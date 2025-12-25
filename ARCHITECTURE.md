@@ -61,3 +61,202 @@ flowchart TD
     C <--> D
     E <--> D
 ```
+
+Moving to **JSON-RPC** for the multiplexing protocol is a smart move. Since your extensions and VS Code are already speaking it, you stay in a consistent ecosystem. However, for a "Multiplexer," we need to wrap the raw data streams (GDB, RTT, SWO) so they don't get mixed up with the DAP control messages.
+
+Here is a proposed structure for the **Funnel Protocol** using a JSON-RPC 2.0 style.
+
+### 1. Packet Format
+
+Since JSON is "heavy" for raw byte streams like RTT, the most efficient way to do this is a **Hybrid Approach**: JSON-RPC for "Control" (opening/closing ports) and "Binary Frames" for the actual debug data.
+
+#### The Binary Frame (The Funnel)
+
+To keep it "Zero-Buffering," every packet through the SSH tunnel should have a small header:
+| Field | Size | Description |
+| :--- | :--- | :--- |
+| **Stream ID** | 1 Byte | `0`: Control/DAP, `1`: GDB, `2`: SWO, `3`: RTT, etc. |
+| **Payload Length** | 4 Bytes | UInt32 (Little Endian) |
+| **Payload** | N Bytes | The raw data (JSON string or raw bytes) |
+
+---
+
+### 2. Control Packet Types (JSON-RPC)
+
+These packets always travel on **Stream ID 0**. They manage the "Ghost Ports" and security.
+
+#### `initialize` (The Handshake)
+
+This is the first packet sent by the Local Funnel to the Remote Funnel.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {
+    "token": "high-entropy-secret-key",
+    "version": "1.0.0",
+    "capabilities": ["multi-stream", "compression"]
+  },
+  "id": 1
+}
+
+```
+
+#### `startStream` (Port Mapping)
+
+The Local Funnel tells the Remote Funnel to connect to a specific local port (e.g., the actual GDB server).
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "startStream",
+  "params": {
+    "streamId": 1,
+    "type": "tcp",
+    "port": 3333,
+    "host": "127.0.0.1"
+  },
+  "id": 2
+}
+
+```
+
+#### `streamStatus` (Lifecycle)
+
+Sent by either side to signal that a specific "pipe" has been broken (e.g., the GDB server crashed).
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "streamStatus",
+  "params": {
+    "streamId": 1,
+    "status": "closed",
+    "reason": "Connection reset by peer"
+  }
+}
+
+```
+
+---
+
+### 3. The Heartbeat (Keep-Alive)
+
+SSH tunnels are notorious for "silently dying" if no data flows for a few minutes (especially through aggressive NAT firewalls).
+
+#### `heartbeat`
+
+The Local Funnel sends this every 30 seconds if the line is quiet. If the Remote Funnel doesn't acknowledge within a timeout, the Local Funnel tears down all "Ghost Ports" so the user knows the session is dead.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "heartbeat",
+  "params": {
+    "timestamp": 1735046622
+  }
+}
+
+```
+
+---
+
+### 4. Handling Binary Streams (The "Raw" Mode)
+
+For **GDB**, **SWO**, and **RTT**, we should skip JSON entirely once the stream is established to avoid the "Base64 Tax" (which adds 33% overhead).
+
+1. **DAP Message:** `[ID:0][Len:124][{"jsonrpc":...}]`
+2. **GDB Data:** `[ID:1][Len:4096][...raw binary bytes...]`
+3. **RTT Data:** `[ID:3][Len:12][...raw RTT string...]`
+
+### Why this structure works for you:
+
+* **Agnostic:** The "Funnel" doesn't need to know *what* is in Stream 1. It just moves the bytes.
+* **Responsive:** Because the header is only 5 bytes, the latency is negligible.
+* **Secure:** By checking the `token` in the `initialize` call, you prevent anyone else on the remote host from hijacking your gdb-server proxy.
+
+In the world of TCP, the odds of a packet being "broken up" are **100%**.
+
+TCP is a **stream-oriented** protocol, not a **message-oriented** one. It guarantees the *order* and *integrity* of the bytes, but it makes no promises about where one of your logical "packets" ends and the next begins. This is the most common trap when moving from local development to a Proxy/Remote model.
+
+### 1. The "Fragmentation" Reality
+
+If you send a 100-byte JSON-RPC message, it might arrive at the other side as:
+
+* One 100-byte chunk (Lucky).
+* Two 50-byte chunks.
+* One 1-byte chunk followed by 99 bytes.
+
+If you are "tunneling" this over SSH, the SSH layer itself adds another layer of packetization. If you don't handle this, your JSON parser will try to parse `{"jsonrpc": "2.` and crash because the string is incomplete.
+
+### 2. The "Read and Accumulate" Strategy
+
+You definitely shouldn't read a byte at a time (that's too much CPU overhead for the system calls). Instead, you use a **Buffer Accumulator**.
+
+**How to implement it in TypeScript/Node:**
+
+1. **The Inbox:** Maintain a persistent buffer (or an array of buffers) for each connection.
+2. **The `on('data')` Event:** When a chunk arrives, append it to your Inbox.
+3. **The Parser Loop:**
+* **Step A:** Do I have at least 5 bytes (the Header)?
+* No? Wait for more data.
+* Yes? Read the `Stream ID` and the `Payload Length`.
+
+
+* **Step B:** Do I have `5 + Payload Length` bytes in the Inbox?
+* No? Wait for more data.
+* Yes? Extract that specific slice as a complete "Packet."
+
+
+* **Step C:** Remove the processed bytes from the Inbox and **repeat** (because the chunk might contain the start of the *next* packet).
+
+
+
+### 3. Efficiency: "Slicing" vs. "Copying"
+
+In Node.js, using `Buffer.concat()` repeatedly can be expensive because it creates new memory allocations. For your "Funnel," you can use a more efficient "Reader" pattern:
+
+```typescript
+// Conceptual logic for the Funnel
+let inbox = Buffer.alloc(0);
+
+socket.on('data', (chunk) => {
+    inbox = Buffer.concat([inbox, chunk]);
+
+    while (inbox.length >= 5) { // Minimum header size
+        const streamId = inbox.readUInt8(0);
+        const length = inbox.readUInt32LE(1);
+
+        if (inbox.length >= 5 + length) {
+            const payload = inbox.subarray(5, 5 + length);
+            processPacket(streamId, payload);
+            
+            // Advance the inbox
+            inbox = inbox.subarray(5 + length);
+        } else {
+            break; // Need more data for this specific payload
+        }
+    }
+});
+
+```
+
+### 4. Why this matters for RTT and SWO
+
+For binary streams like RTT, this "Framing" is your best friend. Without it, if RTT data and DAP data arrive at the same time, the bytes would interleave and corrupt your JSON. By using the **Header + Length**, you ensure that even if the network breaks a packet into 10 pieces, your code will perfectly reassemble them before passing them to the GDB or SVD logic.
+
+### 5. Heartbeats are the "Reset" Button
+
+The only risk with this pattern is if a header gets corrupted (rare with TCP, but possible with bad memory/logic). If the `Length` field becomes a billion by accident, your code will wait forever.
+
+* **Heartbeats** act as a check: if you haven't received a valid, complete packet in a long time, you flush the inbox and reset the connection.
+
+---
+
+**Does this "Header + Length" accumulation logic align with the "Zero-Buffering" feel you want?** It’s technically "buffering" to reassemble, but it’s the minimum amount required to ensure the streams stay isolated and valid.
+
+Enjoy the rest of your cooking—hopefully, your real-world recipes are easier to "assemble" than TCP streams! Would you like to talk about how to handle "Out of Order" execution if you decide to go with a non-blocking queue next?
+
+(I’ll let you get back to the kitchen now—the "recipe" for the proxy is starting to look as good as whatever you're cooking!)
+
