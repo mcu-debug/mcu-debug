@@ -2,7 +2,7 @@ import * as os from "os";
 import { ChildProcess, spawn } from "child_process";
 import { EventEmitter } from "events";
 import { parseGdbMiOut } from "./mi-parser";
-import { GdbMiOutputType } from "./mi-types";
+import { GdbEventNames, GdbMiOutputType, GdbMiRecord, Stderr, Stdout, Console } from "./mi-types";
 import { GdbMiRecordType } from "./mi-types";
 
 const logFilePath = os.tmpdir() + "/mcu-debug-process-log.txt";
@@ -19,18 +19,23 @@ export function processLogging(message: string) {
 class PendingCmdPromise {
     constructor(
         public readonly seq: number,
-        public readonly resolve: (value: string) => void,
+        public readonly resolve: (value: GdbMiRecord) => void,
         public readonly reject: (reason?: any) => void,
     ) {}
 }
 
-export class GdbSession extends EventEmitter {
+export class GdbInstance extends EventEmitter {
     // ... other methods and properties ...
     pid: number = 0;
     process: ChildProcess | null = null;
     public debugMiOutput: boolean = false;
     private cmdSeq: number = 1;
     private pendingCmds: Map<number, PendingCmdPromise> = new Map();
+    private capturedStdout: string[] = [];
+    private captureStdoutMode: boolean = false;
+    public status: "running" | "stopped" | "none" = "none";
+    gdbMajorVersion: number = 0;
+    gdbMinorVersion: number = 0;
 
     constructor(
         private gdbPath: string,
@@ -39,34 +44,82 @@ export class GdbSession extends EventEmitter {
         super();
     }
 
-    start(cwd: string | undefined, init: string[], timeout: number = 5000): Promise<void> {
+    start(cwd: string | undefined, init: string[], timeout: number = 1000, checkVers = true): Promise<void> {
         return new Promise((resolve, reject) => {
-            const processstartTimeout = setTimeout(() => {
-                reject(new Error("GDB start timeout"));
-            }, timeout);
+            const doInitCmds = () => {
+                const promises = [];
+                for (const cmd of init) {
+                    promises.push(this.sendCommand(cmd, timeout));
+                }
+                Promise.all(promises)
+                    .then(() => {
+                        resolve();
+                    })
+                    .catch((err) => {
+                        reject(err);
+                    });
+            };
 
             processLogging(`Starting GDB: ${this.gdbPath} ${this.gdbArgs.join(" ")}, cwd=${cwd}`);
             const child = spawn(this.gdbPath, this.gdbArgs, { cwd: cwd, env: process.env });
-            clearTimeout(processstartTimeout);
             this.process = child;
             this.pid = child.pid!;
             processLogging(`Started GDB: PID=${this.pid}`);
-            child.on("exit", (code, signal) => {
-                this.emit("exit", code, signal);
-            });
-            child.on("error", (err) => {
-                this.emit("error", err);
-            });
-            child.stderr.on("data", (data) => {
-                this.handleStderrData(data);
-            });
-            child.stdout.on("data", (data) => {
-                this.handleStdoutData(data);
-            });
-            resolve();
-            // Implementation to start GDB process
-            // and handle timeout
+            child.on("exit", this.handleExit.bind(this));
+            child.on("error", this.handleError.bind(this));
+            child.stderr.on("data", this.handleStderrData.bind(this));
+            child.stdout.on("data", this.handleStdoutData.bind(this));
+
+            if (!checkVers) {
+                this.captureStdoutMode = true;
+                this.sendCommand("-gdb-version", timeout)
+                    .then(() => {
+                        this.parseVersionInfo();
+                        doInitCmds();
+                    })
+                    .catch(() => {
+                        this.captureStdoutMode = false;
+                        reject(new Error("GDB did not respond to -gdb-version command"));
+                    });
+            } else {
+                doInitCmds();
+            }
         });
+    }
+
+    public log(type: GdbEventNames, msg: string): void {
+        this.emit(type, msg);
+    }
+
+    private parseVersionInfo() {
+        const regex = RegExp(/^GNU gdb.*\s(\d+)\.(\d+)[^\r\n]*/gm);
+        for (const str of this.capturedStdout) {
+            const match = regex.exec(str);
+            if (match !== null) {
+                this.gdbMajorVersion = parseInt(match[1]);
+                this.gdbMinorVersion = parseInt(match[2]);
+                if (this.gdbMajorVersion < 9 || (this.gdbMajorVersion === 9 && this.gdbMinorVersion < 1)) {
+                    this.log(GdbEventNames.Stderr, `ERROR: GDB version ${this.gdbMajorVersion}.${this.gdbMinorVersion} is not supported. Please upgrade to GDB version 9.1 or higher.`);
+                    this.log(GdbEventNames.Stderr, "    This can result in silent failures");
+                }
+                this.captureStdoutMode = false;
+                this.capturedStdout = [];
+                return;
+            }
+        }
+        this.log(Stderr, "ERROR: Could not determine gdb-version number (regex failed). We need version >= 9.1. Please report this problem.");
+        this.log(Stderr, "    This can result in silent failures");
+        this.captureStdoutMode = false;
+        this.capturedStdout = [];
+    }
+
+    private handleExit(code: number | null, signal: NodeJS.Signals | null) {
+        this.process = null;
+        this.emit("exit", code, signal);
+    }
+
+    private handleError(code: number | null, signal: NodeJS.Signals | null) {
+        this.emit("error", code, signal);
     }
 
     private stdoutBuf: string = "";
@@ -78,7 +131,7 @@ export class GdbSession extends EventEmitter {
         while ((index = this.stdoutBuf.indexOf("\n")) >= 0) {
             const line = this.stdoutBuf.slice(0, index).trim();
             this.stdoutBuf = this.stdoutBuf.slice(index + 1);
-            this.emit("stdout", line);
+            this.handleOutputLine(line);
         }
     }
 
@@ -106,7 +159,7 @@ export class GdbSession extends EventEmitter {
                 const token = parseInt(miOutput.resultRecord.token);
                 const pendingCmd = this.pendingCmds.get(token);
                 if (pendingCmd) {
-                    pendingCmd.resolve(line);
+                    pendingCmd.resolve(miOutput.resultRecord);
                     this.pendingCmds.delete(token);
                 } else {
                     this.emit("stderr", `No pending command for token ${token}`);
@@ -114,18 +167,66 @@ export class GdbSession extends EventEmitter {
             }
             for (const record of miOutput.outOfBandRecords) {
                 if (record.recordType === "async") {
-                    this.emit("async", record);
+                    if (record.class === "stopped") {
+                        this.handleSetopped(record);
+                    } else if (record.class === "running") {
+                        this.status = "running";
+                        if (this.debugMiOutput) {
+                            this.log(Stderr, `mi2.status = ${this.status}`);
+                        }
+                        this.emit(GdbEventNames.Running);
+                    }
                 } else if (record.recordType === "stream") {
-                    if (record.outputType === "console") {
-                        this.emit("stdout", record);
+                    if (record.outputType === Console) {
+                        if (this.captureStdoutMode) {
+                            this.capturedStdout.push(record.result);
+                        }
+                        this.emit(Console, record);
                     } else if (record.outputType === "target") {
-                        this.emit("stdout", record);
+                        this.emit(Stdout, record);
                     } else if (record.outputType === "log") {
-                        this.emit("log", record);
+                        this.emit(Stderr, record);
                     }
                 }
             }
         }
+    }
+
+    private firstStop = true;
+    handleSetopped(record: GdbMiRecord) {
+        this.status = "stopped";
+        if (this.debugMiOutput) {
+            this.log(Stderr, `mi2.status = ${this.status}`);
+        }
+        const reason = record.result["reason"];
+        if (reason === "breakpoint-hit") {
+            this.emit("breakpoint", record);
+        } else if (reason && (reason as string).includes("watchpoint-trigger")) {
+            this.emit("watchpoint", record);
+        } else if (reason && (reason as string).includes("watchpoint-scope")) {
+            // When a local variable goes out of scope
+            this.emit("watchpoint-scope", record);
+        } else if (reason === "end-stepping-range") {
+            this.emit("step-end", record);
+        } else if (reason === "function-finished") {
+            this.emit("step-out-end", record);
+        } else if (reason === "signal-received") {
+            this.emit("signal-stop", record);
+        } else if (reason === "exited-normally") {
+            this.emit("exited-normally", record);
+        } else if (reason === "exited") {
+            // exit with error code != 0
+            this.log(Stderr, "Program exited with code " + record.result["exit-code"]);
+            this.emit("exited-normally", record);
+        } else if (reason === undefined && this.firstStop) {
+            this.log(Console, "Program stopped, probably due to a reset and/or halt issued by debugger");
+            this.emit(GdbEventNames.Stopped, record, "entry");
+        } else {
+            this.log(Console, "Not implemented stop reason (assuming exception): " + reason || "Unknown reason");
+            this.emit(GdbEventNames.Stopped, record);
+        }
+        this.firstStop = false;
+        this.emit("generic-stopped", record);
     }
 
     // Method to stop the GDB process. There are so many things that can go wrong here...
@@ -187,7 +288,10 @@ export class GdbSession extends EventEmitter {
         });
     }
 
-    sendCommand(command: string, timeout: number = 10000): Promise<string> {
+    sendCommand(command: string, timeout: number = 10000): Promise<GdbMiRecord> {
+        if (!command.startsWith("-")) {
+            command = "-" + command;
+        }
         return new Promise((resolve, reject) => {
             if (!this.process || !this.process.stdin || !this.process.stdin.writable) {
                 return reject(new Error("GDB process is not running or its stdin is not writable"));

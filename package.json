@@ -42,6 +42,7 @@
     "package": "npm run check-types && node esbuild.js --production"
   },
   "devDependencies": {
+    "@types/hasbin": "^1.2.2",
     "@types/node": "^25.0.3",
     "@types/vscode": "^1.107.0",
     "@vscode/debugadapter": "^1.68.0",
@@ -52,6 +53,7 @@
   },
   "dependencies": {
     "@vscode/extension-telemetry": "^1.2.0",
+    "hasbin": "^1.2.3",
     "winston": "^3.19.0",
     "winston-vscode": "^1.0.0"
   }

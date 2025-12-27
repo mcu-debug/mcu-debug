@@ -1,3 +1,7 @@
+# Cortex-Debug replacement
+
+For this iteration, we will keep most of the frontend functionally equivalent to Cortex-Debug. But the backend (DAP adapter) will be totally new. All though we will have a new backend, we will still maintain compatibility with gdb-server support for all existing ones. Again, functionally equivalent and any changes should not be externally visible
+
 The new debug adapter architecture will split the debug adapter into a client and a server
 
 ## Problem definition
@@ -24,12 +28,13 @@ The server shall, for each port, wait until the port is open and simply provide 
 There is a special case and the most prevalent case where the client and server are running on the same machine. In this case, the server will not be involved, but the client will not care if the host is 1127.0.0.1 or something else
 
 **The most critical information needed is the IP address of the host computer**
-But what starts the server? There are a couple of possibilities
+But what starts the Probe Agent? There are a couple of possibilities
 
-1. We use VSCode to launch the server and the lifecycle of the workspace. Our server has nothing to do with VSCode so this may sound dumb as to why we would rely on that. Some reasons are discovery, distribution(installation), updates. The discover may be the msot important reason. Another reason is that NodeJS is already bundled and available.
-2. Standalone server. In this case, it can run forever in daemon-mode and can handle multiple clients. The only state the server has is the process information for each gdb-server launched and the only reason to have this is to provide a service to kill. But even this state can be maintained by the client. But for security reasons, perhaps we should not offer a kill service using a PID. It should be session based.
+1.  **VS Code Extension Split (Preferred):** VS Code allows extensions to define where they run. We can structure the extension such that a "UI" portion runs on the Local Host (where the USB ports are) and the "Workspace" portion runs on the Remote Host (WSL/Container). The Local Host portion can spawn the Probe Agent automatically when a debug session starts. This is the most seamless experience as it requires no extra installation steps for the user.
+2.  **Helper Extension:** If the split model proves too complex, a separate lightweight "Probe Agent Extension" could be installed on the Local Host side to manage the lifecycle and provide an API for the main extension to communicate with.
+3.  **Standalone Server:** In this case, it can run forever in daemon-mode and can handle multiple clients. The only state the server has is the process information for each gdb-server launched and the only reason to have this is to provide a service to kill. But even this state can be maintained by the client. But for security reasons, perhaps we should not offer a kill service using a PID. It should be session based.
 
-Even in the standalone more, VSCode can still be used as a vehicle for distribution. We will debate this later.
+Even in the standalone mode, VS Code can still be used as a vehicle for distribution. We will debate this later.
 
 ### 2. gdb-server lifecycle management
 
@@ -41,7 +46,11 @@ Note: For JLink, a single debug session may involve launching several gdb-server
 
 ## Client
 
-The Client is the rest of the Debug Adapter as it exists today. GDB is always launched local to the client computer. The client OS can be thought of as the "Remote OS" in VSCode lingo and the server runs on the host which is "Local OS" in VSCode lingo. See https://code.visualstudio.com/docs/remote/remote-overview Yes, this is confusing because in my lingo, the server goes with the gdb-server and GDB and the DAP are clients. So, with my naming convention the relationship is reversed. Ask AI to help rename or use alternate terminology
+The Client is the rest of the Debug Adapter as it exists today. GDB is always launched local to the client computer. The client OS can be thought of as the "Remote OS" in VSCode lingo and the server runs on the host which is "Local OS" in VSCode lingo. See https://code.visualstudio.com/docs/remote/remote-overview Yes, this is confusing because in my lingo, the server goes with the gdb-server and GDB and the DAP are clients. So, with my naming convention the relationship is reversed.
+
+**Terminology Update:** To avoid confusion, we will use the following terms:
+*   **Debug Adapter**: The VS Code extension running in the user's environment (Container, WSL, or Local).
+*   **Probe Agent**: The lightweight server running on the Host OS that manages the USB probe and GDB Server process.
 
 ## Putting it all together
 
@@ -50,12 +59,12 @@ With VSCode as an example, we have the following
 ```mermaid
 flowchart TD
     subgraph "VSCode (Local OS)"
-    C["MyServer"]
+    C["Probe Agent"]
     E["Cortex-Debug"]
     end
 
     subgraph "VSCode Server (Remote OS)"
-    D["MyClient (DAP)"] <--> GDB
+    D["Debug Adapter"] <--> GDB
     end
 
     C <--> D
@@ -73,11 +82,11 @@ Since JSON is "heavy" for raw byte streams like RTT, the most efficient way to d
 #### The Binary Frame (The Funnel)
 
 To keep it "Zero-Buffering," every packet through the SSH tunnel should have a small header:
-| Field | Size | Description |
-| :--- | :--- | :--- |
-| **Stream ID** | 1 Byte | `0`: Control/DAP, `1`: GDB, `2`: SWO, `3`: RTT, etc. |
-| **Payload Length** | 4 Bytes | UInt32 (Little Endian) |
-| **Payload** | N Bytes | The raw data (JSON string or raw bytes) |
+| Field              | Size    | Description                                          |
+| :----------------- | :------ | :--------------------------------------------------- |
+| **Stream ID**      | 1 Byte  | `0`: Control/DAP, `1`: GDB, `2`: SWO, `3`: RTT, etc. |
+| **Payload Length** | 4 Bytes | UInt32 (Little Endian)                               |
+| **Payload**        | N Bytes | The raw data (JSON string or raw bytes)              |
 
 ---
 
@@ -87,7 +96,7 @@ These packets always travel on **Stream ID 0**. They manage the "Ghost Ports" an
 
 #### `initialize` (The Handshake)
 
-This is the first packet sent by the Local Funnel to the Remote Funnel.
+This is the first packet sent by the Debug Adapter to the Probe Agent.
 
 ```json
 {
@@ -105,7 +114,7 @@ This is the first packet sent by the Local Funnel to the Remote Funnel.
 
 #### `startStream` (Port Mapping)
 
-The Local Funnel tells the Remote Funnel to connect to a specific local port (e.g., the actual GDB server).
+The Debug Adapter tells the Probe Agent to connect to a specific local port (e.g., the actual GDB server).
 
 ```json
 {
@@ -147,7 +156,7 @@ SSH tunnels are notorious for "silently dying" if no data flows for a few minute
 
 #### `heartbeat`
 
-The Local Funnel sends this every 30 seconds if the line is quiet. If the Remote Funnel doesn't acknowledge within a timeout, the Local Funnel tears down all "Ghost Ports" so the user knows the session is dead.
+The Debug Adapter sends this every 30 seconds if the line is quiet. If the Probe Agent doesn't acknowledge within a timeout, the Debug Adapter tears down all "Ghost Ports" so the user knows the session is dead.
 
 ```json
 {
@@ -164,9 +173,9 @@ The Local Funnel sends this every 30 seconds if the line is quiet. If the Remote
 
 ### 4. Handling Binary Streams (The "Raw" Mode)
 
-For **GDB**, **SWO**, and **RTT**, we should skip JSON entirely once the stream is established to avoid the "Base64 Tax" (which adds 33% overhead).
+For **GDB**, **SWO**, and **RTT**, we should skip JSON entirely once the stream is established to avoid the "Base64 Tax" (which adds 33% overhead) and CPU overhead.
 
-1. **DAP Message:** `[ID:0][Len:124][{"jsonrpc":...}]`
+1. **Control Message:** `[ID:0][Len:124][{"jsonrpc":...}]`
 2. **GDB Data:** `[ID:1][Len:4096][...raw binary bytes...]`
 3. **RTT Data:** `[ID:3][Len:12][...raw RTT string...]`
 
@@ -254,9 +263,4 @@ The only risk with this pattern is if a header gets corrupted (rare with TCP, bu
 
 ---
 
-**Does this "Header + Length" accumulation logic align with the "Zero-Buffering" feel you want?** It’s technically "buffering" to reassemble, but it’s the minimum amount required to ensure the streams stay isolated and valid.
-
-Enjoy the rest of your cooking—hopefully, your real-world recipes are easier to "assemble" than TCP streams! Would you like to talk about how to handle "Out of Order" execution if you decide to go with a non-blocking queue next?
-
-(I’ll let you get back to the kitchen now—the "recipe" for the proxy is starting to look as good as whatever you're cooking!)
 

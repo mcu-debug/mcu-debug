@@ -90,3 +90,20 @@ export type GdbAsyncRecordClass =
     | "breakpoint-modified"
     | "breakpoint-deleted"
     | "memory-changed";
+
+export enum GdbEventNames {
+    Stopped = "stopped",
+    Running = "running",
+    Exited = "exited",
+
+    // There are really just a few message types for VSSCode
+    Console = "console", // Intended for the debugger normal messages
+    Stderr = "stderr", // Intended for debuggee messages. But we use it for GDB errors ans our errors too
+    Stdout = "stdout",
+    Telemetry = "telemetry",
+}
+
+export const Stderr = GdbEventNames.Stderr;
+export const Stdout = GdbEventNames.Stdout;
+export const Console = GdbEventNames.Console;
+export const Telemetry = GdbEventNames.Telemetry;

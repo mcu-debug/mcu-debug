@@ -9,7 +9,7 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 /// handling (finishing) of requests is possible either. This gives us some determinism
 ///
 /// Another TODO: Handle 'cancel' requests properly. Not sure what the semantics are here.
-export class AdapterSession extends LoggingDebugSession {
+export class SeqDebugSession extends LoggingDebugSession {
     protected requestQueue: DebugProtocol.Request[] = [];
     private isProcessing = false;
     private currentRequestResolve: ((response: DebugProtocol.Response) => void) | null = null;
@@ -24,13 +24,13 @@ export class AdapterSession extends LoggingDebugSession {
     protected exiting: boolean = false;
 
     protected async dispatchRequest(request: DebugProtocol.Request): Promise<void> {
-        if (AdapterSession.exitLikeCommands.has(request.command)) {
+        if (SeqDebugSession.exitLikeCommands.has(request.command)) {
             this.exiting = true;
             super.dispatchRequest(request);
             return;
         }
 
-        if (AdapterSession.continueLikeCommands.has(request.command)) {
+        if (SeqDebugSession.continueLikeCommands.has(request.command)) {
             for (const req of this.requestQueue) {
                 const response: DebugProtocol.Response = {
                     seq: 0,
