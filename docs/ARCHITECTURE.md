@@ -59,16 +59,18 @@ With VSCode as an example, we have the following
 ```mermaid
 flowchart TD
     subgraph "VSCode (Local OS)"
+    S["gdb-server"] <-->
     C["Probe Agent"]
     E["Cortex-Debug"]
     end
 
     subgraph "VSCode Server (Remote OS)"
-    D["Debug Adapter"] <--> GDB
+    D["Debug Adapter"] <--> GDB <--> F["Source Code, Elf"]
     end
 
     C <--> D
     E <--> D
+    GDB <--> C
 ```
 
 Moving to **JSON-RPC** for the multiplexing protocol is a smart move. Since your extensions and VS Code are already speaking it, you stay in a consistent ecosystem. However, for a "Multiplexer," we need to wrap the raw data streams (GDB, RTT, SWO) so they don't get mixed up with the DAP control messages.
@@ -260,6 +262,19 @@ For binary streams like RTT, this "Framing" is your best friend. Without it, if 
 The only risk with this pattern is if a header gets corrupted (rare with TCP, but possible with bad memory/logic). If the `Length` field becomes a billion by accident, your code will wait forever.
 
 * **Heartbeats** act as a check: if you haven't received a valid, complete packet in a long time, you flush the inbox and reset the connection.
+  
+### 6. Code snippet for waiting for channel to be ready
+
+```TS
+// Proxy server sends notification when ready
+proxyConnection.on('channel_ready', (channelId) => {
+  if (channelId === RSP_CHANNEL) {
+    this.rspReady.resolve();
+  }
+});
+
+await this.rspReady.promise;
+```
 
 ---
 
