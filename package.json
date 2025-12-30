@@ -1,60 +1,21 @@
 {
-  "name": "mcu-debug",
-  "version": "0.1.0",
-  "preview": true,
-  "description": "A debugger and debug adapter for MCUs",
-  "keywords": [
-    "MCU",
-    "Cortex-Debug",
-    "ARM",
-    "RISC-V",
-    "debugger"
+  "name": "mcu-debug-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
   ],
-  "homepage": "https://github.com/mcu-debug/mcu-debug#readme",
-  "bugs": {
-    "url": "https://github.com/mcu-debug/mcu-debug/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/mcu-debug/mcu-debug.git"
-  },
-  "license": "MIT",
-  "author": "Haneef Mohammed <haneefdm@gmail.com>",
-  "activationEvents": [
-    "onDebugResolve:cortex-debug",
-    "onStartupFinished"
-  ],
-  "categories": [
-    "Debuggers"
-  ],
-  "engines": {
-    "vscode": "^1.85.0"
-  },
-  "type": "commonjs",
-  "main": "./dist/extension.js",
   "scripts": {
-    "compile": "npm run check-types && node esbuild.js",
-    "check-types": "tsc --noEmit",
-    "watch": "npm-run-all -p watch:*",
-    "watch:esbuild": "node esbuild.js --watch",
-    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "vscode:prepublish": "npm run package",
-    "package": "npm run check-types && node esbuild.js --production"
+    "watch": "npm run watch --workspaces",
+    "build": "npm run build --workspaces",
+    "compile": "npm run compile --workspaces",
+    "build:types": "./scripts/generate-types.sh",
+    "build:go": "cd packages/proxy-server && make build",
+    "build:extensions": "npm run build --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
+    "package": "./scripts/package-extensions.sh",
+    "test": "npm run test --workspaces"
   },
   "devDependencies": {
-    "@types/hasbin": "^1.2.2",
-    "@types/node": "^25.0.3",
-    "@types/vscode": "^1.107.0",
-    "@vscode/debugadapter": "^1.68.0",
-    "@vscode/debugprotocol": "^1.68.0",
-    "esbuild": "^0.27.2",
-    "npm-run-all": "^4.1.5",
-    "prettier": "^3.7.4"
-  },
-  "dependencies": {
-    "@vscode/extension-telemetry": "^1.2.0",
-    "hasbin": "^1.2.3",
-    "winston": "^3.19.0",
-    "winston-vscode": "^1.0.0"
+    "typescript": "^5.3.0",
+    "esbuild": "^0.19.0"
   }
 }

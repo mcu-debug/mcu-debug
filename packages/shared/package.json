@@ -1,0 +1,28 @@
+{
+  "name": "@mcu-debug/shared",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "require": "./lib/index.js",
+      "import": "./lib/index.mjs"
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json && node esbuild.js",
+    "watch": "node esbuild.js --watch"
+  },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.2",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -3,38 +3,17 @@
   "tasks": [
     {
       "label": "watch",
-      "dependsOn": ["npm: watch:tsc", "npm: watch:esbuild"],
+      "dependsOn": ["npm: watch"],
       "presentation": {
         "reveal": "never"
       },
       "group": {
         "kind": "build",
         "isDefault": true
+      },
+      "runOptions": {
+          "runOn": "folderOpen" // Key property for autorun
       }
     },
-    {
-      "type": "npm",
-      "script": "watch:esbuild",
-      "group": "build",
-      "problemMatcher": "$esbuild-watch",
-      "isBackground": true,
-      "label": "npm: watch:esbuild",
-      "presentation": {
-        "group": "watch",
-        "reveal": "never"
-      }
-    },
-    {
-      "type": "npm",
-      "script": "watch:tsc",
-      "group": "build",
-      "problemMatcher": "$tsc-watch",
-      "isBackground": true,
-      "label": "npm: watch:tsc",
-      "presentation": {
-        "group": "watch",
-        "reveal": "never"
-      }
-    }
   ]
 }

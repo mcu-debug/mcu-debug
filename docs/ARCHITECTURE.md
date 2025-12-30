@@ -59,21 +59,34 @@ With VSCode as an example, we have the following
 ```mermaid
 flowchart TD
     subgraph "VSCode (Local OS)"
-    S["gdb-server"] <-->
-    C["Probe Agent"]
-    E["Cortex-Debug"]
+    S["gdb-server"]
+    CD["Cortex-Debug
+    (UI)"]
+    PAL["Probe Agent(local)"]
+    PAL <--> S
+    PAL <--> CD
     end
 
     subgraph "VSCode Server (Remote OS)"
-    D["Debug Adapter"] <--> GDB <--> F["Source Code, Elf"]
+    DA["Cortex-Debug
+    (Debug Adapter)"] <--> GDB <--> SRC["Source Code, Elf"]
+    PAR["Probe Agent(remote)"]
+    DA --> PAR
+    GDB <--> PAR
     end
 
-    C <--> D
-    E <--> D
-    GDB <--> C
-```
+    subgraph "Hardware"
+    Probe <--> MCU
+    end
 
-Moving to **JSON-RPC** for the multiplexing protocol is a smart move. Since your extensions and VS Code are already speaking it, you stay in a consistent ecosystem. However, for a "Multiplexer," we need to wrap the raw data streams (GDB, RTT, SWO) so they don't get mixed up with the DAP control messages.
+    PAL <-->|SSH TUNNEL| PAR
+    S <--> Probe
+```
+This kind of an architecture is also used by VSCode. See [Remote Development using SSH](https://code.visualstudio.com/docs/remote/ssh)
+
+![alt text](vscode-ssh.png)
+
+The difference is that the debug probe and HW are on the Local OS
 
 Here is a proposed structure for the **Funnel Protocol** using a JSON-RPC 2.0 style.
 
@@ -84,11 +97,11 @@ Since JSON is "heavy" for raw byte streams like RTT, the most efficient way to d
 #### The Binary Frame (The Funnel)
 
 To keep it "Zero-Buffering," every packet through the SSH tunnel should have a small header:
-| Field              | Size    | Description                                          |
-| :----------------- | :------ | :--------------------------------------------------- |
-| **Stream ID**      | 1 Byte  | `0`: Control/DAP, `1`: GDB, `2`: SWO, `3`: RTT, etc. |
-| **Payload Length** | 4 Bytes | UInt32 (Little Endian)                               |
-| **Payload**        | N Bytes | The raw data (JSON string or raw bytes)              |
+| Field              | Size    | Description                                      |
+| :----------------- | :------ | :----------------------------------------------- |
+| **Stream ID**      | 1 Byte  | `0`: Control, `1`: GDB, `2`: SWO, `3`: RTT, etc. |
+| **Payload Length** | 4 Bytes | UInt32 (Little Endian)                           |
+| **Payload**        | N Bytes | The raw data (JSON string or raw bytes)          |
 
 ---
 
