@@ -1,11 +1,12 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { Handles } from "@vscode/debugadapter";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { decodeReference, ExtendedVariable, GDBDebugSession, RequestQueue } from "./gdb-session";
-import { MIError, VariableObject } from "./backend/backend";
+import { GDBDebugSession } from "./gdb-session";
+import { decodeReference } from "./variables";
+import { VariableObject, ExtendedVariable } from "./variables";
 import * as crypto from "crypto";
-import { GdbEventNames, GdbMiRecord, Stderr } from "./gdb-mi/mi-types";
-import { expandValue } from "./backend/gdb_expansion";
+import { GdbEventNames, Stderr, MIError, MINode } from "./gdb-mi/mi-types";
+import { expandValue } from "./gdb-mi/gdb_expansion";
 
 export type VariableType = string | VariableObject | ExtendedVariable;
 export interface NameToVarChangeInfo {
@@ -17,8 +18,10 @@ export class VariablesHandler {
     public cachedChangeList: NameToVarChangeInfo | undefined;
 
     constructor(
+        public getStoppedThreadId: () => number | undefined,
         public isBusy: () => boolean,
         public busyError: (r: DebugProtocol.Response, a: any) => void,
+        public sendErrorResponse: (r: DebugProtocol.Response, code: number, msg: string) => void,
     ) {}
 
     public async clearCachedVars(miDebugger: GdbInstance): Promise<void> {
@@ -33,7 +36,7 @@ export class VariablesHandler {
         }
     }
 
-    public refreshCachedChangeList(miDebugger: GdbInstance, resolve) {
+    public refreshCachedChangeList(miDebugger: GdbInstance, resolve: () => void): void {
         this.cachedChangeList = {};
         miDebugger
             .varUpdate("*", -1, -1)
@@ -41,7 +44,7 @@ export class VariablesHandler {
                 const changelist = changes.result("changelist");
                 for (const change of changelist || []) {
                     const name = MINode.valueOf(change, "name");
-                    this.cachedChangeList[name] = change;
+                    this.cachedChangeList![name] = change;
                     const inScope = MINode.valueOf(change, "in_scope");
                     const typeChanged = MINode.valueOf(change, "type_changed");
                     if (inScope === "false" || typeChanged === "true") {
@@ -50,8 +53,10 @@ export class VariablesHandler {
                         break;
                     }
                     const vId = this.variableHandlesReverse.get(name);
-                    const v = this.variableHandles.get(vId) as any;
-                    v.applyChanges(change);
+                    if (vId !== undefined) {
+                        const v = this.variableHandles.get(vId) as any;
+                        v.applyChanges(change);
+                    }
                 }
             })
             .finally(() => {
@@ -61,7 +66,7 @@ export class VariablesHandler {
 
     public createVariable(arg: VariableType, options?: any) {
         if (options) {
-            return this.variableHandles.create(new ExtendedVariable(arg, options));
+            return this.variableHandles.create(new ExtendedVariable(arg as string, options));
         } else {
             return this.variableHandles.create(arg);
         }
@@ -76,155 +81,152 @@ export class VariablesHandler {
         return varObj.isCompound() ? id : 0;
     }
 
-    private evaluateQ = new RequestQueue<DebugProtocol.EvaluateResponse, DebugProtocol.EvaluateArguments>();
-    public evaluateRequest(r: DebugProtocol.EvaluateResponse, a: DebugProtocol.EvaluateArguments, miDebugger: GdbInstance, session: GDBDebugSession, forceNoFrameId = false): Promise<void> {
-        a.context = a.context || "hover";
-        if (a.context !== "repl") {
+    public evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, miDebugger: GdbInstance, session: GDBDebugSession, forceNoFrameId = false): Promise<void> {
+        args.context = args.context || "hover";
+        if (args.context !== "repl") {
             if (this.isBusy()) {
-                this.busyError(r, a);
+                this.busyError(response, args);
                 return Promise.resolve();
             }
         }
 
-        const doit = (response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, _pendContinue: any, miDebugger: GdbInstance, session: GDBDebugSession) => {
-            return new Promise<void>(async (resolve) => {
-                if (this.isBusy() && a.context !== "repl") {
-                    this.busyError(response, args);
-                    resolve();
-                    return;
-                }
+        return new Promise<void>(async (resolve) => {
+            if (this.isBusy() && args.context !== "repl") {
+                this.busyError(response, args);
+                resolve();
+                return;
+            }
 
-                // Spec says if 'frameId' is specified, evaluate in the scope specified or in the global scope. Well,
-                // we don't have a way to specify global scope ... use floating variable.
-                let threadId = session.stoppedThreadId || 1;
-                let frameId = 0;
-                if (forceNoFrameId) {
-                    threadId = frameId = -1;
-                    args.frameId = undefined;
-                } else if (args.frameId !== undefined) {
-                    [threadId, frameId] = decodeReference(args.frameId);
-                }
+            // Spec says if 'frameId' is specified, evaluate in the scope specified or in the global scope. Well,
+            // we don't have a way to specify global scope ... use floating variable.
+            let threadId = this.getStoppedThreadId() || 1;
+            let frameId = 0;
+            if (forceNoFrameId) {
+                threadId = frameId = -1;
+                args.frameId = undefined;
+            } else if (args.frameId !== undefined) {
+                [threadId, frameId] = decodeReference(args.frameId);
+            }
 
-                if (args.context !== "repl") {
-                    try {
-                        const exp = args.expression;
-                        const hasher = crypto.createHash("sha256");
-                        hasher.update(exp);
-                        if (!forceNoFrameId && args.frameId !== undefined) {
-                            hasher.update(args.frameId.toString(16));
-                        }
-                        const exprName = hasher.digest("hex");
-                        const varObjName = `${args.context}_${exprName}`;
-                        let varObj: VariableObject;
-                        let varId = this.variableHandlesReverse.get(varObjName);
-                        let forceCreate = varId === undefined;
-                        let updateError;
-                        if (!forceCreate) {
-                            try {
-                                const cachedChange = this.cachedChangeList && this.cachedChangeList[varObjName];
-                                let changelist;
-                                if (cachedChange) {
-                                    changelist = [];
-                                } else if (this.cachedChangeList && varId !== undefined) {
-                                    changelist = [];
-                                } else {
-                                    const changes = await miDebugger.varUpdate(varObjName, threadId, frameId);
-                                    changelist = changes.result("changelist") ?? [];
-                                }
-                                for (const change of changelist) {
-                                    const inScope = MINode.valueOf(change, "in_scope");
-                                    if (inScope === "true") {
-                                        const name = MINode.valueOf(change, "name");
-                                        const vId = this.variableHandlesReverse.get(name);
+            if (args.context !== "repl") {
+                try {
+                    const exp = args.expression;
+                    const hasher = crypto.createHash("sha256");
+                    hasher.update(exp);
+                    if (!forceNoFrameId && args.frameId !== undefined) {
+                        hasher.update(args.frameId.toString(16));
+                    }
+                    const exprName = hasher.digest("hex");
+                    const varObjName = `${args.context}_${exprName}`;
+                    let varObj: VariableObject | undefined;
+                    let varId = this.variableHandlesReverse.get(varObjName);
+                    let forceCreate = varId === undefined;
+                    let updateError;
+                    if (!forceCreate) {
+                        try {
+                            const cachedChange = this.cachedChangeList && this.cachedChangeList[varObjName];
+                            let changelist;
+                            if (cachedChange) {
+                                changelist = [];
+                            } else if (this.cachedChangeList && varId !== undefined) {
+                                changelist = [];
+                            } else {
+                                const changes = await miDebugger.varUpdate(varObjName, threadId, frameId);
+                                changelist = changes.result("changelist") ?? [];
+                            }
+                            for (const change of changelist) {
+                                const inScope = MINode.valueOf(change, "in_scope");
+                                if (inScope === "true") {
+                                    const name = MINode.valueOf(change, "name");
+                                    const vId = this.variableHandlesReverse.get(name);
+                                    if (vId !== undefined) {
                                         const v = this.variableHandles.get(vId) as any;
                                         v.applyChanges(change);
                                         if (this.cachedChangeList) {
                                             this.cachedChangeList[name] = change;
                                         }
-                                    } else {
-                                        const msg = `${exp} currently not in scope`;
-                                        await miDebugger.sendCommand(`var-delete ${varObjName}`);
-                                        if (session.args.showDevDebugOutput) {
-                                            session.handleMsg(Stderr, `Expression ${msg}. Will try to create again\n`);
-                                        }
-                                        forceCreate = true;
-                                        throw new Error(msg);
                                     }
-                                }
-                                varObj = this.variableHandles.get(varId) as any;
-                            } catch (err) {
-                                updateError = err;
-                            }
-                        }
-                        if (!this.isBusy() && (forceCreate || (updateError instanceof MIError && updateError.message === "Variable object not found"))) {
-                            if (this.cachedChangeList) {
-                                delete this.cachedChangeList[varObjName];
-                            }
-                            if (forceNoFrameId || args.frameId === undefined) {
-                                varObj = await miDebugger.varCreate(0, exp, varObjName, "@"); // Create floating variable
-                            } else {
-                                varObj = await miDebugger.varCreate(0, exp, varObjName, "@", threadId, frameId);
-                            }
-                            varId = this.findOrCreateVariable(varObj);
-                            varObj.exp = exp;
-                            varObj.id = varId;
-                        } else if (!varObj) {
-                            throw updateError || new Error("live watch unknown error");
-                        }
-
-                        response.body = varObj.toProtocolEvaluateResponseBody();
-                        response.success = true;
-                        session.sendResponse(response);
-                    } catch (err: any) {
-                        if (this.isBusy()) {
-                            this.busyError(response, args);
-                        } else {
-                            response.body = {
-                                result: args.context === "hover" ? "" : `<${err.toString()}>`,
-                                variablesReference: 0,
-                            };
-                            session.sendResponse(response);
-                            if (session.args.showDevDebugOutput) {
-                                session.handleMsg(Stderr, args.context + " " + err.toString());
-                            }
-                        }
-                        // this.sendErrorResponse(response, 7, err.toString());
-                    } finally {
-                        resolve();
-                    }
-                } else {
-                    // This is an 'repl'
-                    try {
-                        miDebugger.sendUserInput(args.expression).then(
-                            (output: any) => {
-                                if (typeof output === "undefined") {
-                                    response.body = {
-                                        result: "",
-                                        variablesReference: 0,
-                                    };
                                 } else {
-                                    response.body = {
-                                        result: JSON.stringify(output),
-                                        variablesReference: 0,
-                                    };
+                                    const msg = `${exp} currently not in scope`;
+                                    await miDebugger.sendCommand(`var-delete ${varObjName}`);
+                                    if (session.args.showDevDebugOutput) {
+                                        session.handleMsg(Stderr, `Expression ${msg}. Will try to create again\n`);
+                                    }
+                                    forceCreate = true;
+                                    throw new Error(msg);
                                 }
-                                session.sendResponse(response);
-                                resolve();
-                            },
-                            (msg) => {
-                                session.sendErrorResponsePub(response, 8, msg.toString());
-                                resolve();
-                            },
-                        );
-                    } catch (e) {
-                        session.sendErrorResponsePub(response, 8, e.toString());
-                        resolve();
+                            }
+                            varObj = this.variableHandles.get(varId as number) as any;
+                        } catch (err) {
+                            updateError = err;
+                        }
                     }
-                }
-            });
-        };
+                    if (!this.isBusy() && (forceCreate || (updateError as MIError)?.message === "Variable object not found")) {
+                        if (this.cachedChangeList) {
+                            delete this.cachedChangeList[varObjName];
+                        }
+                        if (forceNoFrameId || args.frameId === undefined) {
+                            varObj = await miDebugger.varCreate(0, exp, varObjName, "@"); // Create floating variable
+                        } else {
+                            varObj = await miDebugger.varCreate(0, exp, varObjName, "@", threadId, frameId);
+                        }
+                        varId = this.findOrCreateVariable(varObj);
+                        varObj.exp = exp;
+                        varObj.id = varId;
+                    } else if (!varObj) {
+                        throw updateError || new Error("live watch unknown error");
+                    }
 
-        return this.evaluateQ.add(doit, r, a, miDebugger, session);
+                    response.body = varObj.toProtocolEvaluateResponseBody();
+                    response.success = true;
+                    session.sendResponse(response);
+                } catch (err: any) {
+                    if (this.isBusy()) {
+                        this.busyError(response, args);
+                    } else {
+                        response.body = {
+                            result: args.context === "hover" ? "" : `<${err.toString()}>`,
+                            variablesReference: 0,
+                        };
+                        session.sendResponse(response);
+                        if (session.args.showDevDebugOutput) {
+                            session.handleMsg(Stderr, args.context + " " + err.toString());
+                        }
+                    }
+                    // this.sendErrorResponse(response, 7, err.toString());
+                } finally {
+                    resolve();
+                }
+            } else {
+                // This is an 'repl'
+                try {
+                    miDebugger.sendUserInput(args.expression).then(
+                        (output: any) => {
+                            if (typeof output === "undefined") {
+                                response.body = {
+                                    result: "",
+                                    variablesReference: 0,
+                                };
+                            } else {
+                                response.body = {
+                                    result: JSON.stringify(output),
+                                    variablesReference: 0,
+                                };
+                            }
+                            session.sendResponse(response);
+                            resolve();
+                        },
+                        (msg) => {
+                            this.sendErrorResponse(response, 8, msg.toString());
+                            resolve();
+                        },
+                    );
+                } catch (e: any) {
+                    this.sendErrorResponse(response, 8, e.toString());
+                    resolve();
+                }
+            }
+        });
     }
 
     public getCachedChilren(pVar: VariableObject): VariableObject[] | undefined {
@@ -261,7 +263,7 @@ export class VariablesHandler {
                 const pVar = id;
 
                 // Variable members
-                let children: VariableObject[];
+                let children: VariableObject[] | undefined;
                 const childMap: { [name: string]: number } = {};
                 try {
                     let vars = [];
@@ -273,7 +275,7 @@ export class VariablesHandler {
                     } else {
                         children = await miDebugger.varListChildren(args.variablesReference, id.name);
                         pVar.children = {}; // Clear in case type changed, dynamic variable, etc.
-                        vars = children.map((child) => {
+                        for (const child of children || []) {
                             const varId = this.findOrCreateVariable(child);
                             child.id = varId;
                             if (/^\d+$/.test(child.exp)) {
@@ -296,8 +298,8 @@ export class VariablesHandler {
                                 }
                                 child.fullExp = `${pVar.fullExp || pVar.exp}${suffix}`;
                             }
-                            return child.toProtocolVariable();
-                        });
+                            vars.push(child.toProtocolVariable());
+                        }
                     }
 
                     response.body = {
@@ -305,14 +307,14 @@ export class VariablesHandler {
                     };
                     session.sendResponse(response);
                 } catch (err) {
-                    session.sendErrorResponsePub(response, 1, `Could not expand variable: ${err}`);
+                    this.sendErrorResponse(response, 1, `Could not expand variable: ${err}`);
                 }
             } else if (id instanceof ExtendedVariable) {
                 const variables: DebugProtocol.Variable[] = [];
 
                 const varReq = id;
                 if (varReq.options.arg) {
-                    const strArr = [];
+                    const strArr: DebugProtocol.Variable[] = [];
                     let argsPart = true;
                     let arrIndex = 0;
                     const submit = () => {
@@ -324,9 +326,10 @@ export class VariablesHandler {
                     const addOne = async () => {
                         const variable = await miDebugger.evalExpression(JSON.stringify(`${varReq.name}+${arrIndex})`), -1, -1);
                         try {
-                            const expanded = expandValue(this.createVariable.bind(this), variable.result("value"), varReq.name, variable);
+                            // const expanded = expandValue(this.createVariable.bind(this), variable.result("value"), varReq.name, variable);
+                            const expanded: any | undefined = undefined;
                             if (!expanded) {
-                                session.sendErrorResponsePub(response, 15, "Could not expand variable");
+                                this.sendErrorResponse(response, 15, "Could not expand variable");
                             } else {
                                 if (typeof expanded === "string") {
                                     if (expanded === "<nullptr>") {
@@ -359,12 +362,12 @@ export class VariablesHandler {
                                 }
                             }
                         } catch (e) {
-                            session.sendErrorResponsePub(response, 14, `Could not expand variable: ${e}`);
+                            this.sendErrorResponse(response, 14, `Could not expand variable: ${e}`);
                         }
                     };
                     addOne();
                 } else {
-                    session.sendErrorResponsePub(response, 13, `Unimplemented variable request options: ${JSON.stringify(varReq.options)}`);
+                    this.sendErrorResponse(response, 13, `Unimplemented variable request options: ${JSON.stringify(varReq.options)}`);
                 }
             } else {
                 response.body = {
@@ -386,8 +389,10 @@ export class LiveWatchMonitor {
     protected varHandler: VariablesHandler;
     constructor(private mainSession: GDBDebugSession) {
         this.varHandler = new VariablesHandler(
+            (): number | undefined => 1,
             (): boolean => false,
             (r: DebugProtocol.Response, a: any) => {},
+            (r: DebugProtocol.Response, code: number, msg: string) => {},
         );
     }
 
@@ -431,9 +436,9 @@ export class LiveWatchMonitor {
     public evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): Promise<void> {
         return new Promise<void>((resolve) => {
             args.frameId = undefined; // We don't have threads or frames here. We always evaluate in global context
-            this.varHandler.evaluateRequest(response, args, this.miDebugger, this.mainSession, true).finally(() => {
+            this.varHandler.evaluateRequest(response, args, this.miDebugger!, this.mainSession, true).finally(() => {
                 if (this.mainSession.args.showDevDebugOutput) {
-                    this.mainSession.handleMsg("log", `LiveGBD: Evaluated ${args.expression}\n`);
+                    this.mainSession.handleMsg(Stderr, `LiveGBD: Evaluated ${args.expression}\n`);
                 }
                 resolve();
             });
@@ -441,18 +446,18 @@ export class LiveWatchMonitor {
     }
 
     public async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): Promise<void> {
-        const ret = await this.varHandler.variablesChildrenRequest(response, args, this.miDebugger, this.mainSession);
+        const ret = await this.varHandler.variablesChildrenRequest(response, args, this.miDebugger!, this.mainSession);
         return ret;
     }
 
     // Calling this will also enable caching for the future of the session
     public async refreshLiveCache(args: RefreshAllArguments): Promise<void> {
         if (args.deleteAll) {
-            await this.varHandler.clearCachedVars(this.miDebugger);
+            await this.varHandler.clearCachedVars(this.miDebugger!);
             return Promise.resolve();
         }
         return new Promise<void>((resolve) => {
-            this.varHandler.refreshCachedChangeList(this.miDebugger, resolve);
+            this.varHandler.refreshCachedChangeList(this.miDebugger!, resolve);
         });
     }
 
@@ -461,9 +466,9 @@ export class LiveWatchMonitor {
         try {
             if (!this.quitting) {
                 this.quitting = true;
-                this.miDebugger.detach();
+                this.miDebugger!.detach();
             }
-        } catch (e) {
+        } catch (e: any) {
             console.error("LiveWatchMonitor.quit", e);
         }
     }

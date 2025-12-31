@@ -55,8 +55,33 @@ export class VariableObject extends VariableKeys implements DebugProtocol.Variab
         evaluateName: string | undefined,
         public value: string,
         public type: string,
+        public exp: string = "", // Junk field to be removed later
+        public fullExp: string = "", // Junk field to be removed later
+        public id: number = 0, // Junk field to be removed later
+        public children: { [key: string]: string } = {}, // Junk field to be removed later
     ) {
         super(scope, parent, name, frameRef, evaluateName);
+    }
+
+    // Junk methods to be removed later
+    public isCompound(): boolean {
+        throw new Error("Method not implemented.");
+    }
+    toProtocolEvaluateResponseBody(): {
+        result: string;
+        type?: string;
+        presentationHint?: DebugProtocol.VariablePresentationHint;
+        variablesReference: number;
+        namedVariables?: number;
+        indexedVariables?: number;
+        memoryReference?: string;
+        valueLocationReference?: number;
+    } {
+        throw new Error("Method not implemented.");
+    }
+    toProtocolVariable(): DebugProtocol.Variable {
+        return this;
+        // throw new Error("Method not implemented.");
     }
 }
 
@@ -91,4 +116,12 @@ export class VariableManager {
     public clear() {
         this.variableHandles.clear();
     }
+}
+
+/// Junk types to be removed later
+export class ExtendedVariable {
+    constructor(
+        public name: string,
+        public options: any,
+    ) {}
 }

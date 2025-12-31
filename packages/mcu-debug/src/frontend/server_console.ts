@@ -1,25 +1,25 @@
-import * as net from 'net';
-import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { IPtyTerminalOptions, magentaWrite, PtyTerminal } from './pty';
-import { getAnyFreePort, TerminalInputMode } from '../common';
+import * as net from "net";
+import * as vscode from "vscode";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { IPtyTerminalOptions, magentaWrite, PtyTerminal } from "./pty";
+import { getAnyFreePort, TerminalInputMode } from "../adapter/servers/common";
 
 //      vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: 'myName' });
 
 let consoleLogFd = -1;
 export class GDBServerConsoleInstance {
     protected static allConsoles: GDBServerConsoleInstance[] = [];
-    public ptyTerm: PtyTerminal = null;
+    public ptyTerm: PtyTerminal | null = null;
     protected ptyOptions: IPtyTerminalOptions;
-    protected toBackend: net.Socket = null;
+    protected toBackend: net.Socket | null = null;
 
     private constructor() {
         this.ptyOptions = {
-            name: 'gdb-server',
-            prompt: '',             // Can't have a prompt since the gdb-server or semihosting may have one
-            inputMode: TerminalInputMode.COOKED
+            name: "gdb-server",
+            prompt: "", // Can't have a prompt since the gdb-server or semihosting may have one
+            inputMode: TerminalInputMode.COOKED,
         };
     }
 
@@ -50,24 +50,27 @@ export class GDBServerConsoleInstance {
     public newBackendConnection(socket: net.Socket) {
         this.createAndShowTerminal();
         this.toBackend = socket;
+        if (!this.ptyTerm) {
+            throw new Error("PTY terminal not created");
+        }
         this.ptyTerm.resume();
         this.clearTerminal();
         this.debugMsg('onBackendConnect: gdb-server session connected. You can switch to "DEBUG CONSOLE" to see GDB interactions.');
         socket.setKeepAlive(true);
-        socket.on('close', () => {
-            this.debugMsg('onBackendConnect: gdb-server session closed');
-            magentaWrite('GDB server session ended. This terminal will be reused, waiting for next session to start...', this.ptyTerm);
+        socket.on("close", () => {
+            this.debugMsg("onBackendConnect: gdb-server session closed");
+            magentaWrite("GDB server session ended. This terminal will be reused, waiting for next session to start...", this.ptyTerm!);
             this.toBackend = null;
-            this.ptyTerm.pause();
+            this.ptyTerm!.pause();
         });
-        socket.on('data', (data) => {
-            this.ptyTerm.write(data);
+        socket.on("data", (data) => {
+            this.ptyTerm!.write(data);
             this.logData(data);
         });
-        socket.on('error', (e) => {
+        socket.on("error", (e) => {
             this.debugMsg(`GDBServerConsole: onBackendConnect: gdb-server program client error ${e}`);
             this.toBackend = null;
-            this.ptyTerm.pause();
+            this.ptyTerm!.pause();
         });
     }
 
@@ -82,24 +85,24 @@ export class GDBServerConsoleInstance {
     }
 
     public clearTerminal() {
-        this.ptyTerm.clearTerminalBuffer();
+        this.ptyTerm!.clearTerminalBuffer();
     }
 
     private setupTerminal() {
         this.ptyOptions.name = GDBServerConsoleInstance.createTermName(this.ptyOptions.name, null);
         this.ptyTerm = new PtyTerminal(this.ptyOptions);
-        this.ptyTerm.terminal.show();
-        this.ptyTerm.on('close', () => {
+        this.ptyTerm.terminal!.show();
+        this.ptyTerm.on("close", () => {
             this.onTerminalClosed();
         });
-        this.ptyTerm.on('data', (data) => {
+        this.ptyTerm.on("data", (data) => {
             this.sendToBackend(data);
         });
         if (this.toBackend === null) {
-            magentaWrite('Waiting for gdb server to start...', this.ptyTerm);
+            magentaWrite("Waiting for gdb server to start...", this.ptyTerm);
             this.ptyTerm.pause();
         } else {
-            magentaWrite('Resuming connection to gdb server...\n', this.ptyTerm);
+            magentaWrite("Resuming connection to gdb server...\n", this.ptyTerm);
             this.ptyTerm.resume();
         }
     }
@@ -109,7 +112,7 @@ export class GDBServerConsoleInstance {
         if (this.toBackend) {
             // Let the terminal close completely and try to re-launch
             setTimeout(() => {
-                vscode.window.showInformationMessage('gdb-server terminal closed unexpectedly. Trying to reopen it');
+                vscode.window.showInformationMessage("gdb-server terminal closed unexpectedly. Trying to reopen it");
                 this.setupTerminal();
             }, 10);
         }
@@ -123,11 +126,11 @@ export class GDBServerConsoleInstance {
     }
 
     public logData(data: Buffer | string) {
-        GDBServerConsole.logDataStatic(this.ptyTerm, data);
+        GDBServerConsole.logDataStatic(this.ptyTerm!, data);
     }
 
     public debugMsg(msg: string) {
-        GDBServerConsole.debugMsgStatic(this.ptyTerm, msg);
+        GDBServerConsole.debugMsgStatic(this.ptyTerm!, msg);
     }
 
     public static createTermName(want: string, existing: string | null): string {
@@ -145,14 +148,17 @@ export class GDBServerConsoleInstance {
 }
 
 export class GDBServerConsole {
-    protected toBackendServer: net.Server = null;
-    protected toBackend: net.Socket = null;
+    protected toBackendServer: net.Server | null = null;
+    protected toBackend: net.Socket | null = null;
     protected toBackendPort: number = -1;
-    protected logFName = '';
+    protected logFName = "";
     protected allConsoles: GDBServerConsoleInstance[] = [];
     public static BackendPort: number = -1;
 
-    constructor(public context: vscode.ExtensionContext, public logFileName = '') {
+    constructor(
+        public context: vscode.ExtensionContext,
+        public logFileName = "",
+    ) {
         this.createLogFile(logFileName);
     }
 
@@ -174,12 +180,12 @@ export class GDBServerConsole {
                 if (dir) {
                     fs.mkdirSync(dir, { recursive: true });
                 }
-                this.logFName = this.logFName.replace('${PID}', process.pid.toString());
+                this.logFName = this.logFName.replace("${PID}", process.pid.toString());
             } else {
                 const tmpdir = os.tmpdir();
                 this.logFName = `${tmpdir}/gdb-server-console-${process.pid}.log`;
             }
-            consoleLogFd = fs.openSync(this.logFName, 'w');
+            consoleLogFd = fs.openSync(this.logFName, "w");
         } catch (error) {
             if (showErr) {
                 vscode.window.showErrorMessage(`Could not open log file: ${this.logFName}\n${error}`);
@@ -196,7 +202,7 @@ export class GDBServerConsole {
         msg = `[${date.toISOString()}] SERVER CONSOLE DEBUG: ` + msg;
         // console.log(msg);
         if (ptyTerm) {
-            msg += msg.endsWith('\n') ? '' : '\n';
+            msg += msg.endsWith("\n") ? "" : "\n";
             magentaWrite(msg, ptyTerm);
         }
         GDBServerConsole.logDataStatic(ptyTerm, msg);
@@ -210,16 +216,16 @@ export class GDBServerConsole {
             getAnyFreePort(55878).then((p) => {
                 this.toBackendPort = p;
                 const newServer = net.createServer(this.onBackendConnect.bind(this));
-                newServer.listen(this.toBackendPort, '127.0.0.1', () => {
+                newServer.listen(this.toBackendPort, "127.0.0.1", () => {
                     this.toBackendServer = newServer;
                     GDBServerConsole.BackendPort = this.toBackendPort;
                     resolve();
                 });
-                newServer.on(('error'), (e) => {
+                newServer.on("error", (e) => {
                     console.error(e);
                     reject(e);
                 });
-                newServer.on('close', () => {
+                newServer.on("close", () => {
                     this.toBackendServer = null;
                 });
             });

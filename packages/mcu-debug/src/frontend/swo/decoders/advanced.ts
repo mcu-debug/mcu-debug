@@ -5,11 +5,10 @@ import { SWOAdvancedDecoderConfig, AdvancedDecoder } from "../advanced-decoder";
 import { EventEmitter } from "events";
 import { Packet } from "../common";
 import { MCUDebugChannel } from "../../../dbgmsgs";
-import { HrTimer } from "../../../common";
+import { HrTimer } from "../../../adapter/servers/common";
 
-declare function __webpack_require__();
-declare const __non_webpack_require__: NodeRequire;
-const dynamicRequire = typeof __webpack_require__ === "function" ? __non_webpack_require__ : require;
+// Use eval('require') to prevent bundlers (esbuild/webpack) from trying to bundle these dynamic paths
+const dynamicRequire = eval("require");
 
 export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecoder {
     private output: vscode.OutputChannel;

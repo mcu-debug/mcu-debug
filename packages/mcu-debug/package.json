@@ -3158,9 +3158,13 @@
     "@mcu-debug/shared": "*",
     "@vscode/extension-telemetry": "^1.2.0",
     "applicationinsights": "^3.12.1",
+    "binary-parser": "^2.3.0",
     "hasbin": "^1.2.3",
     "proper-lockfile": "^4.1.2",
+    "ring-buffer-ts": "^1.2.0",
+    "serialport": "^13.0.0",
     "tmp": "^0.2.5",
+    "usb": "^2.16.0",
     "winston": "^3.19.0",
     "winston-vscode": "^1.0.0"
   }

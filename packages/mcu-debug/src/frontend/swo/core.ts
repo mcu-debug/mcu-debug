@@ -23,11 +23,11 @@ import { SWORTTAdvancedProcessor } from "./decoders/advanced";
 import { EventEmitter } from "events";
 import { PacketType, Packet } from "./common";
 import { parseUnsigned } from "./decoders/utils";
-import { SymbolInformation } from "../../symbols";
-import { getNonce, RTTCommonDecoderOpts } from "../../common";
+import { SymbolInformation } from "../../adapter/symbols";
+import { getNonce, RTTCommonDecoderOpts } from "../../adapter/servers/common";
 import { SocketRTTSource, SocketSWOSource } from "./sources/socket";
 
-import * as RingBuffer from "ringbufferjs";
+import * as RingBuffer from "ring-buffer-ts";
 
 enum Status {
     IDLE = 1,
@@ -45,25 +45,25 @@ const PORT_MASK = 0b11111000;
 const TIMESTAMP_MASK = 0b00001111;
 
 class ITMDecoder extends EventEmitter {
-    private syncBuffer = new RingBuffer(6);
+    private syncBuffer = new RingBuffer.RingBuffer<number>(6);
     private status: Status = Status.IDLE;
 
     private rxCount: number = 0;
-    private rxBuffer: Buffer;
-    private rxPort: number;
-    private rxTargetLength: number;
-    private rxPacketType: PacketType;
+    private rxBuffer: Buffer = Buffer.alloc(100, 0);
+    private rxPort: number = -1;
+    private rxTargetLength: number = 0;
+    private rxPacketType: PacketType = PacketType.SOFTWARE;
     private timestamp: number = 0;
 
     constructor() {
         super();
 
-        this.syncBuffer.enq(0xff);
-        this.syncBuffer.enq(0xff);
-        this.syncBuffer.enq(0xff);
-        this.syncBuffer.enq(0xff);
-        this.syncBuffer.enq(0xff);
-        this.syncBuffer.enq(0xff);
+        this.syncBuffer.add(0xff);
+        this.syncBuffer.add(0xff);
+        this.syncBuffer.add(0xff);
+        this.syncBuffer.add(0xff);
+        this.syncBuffer.add(0xff);
+        this.syncBuffer.add(0xff);
         // Prefill the sync buffer
     }
 
@@ -94,8 +94,8 @@ class ITMDecoder extends EventEmitter {
     }
 
     private checkSync(byte: number) {
-        this.syncBuffer.enq(byte);
-        const bytes: number[] = this.syncBuffer.peekN(6);
+        this.syncBuffer.add(byte);
+        const bytes: number[] = this.syncBuffer.toArray();
         return bytes[5] === 0x80 && bytes[4] === 0x00 && bytes[3] === 0x00 && bytes[2] === 0x00 && bytes[1] === 0x00 && bytes[0] === 0x00;
     }
 
@@ -270,7 +270,7 @@ class SWOWebview {
 }
 
 export class SWORTTCoreBase {
-    protected webview: SWOWebview = null;
+    protected webview: SWOWebview | null = null;
 
     public debugSessionTerminated() {
         if (this.webview) {
@@ -298,7 +298,7 @@ export class SWOCore extends SWORTTCoreBase {
     private processors: SWORTTDecoder[] = [];
     private connected: boolean = false;
     private itmDecoder: ITMDecoder;
-    private functionSymbols: SymbolInformation[];
+    private functionSymbols: SymbolInformation[] = [];
 
     constructor(
         private session: vscode.DebugSession,
@@ -358,7 +358,7 @@ export class SWOCore extends SWORTTCoreBase {
                             this.webview.registerProcessors(processor);
                         }
                         this.processors.push(processor);
-                    } catch (e) {
+                    } catch (e: any) {
                         vscode.window.showErrorMessage(`Error Initializing Advanced Decoder: ${e.toString()}`);
                     }
                     break;
@@ -451,14 +451,14 @@ export class SWOCore extends SWORTTCoreBase {
 
     public dispose() {
         this.processors.forEach((p) => p.dispose());
-        this.processors = null;
+        this.processors = [];
         if (this.webview) {
             this.webview.clearProcessors();
         }
         this.connected = false;
     }
 
-    public getFunctionAtAddress(address: number): SymbolInformation {
+    public getFunctionAtAddress(address: number): SymbolInformation | undefined {
         const matches = this.functionSymbols.filter((s) => s.address <= address && s.address + s.length > address);
         if (!matches || matches.length === 0) {
             return undefined;
@@ -553,7 +553,7 @@ export class RTTCore extends SWORTTCoreBase {
                             this.webview.registerProcessors(processor);
                         }
                         this.processors.push(processor);
-                    } catch (e) {
+                    } catch (e: any) {
                         vscode.window.showErrorMessage(`Error Initializing Advanced Decoder: ${e.toString()}`);
                     }
                     break;
@@ -582,7 +582,7 @@ export class RTTCore extends SWORTTCoreBase {
 
     public dispose() {
         this.processors.forEach((p) => p.dispose());
-        this.processors = null;
+        this.processors = [];
         if (this.webview) {
             this.webview.clearProcessors();
         }

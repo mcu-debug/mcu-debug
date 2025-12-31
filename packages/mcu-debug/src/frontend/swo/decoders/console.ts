@@ -1,18 +1,18 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
+import * as vscode from "vscode";
+import * as fs from "fs";
 
-import { SWORTTDecoder } from './common';
-import { SWOConsoleDecoderConfig } from '../common';
-import { Packet } from '../common';
-import { IPtyTerminalOptions, PtyTerminal } from '../../pty';
-import { HrTimer, TerminalInputMode, TextEncoding } from '../../../common';
+import { SWORTTDecoder } from "./common";
+import { SWOConsoleDecoderConfig } from "../common";
+import { Packet } from "../common";
+import { IPtyTerminalOptions, PtyTerminal } from "../../pty";
+import { HrTimer, TerminalInputMode, TextEncoding } from "../../../adapter/servers/common";
 
 export class SWOConsoleProcessor implements SWORTTDecoder {
     private positionCount: number;
     private output: vscode.OutputChannel;
     private position: number = 0;
     private timeout: any = null;
-    public readonly format: string = 'console';
+    public readonly format: string = "console";
     private port: number;
     private encoding: TextEncoding;
     private showOutputTimer: NodeJS.Timeout = null;
@@ -27,7 +27,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
         this.port = config.port;
         this.encoding = config.encoding || TextEncoding.UTF8;
         this.timestamp = !!config.timestamp;
-        this.useTerminal = 'useTerminal' in config ? (config as any).useTerminal : true;   // TODO: Remove
+        this.useTerminal = "useTerminal" in config ? (config as any).useTerminal : true; // TODO: Remove
         if (this.useTerminal) {
             this.createVSCodeTerminal(config);
         } else {
@@ -36,7 +36,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
         if (config.logfile) {
             this.logfile = config.logfile;
             try {
-                this.logFd = fs.openSync(config.logfile, 'w');
+                this.logFd = fs.openSync(config.logfile, "w");
             } catch (e) {
                 const msg = `Could not open file ${config.logfile} for writing. ${e.toString()}`;
                 vscode.window.showErrorMessage(msg);
@@ -46,27 +46,27 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
 
     private createName(config: SWOConsoleDecoderConfig) {
         // Try to keep it small while still having enough info
-        const basic = `SWO:${config.label || ''}[port:${this.port}`;
+        const basic = `SWO:${config.label || ""}[port:${this.port}`;
 
         if (this.useTerminal) {
-            return basic + '] console';
+            return basic + "] console";
         } else {
-            return basic + ', type: console]';
+            return basic + ", type: console]";
         }
     }
 
     private createVSCodeTerminal(config: SWOConsoleDecoderConfig) {
         const options: IPtyTerminalOptions = {
             name: this.createName(config),
-            prompt: '',
-            inputMode: TerminalInputMode.DISABLED
+            prompt: "",
+            inputMode: TerminalInputMode.DISABLED,
         };
         this.ptyTerm = PtyTerminal.findExisting(options.name);
         if (this.ptyTerm) {
             this.ptyTerm.clearTerminalBuffer();
         } else {
             this.ptyTerm = new PtyTerminal(options);
-            this.ptyTerm.on('close', () => {
+            this.ptyTerm.on("close", () => {
                 this.ptyTerm = null;
             });
             if (config.showOnStartup) {
@@ -101,14 +101,14 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
 
     private createDateHeaderUs(): string {
         if (this.timestamp) {
-            return this.hrTimer.createDateTimestamp() + ' ';
+            return this.hrTimer.createDateTimestamp() + " ";
         } else {
-            return '';
+            return "";
         }
     }
 
     private logFileWrite(text: string) {
-        if ((this.logFd < 0) || (text === '')) {
+        if (this.logFd < 0 || text === "") {
             return;
         }
         try {
@@ -119,15 +119,17 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
             try {
                 fs.closeSync(this.logFd);
             } catch (closeErr) {
-                console.error('decoder.logCloseError', closeErr);
+                console.error("decoder.logCloseError", closeErr);
             }
             this.logFd = -1;
         }
     }
 
     public softwareEvent(packet: Packet) {
-        if (packet.port !== this.port) { return; }
-        let text = '';
+        if (packet.port !== this.port) {
+            return;
+        }
+        let text = "";
         const letters = packet.data.toString(this.encoding);
         for (const letter of letters) {
             if (this.timeout) {
@@ -135,9 +137,9 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
                 this.timeout = null;
             }
 
-            if (letter === '\n') {
-                text += '\n';
-                this.pushOutput('\n');
+            if (letter === "\n") {
+                text += "\n";
+                this.pushOutput("\n");
                 this.position = 0;
                 continue;
             }
@@ -152,13 +154,13 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
             this.pushOutput(letter);
             this.position += 1;
 
-            if (this.timestamp && (this.position > 0)) {
+            if (this.timestamp && this.position > 0) {
                 if (this.timeout) {
                     clearTimeout(this.timeout);
                 }
                 this.timeout = setTimeout(() => {
-                    text += '\n';
-                    this.pushOutput('\n');
+                    text += "\n";
+                    this.pushOutput("\n");
                     this.position = 0;
                     this.timeout = null;
                 }, 5000);

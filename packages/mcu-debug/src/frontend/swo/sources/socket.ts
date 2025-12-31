@@ -1,7 +1,7 @@
 import { SWORTTSource } from "./common";
 import { EventEmitter } from "events";
 import * as net from "net";
-import { parseHostPort, SocketTimout } from "../../../common";
+import { parseHostPort, SocketTimout } from "../../../adapter/servers/common";
 import * as vscode from "vscode";
 import { TextDecoder } from "util";
 import { setFlagsFromString } from "v8";
@@ -44,7 +44,7 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
                     resolve();
                 });
                 this.client.on("data", (buffer) => {
-                    this.processData(buffer);
+                    this.processData(buffer as Buffer);
                 });
                 this.client.on("end", () => {
                     this.dispose();

@@ -1,4 +1,4 @@
-import { TextEncoding } from '../../common';
+import { TextEncoding } from "../../adapter/servers/common";
 
 export interface SWODecoderConfig {
     type: string;
@@ -60,11 +60,11 @@ export interface XYGraphConfiguration extends GraphConfiguration {
 
 export interface GrapherMessage {
     timestamp?: number;
-    type: 'configure' | 'status' | 'data' | 'program-counter' | 'init';
+    type: "configure" | "status" | "data" | "program-counter" | "init";
 }
 
 export interface GrapherStatusMessage extends GrapherMessage {
-    status: 'stopped' | 'terminated' | 'continued';
+    status: "stopped" | "terminated" | "continued";
 }
 
 export interface GrapherDataMessage extends GrapherMessage {
@@ -79,20 +79,20 @@ export interface GrapherProgramCounterMessage extends GrapherMessage {
 
 export interface GrapherConfigurationMessage extends GrapherMessage {
     graphs: [GraphConfiguration];
-    status: 'stopped' | 'terminated' | 'continued';
+    status: "stopped" | "terminated" | "continued";
 }
 
 export enum PacketType {
     HARDWARE = 1,
     SOFTWARE,
-    TIMESTAMP
+    TIMESTAMP,
 }
 
 export enum TimestampType {
     CURRENT,
     DELAYED,
     EVENT_DELAYED,
-    EVENT_TIME_DELAYED
+    EVENT_TIME_DELAYED,
 }
 
 export interface TimestampPacket {

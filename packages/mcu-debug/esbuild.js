@@ -34,6 +34,7 @@ async function main() {
         platform: "node",
         external: ["vscode"],
         logLevel: "warning",
+        logOverride: { "direct-eval": "silent" },
         plugins: [esbuildProblemMatcherPlugin],
     };
 

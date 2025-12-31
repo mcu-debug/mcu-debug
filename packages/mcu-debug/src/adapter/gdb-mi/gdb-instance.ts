@@ -1,10 +1,11 @@
 import { ChildProcess, spawn } from "child_process";
 import { EventEmitter } from "events";
 import { parseGdbMiOut } from "./mi-parser";
-import { GdbEventNames, GdbMiOutputType, GdbMiRecord, Stderr, Stdout, Console, GdbMiOutput } from "./mi-types";
+import { GdbEventNames, GdbMiOutputType, GdbMiRecord, Stderr, Stdout, Console, GdbMiOutput, MINode } from "./mi-types";
 import { GdbMiRecordType } from "./mi-types";
 import { ServerConsoleLog } from "../server-console-log";
 import { receiveMessageOnPort } from "worker_threads";
+import { VariableObject } from "../variables";
 
 class PendingCmdPromise {
     constructor(
@@ -329,5 +330,33 @@ export class GdbInstance extends EventEmitter {
         });
     }
 
-    // ... other methods and properties ...
+    public sendUserInput(command: string): Thenable<any> {
+        if (command.startsWith("-")) {
+            return this.sendCommand(command.substr(1));
+        } else {
+            return this.sendCommand(`interpreter-exec console "${command}"`);
+        }
+    }
+
+    /// Junk methods to be removed later
+    varUpdate(expr: string, threadId: number, frameId: number): Promise<MINode> {
+        throw new Error("Method not implemented.");
+    }
+
+    varCreate(ref: number, expr: string, name: string, scope: string = "-", threadId: number = -1, frameId: number = -1): Promise<VariableObject> {
+        throw new Error("Method not implemented.");
+    }
+
+    varAssign(name: string, expr: string, threadId: number = -1, frameId: number = -1): Promise<VariableObject> {
+        throw new Error("Method not implemented.");
+    }
+    varListChildren(variablesReference: number, name: string): VariableObject[] | PromiseLike<VariableObject[] | undefined> | undefined {
+        throw new Error("Method not implemented.");
+    }
+    evalExpression(arg0: string, arg1: number, arg2: number): Thenable<any> {
+        throw new Error("Method not implemented.");
+    }
+    detach() {
+        throw new Error("Method TBD implemented.");
+    }
 }

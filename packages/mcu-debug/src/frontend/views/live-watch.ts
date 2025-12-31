@@ -1,8 +1,8 @@
 import { TreeItem, TreeDataProvider, EventEmitter, Event, TreeItemCollapsibleState, ProviderResult } from "vscode";
 import * as vscode from "vscode";
 
-import { getPathRelative, LiveWatchConfig } from "../../common";
-import { BaseNode } from "./nodes/basenode";
+import { getPathRelative, LiveWatchConfig } from "../../adapter/servers/common";
+// import { BaseNode } from "./nodes/basenode";
 import { DebugProtocol } from "@vscode/debugprotocol";
 
 interface SaveVarState {
@@ -14,20 +14,30 @@ interface SaveVarState {
 interface SaveVarStateMap {
     [name: string]: SaveVarState;
 }
-export class LiveVariableNode extends BaseNode {
-    protected session: vscode.DebugSession | undefined; // This is transient
-    protected children: LiveVariableNode[] | undefined;
+export class LiveVariableNode extends TreeItem {
+    public parent: LiveVariableNode | undefined;
+    public expanded: boolean = false;
+    public children: LiveVariableNode[] = [];
+    public variablesReference: number = 0;
+    public session: vscode.DebugSession | undefined;
     protected prevValue: string = "";
+
     constructor(
         parent: LiveVariableNode | undefined,
         protected name: string,
         protected expr: string, // Any string for top level ars but lower level ones are actual children's simple names
         protected value = "", // Current value
         protected type = "", // C/C++ Type if any
-        protected variablesReference = 0,
+        variablesReference = 0,
     ) {
         // Variable reference returned by the debugger (only valid per-session)
-        super(parent);
+        super(name);
+        this.parent = parent;
+        this.variablesReference = variablesReference;
+    }
+
+    public getParent(): LiveVariableNode | undefined {
+        return this.parent;
     }
 
     public getExpr(): string {
@@ -427,14 +437,13 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
         }
     }
 
+    private static defaultRefreshRate = 300;
     private currentRefreshRate = LiveWatchTreeProvider.defaultRefreshRate;
     private settingsChanged(e: vscode.ConfigurationChangeEvent) {
         if (e.affectsConfiguration("mcu-debug.liveWatchRefreshRate")) {
             this.setRefreshRate();
         }
     }
-
-    private static defaultRefreshRate = 300;
     private static minRefreshRate = 200; // Seems to be the magic number
     private static maxRefreshRate = 5000;
     private setRefreshRate() {

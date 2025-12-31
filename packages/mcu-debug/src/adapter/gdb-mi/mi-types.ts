@@ -113,3 +113,98 @@ export const Stderr = GdbEventNames.Stderr;
 export const Stdout = GdbEventNames.Stdout;
 export const Console = GdbEventNames.Console;
 export const Telemetry = GdbEventNames.Telemetry;
+
+/// Temporary types for gdb-mi2 parser, to be obsoleted later
+
+export interface MIError extends Error {
+    readonly name: string;
+    readonly message: string;
+    readonly source: string;
+}
+
+export interface MIInfo {
+    token: number;
+    outOfBandRecord: { isStream: boolean; type: string; asyncClass: string; output: [string, any][]; content: string }[];
+    resultRecords: { resultClass: string; results: [string, any][] };
+}
+
+export class MINode implements MIInfo {
+    public token: number;
+    public outOfBandRecord: { isStream: boolean; type: string; asyncClass: string; output: [string, any][]; content: string }[];
+    public resultRecords: { resultClass: string; results: [string, any][] };
+    public output: string = "";
+
+    public static valueOf(start: any, path: string): any {
+        if (!start) {
+            return undefined;
+        }
+        const pathRegex = /^\.?([a-zA-Z_-][a-zA-Z0-9_-]*)/;
+        const indexRegex = /^\[(\d+)\](?:$|\.)/;
+        path = path.trim();
+        if (!path) {
+            return start;
+        }
+        let current = start;
+        do {
+            let target = pathRegex.exec(path);
+            if (target) {
+                path = path.substr(target[0].length);
+                if (current.length && typeof current !== "string") {
+                    const found = [];
+                    for (const element of current) {
+                        if (element[0] === target[1]) {
+                            found.push(element[1]);
+                        }
+                    }
+                    if (found.length > 1) {
+                        current = found;
+                    } else if (found.length === 1) {
+                        current = found[0];
+                    } else {
+                        return undefined;
+                    }
+                } else {
+                    return undefined;
+                }
+            } else if (path[0] === "@") {
+                current = [current];
+                path = path.substr(1);
+            } else {
+                target = indexRegex.exec(path);
+                if (target) {
+                    path = path.substr(target[0].length);
+                    const i = parseInt(target[1]);
+                    if (current.length && typeof current !== "string" && i >= 0 && i < current.length) {
+                        current = current[i];
+                    } else if (i !== 0) {
+                        return undefined;
+                    }
+                } else {
+                    return undefined;
+                }
+            }
+            path = path.trim();
+        } while (path);
+        return current;
+    }
+
+    constructor(token: number, info: { isStream: boolean; type: string; asyncClass: string; output: [string, any][]; content: string }[], result: { resultClass: string; results: [string, any][] }) {
+        this.token = token;
+        this.outOfBandRecord = info;
+        this.resultRecords = result;
+    }
+
+    public record(path: string): any {
+        if (!this.outOfBandRecord || this.outOfBandRecord.length === 0) {
+            return undefined;
+        }
+        return MINode.valueOf(this.outOfBandRecord[0].output, path);
+    }
+
+    public result(path: string): any {
+        if (!this.resultRecords) {
+            return undefined;
+        }
+        return MINode.valueOf(this.resultRecords.results, path);
+    }
+}

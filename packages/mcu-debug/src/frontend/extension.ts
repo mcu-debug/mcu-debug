@@ -3,11 +3,11 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { MCUDebugChannel } from "../dbgmsgs";
-// import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
+import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
 
 import { RTTCore, SWOCore } from "./swo/core";
 import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, CortexDebugKeys, ChainedEvents, ADAPTER_DEBUG_MODE, ChainedConfig } from "../adapter/servers/common";
-//import Reporting from "../analytics/reporting";
+import { Reporting } from "../analytics/reporting";
 
 import { CortexDebugConfigurationProvider } from "./configprovider";
 import { JLinkSocketRTTSource, SocketRTTSource, SocketSWOSource, PeMicroSocketSource } from "./swo/sources/socket";
@@ -20,7 +20,6 @@ import { RTTTerminal } from "./rtt_terminal";
 import { GDBServerConsole } from "./server_console";
 import { CDebugSession, CDebugChainedSessionItem } from "./cortex_debug_session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
-import { activateTelemetry } from "../analytics/reporting";
 
 interface SVDInfo {
     expression: RegExp;
@@ -44,12 +43,10 @@ export class MCUDebugExtension {
     private liveWatchTreeView: vscode.TreeView<LiveVariableNode>;
 
     private SVDDirectory: SVDInfo[] = [];
-    private functionSymbols: SymbolInformation[] = null;
+    private functionSymbols: SymbolInformation[] = [];
     private serverStartedEvent: ServerStartedPromise | null = null;
 
     constructor(private context: vscode.ExtensionContext) {
-        activateTelemetry(context);
-
         const config = vscode.workspace.getConfiguration("mcu-debug");
         this.startServerConsole(context, config.get(CortexDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
 
@@ -61,14 +58,11 @@ export class MCUDebugExtension {
         vscode.commands.executeCommand("setContext", `mcu-debug:${CortexDebugKeys.VARIABLE_DISPLAY_MODE}`, config.get(CortexDebugKeys.VARIABLE_DISPLAY_MODE, true));
 
         context.subscriptions.push(
-            vscode.workspace.registerTextDocumentContentProvider("examinememory", this.memoryProvider),
-
             vscode.commands.registerCommand("mcu-debug.varHexModeTurnOn", this.variablesNaturalMode.bind(this, false)),
             vscode.commands.registerCommand("mcu-debug.varHexModeTurnOff", this.variablesNaturalMode.bind(this, true)),
             vscode.commands.registerCommand("mcu-debug.toggleVariableHexFormat", this.toggleVariablesHexMode.bind(this)),
 
             vscode.commands.registerCommand("mcu-debug.examineMemory", this.examineMemory.bind(this)),
-            vscode.commands.registerCommand("mcu-debug.examineMemoryLegacy", this.examineMemoryLegacy.bind(this)),
 
             vscode.commands.registerCommand("mcu-debug.resetDevice", this.resetDevice.bind(this)),
             vscode.commands.registerCommand("mcu-debug.pvtEnableDebug", this.pvtCycleDebugMode.bind(this)),
@@ -94,7 +88,7 @@ export class MCUDebugExtension {
                 this.liveWatchProvider.saveState();
             }),
             this.liveWatchTreeView.onDidCollapseElement((e) => {
-                e.element.expanded = false;
+                // e.element.expanded = false;
                 this.liveWatchProvider.saveState();
             }),
         );
@@ -112,7 +106,7 @@ export class MCUDebugExtension {
         let session = MCUDebugExtension.getActiveCDSession();
         if (session) {
             let mySession = CDebugSession.FindSession(session);
-            const parentConfig = mySession.config?.pvtParent;
+            const parentConfig = mySession?.config?.pvtParent;
             while (mySession && parentConfig) {
                 // We have a parent. See if our life-cycle is managed by our parent, if so
                 // send a reset to the parent instead
@@ -142,7 +136,7 @@ export class MCUDebugExtension {
                     resolve(); // All worked out
                 })
                 .catch((e) => {
-                    this.gdbServerConsole.dispose();
+                    this.gdbServerConsole?.dispose();
                     this.gdbServerConsole = null;
                     vscode.window.showErrorMessage(`Could not create gdb-server-console. Will use old style console. Please report this problem. ${e.toString()}`);
                 });
@@ -180,7 +174,7 @@ export class MCUDebugExtension {
         if (e.affectsConfiguration(`mcu-debug.${CortexDebugKeys.SERVER_LOG_FILE_NAME}`)) {
             const config = vscode.workspace.getConfiguration("mcu-debug");
             const fName = config.get(CortexDebugKeys.SERVER_LOG_FILE_NAME, "");
-            this.gdbServerConsole.createLogFile(fName);
+            this.gdbServerConsole?.createLogFile(fName);
         }
         if (e.affectsConfiguration(`mcu-debug.${CortexDebugKeys.DEV_DEBUG_MODE}`)) {
             const config = vscode.workspace.getConfiguration("mcu-debug");
@@ -197,7 +191,7 @@ export class MCUDebugExtension {
 
     private getSVDFile(device: string): string {
         const entry = this.SVDDirectory.find((de) => de.expression.test(device));
-        return entry ? entry.path : null;
+        return entry ? entry.path : "";
     }
 
     public registerSVDFile(expression: RegExp | string, path: string): void {
@@ -217,7 +211,6 @@ export class MCUDebugExtension {
                 vscode.window
                     .showErrorMessage(
                         `Unable to execute ${cmd}. Perhaps the MemoryView extension is not installed. ` + "Please install extension and try again. A restart may be needed",
-                        undefined,
                         {
                             title: installExt,
                         },
@@ -247,7 +240,7 @@ export class MCUDebugExtension {
             for (const mapping of configurationTargetMapping) {
                 const [inspectKeyPrefix, mappingTarget] = mapping;
                 const inspectKey = inspectKeyPrefix + inspectKeySuffix;
-                if (info[inspectKey] !== undefined) return [mappingTarget, inspectKeySuffix == "LanguageValue"];
+                if (info && (info as any)[inspectKey] !== undefined) return [mappingTarget, inspectKeySuffix == "LanguageValue"];
             }
         }
         // Shouldn't get here unless new configuration targets get added to the
@@ -304,7 +297,7 @@ export class MCUDebugExtension {
 
         const newSession = CDebugSession.NewSessionStarted(session);
 
-        this.functionSymbols = null;
+        this.functionSymbols = [];
         session.customRequest("get-arguments").then(
             (args) => {
                 newSession.config = args;
@@ -349,11 +342,11 @@ export class MCUDebugExtension {
             }
             if (mySession?.rttPortMap) {
                 for (const ch of Object.keys(mySession.rttPortMap)) {
-                    mySession.rttPortMap[ch].dispose();
+                    mySession.rttPortMap[Number(ch)].dispose();
                 }
                 mySession.rttPortMap = {};
             }
-        } catch (e) {
+        } catch (e: any) {
             vscode.window.showInformationMessage(`Debug session did not terminate cleanly ${e}\n${e ? e.stackstrace : ""}. Please report this problem`);
         } finally {
             CDebugSession.RemoveSession(session);
@@ -389,7 +382,7 @@ export class MCUDebugExtension {
                 this.liveWatchProvider?.debugSessionStarted(session);
                 break;
             case "custom-event-session-terminating":
-                ServerConsoleLog("Got event for sessions terminating", process.pid);
+                ServerConsoleLog(`Got event for sessions terminating PID=${process.pid}`);
                 this.endChainedConfigs(e);
                 break;
             case "custom-event-session-restart":
@@ -427,7 +420,7 @@ export class MCUDebugExtension {
     private signalPortsAllocated(e: vscode.DebugSessionCustomEvent) {
         if (this.serverStartedEvent) {
             this.serverStartedEvent.resolve(e);
-            this.serverStartedEvent = undefined;
+            this.serverStartedEvent = null;
         }
     }
 
@@ -468,6 +461,12 @@ export class MCUDebugExtension {
             delay += Math.max(launch.delayMs || 0, 0);
             const child = new CDebugChainedSessionItem(cDbgParent, launch, childOptions);
             const folder = this.getWsFolder(launch.folder, e.session.workspaceFolder, launch.name);
+            if (!folder && launch.folder) {
+                vscode.window.showErrorMessage(
+                    `Chained configuration for '${launch.name}' specified folder is '${launch.folder}' which is not part of the current workspace. Cannot launch this configuration.`,
+                );
+                continue;
+            }
             setTimeout(() => {
                 vscode.debug.startDebugging(folder, launch.name, childOptions).then(
                     (success) => {
@@ -484,18 +483,14 @@ export class MCUDebugExtension {
             }, delay);
             if (launch && launch.detached && count > 0) {
                 try {
-                    // tslint:disable-next-line: one-variable-per-declaration
-                    let res: (value: vscode.DebugSessionCustomEvent) => void;
-                    let rej: (reason?: any) => void;
                     const prevStartedPromise = new Promise<vscode.DebugSessionCustomEvent>((resolve, reject) => {
-                        res = resolve;
-                        rej = reject;
+                        this.serverStartedEvent = new ServerStartedPromise(launch.name, prevStartedPromise, resolve, reject);
                     });
-                    this.serverStartedEvent = new ServerStartedPromise(launch.name, prevStartedPromise, res, rej);
-                    let to = setTimeout(() => {
+                    let to: NodeJS.Timeout | undefined = undefined;
+                    to = setTimeout(() => {
                         if (this.serverStartedEvent) {
                             this.serverStartedEvent.reject(new Error(`Timeout starting chained session: ${launch.name}`));
-                            this.serverStartedEvent = undefined;
+                            this.serverStartedEvent = null;
                         }
                         to = undefined;
                     }, 5000);
@@ -516,7 +511,7 @@ export class MCUDebugExtension {
 
     private endChainedConfigs(e: vscode.DebugSessionCustomEvent) {
         const mySession = CDebugSession.FindSession(e.session);
-        if (mySession && mySession.hasChildren) {
+        if (mySession && mySession.hasChildren()) {
             // Note that we may not be the root, but we have children. Also we do not modify the tree while iterating it
             const deathList: CDebugSession[] = [];
             const orphanList: CDebugSession[] = [];
@@ -534,15 +529,20 @@ export class MCUDebugExtension {
             // According to current scheme, there should not be any orphaned children.
             while (orphanList.length > 0) {
                 const s = orphanList.pop();
-                s.moveToRoot(); // Or should we move to our parent. TODO: fix for when we are going to have grand children
+                if (s) {
+                    s.moveToRoot(); // Or should we move to our parent. TODO: fix for when we are going to have grand children
+                }
             }
 
             while (deathList.length > 0) {
                 const s = deathList.pop();
+                if (!s || !s.session) {
+                    continue;
+                }
                 // We cannot actually use the following API. We have to do this ourselves. Probably because we own
                 // the lifetime management.
                 // vscode.debug.stopDebugging(s.session);
-                ServerConsoleLog(`Sending custom-stop-debugging to ${s.session.name}`, process.pid);
+                ServerConsoleLog(`Sending custom-stop-debugging to ${s.session.name} PID=${process.pid}`);
                 s.session.customRequest("custom-stop-debugging", e.body.info).then(
                     () => {},
                     (reason) => {
@@ -558,7 +558,7 @@ export class MCUDebugExtension {
 
     private resetOrResartChained(e: vscode.DebugSessionCustomEvent, type: "reset" | "restart") {
         const mySession = CDebugSession.FindSession(e.session);
-        if (mySession && mySession.hasChildren) {
+        if (mySession && mySession.hasChildren()) {
             mySession.broadcastDFS((s) => {
                 if (s === mySession) {
                     return;
@@ -573,8 +573,8 @@ export class MCUDebugExtension {
         }
     }
 
-    private getWsFolder(folder: string, def: vscode.WorkspaceFolder, childName): vscode.WorkspaceFolder {
-        if (folder) {
+    private getWsFolder(folder: string, def: vscode.WorkspaceFolder | undefined, childName: string): vscode.WorkspaceFolder | undefined {
+        if (folder && def) {
             const orig = folder;
             const normalize = (fsPath: string) => {
                 fsPath = path.normalize(fsPath).replace(/\\/g, "/");
@@ -586,7 +586,7 @@ export class MCUDebugExtension {
             };
             // Folder is always a full path name
             folder = normalize(folder);
-            for (const f of vscode.workspace.workspaceFolders) {
+            for (const f of vscode.workspace.workspaceFolders || []) {
                 const tmp = normalize(f.uri.fsPath);
                 if (f.uri.fsPath === folder || f.name === folder || tmp === folder) {
                     return f;
@@ -599,12 +599,13 @@ export class MCUDebugExtension {
         return def;
     }
 
-    private getCurrentArgs(session: vscode.DebugSession): ConfigurationArguments {
+    private getCurrentArgs(session: vscode.DebugSession): ConfigurationArguments | undefined {
         if (!session) {
-            session = vscode.debug.activeDebugSession;
-            if (!session || session.type !== "mcu-debug") {
+            const currentSession = vscode.debug.activeDebugSession;
+            if (!currentSession || currentSession.type !== "mcu-debug") {
                 return undefined;
             }
+            session = currentSession;
         }
         const ourSession = CDebugSession.FindSession(session);
         if (ourSession) {
@@ -613,51 +614,50 @@ export class MCUDebugExtension {
         return session.configuration as unknown as ConfigurationArguments;
     }
 
-    // Assuming 'session' valid and it a mcu-debug session
+    // Assuming 'session' valid and it is a mcu-debug session
     private isDebugging(session: vscode.DebugSession) {
-        const { noDebug } = this.getCurrentArgs(session);
-        return noDebug !== true; // If it is exactly equal to 'true' we are doing a 'run without debugging'
+        const args = this.getCurrentArgs(session);
+        return args?.noDebug !== true; // If it is exactly equal to 'true' we are doing a 'run without debugging'
     }
 
     private receivedStopEvent(e: vscode.DebugSessionCustomEvent) {
         const mySession = CDebugSession.FindSession(e.session);
-        mySession.status = "stopped";
-        this.liveWatchProvider?.debugStopped(e.session);
-        vscode.workspace.textDocuments
-            .filter((td) => td.fileName.endsWith(".cdmem"))
-            .forEach((doc) => {
-                if (!doc.isClosed) {
-                    this.memoryProvider.update(doc);
-                }
-            });
-        if (mySession.swo) {
-            mySession.swo.debugStopped();
-        }
-        if (mySession.rtt) {
-            mySession.rtt.debugStopped();
+        if (mySession) {
+            mySession.status = "stopped";
+            this.liveWatchProvider?.debugStopped(e.session);
+            if (mySession.swo) {
+                mySession.swo.debugStopped();
+            }
+            if (mySession.rtt) {
+                mySession.rtt.debugStopped();
+            }
         }
     }
 
     private receivedContinuedEvent(e: vscode.DebugSessionCustomEvent) {
         const mySession = CDebugSession.FindSession(e.session);
-        mySession.status = "running";
-        this.liveWatchProvider?.debugContinued(e.session);
-        if (mySession.swo) {
-            mySession.swo.debugContinued();
-        }
-        if (mySession.rtt) {
-            mySession.rtt.debugContinued();
+        if (mySession) {
+            mySession.status = "running";
+            this.liveWatchProvider?.debugContinued(e.session);
+            if (mySession.swo) {
+                mySession.swo.debugContinued();
+            }
+            if (mySession.rtt) {
+                mySession.rtt.debugContinued();
+            }
         }
     }
 
-    private receivedEvent(e) {
-        Reporting.sendEvent(e.body.category, e.body.action, e.body.label, e.body.parameters);
+    private receivedEvent(e: vscode.DebugSessionCustomEvent) {
+        const str = JSON.stringify(e.body);
+        console.log(`Event: ${e.body.category}, ${e.body.action}, ${e.body.label}, ${str}`);
+        Reporting.sendEvent(e.event, { body: str });
     }
 
     private receivedSWOConfigureEvent(e: vscode.DebugSessionCustomEvent) {
         const mySession = CDebugSession.GetSession(e.session);
         if (e.body.type === "socket") {
-            let src;
+            let src: SocketSWOSource | PeMicroSocketSource;
             if (mySession.config.servertype === "pe") {
                 src = new PeMicroSocketSource(e.body.port);
             } else {
@@ -674,20 +674,20 @@ export class MCUDebugExtension {
                     vscode.window.showErrorMessage(`Could not open SWO TCP port ${e.body.port} ${e} after ${src.nTries} tries`);
                 },
             );
-            Reporting.sendEvent("SWO", "Source", "Socket");
+            Reporting.sendEvent("SWO", { Source: "Socket" });
             return;
         } else if (e.body.type === "fifo") {
             mySession.swoSource = new FifoSWOSource(e.body.path);
-            Reporting.sendEvent("SWO", "Source", "FIFO");
+            Reporting.sendEvent("SWO", { Source: "FIFO" });
         } else if (e.body.type === "file") {
             mySession.swoSource = new FileSWOSource(e.body.path);
-            Reporting.sendEvent("SWO", "Source", "File");
+            Reporting.sendEvent("SWO", { Source: "File" });
         } else if (e.body.type === "serial") {
             mySession.swoSource = new SerialSWOSource(e.body.device, e.body.baudRate);
-            Reporting.sendEvent("SWO", "Source", "Serial");
+            Reporting.sendEvent("SWO", { Source: "Serial" });
         } else if (e.body.type === "usb") {
             mySession.swoSource = new UsbSWOSource(e.body.device, e.body.port);
-            Reporting.sendEvent("SWO", "Source", "USB");
+            Reporting.sendEvent("SWO", { Source: "USB" });
         }
 
         this.initializeSWO(e.session, e.body.args);
@@ -697,10 +697,10 @@ export class MCUDebugExtension {
         if (e.body.type === "socket") {
             const decoder: RTTCommonDecoderOpts = e.body.decoder;
             if (decoder.type === "console" || decoder.type === "binary") {
-                Reporting.sendEvent("RTT", "Source", "Socket: Console");
+                Reporting.sendEvent("RTT", { Source: "Socket= Console" });
                 this.rttCreateTerninal(e, decoder as RTTConsoleDecoderOpts);
             } else {
-                Reporting.sendEvent("RTT", "Source", `Socket: ${decoder.type}`);
+                Reporting.sendEvent("RTT", { Source: `Socket= ${decoder.type}` });
                 if (!decoder.ports) {
                     this.createRTTSource(e, decoder.tcpPort, decoder.port);
                 } else {
@@ -776,8 +776,11 @@ export class MCUDebugExtension {
         this.rttTerminals = this.rttTerminals.filter((t) => t.terminal !== terminal);
     }
 
-    private initializeSWO(session: vscode.DebugSession, args) {
+    private initializeSWO(session: vscode.DebugSession, args: ConfigurationArguments) {
         const mySession = CDebugSession.FindSession(session);
+        if (!mySession) {
+            return;
+        }
         if (!mySession.swoSource) {
             vscode.window.showErrorMessage("Tried to initialize SWO Decoding without a SWO data source");
             return;
@@ -788,9 +791,9 @@ export class MCUDebugExtension {
         }
     }
 
-    private initializeRTT(session: vscode.DebugSession, args) {
+    private initializeRTT(session: vscode.DebugSession, args: ConfigurationArguments) {
         const mySession = CDebugSession.FindSession(session);
-        if (!mySession.rtt) {
+        if (mySession && !mySession.rtt) {
             mySession.rtt = new RTTCore(mySession.rttPortMap, args, this.context.extensionPath);
         }
     }
@@ -803,7 +806,7 @@ export class MCUDebugExtension {
                 prompt: "Enter Live Watch Expression",
             })
             .then((v) => {
-                if (v) {
+                if (v && vscode.debug.activeDebugSession) {
                     this.liveWatchProvider.addWatchExpr(v, vscode.debug.activeDebugSession);
                 }
             });
@@ -826,7 +829,7 @@ export class MCUDebugExtension {
                 (result) => {
                     if (!result.success) {
                         vscode.window.showErrorMessage(`Cannot add ${expr} to Live Watch. Must be a global or static variable`);
-                    } else {
+                    } else if (vscode.debug.activeDebugSession) {
                         this.liveWatchProvider.addWatchExpr(expr, vscode.debug.activeDebugSession);
                     }
                 },
@@ -855,13 +858,13 @@ export class MCUDebugExtension {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+    Reporting.activateTelemetry(context);
     try {
-        MCUDebugChannel.createDebugChanne();
+        MCUDebugChannel.createDebugChannel();
         MCUDebugChannel.debugMessage("Starting mcu-Debug extension.");
     } catch (_e) {
         /* empty */
     }
-
     return new MCUDebugExtension(context);
 }
 

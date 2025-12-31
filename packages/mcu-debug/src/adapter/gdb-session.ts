@@ -13,6 +13,7 @@ import { GdbEventNames } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
 import { VariableManager } from "./variables";
+import { GDBServerSession } from "./server-session";
 
 export class SymbolManager {
     constructor() {}
@@ -22,12 +23,14 @@ export class GDBDebugSession extends SeqDebugSession {
     public args = {} as ConfigurationArguments;
     public gdbInstance: GdbInstance | null = null;
     public liveGdbInstance: GdbInstance | null = null;
+    public serverSession: GDBServerSession;
 
     protected frameHanedles = new ValueHandleRegistryPrimitive<number>();
     protected variableManager = new VariableManager();
 
     constructor() {
         super();
+        this.serverSession = new GDBServerSession(this);
     }
 
     protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
@@ -39,7 +42,10 @@ export class GDBDebugSession extends SeqDebugSession {
         response.body.supportsHitConditionalBreakpoints = true;
         this.sendResponse(response);
     }
-    protected disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments, request?: DebugProtocol.Request): void {
+    protected async disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments, request?: DebugProtocol.Request): Promise<void> {
+        if (this.serverSession) {
+            await this.serverSession.stopServer();
+        }
         this.sendResponse(response);
     }
     protected launchRequest(response: DebugProtocol.LaunchResponse, args: ConfigurationArguments, request?: DebugProtocol.Request): void {
@@ -309,6 +315,7 @@ export class GDBDebugSession extends SeqDebugSession {
     private launchAttachInit(args: ConfigurationArguments) {
         this.setupLogging();
         this.args = this.normalizeArguments(args);
+        this.serverSession = new GDBServerSession(this);
     }
 
     private async launchAttachRequest(response: DebugProtocol.LaunchResponse, isAttach: boolean, noDebug: boolean): Promise<void> {
@@ -350,9 +357,12 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private async startServer(): Promise<void> {
-        if (this.args.servertype === "external") {
-            return;
+        await this.serverSession.startServer();
+        const commands = this.serverSession.serverController.initCommands();
+        if (commands.length > 0 && this.gdbInstance) {
+            for (const cmd of commands) {
+                await this.gdbInstance.sendCommand(cmd);
+            }
         }
-        // Implement server start logic here
     }
 }
