@@ -1,8 +1,7 @@
-import { EventEmitter } from 'stream';
-import { SWORTTSource } from './common';
-import { promisify } from 'util';
-import * as vscode from 'vscode';
-import * as usb from 'usb';
+import { EventEmitter } from "stream";
+import { SWORTTSource } from "./common";
+import { promisify } from "util";
+import * as vscode from "vscode";
 
 /*
  * NOTE: using legacy node-usb interface, because the modern
@@ -10,14 +9,21 @@ import * as usb from 'usb';
  * transfer, leading to problems with getting rid of the connection
  */
 
+type UsbDevice = any;
+type UsbInterface = any;
+type UsbInEndpoint = any;
+type UsbConfigDescriptor = any;
+type UsbInterfaceDescriptor = any;
+type UsbEndpointDescriptor = any;
+
 export class UsbSWOSource extends EventEmitter implements SWORTTSource {
-    private dev?: usb.Device;
-    private iface?: usb.Interface;
-    private ep?: usb.InEndpoint;
+    private dev?: UsbDevice;
+    private iface?: UsbInterface;
+    private ep?: UsbInEndpoint;
 
     constructor(
         private readonly device: string,
-        private readonly port: string
+        private readonly port: string,
     ) {
         super();
 
@@ -25,16 +31,18 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
     }
 
     private async findDevice(): Promise<
-    | {
-        dev: usb.Device;
-        config: usb.ConfigDescriptor;
-        iface: usb.InterfaceDescriptor;
-        endpoint: usb.EndpointDescriptor;
-        productName: string;
-    }
-    | undefined
+        | {
+              dev: UsbDevice;
+              config: UsbConfigDescriptor;
+              iface: UsbInterfaceDescriptor;
+              endpoint: UsbEndpointDescriptor;
+              productName: string;
+          }
+        | undefined
     > {
-        console.info('Looking for USB devices matching', this.device);
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const usb = require("usb");
+        console.info("Looking for USB devices matching", this.device);
         const devs = usb.getDeviceList();
         for (const dev of devs) {
             dev.open();
@@ -42,16 +50,7 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
             const getStringDescriptor = promisify(dev.getStringDescriptor.bind(dev));
             const productName = await getStringDescriptor(dd.iProduct);
             if (productName.match(this.device)) {
-                console.info(
-                    'Found device',
-                    productName,
-                    'VID',
-                    dd.idVendor.toString(16),
-                    'PID',
-                    dd.idProduct.toString(16),
-                    'Serial',
-                    await getStringDescriptor(dd.iSerialNumber)
-                );
+                console.info("Found device", productName, "VID", dd.idVendor.toString(16), "PID", dd.idProduct.toString(16), "Serial", await getStringDescriptor(dd.iSerialNumber));
 
                 for (const cfg of dev.allConfigDescriptors) {
                     for (const iface of cfg.interfaces) {
@@ -59,24 +58,14 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
                             const interfaceName = await getStringDescriptor(alt.iInterface);
                             if (interfaceName?.match(this.port)) {
                                 for (const ep of alt.endpoints) {
-                                    if ((ep.bmAttributes & 3) === usb.usb.LIBUSB_TRANSFER_TYPE_BULK
-                       && ep.bEndpointAddress & usb.usb.LIBUSB_ENDPOINT_IN) {
-                                        console.info(
-                                            'Matched config',
-                                            cfg.bConfigurationValue,
-                                            'interface',
-                                            alt.bInterfaceNumber,
-                                            'alternate',
-                                            alt.bAlternateSetting,
-                                            'endpoint',
-                                            ep.bEndpointAddress
-                                        );
+                                    if ((ep.bmAttributes & 3) === usb.usb.LIBUSB_TRANSFER_TYPE_BULK && ep.bEndpointAddress & usb.usb.LIBUSB_ENDPOINT_IN) {
+                                        console.info("Matched config", cfg.bConfigurationValue, "interface", alt.bInterfaceNumber, "alternate", alt.bAlternateSetting, "endpoint", ep.bEndpointAddress);
                                         return {
                                             dev,
                                             config: cfg,
                                             iface: alt,
                                             endpoint: ep,
-                                            productName
+                                            productName,
                                         };
                                     }
                                 }
@@ -85,48 +74,46 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
                     }
                 }
 
-                console.warn('Couldn\'t match interface named', this.port);
+                console.warn("Couldn't match interface named", this.port);
             }
             dev.close();
         }
-        console.warn('Matching device not found');
+        console.warn("Matching device not found");
         return undefined;
     }
 
     public async start() {
         const { dev, config, iface, endpoint, productName } = (await this.findDevice()) ?? {};
         if (!dev) {
-            vscode.window.showErrorMessage(
-                `Couldn't find a device matching '${this.device}' with interface '${this.port}`
-            );
+            vscode.window.showErrorMessage(`Couldn't find a device matching '${this.device}' with interface '${this.port}`);
             return;
         }
 
-        console.debug('Connecting to', productName);
+        console.debug("Connecting to", productName);
         dev.open();
         this.dev = dev;
-        console.debug('Selecting configuration', config.bConfigurationValue);
+        console.debug("Selecting configuration", config.bConfigurationValue);
         await promisify(dev.setConfiguration.bind(dev))(config.bConfigurationValue);
-        console.debug('Claiming interface', iface.bInterfaceNumber);
+        console.debug("Claiming interface", iface.bInterfaceNumber);
         this.iface = dev.interface(iface.bInterfaceNumber);
         this.iface.claim();
         if (iface.bAlternateSetting) {
-            console.debug('Selecting alternate', iface.bAlternateSetting);
+            console.debug("Selecting alternate", iface.bAlternateSetting);
             await dev.interface(iface.iInterface).setAltSettingAsync(iface.bAlternateSetting);
         }
-        console.debug('Reading from endpoint', endpoint.bEndpointAddress);
+        console.debug("Reading from endpoint", endpoint.bEndpointAddress);
 
-        this.ep = this.iface.endpoint(endpoint.bEndpointAddress) as usb.InEndpoint;
-        this.ep.on('data', (buffer: Buffer) => {
-            console.debug(buffer.length, 'bytes received');
-            this.emit('data', buffer);
+        this.ep = this.iface.endpoint(endpoint.bEndpointAddress) as UsbInEndpoint;
+        this.ep.on("data", (buffer: Buffer) => {
+            console.debug(buffer.length, "bytes received");
+            this.emit("data", buffer);
         });
-        this.ep.on('error', (error) => {
-            console.error('Unexpected polling error', error);
+        this.ep.on("error", (error) => {
+            console.error("Unexpected polling error", error);
         });
         this.ep.startPoll();
 
-        this.emit('connected');
+        this.emit("connected");
     }
 
     public get connected() {
@@ -135,23 +122,23 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
 
     public async dispose() {
         if (this.ep) {
-            console.debug('Stopping polling...');
+            console.debug("Stopping polling...");
             await promisify(this.ep.stopPoll.bind(this.ep))();
             this.ep = undefined;
-            console.debug('Polling stopped');
+            console.debug("Polling stopped");
         }
         if (this.iface) {
-            console.debug('Releasing interface...');
+            console.debug("Releasing interface...");
             await this.iface.releaseAsync();
             this.iface = undefined;
-            console.debug('Interface released');
+            console.debug("Interface released");
         }
         if (this.dev) {
-            console.debug('Closing device...');
+            console.debug("Closing device...");
             this.dev.close();
             this.dev = undefined;
-            console.debug('Device closed');
+            console.debug("Device closed");
         }
-        this.emit('disconnected');
+        this.emit("disconnected");
     }
 }

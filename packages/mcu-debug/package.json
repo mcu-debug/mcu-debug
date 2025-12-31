@@ -1,8 +1,10 @@
 {
   "name": "mcu-debug",
+  "publisher": "mcu-debug",
   "version": "0.1.0",
   "preview": true,
   "description": "A debugger and debug adapter for MCUs",
+  "displayName": "MCU-Debug",
   "keywords": [
     "MCU",
     "Cortex-Debug",

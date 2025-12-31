@@ -2,7 +2,8 @@
   "name": "mcu-debug-monorepo",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/mcu-debug",
+    "packages/shared"
   ],
   "scripts": {
     "watch": "npm run watch --workspaces",

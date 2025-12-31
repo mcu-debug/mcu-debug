@@ -15,5 +15,16 @@
           "runOn": "folderOpen" // Key property for autorun
       }
     },
+    {
+      "label": "compile",
+      "dependsOn": ["npm: compile"],
+      "presentation": {
+        "reveal": "never"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+    },
   ]
 }

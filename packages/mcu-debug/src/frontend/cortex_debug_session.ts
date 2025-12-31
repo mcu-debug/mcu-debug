@@ -17,15 +17,16 @@ export class CDebugSession {
 
     protected parent: CDebugSession | null = null;
     protected children: CDebugSession[] = [];
-    private static ROOT = new CDebugSession({} as vscode.DebugSession, {} as ConfigurationArguments); // Dummy node for all sessions trees
     public static CurrentSessions: CDebugSession[] = []; // This may stuff that never fully got created
+    private static ROOT = new CDebugSession({} as vscode.DebugSession, {} as ConfigurationArguments, true); // Dummy node for all sessions trees
     public usedPorts: Set<number> = new Set<number>();
 
     constructor(
         public session: vscode.DebugSession,
         public config: ConfigurationArguments | vscode.DebugConfiguration,
+        isRoot: boolean = false,
     ) {
-        if (session) {
+        if (!isRoot) {
             CDebugSession.CurrentSessions.push(this);
         }
     }
