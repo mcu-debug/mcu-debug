@@ -859,6 +859,7 @@ export class MCUDebugExtension {
 
 export function activate(context: vscode.ExtensionContext) {
     try {
+        Reporting.activateTelemetry(context);
         MCUDebugChannel.createDebugChannel();
         MCUDebugChannel.debugMessage("Starting mcu-Debug extension.");
     } catch (_e) {
