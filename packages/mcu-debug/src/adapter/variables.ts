@@ -1,7 +1,7 @@
 import { IValueIdentifiable, ValueHandleRegistry } from "@mcu-debug/shared";
 import { DebugProtocol } from "@vscode/debugprotocol";
 
-enum VariableScope {
+export enum VariableScope {
     Global = 0,
     Static = 1,
     Local = 2,

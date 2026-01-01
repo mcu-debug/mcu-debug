@@ -105,6 +105,35 @@ export class MiCommands {
                 .catch(reject);
         });
     }
+
+    sendStackListFrames(threadId: number, startFrame: number, endFrame: number): Promise<GdbMiFrame[]> {
+        const cmd = `-stack-list-frames --thread ${threadId} ${startFrame} ${endFrame}`;
+        return new Promise<GdbMiFrame[]>((resolve, reject) => {
+            this.gdbInstance
+                .sendCommand(cmd)
+                .then((output) => {
+                    try {
+                        const record = output.resultRecord;
+                        if (!record) {
+                            reject(new Error("No result record in stack-list-frames output"));
+                            return;
+                        }
+                        const framesRaw = (record.result as any)["stack"];
+                        const frames: GdbMiFrame[] = [];
+                        if (Array.isArray(framesRaw)) {
+                            for (const fr of framesRaw) {
+                                frames.push(new GdbMiFrame(fr));
+                            }
+                        }
+                        resolve(frames);
+                    } catch (e) {
+                        reject(e);
+                        return;
+                    }
+                })
+                .catch(reject);
+        });
+    }
 }
 
 export class GdbMiThreadsList {

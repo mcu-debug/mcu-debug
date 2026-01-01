@@ -11,9 +11,10 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GdbEventNames, GdbMiRecord } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
-import { VariableManager } from "./variables";
+import { encodeReference, VariableManager, VariableScope } from "./variables";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
+import { encode } from "punycode";
 
 export class SymbolManager {
     constructor() {}
@@ -130,15 +131,53 @@ export class GDBDebugSession extends SeqDebugSession {
     protected terminateThreadsRequest(response: DebugProtocol.TerminateThreadsResponse, args: DebugProtocol.TerminateThreadsArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
-    protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments, request?: DebugProtocol.Request): void {
+    protected async stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments, request?: DebugProtocol.Request): Promise<void> {
         response.body = { stackFrames: [], totalFrames: 0 };
+        if (this.isBusy()) {
+            this.handleMsg(GdbEventNames.Stderr, "StackTrace request received while target is running. Returning empty stack trace.\n");
+            this.sendResponse(response);
+            return;
+        }
+        try {
+            const threadId = args.threadId;
+            const startFrame = args.startFrame || 0;
+            const levels = args.levels || 40;
+            const frames = await this.gdbMiCommands.sendStackListFrames(threadId, startFrame, startFrame + levels);
+            for (const frame of frames) {
+                const ref = encodeReference(threadId, frame.level, VariableScope.Scope);
+                const handle = this.frameHanedles.add(ref);
+                const stackFrame: DebugProtocol.StackFrame = {
+                    id: handle,
+                    name: frame.func || "<unknown>",
+                    line: frame.line || 0,
+                    column: 0,
+                    instructionPointerReference: frame.addr || undefined,
+                    source: {
+                        name: frame.file || "<unknown>",
+                        path: frame.fullname || undefined,
+                    },
+                };
+                response.body.stackFrames.push(stackFrame);
+            }
+            response.body.totalFrames = frames.length;
+        } catch (e) {
+            this.sendErrorResponse(response, 1, `Failed to get stack frames: ${e}`);
+            return;
+        }
         this.sendResponse(response);
     }
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments, request?: DebugProtocol.Request): void {
-        response.body = { scopes: [] };
+        const scopes: DebugProtocol.Scope[] = [];
+        scopes.push({ name: "Local", variablesReference: VariableScope.Local, expensive: false });
+        scopes.push({ name: "Global", variablesReference: VariableScope.Global, expensive: true });
+        scopes.push({ name: "Static", variablesReference: VariableScope.Static, expensive: false });
+        scopes.push({ name: "Registers", variablesReference: VariableScope.Registers, expensive: false });
+
+        response.body = { scopes: scopes };
         this.sendResponse(response);
     }
     protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments, request?: DebugProtocol.Request): void {
+        response.body = { variables: [] };
         this.sendResponse(response);
     }
     protected setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments, request?: DebugProtocol.Request): void {
