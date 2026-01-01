@@ -3,17 +3,18 @@ import { SeqDebugSession } from "./seq-debug-session";
 import { EventEmitter } from "events";
 import { Config } from "winston/lib/winston/config";
 import { Logger, logger, OutputEvent, Variable } from "@vscode/debugadapter";
-import { ADAPTER_DEBUG_MODE, ConfigurationArguments, RTTCommonDecoderOpts } from "./servers/common";
+import { ADAPTER_DEBUG_MODE, ConfigurationArguments, CustomStoppedEvent, RTTCommonDecoderOpts, StoppedEvent } from "./servers/common";
 import path from "path";
 import os from "os";
 import fs from "fs";
 import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { GdbEventNames } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiRecord } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
 import { VariableManager } from "./variables";
 import { GDBServerSession } from "./server-session";
+import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
 
 export class SymbolManager {
     constructor() {}
@@ -24,6 +25,15 @@ export class GDBDebugSession extends SeqDebugSession {
     public gdbInstance: GdbInstance | null = null;
     public liveGdbInstance: GdbInstance | null = null;
     public serverSession: GDBServerSession;
+    public gdbMiCommands: MiCommands | null = null;
+    public latestThreadInfo: GdbMiThreadInfoList | null = null;
+    public continuing: boolean = false;
+    public isRunning(): boolean {
+        return this.gdbInstance?.status === "running";
+    }
+    public isBusy(): boolean {
+        return this.continuing || this.isRunning();
+    }
 
     protected frameHanedles = new ValueHandleRegistryPrimitive<number>();
     protected variableManager = new VariableManager();
@@ -105,15 +115,28 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected threadsRequest(response: DebugProtocol.ThreadsResponse, request?: DebugProtocol.Request): void {
+        response.body = { threads: [] };
+        if (this.isBusy()) {
+            this.handleMsg(GdbEventNames.Stderr, "Threads request received while target is running. Returning empty thread list.\n");
+        } else if (this.latestThreadInfo) {
+            for (const t of this.latestThreadInfo.threads) {
+                response.body.threads.push({ id: t.id, name: t.name });
+            }
+        } else {
+            response.body.threads.push({ id: 1, name: "Unnamed Thread" });
+        }
         this.sendResponse(response);
     }
+
     protected terminateThreadsRequest(response: DebugProtocol.TerminateThreadsResponse, args: DebugProtocol.TerminateThreadsArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
     protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments, request?: DebugProtocol.Request): void {
+        response.body = { stackFrames: [], totalFrames: 0 };
         this.sendResponse(response);
     }
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments, request?: DebugProtocol.Request): void {
+        response.body = { scopes: [] };
         this.sendResponse(response);
     }
     protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments, request?: DebugProtocol.Request): void {
@@ -358,6 +381,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.gdbInstance.debugFlags = this.args.debugFlags;
             this.handleMsg(GdbEventNames.Console, `Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
             this.subscribeToGdbEvents();
+            this.gdbMiCommands = new MiCommands(this.gdbInstance);
             await this.gdbInstance.start(this.args.cwd, this.getInitCommands());
         } catch (e) {
             throw e;
@@ -397,9 +421,61 @@ export class GDBDebugSession extends SeqDebugSession {
     quitEvent() {
         throw new Error("Not yet implemented");
     }
-    stopEvent() {
-        // throw new Error("Not yet implemented");
+
+    // Unlike in cortex-debug, we get the thread info here before sending the stop event
+    // Sometimes we get interrupted by other requests, so we store the latest thread info
+    // and use that when needed. This works for All-Stop mode only for now.
+    stopEvent(record: GdbMiRecord, reason?: string) {
+        let getStack = true;
+        let doNotify = !this.args.noDebug;
+        switch (reason) {
+            case "entry":
+                // doNotify = false;
+                // getStack = false;
+                break;
+            case "exited":
+            case "exited-normally":
+                // TODO: Handle exit properly, send TerminatedEvent
+                getStack = false;
+                break;
+            default:
+        }
+        this.latestThreadInfo = null;
+        if (getStack) {
+            this.gdbMiCommands
+                .sendThreadInfoAll()
+                .then((threadsInfo) => {
+                    this.latestThreadInfo = threadsInfo;
+                })
+                .catch((err) => {
+                    this.handleMsg(GdbEventNames.Stderr, `Failed to get thread info: ${err instanceof Error ? err.message : String(err)}\n`);
+                })
+                .finally(() => {
+                    if (doNotify) {
+                        this.notifyStopped(reason, true);
+                    }
+                });
+        }
     }
+
+    private notifyStopped(reason, doCustom = true) {
+        const threadId = this.latestThreadInfo?.currentThreadId || 1;
+        const ev: DebugProtocol.StoppedEvent = {
+            type: "event",
+            seq: 0,
+            event: "stopped",
+            body: {
+                reason: reason || "breakpoint",
+                threadId: threadId,
+                allThreadsStopped: true,
+            },
+        };
+        this.sendEvent(ev);
+        if (doCustom) {
+            this.sendEvent(new CustomStoppedEvent(reason, threadId));
+        }
+    }
+
     handleBreakpointDeleted() {
         throw new Error("Not yet implemented");
     }

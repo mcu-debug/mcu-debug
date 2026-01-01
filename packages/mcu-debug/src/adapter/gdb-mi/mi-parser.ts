@@ -224,8 +224,13 @@ function nextTuple(line: string, i: number): [number, any] {
         // INVARIANT: line[i]='{' or line[i]=',' or line[i]='}'
         var result = nextResult(line, i + 1);
         if (!result) return [i + 1, ret];
-
-        ret[result[1]] = result[2];
+        let key = result[1];
+        let count = 1;
+        while (key in ret) {
+            // Handle duplicate keys by appending a suffix
+            key = `${key}#${count++}`;
+        }
+        ret[key] = result[2];
         i = eatWhitespace(line, result[0]); // i at ',', '}', or line end
     }
     return [i + 1, ret];

@@ -180,7 +180,7 @@ export class GdbInstance extends EventEmitter {
             }
             for (const record of miOutput.outOfBandRecords) {
                 if (record.recordType === "async") {
-                    const className = record.class.startsWith("*") ? record.class.slice(1) : record.class;
+                    const className = record.class;
                     if (className === "stopped") {
                         this.handleSetopped(miOutput);
                     } else if (className === "running") {
@@ -214,7 +214,7 @@ export class GdbInstance extends EventEmitter {
         }
         // FIXME: It should always be a single outOfBandRecord here, but just in case...
         const record = output.outOfBandRecords.length > 0 ? output.outOfBandRecords[0] : output.resultRecord!;
-        const reason = (record.result as any)["reason"];
+        let reason = (record.result as any)["reason"];
         if (reason === "breakpoint-hit") {
             this.emit("breakpoint", record);
         } else if (reason && (reason as string).includes("watchpoint-trigger")) {
@@ -235,13 +235,14 @@ export class GdbInstance extends EventEmitter {
             this.log(Stderr, "Program exited with code " + record.result["exit-code"]);
             this.emit("exited-normally", record);
         } else if (reason === undefined && this.firstStop) {
+            reason = "entry";
             this.log(Console, "Program stopped, probably due to a reset and/or halt issued by debugger");
-            this.emit(GdbEventNames.Stopped, record, "entry");
         } else {
+            reason = reason || "unknown";
             this.log(Console, "Not implemented stop reason (assuming exception): " + reason || "Unknown reason");
-            this.emit(GdbEventNames.Stopped, record);
         }
         this.firstStop = false;
+        this.emit(GdbEventNames.Stopped, record, reason);
         this.emit("generic-stopped", record);
     }
 

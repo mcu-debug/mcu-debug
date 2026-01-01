@@ -4,7 +4,7 @@ export interface GdbMiError extends Error {
     readonly source: string;
 }
 
-export interface GdbMiFrame {
+export interface GdbMiFrameIF {
     level: number;
     addr: string;
     func: string;
@@ -15,10 +15,10 @@ export interface GdbMiFrame {
     addr_flags?: string;
 }
 
-export interface GdbMiThread {
+export interface GdbMiThreadIF {
     id: number;
     target_id?: string;
-    frame: GdbMiFrame;
+    frame: GdbMiFrameIF;
     state?: string;
     core?: number;
 }

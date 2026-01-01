@@ -12,8 +12,8 @@
 			"outFiles": [
 				"${workspaceRoot}/packages/mcu-debug/dist/*.js"
 			],
-      "preLaunchTask": "npm: compile"
-    },
+      		// "preLaunchTask": "npm: compile"
+    	},
 		{
 			"name": "Debug Server",
 			"type": "node",
@@ -26,7 +26,7 @@
 			"outFiles": [
 				"${workspaceRoot}/packages/mcu-debug/dist/*.js"
 			],
-			//"cwd": "${workspaceRoot}/packages/mcu-debug"
+      		// "preLaunchTask": "npm: compile"
 		},
 		{
 			"name": "Launch Tests",
@@ -44,7 +44,8 @@
 	"compounds": [
 		{
 			"name": "Extension + Debug Server",
-			"configurations": ["Launch Extension", "Debug Server"]
+			"configurations": ["Launch Extension", "Debug Server"],
+      		"preLaunchTask": "npm: compile"
 		}
 	]
 }

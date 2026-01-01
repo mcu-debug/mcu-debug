@@ -8,7 +8,6 @@ import * as os from "os";
 import * as stream from "stream";
 import * as path from "path";
 import { GDBDebugSession } from "../gdb-session";
-import { CreateReadStreamOptions } from "fs/promises";
 import * as readline from "readline";
 
 export enum ADAPTER_DEBUG_MODE {
@@ -46,21 +45,13 @@ export class GenericCustomEvent extends Event implements DebugProtocol.Event {
     }
 }
 
-export class StoppedEvent extends Event implements DebugProtocol.Event {
+export class CustomStoppedEvent extends Event implements DebugProtocol.Event {
     public readonly body: {
         reason: string;
-        description?: string;
-        threadId?: number;
-        text?: string;
-        allThreadsStopped?: boolean;
-    } = { reason: "" };
-
-    constructor(reason: string, threadId: number, allThreadsStopped: boolean) {
-        super("stopped", {
-            reason: reason,
-            threadId: threadId,
-            allThreadsStopped: allThreadsStopped,
-        });
+        threadID: number;
+    };
+    constructor(reason: string, threadID: number) {
+        super("custom-stop", { reason: reason, threadID: threadID ?? 1 });
     }
 }
 
