@@ -95,8 +95,8 @@ export class QEMUServerController extends EventEmitter implements GDBServerContr
         return cmdargs;
     }
 
-    public initMatch(): RegExp {
-        return new RegExp("");
+    public initMatch(): RegExp | null {
+        return null;
     }
 
     public serverLaunchStarted(): void {}

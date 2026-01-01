@@ -6,7 +6,7 @@ import { MCUDebugChannel } from "../dbgmsgs";
 import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
 
 import { RTTCore, SWOCore } from "./swo/core";
-import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, CortexDebugKeys, ChainedEvents, ADAPTER_DEBUG_MODE, ChainedConfig } from "../adapter/servers/common";
+import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ADAPTER_DEBUG_MODE, ChainedConfig } from "../adapter/servers/common";
 import { Reporting } from "../analytics/reporting";
 
 import { CortexDebugConfigurationProvider } from "./configprovider";
@@ -48,14 +48,14 @@ export class MCUDebugExtension {
 
     constructor(private context: vscode.ExtensionContext) {
         const config = vscode.workspace.getConfiguration("mcu-debug");
-        this.startServerConsole(context, config.get(CortexDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
+        this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
 
         this.liveWatchProvider = new LiveWatchTreeProvider(this.context);
         this.liveWatchTreeView = vscode.window.createTreeView("mcu-debug.liveWatch", {
             treeDataProvider: this.liveWatchProvider,
         });
 
-        vscode.commands.executeCommand("setContext", `mcu-debug:${CortexDebugKeys.VARIABLE_DISPLAY_MODE}`, config.get(CortexDebugKeys.VARIABLE_DISPLAY_MODE, true));
+        vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.VARIABLE_DISPLAY_MODE}`, config.get(MCUDebugKeys.VARIABLE_DISPLAY_MODE, true));
 
         context.subscriptions.push(
             vscode.commands.registerCommand("mcu-debug.varHexModeTurnOn", this.variablesNaturalMode.bind(this, false)),
@@ -126,8 +126,8 @@ export class MCUDebugExtension {
         }
     }
 
-    private startServerConsole(context: vscode.ExtensionContext, logFName: string = ""): Promise<void> {
-        return new Promise<void>((resolve, reject) => {
+    private async startServerConsole(context: vscode.ExtensionContext, logFName: string = ""): Promise<void> {
+        const promise = new Promise<void>((resolve, reject) => {
             const rptMsg = "Please report this problem.";
             this.gdbServerConsole = new GDBServerConsole(context, logFName);
             this.gdbServerConsole
@@ -141,12 +141,13 @@ export class MCUDebugExtension {
                     vscode.window.showErrorMessage(`Could not create gdb-server-console. Will use old style console. Please report this problem. ${e.toString()}`);
                 });
         });
+        await promise;
     }
 
     private settingsChanged(e: vscode.ConfigurationChangeEvent) {
-        if (e.affectsConfiguration(`mcu-debug.${CortexDebugKeys.VARIABLE_DISPLAY_MODE}`)) {
+        if (e.affectsConfiguration(`mcu-debug.${MCUDebugKeys.VARIABLE_DISPLAY_MODE}`)) {
             const config = vscode.workspace.getConfiguration("mcu-debug");
-            const isHex = config.get(CortexDebugKeys.VARIABLE_DISPLAY_MODE, true) ? false : true;
+            const isHex = config.get(MCUDebugKeys.VARIABLE_DISPLAY_MODE, true) ? false : true;
             let foundStopped = false;
             for (const s of CDebugSession.CurrentSessions) {
                 try {
@@ -171,14 +172,14 @@ export class MCUDebugExtension {
                 vscode.window.showInformationMessage(msg);
             }
         }
-        if (e.affectsConfiguration(`mcu-debug.${CortexDebugKeys.SERVER_LOG_FILE_NAME}`)) {
+        if (e.affectsConfiguration(`mcu-debug.${MCUDebugKeys.SERVER_LOG_FILE_NAME}`)) {
             const config = vscode.workspace.getConfiguration("mcu-debug");
-            const fName = config.get(CortexDebugKeys.SERVER_LOG_FILE_NAME, "");
+            const fName = config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "");
             this.gdbServerConsole?.createLogFile(fName);
         }
-        if (e.affectsConfiguration(`mcu-debug.${CortexDebugKeys.DEV_DEBUG_MODE}`)) {
+        if (e.affectsConfiguration(`mcu-debug.${MCUDebugKeys.DEV_DEBUG_MODE}`)) {
             const config = vscode.workspace.getConfiguration("mcu-debug");
-            const dbgMode = config.get(CortexDebugKeys.DEV_DEBUG_MODE, ADAPTER_DEBUG_MODE.NONE);
+            const dbgMode = config.get(MCUDebugKeys.DEV_DEBUG_MODE, ADAPTER_DEBUG_MODE.NONE);
             for (const s of CDebugSession.CurrentSessions) {
                 try {
                     s.session.customRequest("set-debug-mode", { mode: dbgMode });
@@ -256,10 +257,10 @@ export class MCUDebugExtension {
         // with it later
         const config = vscode.workspace.getConfiguration("mcu-debug");
 
-        vscode.commands.executeCommand("setContext", `mcu-debug:${CortexDebugKeys.VARIABLE_DISPLAY_MODE}`, newVal);
+        vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.VARIABLE_DISPLAY_MODE}`, newVal);
         try {
-            const [target, languageOverride] = this.getConfigSource(config, CortexDebugKeys.VARIABLE_DISPLAY_MODE);
-            config.update(CortexDebugKeys.VARIABLE_DISPLAY_MODE, newVal, target, languageOverride);
+            const [target, languageOverride] = this.getConfigSource(config, MCUDebugKeys.VARIABLE_DISPLAY_MODE);
+            config.update(MCUDebugKeys.VARIABLE_DISPLAY_MODE, newVal, target, languageOverride);
         } catch (e) {
             console.error(e);
         }
@@ -269,12 +270,12 @@ export class MCUDebugExtension {
         // 'cxt' contains the treeItem on which this menu was invoked. Maybe we can do something
         // with it later
         const config = vscode.workspace.getConfiguration("mcu-debug");
-        const curVal = config.get(CortexDebugKeys.VARIABLE_DISPLAY_MODE, true);
+        const curVal = config.get(MCUDebugKeys.VARIABLE_DISPLAY_MODE, true);
         const newVal = !curVal;
-        vscode.commands.executeCommand("setContext", `mcu-debug:${CortexDebugKeys.VARIABLE_DISPLAY_MODE}`, newVal);
+        vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.VARIABLE_DISPLAY_MODE}`, newVal);
         try {
-            const [target, languageOverride] = this.getConfigSource(config, CortexDebugKeys.VARIABLE_DISPLAY_MODE);
-            config.update(CortexDebugKeys.VARIABLE_DISPLAY_MODE, newVal, target, languageOverride);
+            const [target, languageOverride] = this.getConfigSource(config, MCUDebugKeys.VARIABLE_DISPLAY_MODE);
+            config.update(MCUDebugKeys.VARIABLE_DISPLAY_MODE, newVal, target, languageOverride);
         } catch (e) {
             console.error(e);
         }
@@ -282,11 +283,11 @@ export class MCUDebugExtension {
 
     private pvtCycleDebugMode() {
         const config = vscode.workspace.getConfiguration("mcu-debug");
-        const curVal: ADAPTER_DEBUG_MODE = config.get(CortexDebugKeys.DEV_DEBUG_MODE, ADAPTER_DEBUG_MODE.NONE);
+        const curVal: ADAPTER_DEBUG_MODE = config.get(MCUDebugKeys.DEV_DEBUG_MODE, ADAPTER_DEBUG_MODE.NONE);
         const validVals = Object.values(ADAPTER_DEBUG_MODE);
         let ix = validVals.indexOf(curVal);
         ix = ix < 0 ? (ix = 0) : (ix + 1) % validVals.length;
-        config.set(CortexDebugKeys.DEV_DEBUG_MODE, validVals[ix]);
+        config.set(MCUDebugKeys.DEV_DEBUG_MODE, validVals[ix]);
     }
 
     // Debug Events

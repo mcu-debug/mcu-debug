@@ -1,6 +1,5 @@
-import { SeqDebugSession } from "./seq-debug-session";
-import { LoggingDebugSession } from "@vscode/debugadapter";
 import { ServerConsoleLog } from "./server-console-log";
+import { GDBDebugSession } from "./gdb-session";
 
 process.on("uncaughtException", (err) => {
     const msg = err && err.stack ? err.stack : err.message ? err.message : "unknown error";
@@ -16,7 +15,7 @@ process.on("unhandledRejection", (reason: any, promise: Promise<any>) => {
 });
 
 try {
-    LoggingDebugSession.run(SeqDebugSession);
+    GDBDebugSession.run(GDBDebugSession);
 } catch (error: any) {
     console.error(": Error occurred while running GDBDebugSession:", error);
     ServerConsoleLog(": Caught exception: " + error.toString());

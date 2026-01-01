@@ -175,7 +175,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected timeStart = Date.now();
     protected timeLast = this.timeStart;
     protected wrapTimeStamp(str: string): string {
-        if (this.args.showDevDebugOutput && this.args.showDevDebugTimestamps) {
+        if (this.args.debugFlags.anyFlags && this.args.debugFlags.timestamps) {
             return this.wrapTimeStampRaw(str);
         } else {
             return str;
@@ -196,7 +196,10 @@ export class GDBDebugSession extends SeqDebugSession {
             return;
         }
         msg = this.wrapTimeStamp(msg);
-        if (this.args.pvtShowDevDebugOutput === ADAPTER_DEBUG_MODE.VSCODE) {
+        if (msg.endsWith("\n") === false) {
+            msg += "\n";
+        }
+        if (this.args.debugFlags.vscodeRequests) {
             logger.setup(Logger.LogLevel.Stop, false, false);
             this.sendEvent(new OutputEvent(msg, type));
             logger.setup(Logger.LogLevel.Verbose, false, false);
@@ -206,8 +209,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     setupLogging() {
-        this.args.pvtShowDevDebugOutput = this.args.showDevDebugOutput;
-        if (this.args.showDevDebugOutput === ADAPTER_DEBUG_MODE.VSCODE) {
+        if (this.args.debugFlags.vscodeRequests) {
             logger.setup(Logger.LogLevel.Verbose, false, false);
             logger.init((ev: OutputEvent) => {
                 // This callback is called with every msg. We don't want to create a recursive
@@ -218,7 +220,6 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendEvent(new OutputEvent(msg, ev.body.category));
                 logger.setup(Logger.LogLevel.Verbose, false, false);
             });
-            this.args.showDevDebugOutput = ADAPTER_DEBUG_MODE.RAW;
         }
     }
 
@@ -264,6 +265,10 @@ export class GDBDebugSession extends SeqDebugSession {
 
     private normalizeArguments(args: ConfigurationArguments): ConfigurationArguments {
         args.graphConfig = args.graphConfig || [];
+
+        args.debugFlags = args.debugFlags || {};
+        args.debugFlags.gdbTraces = args.debugFlags.gdbTraces || args.debugFlags.gdbTracesParsed || args.debugFlags.timestamps;
+        args.debugFlags.anyFlags = Object.values(args.debugFlags).some((v) => v === true);
 
         if (args.executable && !path.isAbsolute(args.executable)) {
             args.executable = path.normalize(path.join(args.cwd, args.executable));
@@ -313,8 +318,8 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private launchAttachInit(args: ConfigurationArguments) {
-        this.setupLogging();
         this.args = this.normalizeArguments(args);
+        this.setupLogging();
         this.serverSession = new GDBServerSession(this);
     }
 
@@ -350,6 +355,9 @@ export class GDBDebugSession extends SeqDebugSession {
             const gdbPath = this.getGdbPath();
             const gdbArgs = ["-q", "--interpreter=mi3", ...(this.args.debuggerArgs || [])];
             this.gdbInstance = new GdbInstance(gdbPath, gdbArgs);
+            this.gdbInstance.debugFlags = this.args.debugFlags;
+            this.handleMsg(GdbEventNames.Console, `Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
+            this.subscribeToGdbEvents();
             await this.gdbInstance.start(this.args.cwd, this.getInitCommands());
         } catch (e) {
             throw e;
@@ -364,5 +372,65 @@ export class GDBDebugSession extends SeqDebugSession {
                 await this.gdbInstance.sendCommand(cmd);
             }
         }
+    }
+
+    protected subscribeToGdbEvents() {
+        this.gdbInstance.on("quit", this.quitEvent.bind(this));
+        this.gdbInstance.on("exited-normally", this.quitEvent.bind(this));
+        this.gdbInstance.on("stopped", this.stopEvent.bind(this));
+        this.gdbInstance.on("breakpoint-deleted", this.handleBreakpointDeleted.bind(this));
+        this.gdbInstance.on("msg", this.handleMsg.bind(this));
+        this.gdbInstance.on("breakpoint", this.handleBreakpoint.bind(this));
+        this.gdbInstance.on("watchpoint", this.handleWatchpoint.bind(this, "hit"));
+        this.gdbInstance.on("watchpoint-scope", this.handleWatchpoint.bind(this, "scope"));
+        this.gdbInstance.on("step-end", this.handleBreak.bind(this));
+        this.gdbInstance.on("step-out-end", this.handleBreak.bind(this));
+        this.gdbInstance.on("signal-stop", this.handlePause.bind(this));
+        this.gdbInstance.on("running", this.handleRunning.bind(this));
+        this.gdbInstance.on("continue-failed", this.handleContinueFailed.bind(this));
+        this.gdbInstance.on("thread-created", this.handleThreadCreated.bind(this));
+        this.gdbInstance.on("thread-exited", this.handleThreadExited.bind(this));
+        this.gdbInstance.on("thread-selected", this.handleThreadSelected.bind(this));
+        this.gdbInstance.on("thread-group-exited", this.handleThreadGroupExited.bind(this));
+    }
+
+    quitEvent() {
+        throw new Error("Not yet implemented");
+    }
+    stopEvent() {
+        // throw new Error("Not yet implemented");
+    }
+    handleBreakpointDeleted() {
+        throw new Error("Not yet implemented");
+    }
+    handleBreakpoint() {
+        throw new Error("Not yet implemented");
+    }
+    handleWatchpoint() {
+        throw new Error("Not yet implemented");
+    }
+    handleBreak() {
+        throw new Error("Not yet implemented");
+    }
+    handlePause() {
+        throw new Error("Not yet implemented");
+    }
+    handleRunning() {
+        throw new Error("Not yet implemented");
+    }
+    handleContinueFailed() {
+        throw new Error("Not yet implemented");
+    }
+    handleThreadCreated() {
+        throw new Error("Not yet implemented");
+    }
+    handleThreadExited() {
+        throw new Error("Not yet implemented");
+    }
+    handleThreadSelected() {
+        throw new Error("Not yet implemented");
+    }
+    handleThreadGroupExited() {
+        throw new Error("Not yet implemented");
     }
 }

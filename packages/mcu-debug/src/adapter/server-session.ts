@@ -14,6 +14,7 @@ import { createPortName, GDBServerController, GenericCustomEvent } from "./serve
 import { GdbEventNames, Stderr } from "./gdb-mi/mi-types";
 import { TcpPortScanner } from "@mcu-debug/shared";
 import path from "path";
+import { match } from "assert";
 
 const SERVER_TYPE_MAP: { [key: string]: any } = {
     jlink: JLinkServerController,
@@ -85,7 +86,8 @@ export class GDBServerSession {
             });
         }
 
-        return new Promise<void>((resolve, reject) => {
+        return new Promise<void>(async (resolve, reject) => {
+            this.session.handleMsg(GdbEventNames.Console, `Starting GDB-Server: ${executable} ${args.join(" ")}\n`);
             this.process = child_process.spawn(executable, args, {
                 cwd: serverCwd,
                 env: process.env,
@@ -95,35 +97,47 @@ export class GDBServerSession {
             this.serverController.serverLaunchStarted();
 
             const matchRegex = this.serverController.initMatch();
+            let timer: NodeJS.Timeout | null = null;
+            let timeout: NodeJS.Timeout | null = null;
             let resolved = false;
+            if (!matchRegex) {
+                setTimeout(() => {
+                    // No match needed, resolve immediately
+                    this.serverController.serverLaunchCompleted();
+                    resolved = true;
+                    resolve();
+                }, 2000);
+            } else {
+                timer = setInterval(() => {
+                    this.session.handleMsg(GdbEventNames.Console, "Waiting for gdb-server to start...\n");
+                }, 5000);
 
-            const timer = setInterval(() => {
-                this.session.handleMsg(GdbEventNames.Console, "Waiting for gdb-server to start...\n");
-            }, 5000);
-
-            const timeout = setTimeout(
-                () => {
-                    clearInterval(timer);
-                    if (this.process) {
-                        this.process.kill();
-                    }
-                    reject(new Error("Timeout waiting for gdb-server to start"));
-                },
-                5 * 60 * 1000,
-            );
+                timeout = setTimeout(
+                    () => {
+                        clearInterval(timer);
+                        if (this.process) {
+                            this.process.kill();
+                        }
+                        reject(new Error("Timeout waiting for gdb-server to start"));
+                    },
+                    5 * 60 * 1000,
+                );
+            }
 
             const handleOutput = (data: Buffer) => {
                 if (this.consoleSocket && !this.consoleSocket.destroyed) {
                     this.consoleSocket.write(data);
                 }
 
-                const str = data.toString();
-                if (!resolved && matchRegex && matchRegex.test(str)) {
-                    resolved = true;
-                    clearInterval(timer);
-                    clearTimeout(timeout);
-                    this.serverController.serverLaunchCompleted();
-                    resolve();
+                if (matchRegex && !resolved) {
+                    const str = data.toString();
+                    if (matchRegex.test(str)) {
+                        resolved = true;
+                        clearInterval(timer);
+                        clearTimeout(timeout);
+                        this.serverController.serverLaunchCompleted();
+                        resolve();
+                    }
                 }
             };
 
@@ -132,8 +146,8 @@ export class GDBServerSession {
 
             this.process.on("error", (err) => {
                 if (!resolved) {
-                    clearInterval(timer);
-                    clearTimeout(timeout);
+                    timer && clearInterval(timer);
+                    timeout && clearTimeout(timeout);
                     reject(err);
                 }
             });
@@ -202,7 +216,7 @@ export class GDBServerSession {
             if (useParent) {
                 this.ports = this.session.args.pvtPorts = this.session.args.pvtParent.pvtPorts;
                 this.serverController.setPorts(this.ports);
-                if (this.session.args.showDevDebugOutput) {
+                if (this.session.args.debugFlags.anyFlags) {
                     this.session.handleMsg(Stderr, JSON.stringify({ configFromParent: this.session.args.pvtMyConfigFromParent }, undefined, 4) + "\n");
                 }
                 return resolve();

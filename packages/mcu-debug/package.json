@@ -633,19 +633,33 @@
                 "default": "cortex-m3",
                 "type": "string",
                 "description": "CPU Type Selection - used for QEMU server type",
-                "enum": [
-                  "cortex-m3",
-                  "cortex-m4"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "cortex-m3",
+                      "cortex-m4"
+                    ]
+                  },
+                  {
+                    "type": "string"
+                  }
                 ]
               },
               "machine": {
                 "default": "lm3s811evb",
                 "type": "string",
                 "description": "Machine Type Selection - used for QEMU server type",
-                "enum": [
-                  "lm3s811evb",
-                  "lm3s6965evb",
-                  "mps2-an385"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "lm3s811evb",
+                      "lm3s6965evb",
+                      "mps2-an385"
+                    ]
+                  },
+                  {
+                    "type": "string"
+                  }
                 ]
               },
               "device": {
@@ -1121,13 +1135,41 @@
                   "vscode"
                 ],
                 "default": "none",
-                "description": "Used to debug this extension.",
+                "description": "Deprecated: Use debugFlags instead. Used to debug this extension.",
+                "deprecationMessage": "Please use 'debugFlags' to set individual debug modes.",
                 "type": "string"
               },
               "showDevDebugTimestamps": {
                 "default": false,
-                "description": "Show timestamps when 'showDevDebugOutput' is enabled",
+                "description": "Deprecated: Use debugFlags instead. Show timestamps when 'showDevDebugOutput' is enabled",
+                "deprecationMessage": "Please use 'debugFlags' to set individual debug modes.",
                 "type": "boolean"
+              },
+              "debugFlags": {
+                "description": "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",
+                "type": "object",
+                "properties": {
+                  "gdbTraces": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable GDB MI trace output"
+                  },
+                  "vscodeRequests": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable VSCode Request/Response trace output"
+                  },
+                  "gdbTracesParsed": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable parsed GDB MI output"
+                  },
+                  "timestamps": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show timestamps in debug output"
+                  }
+                }
               },
               "svdFile": {
                 "default": null,
@@ -1862,19 +1904,33 @@
                 "default": "cortex-m3",
                 "type": "string",
                 "description": "CPU Type Selection - used for QEMU server type",
-                "enum": [
-                  "cortex-m3",
-                  "cortex-m4"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "cortex-m3",
+                      "cortex-m4"
+                    ]
+                  },
+                  {
+                    "type": "string"
+                  }
                 ]
               },
               "machine": {
                 "default": "lm3s811evb",
                 "type": "string",
                 "description": "Machine Type Selection - used for QEMU server type",
-                "enum": [
-                  "lm3s811evb",
-                  "lm3s6965evb",
-                  "mps2-an385"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "lm3s811evb",
+                      "lm3s6965evb",
+                      "mps2-an385"
+                    ]
+                  },
+                  {
+                    "type": "string"
+                  }
                 ]
               },
               "device": {
@@ -2350,13 +2406,41 @@
                   "vscode"
                 ],
                 "default": "none",
-                "description": "Used to debug this extension.",
+                "description": "Deprecated: Use debugFlags instead. Used to debug this extension.",
+                "deprecationMessage": "Please use 'debugFlags' to set individual debug modes.",
                 "type": "string"
               },
               "showDevDebugTimestamps": {
                 "default": false,
-                "description": "Show timestamps when 'showDevDebugOutput' is enabled",
+                "description": "Deprecated: Use debugFlags instead. Show timestamps when 'showDevDebugOutput' is enabled",
+                "deprecationMessage": "Please use 'debugFlags' to set individual debug modes.",
                 "type": "boolean"
+              },
+              "debugFlags": {
+                "description": "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",
+                "type": "object",
+                "properties": {
+                  "gdbTraces": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable GDB MI trace output"
+                  },
+                  "vscodeRequests": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable VSCode Request/Response trace output"
+                  },
+                  "gdbTracesParsed": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable parsed GDB MI output"
+                  },
+                  "timestamps": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show timestamps in debug output"
+                  }
+                }
               },
               "svdFile": {
                 "default": null,
@@ -2959,7 +3043,9 @@
               "type": "mcu-debug",
               "device": "",
               "runToEntryPoint": "main",
-              "showDevDebugOutput": "none",
+              "debugFlags": {
+                "gdbTraces": false
+              },
               "servertype": "jlink"
             }
           },
@@ -2976,7 +3062,9 @@
               "configFiles": [],
               "searchDir": [],
               "runToEntryPoint": "main",
-              "showDevDebugOutput": "none"
+              "debugFlags": {
+                "gdbTraces": false
+              }
             }
           },
           {
@@ -2989,7 +3077,9 @@
               "request": "launch",
               "type": "mcu-debug",
               "runToEntryPoint": "main",
-              "showDevDebugOutput": "none",
+              "debugFlags": {
+                "gdbTraces": false
+              },
               "servertype": "stlink"
             }
           },
@@ -3003,7 +3093,9 @@
               "request": "launch",
               "type": "mcu-debug",
               "runToEntryPoint": "main",
-              "showDevDebugOutput": "none",
+              "debugFlags": {
+                "gdbTraces": false
+              },
               "servertype": "pyocd"
             }
           },
@@ -3017,7 +3109,9 @@
               "request": "launch",
               "type": "mcu-debug",
               "runToEntryPoint": "main",
-              "showDevDebugOutput": "none",
+              "debugFlags": {
+                "gdbTraces": false
+              },
               "servertype": "stutil"
             }
           }

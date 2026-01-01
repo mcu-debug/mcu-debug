@@ -19,7 +19,7 @@ export enum ADAPTER_DEBUG_MODE {
     VSCODE = "vscode",
 }
 
-export enum CortexDebugKeys {
+export enum MCUDebugKeys {
     REGISTER_DISPLAY_MODE = "registerUseNaturalFormat",
     VARIABLE_DISPLAY_MODE = "variableUseNaturalFormat",
     SERVER_LOG_FILE_NAME = "dbgServerLogfile",
@@ -267,6 +267,13 @@ export interface HWWatchpointInfo {
     limit?: number;
 }
 
+export interface DebugFlags {
+    gdbTraces?: boolean;
+    vscodeRequests?: boolean;
+    gdbTracesParsed?: boolean;
+    timestamps?: boolean;
+    anyFlags?: boolean;
+}
 export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArguments {
     name: string;
     request: string;
@@ -312,6 +319,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     showDevDebugOutput: ADAPTER_DEBUG_MODE;
     pvtShowDevDebugOutput: ADAPTER_DEBUG_MODE;
     showDevDebugTimestamps: boolean;
+    debugFlags: DebugFlags;
     cwd: string;
     extensionPath: string;
     rtos: string;
@@ -409,7 +417,7 @@ export interface GDBServerController extends EventEmitter {
     swoAndRTTCommands(): string[];
     serverExecutable(): string;
     serverArguments(): string[];
-    initMatch(): RegExp;
+    initMatch(): RegExp | null;
     serverLaunchStarted(): void;
     serverLaunchCompleted(): Promise<void> | void;
     debuggerLaunchStarted(obj?: GDBDebugSession): void;
@@ -548,6 +556,15 @@ export function createPortName(procNum: number, prefix: string = "gdbPort"): str
 
 export function getAnyFreePort(preferred: number): Promise<number> {
     return new Promise((resolve, reject) => {
+        TcpPortScanner.findFreePorts(1, { start: preferred, consecutive: false, avoid: undefined })
+            .then((ports) => {
+                TcpPortScanner.EmitAllocated(ports);
+                resolve(ports[0]);
+            })
+            .catch((e) => {
+                reject(e);
+            });
+        /*
         function findFreePorts() {
             TcpPortScanner.findFreePorts(1, { start: 60000, consecutive: false, avoid: undefined })
                 .then((ports) => {
@@ -570,6 +587,7 @@ export function getAnyFreePort(preferred: number): Promise<number> {
         } else {
             findFreePorts();
         }
+            */
     });
 }
 
@@ -803,24 +821,6 @@ export function quoteShellAndCmdChars(s: string): string {
 
 export function quoteShellCmdLine(list: string[]): string {
     return list.map((s) => quoteShellAndCmdChars(s)).join(" ");
-}
-
-export function sanitizeDevDebug(config: { showDevDebugOutput?: string | boolean }): boolean {
-    const modes = Object.values(ADAPTER_DEBUG_MODE);
-    let val = config.showDevDebugOutput;
-    if (typeof val === "string") {
-        val = val.toLowerCase().trim();
-        config.showDevDebugOutput = val;
-    }
-    if (val === false || val === "false" || val === "" || val === "none") {
-        delete config.showDevDebugOutput;
-    } else if (val === true || val === "true)") {
-        config.showDevDebugOutput = ADAPTER_DEBUG_MODE.RAW;
-    } else if (modes.indexOf(val as ADAPTER_DEBUG_MODE) < 0) {
-        config.showDevDebugOutput = ADAPTER_DEBUG_MODE.VSCODE;
-        return false; // Meaning, needed adjustment
-    }
-    return true;
 }
 
 //

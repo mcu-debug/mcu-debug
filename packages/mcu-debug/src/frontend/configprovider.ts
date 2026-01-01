@@ -7,8 +7,7 @@ import {
     ADAPTER_DEBUG_MODE,
     ChainedConfigurations,
     ChainedEvents,
-    CortexDebugKeys,
-    sanitizeDevDebug,
+    MCUDebugKeys,
     validateELFHeader,
     SymbolFile,
     defSymbolFile,
@@ -210,13 +209,6 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
         if (typeof (config as any).pvtAdapterDebugOptions !== "object") {
             (config as any).pvtAdapterDebugOptions = {};
         }
-        if (config.showDevDebugOutput === undefined) {
-            config.showDevDebugOutput = configuration.get(CortexDebugKeys.DEV_DEBUG_MODE, ADAPTER_DEBUG_MODE.NONE);
-        }
-        if (!sanitizeDevDebug(config as any)) {
-            const modes = Object.values(ADAPTER_DEBUG_MODE).join(",");
-            vscode.window.showInformationMessage(`launch.json: "showDevDebugOutput" muse be one of ${modes}. Setting to "${config.showDevDebugOutput}"`);
-        }
 
         if (config.armToolchainPath) {
             config.toolchainPath = config.armToolchainPath;
@@ -244,8 +236,8 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
             config.extensionPath = config.extensionPath.replace(/\\/g, "/"); // GDB doesn't interpret the path correctly with backslashes.
         }
 
-        config.registerUseNaturalFormat = configuration.get(CortexDebugKeys.REGISTER_DISPLAY_MODE, true);
-        config.variableUseNaturalFormat = configuration.get(CortexDebugKeys.VARIABLE_DISPLAY_MODE, true);
+        config.registerUseNaturalFormat = configuration.get(MCUDebugKeys.REGISTER_DISPLAY_MODE, true);
+        config.variableUseNaturalFormat = configuration.get(MCUDebugKeys.VARIABLE_DISPLAY_MODE, true);
 
         if (validationResponse) {
             vscode.window.showErrorMessage(validationResponse);

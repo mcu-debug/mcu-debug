@@ -21,12 +21,12 @@
 			"runtimeArgs": [ "--nolazy", "--trace-warnings"],//, "--unhandled-rejections=strict" ],
 			"program": "${workspaceRoot}/packages/mcu-debug/dist/adapter.js",
 			"stopOnEntry": false,
-			"args": [ "--server=4711" ],
+			"args": [ "--server=4721" ],
 			"sourceMaps": true,
 			"outFiles": [
 				"${workspaceRoot}/packages/mcu-debug/dist/*.js"
 			],
-			"cwd": "${workspaceRoot}/packages/mcu-debug"
+			//"cwd": "${workspaceRoot}/packages/mcu-debug"
 		},
 		{
 			"name": "Launch Tests",

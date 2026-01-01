@@ -73,17 +73,31 @@ class TcpPortScanner {
      * `isPortInUseEx()` if you want to do a more exhaustive check or a general purpose use for any host
      *
      * @param port port to use. Must be > 0 and <= 65535
-     * @param host host ip address to use. This should be an alias to a localhost. (Default: 0.0.0.0 covers all interfaces)
+     * @param host host ip address(es) to use. This should be an alias to a localhost. (Default: check both 127.0.0.1
+     * and 0.0.0.0 covers all interfaces -- needed for macOS)
      * @param avoid if port is in this list, it is considered "in use"
      * @returns Promise that resolves to true if the port is in use, false otherwise
      */
-    static isPortInUse(port, avoid) {
-        return new Promise((resolve, reject) => {
-            if (avoid && avoid.has(port)) {
-                resolve(true);
-                return;
+    static async isPortInUse(port, avoid, hosts) {
+        if (avoid && avoid.has(port)) {
+            return true;
+        }
+        // If a specific host is requested, check only that.
+        // Otherwise, check both 127.0.0.1 and 0.0.0.0 to be safe across platforms (e.g. macOS vs Linux)
+        const hostsToCheck = hosts && hosts.length ? hosts : [TcpPortScanner.LoopbackAddr, TcpPortScanner.AllInterfaces];
+        for (const h of hostsToCheck) {
+            const inUse = await TcpPortScanner.checkPortStatus(port, h);
+            if (inUse) {
+                return true;
             }
-            const server = net.createServer();
+        }
+        return false;
+    }
+    static checkPortStatus(port, host) {
+        return new Promise((resolve, reject) => {
+            const server = net.createServer(() => {
+                // We should not get here
+            });
             server.once("error", (err) => {
                 if (err.code === "EADDRINUSE") {
                     // Port is in use on the specified host
@@ -94,13 +108,12 @@ class TcpPortScanner {
                     reject(err);
                 }
             });
-            server.once("listening", () => {
-                // Port is available, close the server and resolve to false
-                server.close(() => {
-                    resolve(false);
-                });
+            server.once("close", () => {
+                resolve(false);
             });
-            server.listen(port, TcpPortScanner.AllInterfaces);
+            server.listen(port, host, () => {
+                server.close();
+            });
         });
     }
     /**
@@ -130,11 +143,15 @@ class TcpPortScanner {
 }
 exports.TcpPortScanner = TcpPortScanner;
 async function tryReserveRange(start, count, consecutive = false, avoid) {
-    const lockPaths = [];
     const ports = [];
+    const lockPaths = [];
+    const releaseLocks = [];
     try {
         for (let i = 0; ports.length < count; i++) {
             const port = start + i;
+            if (port > 65535) {
+                throw new Error("Out of ports");
+            }
             const lockPath = path.join(os.tmpdir(), `mcu-debug-port-${port}.lock`);
             const inUse = await TcpPortScanner.isPortInUse(port, avoid);
             if (inUse) {
@@ -145,28 +162,34 @@ async function tryReserveRange(start, count, consecutive = false, avoid) {
                     continue;
                 }
             }
-            // Ensure file exists
-            if (!fs.existsSync(lockPath)) {
-                fs.writeFileSync(lockPath, "");
+            try {
+                // Ensure file exists
+                if (!fs.existsSync(lockPath)) {
+                    fs.writeFileSync(lockPath, "");
+                }
+                const release = await lockfile.lock(lockPath, { stale: 30000 });
+                lockPaths.push(lockPath);
+                releaseLocks.push(release);
+                ports.push(port);
             }
-            // Try to lock (non-blocking)
-            await lockfile.lock(lockPath, {
-                retries: 0, // Fail immediately
-                stale: 60000, // 60 second stale timeout
-                realpath: false, // Don't resolve symlinks
-                fs: {
-                    // Custom FS options
-                    retries: 0, // Don't retry FS operations
-                },
-            });
-            lockPaths.push(lockPath);
-            ports.push(port);
+            catch (e) {
+                if (consecutive) {
+                    throw e;
+                }
+                // If not consecutive, just treat this port as unavailable and continue
+                continue;
+            }
         }
         return new PortRangeLock(lockPaths, ports);
     }
     catch (err) {
         // Cleanup locks we got
-        await Promise.all(lockPaths.map((p) => lockfile.unlock(p).catch(() => { })));
+        try {
+            await Promise.all(releaseLocks.map((r) => r().catch(() => { })));
+        }
+        catch (e) {
+            console.error(`Error releasing port locks: ${e.toString()}`);
+        }
         return null;
     }
 }

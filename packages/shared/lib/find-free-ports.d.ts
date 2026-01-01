@@ -21,11 +21,13 @@ export declare class TcpPortScanner {
      * `isPortInUseEx()` if you want to do a more exhaustive check or a general purpose use for any host
      *
      * @param port port to use. Must be > 0 and <= 65535
-     * @param host host ip address to use. This should be an alias to a localhost. (Default: 0.0.0.0 covers all interfaces)
+     * @param host host ip address(es) to use. This should be an alias to a localhost. (Default: check both 127.0.0.1
+     * and 0.0.0.0 covers all interfaces -- needed for macOS)
      * @param avoid if port is in this list, it is considered "in use"
      * @returns Promise that resolves to true if the port is in use, false otherwise
      */
-    static isPortInUse(port: number, avoid: Set<number> | undefined): Promise<boolean>;
+    static isPortInUse(port: number, avoid: Set<number> | undefined, hosts?: string[]): Promise<boolean>;
+    private static checkPortStatus;
     /**
      * Scan for free ports (no one listening) on the specified host.
      * Don't like the interface but trying to keep compatibility with `portastic.find()`. Unlike

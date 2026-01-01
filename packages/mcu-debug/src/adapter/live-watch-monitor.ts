@@ -149,7 +149,7 @@ export class VariablesHandler {
                                 } else {
                                     const msg = `${exp} currently not in scope`;
                                     await miDebugger.sendCommand(`var-delete ${varObjName}`);
-                                    if (session.args.showDevDebugOutput) {
+                                    if (session.args.debugFlags.anyFlags) {
                                         session.handleMsg(Stderr, `Expression ${msg}. Will try to create again\n`);
                                     }
                                     forceCreate = true;
@@ -189,7 +189,7 @@ export class VariablesHandler {
                             variablesReference: 0,
                         };
                         session.sendResponse(response);
-                        if (session.args.showDevDebugOutput) {
+                        if (session.args.debugFlags.anyFlags) {
                             session.handleMsg(Stderr, args.context + " " + err.toString());
                         }
                     }
@@ -437,7 +437,7 @@ export class LiveWatchMonitor {
         return new Promise<void>((resolve) => {
             args.frameId = undefined; // We don't have threads or frames here. We always evaluate in global context
             this.varHandler.evaluateRequest(response, args, this.miDebugger!, this.mainSession, true).finally(() => {
-                if (this.mainSession.args.showDevDebugOutput) {
+                if (this.mainSession.args.debugFlags.anyFlags) {
                     this.mainSession.handleMsg(Stderr, `LiveGBD: Evaluated ${args.expression}\n`);
                 }
                 resolve();

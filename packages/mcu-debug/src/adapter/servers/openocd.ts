@@ -392,7 +392,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
                         resolve: resolve,
                         reject: reject,
                     };
-                    if (this.args.showDevDebugOutput) {
+                    if (this.args.debugFlags.anyFlags) {
                         this.session!.handleMsg(Stderr, `openocd <- ${newCmd.id}-${cmd}\n`);
                     }
                     this.tclCommandQueue.push(newCmd);
@@ -453,7 +453,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
             const next = this.tclCommandQueue.shift();
             if (next) {
                 next.result = packets.shift();
-                if (this.args.showDevDebugOutput) {
+                if (this.args.debugFlags.anyFlags) {
                     this.session!.handleMsg(Stderr, `openocd -> ${next.id}-'${next.result}'\n`);
                 }
                 next.resolve(next.result);
@@ -461,7 +461,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
         }
         while (packets.length > 0) {
             const p = packets.shift()!.trim();
-            if (p && this.args.showDevDebugOutput) {
+            if (p && this.args.debugFlags.anyFlags) {
                 this.session!.handleMsg(Stderr, `openocd -> '${p}'\n`);
             }
         }

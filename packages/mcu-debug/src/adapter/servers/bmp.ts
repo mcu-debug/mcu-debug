@@ -102,8 +102,8 @@ export class BMPServerController extends EventEmitter implements GDBServerContro
         return [];
     }
 
-    public initMatch(): RegExp {
-        return new RegExp(""); // No init match needed for BMP
+    public initMatch(): RegExp | null {
+        return null; // No init match needed for BMP
     }
 
     public serverLaunchStarted(): void {}

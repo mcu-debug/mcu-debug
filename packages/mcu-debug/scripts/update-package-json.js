@@ -129,7 +129,9 @@ function generateDebuggers() {
                         type: "mcu-debug",
                         device: "",
                         runToEntryPoint: "main",
-                        showDevDebugOutput: "none",
+                        debugFlags: {
+                            gdbTraces: false,
+                        },
                         servertype: "jlink",
                     },
                 },
@@ -146,7 +148,9 @@ function generateDebuggers() {
                         configFiles: [],
                         searchDir: [],
                         runToEntryPoint: "main",
-                        showDevDebugOutput: "none",
+                        debugFlags: {
+                            gdbTraces: false,
+                        },
                     },
                 },
                 {
@@ -159,7 +163,9 @@ function generateDebuggers() {
                         request: "launch",
                         type: "mcu-debug",
                         runToEntryPoint: "main",
-                        showDevDebugOutput: "none",
+                        debugFlags: {
+                            gdbTraces: false,
+                        },
                         servertype: "stlink",
                     },
                 },
@@ -173,7 +179,9 @@ function generateDebuggers() {
                         request: "launch",
                         type: "mcu-debug",
                         runToEntryPoint: "main",
-                        showDevDebugOutput: "none",
+                        debugFlags: {
+                            gdbTraces: false,
+                        },
                         servertype: "pyocd",
                     },
                 },
@@ -187,7 +195,9 @@ function generateDebuggers() {
                         request: "launch",
                         type: "mcu-debug",
                         runToEntryPoint: "main",
-                        showDevDebugOutput: "none",
+                        debugFlags: {
+                            gdbTraces: false,
+                        },
                         servertype: "stutil",
                     },
                 },

@@ -173,6 +173,9 @@ function simpleUnescape(line: string): string {
                 ret += line[i];
                 i++;
             }
+        } else {
+            ret += line[i];
+            i++;
         }
     }
     return ret;

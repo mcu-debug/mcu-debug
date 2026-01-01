@@ -6,11 +6,13 @@ import { GdbMiRecordType } from "./mi-types";
 import { ServerConsoleLog } from "../server-console-log";
 import { receiveMessageOnPort } from "worker_threads";
 import { VariableObject } from "../variables";
+import { DebugFlags } from "../servers/common";
+import { MiCommands } from "./mi-commands";
 
 class PendingCmdPromise {
     constructor(
         public readonly seq: number,
-        public readonly resolve: (value: GdbMiRecord) => void,
+        public readonly resolve: (value: GdbMiOutput) => void,
         public readonly reject: (reason?: any) => void,
     ) {}
 }
@@ -19,12 +21,13 @@ export class GdbInstance extends EventEmitter {
     // ... other methods and properties ...
     pid: number = 0;
     process: ChildProcess | null = null;
-    public debugMiOutput: boolean = false;
+    public debugFlags: DebugFlags = {};
     private cmdSeq: number = 1;
     private pendingCmds: Map<number, PendingCmdPromise> = new Map();
     private capturedStdout: string[] = [];
     private captureStdoutMode: boolean = false;
     public status: "running" | "stopped" | "none" = "none";
+    public readonly miCommands: MiCommands;
     gdbMajorVersion: number = 0;
     gdbMinorVersion: number = 0;
 
@@ -33,10 +36,11 @@ export class GdbInstance extends EventEmitter {
         private gdbArgs: string[] = [],
     ) {
         super();
+        this.miCommands = new MiCommands(this);
     }
 
     start(cwd: string | undefined, init: string[], timeout: number = 1000, checkVers = true): Promise<void> {
-        return new Promise((resolve, reject) => {
+        return new Promise(async (resolve, reject) => {
             const doInitCmds = () => {
                 const promises = [];
                 for (const cmd of init) {
@@ -61,7 +65,22 @@ export class GdbInstance extends EventEmitter {
             child.stderr.on("data", this.handleStderrData.bind(this));
             child.stdout.on("data", this.handleStdoutData.bind(this));
 
-            if (!checkVers) {
+            if (checkVers) {
+                try {
+                    const major = await this.miCommands.sendDataEvaluateExpression<string>("$_gdb_major");
+                    const minor = await this.miCommands.sendDataEvaluateExpression<string>("$_gdb_minor");
+                    this.gdbMajorVersion = parseInt(major);
+                    this.gdbMinorVersion = parseInt(minor);
+                    if (this.gdbMajorVersion < 9 || (this.gdbMajorVersion === 9 && this.gdbMinorVersion < 1)) {
+                        this.log(GdbEventNames.Stderr, `ERROR: GDB version ${this.gdbMajorVersion}.${this.gdbMinorVersion} is not supported. Please upgrade to GDB version 9.1 or higher.`);
+                        this.log(GdbEventNames.Stderr, "    This can result in silent failures");
+                    }
+                    doInitCmds();
+                    resolve();
+                    return;
+                } catch (e) {
+                    ServerConsoleLog("Failed to get GDB version using $_gdb_major/minor, falling back to -gdb-version");
+                }
                 this.captureStdoutMode = true;
                 this.sendCommand("-gdb-version", timeout)
                     .then(() => {
@@ -141,19 +160,22 @@ export class GdbInstance extends EventEmitter {
 
     private handleOutputLine(line: string) {
         // Implementation to parse and handle a line of GDB output
-        if (this.debugMiOutput) {
-            this.emit("output", "<-- " + line);
+        if (this.debugFlags.gdbTraces) {
+            this.log(Console, "--> " + line);
         }
         const miOutput = parseGdbMiOut(line);
         if (miOutput) {
+            if (this.debugFlags.gdbTracesParsed) {
+                this.log(Console, "~~> " + JSON.stringify(miOutput));
+            }
             if (miOutput.resultRecord) {
                 const token = parseInt(miOutput.resultRecord.token);
                 const pendingCmd = this.pendingCmds.get(token);
                 if (pendingCmd) {
-                    pendingCmd.resolve(miOutput.resultRecord);
+                    pendingCmd.resolve(miOutput);
                     this.pendingCmds.delete(token);
                 } else {
-                    this.emit("stderr", `No pending command for token ${token}`);
+                    this.log(Stderr, `No pending command for token ${token}`);
                 }
             }
             for (const record of miOutput.outOfBandRecords) {
@@ -163,7 +185,7 @@ export class GdbInstance extends EventEmitter {
                         this.handleSetopped(miOutput);
                     } else if (className === "running") {
                         this.status = "running";
-                        if (this.debugMiOutput) {
+                        if (this.debugFlags.gdbTraces) {
                             this.log(Stderr, `mi2.status = ${this.status}`);
                         }
                         this.emit(GdbEventNames.Running);
@@ -173,11 +195,11 @@ export class GdbInstance extends EventEmitter {
                         if (this.captureStdoutMode) {
                             this.capturedStdout.push(record.result);
                         }
-                        this.emit(Console, record);
+                        this.log(Console, record.result);
                     } else if (record.outputType === "target") {
-                        this.emit(Stdout, record);
+                        this.log(Stdout, record.result);
                     } else if (record.outputType === "log") {
-                        this.emit(Stderr, record);
+                        this.log(Stderr, record.result);
                     }
                 }
             }
@@ -187,7 +209,7 @@ export class GdbInstance extends EventEmitter {
     private firstStop = true;
     handleSetopped(output: GdbMiOutput) {
         this.status = "stopped";
-        if (this.debugMiOutput) {
+        if (this.debugFlags.gdbTraces) {
             this.log(Stderr, `mi2.status = ${this.status}`);
         }
         // FIXME: It should always be a single outOfBandRecord here, but just in case...
@@ -282,7 +304,7 @@ export class GdbInstance extends EventEmitter {
         });
     }
 
-    sendCommand(command: string, timeout: number = 10000): Promise<GdbMiRecord> {
+    sendCommand(command: string, timeout: number = 10000): Promise<GdbMiOutput> {
         if (!command.startsWith("-")) {
             command = "-" + command;
         }
@@ -292,10 +314,10 @@ export class GdbInstance extends EventEmitter {
             }
 
             const seq = this.cmdSeq++;
-            const fullCommand = `${seq}-${command}\n`;
+            const fullCommand = `${seq}${command}\n`;
 
-            if (this.debugMiOutput) {
-                this.emit("stderr", "--> " + fullCommand.trim());
+            if (this.debugFlags.gdbTraces) {
+                this.log(Console, fullCommand);
             }
 
             const timer = setTimeout(() => {

@@ -74,8 +74,8 @@ export class ExternalServerController extends EventEmitter implements GDBServerC
         return [];
     }
 
-    public initMatch(): RegExp {
-        return new RegExp("");
+    public initMatch(): RegExp | null {
+        return null;
     }
 
     public serverLaunchStarted(): void {
