@@ -1,9 +1,8 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
-import { EventEmitter } from "events";
 import { Config } from "winston/lib/winston/config";
 import { Logger, logger, OutputEvent, Variable } from "@vscode/debugadapter";
-import { ADAPTER_DEBUG_MODE, ConfigurationArguments, CustomStoppedEvent, RTTCommonDecoderOpts, StoppedEvent } from "./servers/common";
+import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent } from "./servers/common";
 import path from "path";
 import os from "os";
 import fs from "fs";
