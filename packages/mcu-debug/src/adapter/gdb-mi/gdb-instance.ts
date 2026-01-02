@@ -321,23 +321,34 @@ export class GdbInstance extends EventEmitter {
                 this.log(Console, fullCommand);
             }
 
-            const timer = setTimeout(() => {
-                if (this.pendingCmds.has(seq)) {
-                    this.pendingCmds.delete(seq);
-                    reject(new Error(`GDB command timed out: ${command}`));
+            const clearTimer = () => {
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = undefined;
                 }
-            }, timeout);
+            };
+
+            let timer: NodeJS.Timeout | undefined;
+            if (timeout > 250) {
+                timer = setTimeout(() => {
+                    timer = undefined;
+                    if (this.pendingCmds.has(seq)) {
+                        this.pendingCmds.delete(seq);
+                        reject(new Error(`GDB command timer expired after ${timeout / 1000.0}s: '${command}'. May not be recoverable from this error.`));
+                    }
+                }, timeout);
+            }
 
             this.pendingCmds.set(
                 seq,
                 new PendingCmdPromise(
                     seq,
                     (val) => {
-                        clearTimeout(timer);
+                        clearTimer();
                         resolve(val);
                     },
                     (err) => {
-                        clearTimeout(timer);
+                        clearTimer();
                         reject(err);
                     },
                 ),
@@ -347,7 +358,7 @@ export class GdbInstance extends EventEmitter {
                 this.process.stdin.write(fullCommand);
             } catch (e) {
                 this.pendingCmds.delete(seq);
-                clearTimeout(timer);
+                clearTimer();
                 reject(e);
             }
         });

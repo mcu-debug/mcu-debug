@@ -139,14 +139,17 @@ export class ValueHandleRegistryPrimitive<T = string | number | boolean | BigInt
     private counter = 0;
 
     add(item: T): number {
+        const existing = this.keyToHandle.get(item);
+        if (existing !== undefined) {
+            return existing;
+        }
         this.counter++;
-
         this.keyToHandle.set(item, this.counter);
         this.handleToItem.set(this.counter, item);
         return this.counter;
     }
 
-    getObject(handle: number): T | undefined {
+    get(handle: number): T | undefined {
         return this.handleToItem.get(handle);
     }
 

@@ -52,7 +52,7 @@ export declare class ValueHandleRegistryPrimitive<T = string | number | boolean 
     private handleToItem;
     private counter;
     add(item: T): number;
-    getObject(handle: number): T | undefined;
+    get(handle: number): T | undefined;
     release(handle: number): boolean;
     clear(): void;
 }

@@ -11,10 +11,11 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GdbEventNames, GdbMiRecord } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
-import { encodeReference, VariableManager, VariableScope } from "./variables";
+import { decodeReference, encodeReference, VariableContainer, VariableManager, VariableScope } from "./variables";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
 import { encode } from "punycode";
+import { threadId } from "worker_threads";
 
 export class SymbolManager {
     constructor() {}
@@ -26,7 +27,7 @@ export class GDBDebugSession extends SeqDebugSession {
     public liveGdbInstance: GdbInstance | null = null;
     public serverSession: GDBServerSession;
     public gdbMiCommands: MiCommands | null = null;
-    public latestThreadInfo: GdbMiThreadInfoList | null = null;
+    public lastThreadsInfo: GdbMiThreadInfoList | null = null;
     public continuing: boolean = false;
     public isRunning(): boolean {
         return this.gdbInstance?.status === "running";
@@ -36,7 +37,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     protected frameHanedles = new ValueHandleRegistryPrimitive<number>();
-    protected variableManager = new VariableManager();
+    protected varManager = new VariableManager();
 
     constructor() {
         super();
@@ -85,20 +86,55 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+        if (this.isBusy()) {
+            this.handleMsg(GdbEventNames.Stderr, "Continue request received while target is running. Ignoring.\n");
+            this.sendErrorResponse(response, 1, "Continue request received while target is running.");
+            return;
+        }
+        this.continuing = true;
+        this.gdbMiCommands!.sendContinue(undefined)
+            .then(() => {
+                response.body = { allThreadsContinued: true };
+                this.sendResponse(response);
+            })
+            .catch((e) => {
+                this.sendErrorResponse(response, 1, `Continue request failed: ${e}`);
+            })
+            .finally(() => {
+                this.clearForContinue();
+            });
     }
     protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+        this.continuing = true;
+        this.gdbMiCommands!.sendNext()
+            .then(() => {
+                this.sendResponse(response);
+            })
+            .catch((e) => {
+                this.sendErrorResponse(response, 1, `Next request failed: ${e}`);
+            });
     }
     protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+        this.continuing = true;
+        this.gdbMiCommands!.sendStepIn()
+            .then(() => {
+                this.sendResponse(response);
+            })
+            .catch((e) => {
+                this.sendErrorResponse(response, 1, `Next request failed: ${e}`);
+            });
     }
     protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+        this.continuing = true;
+        this.gdbMiCommands!.sendStepOut()
+            .then(() => {
+                this.sendResponse(response);
+            })
+            .catch((e) => {
+                this.sendErrorResponse(response, 1, `Next request failed: ${e}`);
+            });
     }
-    protected stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
-    }
+    protected stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments, request?: DebugProtocol.Request): void {}
     protected reverseContinueRequest(response: DebugProtocol.ReverseContinueResponse, args: DebugProtocol.ReverseContinueArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
@@ -109,7 +145,14 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected pauseRequest(response: DebugProtocol.PauseResponse, args: DebugProtocol.PauseArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+        this.gdbMiCommands!.sendHalt(undefined)
+            .then(() => {
+                this.sendResponse(response);
+            })
+            .catch((e) => {
+                this.handleMsg(GdbEventNames.Stderr, `Pause request failed: ${e}\n`);
+                this.sendErrorResponse(response, 1, `Pause request failed: ${e}`);
+            });
     }
     protected sourceRequest(response: DebugProtocol.SourceResponse, args: DebugProtocol.SourceArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
@@ -118,8 +161,8 @@ export class GDBDebugSession extends SeqDebugSession {
         response.body = { threads: [] };
         if (this.isBusy()) {
             this.handleMsg(GdbEventNames.Stderr, "Threads request received while target is running. Returning empty thread list.\n");
-        } else if (this.latestThreadInfo) {
-            for (const t of this.latestThreadInfo.threads) {
+        } else if (this.lastThreadsInfo) {
+            for (const t of this.lastThreadsInfo.threads) {
                 response.body.threads.push({ id: t.id, name: t.name });
             }
         } else {
@@ -166,16 +209,32 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         this.sendResponse(response);
     }
+
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments, request?: DebugProtocol.Request): void {
         const scopes: DebugProtocol.Scope[] = [];
-        scopes.push({ name: "Local", variablesReference: VariableScope.Local, expensive: false });
-        scopes.push({ name: "Global", variablesReference: VariableScope.Global, expensive: true });
-        scopes.push({ name: "Static", variablesReference: VariableScope.Static, expensive: false });
-        scopes.push({ name: "Registers", variablesReference: VariableScope.Registers, expensive: false });
+        const frameRef = this.frameHanedles.get(args.frameId);
+        if (frameRef === undefined) {
+            this.sendErrorResponse(response, 1, `Invalid frame ID: ${args.frameId}`);
+            return;
+        }
+        const [threadId, frameId, scope] = decodeReference(frameRef);
+        if (scope !== VariableScope.Scope) {
+            this.sendErrorResponse(response, 1, `Invalid scope for scopes request: ${VariableScope[scope]}`);
+            return;
+        }
+        scopes.push({ name: "Local", variablesReference: encodeReference(threadId, frameId, VariableScope.Local), expensive: false });
+        scopes.push({ name: "Global", variablesReference: encodeReference(0, 0, VariableScope.Global), expensive: true });
+        scopes.push({ name: "Static", variablesReference: encodeReference(0, 0, VariableScope.Static), expensive: false });
+        scopes.push({ name: "Registers", variablesReference: encodeReference(threadId, frameId, VariableScope.Registers), expensive: false });
+        for (const s of scopes) {
+            // We need to get a handle for the variablesReference
+            s.variablesReference = this.frameHanedles.add(s.variablesReference);
+        }
 
         response.body = { scopes: scopes };
         this.sendResponse(response);
     }
+
     protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments, request?: DebugProtocol.Request): void {
         response.body = { variables: [] };
         this.sendResponse(response);
@@ -478,12 +537,12 @@ export class GDBDebugSession extends SeqDebugSession {
                 break;
             default:
         }
-        this.latestThreadInfo = null;
+        this.lastThreadsInfo = null;
         if (getStack) {
             this.gdbMiCommands
                 .sendThreadInfoAll()
                 .then((threadsInfo) => {
-                    this.latestThreadInfo = threadsInfo;
+                    this.lastThreadsInfo = threadsInfo;
                 })
                 .catch((err) => {
                     this.handleMsg(GdbEventNames.Stderr, `Failed to get thread info: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -497,7 +556,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private notifyStopped(reason, doCustom = true) {
-        const threadId = this.latestThreadInfo?.currentThreadId || 1;
+        const threadId = this.lastThreadsInfo?.currentThreadId || 1;
         const ev: DebugProtocol.StoppedEvent = {
             type: "event",
             seq: 0,
@@ -530,8 +589,15 @@ export class GDBDebugSession extends SeqDebugSession {
         throw new Error("Not yet implemented");
     }
     handleRunning() {
-        throw new Error("Not yet implemented");
+        this.clearForContinue();
+        this.continuing = false;
     }
+    private clearForContinue() {
+        this.varManager.clearForContinue();
+        this.frameHanedles.clear();
+        this.lastThreadsInfo = null;
+    }
+
     handleContinueFailed() {
         throw new Error("Not yet implemented");
     }

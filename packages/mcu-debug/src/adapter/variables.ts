@@ -1,15 +1,16 @@
 import { IValueIdentifiable, ValueHandleRegistry } from "@mcu-debug/shared";
 import { DebugProtocol } from "@vscode/debugprotocol";
+import { threadId } from "worker_threads";
 
 export enum VariableScope {
     Global = 0,
     Static = 1,
     Local = 2,
     Registers = 3,
-    Scope = 4,
-    Watch = 5,
-    Hover = 6,
-    Other = 7,
+    Watch = 4,
+    Hover = 5,
+    Scope = 6, // Dummy scope for top level variable categories
+    Other = 7, // For future use
 }
 
 // We have a total of 53 bits of precision in a JavaScript number
@@ -17,7 +18,8 @@ export enum VariableScope {
 const FrameIDMask = 0xffffff;
 const ThreadIDMask = 0x3ffffff;
 const ScopeMask = 0x7;
-export function decodeReference(varRef: number): number[] {
+const ScopeBits = 3;
+export function decodeReference(varRef: number): [number, number, VariableScope] {
     return [(varRef & ThreadIDMask) >>> (24 + 3), (varRef & FrameIDMask) >>> 3, varRef & ScopeMask];
 }
 
@@ -90,13 +92,17 @@ export class VariableObject extends VariableKeys implements DebugProtocol.Variab
 // 1. For local variables and registers, they are released when stack is no longer valid (on continue)
 // 2. For global/static variables, they are never released (could be updated in the future)
 // 3. Watch variables are released when the watch is removed
-export class VariableManager {
+//
+// From a handle, we can get the VariableObject which has all the information needed to evaluate
+// the variable again if needed. You can also get the scope of a handle by looking at the lower bits of
+// the handle (see VariableManager.createVariable)
+export class VariableContainer {
     private variableHandles = new ValueHandleRegistry<VariableKeys>();
     public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number, evaluateName?: string): VariableObject {
         const varRef = encodeReference(threadId, frameId, scope);
         const variable = new VariableObject(scope, parent, name, varRef, evaluateName, value, type);
         const handle = this.variableHandles.addObject(variable);
-        variable.handle = handle;
+        variable.handle = (handle << ScopeBits) | (scope & ScopeMask); // Shift left to make room for scope bits
         return variable;
     }
 
@@ -108,13 +114,74 @@ export class VariableManager {
     }
     // handle is the same as variable.variablesReference but variablesReference may be 0
     public getVariableByRef(handle: number): VariableObject | undefined {
+        handle = handle >> ScopeBits; // Just to avoid lint warning
         return this.variableHandles.getObject(handle) as VariableObject | undefined;
     }
     public releaseVariable(handle: number): boolean {
+        handle = handle >> ScopeBits; // Just to avoid lint warning
         return this.variableHandles.release(handle);
+    }
+    public getScopeFromHandle(handle: number): VariableScope {
+        return handle & ScopeMask;
     }
     public clear() {
         this.variableHandles.clear();
+    }
+}
+
+// This containuer is for locals and globals only. These don't have a thread/frame assosciated with them
+// But we will use the ThreadID for a file identifier for globals/statics. ThreadID = 0 means all files.
+export class VariableContainerForGlobals extends VariableContainer {
+    private fileToIdMap = new Map<string, number>();
+    private fildIdToFile = new Map<number, string>();
+    private nextFileId = 1; // Start from 1, 0 means all files
+
+    public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName?: string, evaluateName?: string): VariableObject {
+        let fileId = fileName ? this.fileToIdMap.get(fileName) : 0;
+        if (fileName && fileId === undefined) {
+            fileId = this.nextFileId++;
+            this.fileToIdMap.set(fileName, fileId);
+            this.fildIdToFile.set(fileId, fileName);
+        }
+        return super.createVariable(scope, parent, name, value, type, fileId || 0, 0, evaluateName);
+    }
+
+    public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number, evaluateName?: string): VariableObject {
+        throw new Error("Use createGlobalVariable for globals/statics");
+    }
+}
+
+export class VariableManager {
+    private globalContainer: VariableContainerForGlobals = new VariableContainerForGlobals();
+    private localContainer: VariableContainer = new VariableContainer();
+    private dynamicContainer: VariableContainer = new VariableContainer();
+    private containers = new Map<VariableScope, VariableContainer>();
+
+    constructor() {
+        // These two scopes need a thread/frame associated with them
+        this.containers[VariableScope.Global] = this.globalContainer;
+        this.containers[VariableScope.Static] = this.globalContainer;
+
+        //These two scopes are for globals and statics only
+        this.containers[VariableScope.Local] = this.localContainer;
+        this.containers[VariableScope.Registers] = this.localContainer;
+
+        // These scopes are dynamic and can be released individually
+        this.containers[VariableScope.Watch] = this.dynamicContainer;
+        this.containers[VariableScope.Hover] = this.dynamicContainer;
+    }
+
+    public getContainer(scope: VariableScope): VariableContainer {
+        let container = this.containers.get(scope);
+        if (!container) {
+            throw new Error(`No container for scope ${VariableScope[scope]}`);
+        }
+        return container;
+    }
+
+    clearForContinue() {
+        this.localContainer.clear();
+        this.dynamicContainer.clear();
     }
 }
 

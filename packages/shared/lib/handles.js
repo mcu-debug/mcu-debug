@@ -115,12 +115,16 @@ class ValueHandleRegistryPrimitive {
     handleToItem = new Map();
     counter = 0;
     add(item) {
+        const existing = this.keyToHandle.get(item);
+        if (existing !== undefined) {
+            return existing;
+        }
         this.counter++;
         this.keyToHandle.set(item, this.counter);
         this.handleToItem.set(this.counter, item);
         return this.counter;
     }
-    getObject(handle) {
+    get(handle) {
         return this.handleToItem.get(handle);
     }
     release(handle) {
