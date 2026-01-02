@@ -265,6 +265,12 @@ export interface DebugFlags {
     timestamps?: boolean;
     anyFlags?: boolean;
 }
+
+export enum SessionMode {
+    Launch = "launch",
+    Attach = "attach",
+    Reset = "reset",
+}
 export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArguments {
     name: string;
     request: string;
@@ -323,7 +329,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     chainedConfigurations: ChainedConfigurations;
     hardwareBreakpoints: HWBreakpointInfo;
     hardwareWatchpoints: HWWatchpointInfo;
-    pvtIsReset: boolean;
+    pvtSessionMode: SessionMode;
     pvtPorts: { [name: string]: number };
     pvtParent: ConfigurationArguments;
     pvtMyConfigFromParent: ChainedConfig; // My configuration coming from the parent

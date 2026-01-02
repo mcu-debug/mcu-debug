@@ -1,5 +1,5 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { GDBServerController, ConfigurationArguments, calculatePortMask, createPortName, SWOConfigureEvent, parseHexOrDecInt, RTTServerHelper, genDownloadCommands } from "./common";
+import { GDBServerController, ConfigurationArguments, calculatePortMask, createPortName, SWOConfigureEvent, parseHexOrDecInt, RTTServerHelper, genDownloadCommands, SessionMode } from "./common";
 import * as os from "os";
 import { EventEmitter } from "events";
 import { commandExists } from "@mcu-debug/shared";
@@ -53,7 +53,7 @@ export class JLinkServerController extends EventEmitter implements GDBServerCont
 
     public rttCommands(): string[] {
         const commands: string[] = [];
-        if (this.args.rttConfig.enabled && !this.args.pvtIsReset) {
+        if (this.args.rttConfig.enabled && this.args.pvtSessionMode !== SessionMode.Reset) {
             const cfg = this.args.rttConfig;
             if (this.args.request === "launch" && cfg.clearSearch) {
                 // The RTT control block may contain a valid search string from a previous run

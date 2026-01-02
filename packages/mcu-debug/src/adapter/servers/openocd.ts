@@ -1,5 +1,5 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { GDBServerController, ConfigurationArguments, SWOConfigureEvent, createPortName, RTTServerHelper, genDownloadCommands, CTIAction, getGDBSWOInitCommands } from "./common";
+import { GDBServerController, ConfigurationArguments, SWOConfigureEvent, createPortName, RTTServerHelper, genDownloadCommands, CTIAction, getGDBSWOInitCommands, SessionMode } from "./common";
 import * as os from "os";
 import * as fs from "fs";
 import * as net from "net";
@@ -122,7 +122,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
 
     public rttCommands(): string[] {
         const commands: string[] = [];
-        if (this.args.rttConfig.enabled && !this.args.pvtIsReset) {
+        if (this.args.rttConfig.enabled && this.args.pvtSessionMode !== SessionMode.Reset) {
             const cfg = this.args.rttConfig;
             if (this.args.request === "launch" && cfg.clearSearch) {
                 // The RTT control block may contain a valid search string from a previous run
@@ -164,7 +164,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
     private SWOConfigurationCommands(): string[] {
         const commands: string[] = [];
 
-        if (!this.args.pvtIsReset) {
+        if (this.args.pvtSessionMode !== SessionMode.Reset) {
             const swoFrequency = this.args.swoConfig.swoFrequency;
             const cpuFrequency = this.args.swoConfig.cpuFrequency;
             const source = this.args.swoConfig.source;

@@ -8,15 +8,14 @@ import os from "os";
 import fs from "fs";
 import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { GdbEventNames, GdbMiRecord } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
 import { decodeReference, encodeReference, VariableContainer, VariableManager, VariableScope } from "./variables";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
-import { encode } from "punycode";
-import { threadId } from "worker_threads";
-
+import { SessionMode } from "./servers/common";
+import { hexFormat } from "../frontend/utils";
 export class SymbolManager {
     constructor() {}
 }
@@ -45,6 +44,9 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     handleErrResponse(response: DebugProtocol.Response, msg: string): void {
+        if (!msg.startsWith("mcu-debug")) {
+            msg = "mcu-debug: " + msg;
+        }
         this.handleMsg(GdbEventNames.Stderr, msg + "\n");
         this.sendErrorResponse(response, 1, msg);
     }
@@ -84,12 +86,14 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected launchRequest(response: DebugProtocol.LaunchResponse, args: ConfigurationArguments, request?: DebugProtocol.Request): void {
+        args.pvtSessionMode = SessionMode.Launch;
         this.launchAttachInit(args);
-        this.launchAttachRequest(response, false, args.noDebug || false);
+        this.launchAttachRequest(response, args.noDebug ?? false);
     }
     protected attachRequest(response: DebugProtocol.AttachResponse, args: ConfigurationArguments, request?: DebugProtocol.Request): void {
+        args.pvtSessionMode = SessionMode.Attach;
         this.launchAttachInit(args);
-        this.launchAttachRequest(response, true, false);
+        this.launchAttachRequest(response, false);
     }
     protected terminateRequest(response: DebugProtocol.TerminateResponse, args: DebugProtocol.TerminateArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
@@ -182,7 +186,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected threadsRequest(response: DebugProtocol.ThreadsResponse, request?: DebugProtocol.Request): void {
         response.body = { threads: [] };
         if (this.isBusy()) {
-            this.handleMsg(GdbEventNames.Stderr, "Threads request received while target is running. Returning empty thread list.\n");
+            this.handleMsg(GdbEventNames.Stderr, "mcu-debug: Threads request received while target is running. Returning empty thread list.\n");
         } else if (this.lastThreadsInfo) {
             for (const t of this.lastThreadsInfo.threads) {
                 response.body.threads.push({ id: t.id, name: t.name });
@@ -199,7 +203,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected async stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments, request?: DebugProtocol.Request): Promise<void> {
         response.body = { stackFrames: [], totalFrames: 0 };
         if (this.isBusy()) {
-            this.handleMsg(GdbEventNames.Stderr, "StackTrace request received while target is running. Returning empty stack trace.\n");
+            this.handleMsg(GdbEventNames.Stderr, "mcu-debug: StackTrace request received while target is running. Returning empty stack trace.\n");
             this.sendResponse(response);
             return;
         }
@@ -276,8 +280,9 @@ export class GDBDebugSession extends SeqDebugSession {
     protected gotoTargetsRequest(response: DebugProtocol.GotoTargetsResponse, args: DebugProtocol.GotoTargetsArguments, request?: DebugProtocol.Request): void {
         response.body = { targets: [] };
         if (args.source?.path && fs.existsSync(args.source.path)) {
+            this.continuing = true;
             this.gdbMiCommands
-                .sendGotoFileLine(args.source.path || "", args.line)
+                .sendGotoFileLine(args.source.path, args.line)
                 .then(() => {
                     this.sendResponse(response);
                 })
@@ -285,7 +290,7 @@ export class GDBDebugSession extends SeqDebugSession {
                     this.handleErrResponse(response, `GotoTargets request failed: ${e}`);
                 });
         } else {
-            this.sendResponse(response);
+            this.handleErrResponse(response, `GotoTargets request failed: invalid source path. ${args.source?.path}`);
         }
     }
     protected completionsRequest(response: DebugProtocol.CompletionsResponse, args: DebugProtocol.CompletionsArguments, request?: DebugProtocol.Request): void {
@@ -408,6 +413,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
     private getInitCommands(): string[] {
         return [
+            "-gdb-set mi-async on",
             'interpreter-exec console "set print demangle on"',
             'interpreter-exec console "set print asm-demangle on"',
             "enable-pretty-printing",
@@ -477,30 +483,31 @@ export class GDBDebugSession extends SeqDebugSession {
         this.serverSession = new GDBServerSession(this);
     }
 
-    private async launchAttachRequest(response: DebugProtocol.LaunchResponse, isAttach: boolean, noDebug: boolean): Promise<void> {
+    private async launchAttachRequest(response: DebugProtocol.LaunchResponse, noDebug: boolean): Promise<void> {
         return new Promise<void>(async (resolve, _reject) => {
             const finish = () => {
                 this.sendResponse(response);
                 resolve();
             };
             const finishWithError = (message: string) => {
-                this.handleMsg(GdbEventNames.Stderr, message);
-                this.sendErrorResponse(response, {
-                    id: 3000,
-                    format: message,
-                    showUser: true,
-                    sendTelemetry: false,
-                });
+                this.handleErrResponse(response, message);
                 resolve();
             };
+            try {
+                this.getSymbolAndLoadCommands();
 
-            await this.startGdb().catch((e) => {
-                return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}`);
-            });
-            await this.startServer().catch((e) => {
-                return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}`);
-            });
-            finish();
+                this.handleRunning(); // Assume we are running at the beginning, so VSCode doesn't send any requests too early
+                await this.startGdb().catch((e) => {
+                    return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}`);
+                });
+                await this.sendCommandsWithWait(this.gdbInitCommands);
+                await this.startServer().catch((e) => {
+                    return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}`);
+                });
+                finish();
+            } catch (e) {
+                return finishWithError(`Launch/Attach request failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
         });
     }
 
@@ -510,7 +517,7 @@ export class GDBDebugSession extends SeqDebugSession {
             const gdbArgs = ["-q", "--interpreter=mi3", ...(this.args.debuggerArgs || [])];
             this.gdbInstance = new GdbInstance(gdbPath, gdbArgs);
             this.gdbInstance.debugFlags = this.args.debugFlags;
-            this.handleMsg(GdbEventNames.Console, `Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
+            this.handleMsg(GdbEventNames.Console, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
             this.subscribeToGdbEvents();
             this.gdbMiCommands = new MiCommands(this.gdbInstance);
             await this.gdbInstance.start(this.args.cwd, this.getInitCommands());
@@ -520,13 +527,111 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private async startServer(): Promise<void> {
-        await this.serverSession.startServer();
-        const commands = this.serverSession.serverController.initCommands();
-        if (commands.length > 0 && this.gdbInstance) {
-            for (const cmd of commands) {
-                await this.gdbInstance.sendCommand(cmd);
-            }
+        const mode = this.args.pvtSessionMode;
+        await this.serverSession.startServer(); // Can throw
+        await this.sendCommandsWithWait(this.getConnectCommands()); // Can throw
+        if (this.isRunning()) {
+            return;
         }
+        await this.runSessionModeCommands();
+    }
+
+    private symInitCommands: string[] = [];
+    private gdbInitCommands: string[] = [];
+    private getSymbolAndLoadCommands(): void {
+        const loadFiles = this.args.loadFiles;
+        let isLoaded = false;
+        if (this.args.symbolFiles) {
+            // If you just used 'add-symbol-file' debugging works but RTOS detection fails
+            // for most debuggers.
+            for (const symF of this.args.symbolFiles) {
+                const offset = symF.offset ? `-o ${hexFormat(symF.offset)}"` : "";
+                let otherArgs = typeof symF.textaddress === "number" ? ` ${hexFormat(symF.textaddress)}"` : "";
+                for (const section of symF.sections) {
+                    otherArgs += ` -s ${section.name} ${section.address}`;
+                }
+                const cmd = `add-symbol-file \\"${symF.file}\\" ${offset} ${otherArgs}`.trimEnd();
+                this.symInitCommands.push(`interpreter-exec console "${cmd}"`);
+            }
+            if (this.symInitCommands.length === 0) {
+                this.handleMsg(Stderr, 'mcu-debug: GDB may not start since there were no files with symbols in "symbolFiles?\n');
+            }
+            this.gdbInitCommands.push(...this.symInitCommands);
+            this.symInitCommands = [];
+        } else if (!loadFiles && this.args.executable) {
+            this.gdbInitCommands.push(`file-exec-and-symbols "${this.args.executable}"`);
+            isLoaded = true;
+        }
+        if (!isLoaded && !loadFiles && this.args.executable) {
+            this.args.loadFiles = [this.args.executable];
+        }
+    }
+
+    private getServerConnectCommands() {
+        // server init commands simply makes a tcp connection. It should not halt
+        // the program. After the connection is established, we should load all the
+        // symbols -- especially before a halt
+        const cmds: string[] = [
+            // 'interpreter-exec console "set debug remote 1"',
+            ...(this.serverSession.serverController.initCommands() || []),
+            ...this.symInitCommands,
+        ];
+        return cmds;
+    }
+    protected getConnectCommands(): string[] {
+        const commands = this.getServerConnectCommands();
+
+        if (this.args.pvtSessionMode === SessionMode.Attach) {
+            commands.push(...this.args.preAttachCommands);
+            const attachCommands = this.args.overrideAttachCommands != null ? this.args.overrideAttachCommands : this.serverSession.serverController.attachCommands();
+            commands.push(...attachCommands);
+            commands.push(...this.args.postAttachCommands);
+        } else {
+            commands.push(...this.args.preLaunchCommands);
+            const launchCommands = this.args.overrideLaunchCommands != null ? this.args.overrideLaunchCommands : this.serverSession.serverController.launchCommands();
+            commands.push(...launchCommands);
+            commands.push(...this.args.postLaunchCommands);
+        }
+        return commands;
+    }
+
+    protected async runSessionModeCommands(): Promise<void> {
+        let commands = [];
+        if (this.args.pvtSessionMode === SessionMode.Launch || this.args.pvtSessionMode === SessionMode.Reset) {
+            if (!this.args.breakAfterReset && this.args.runToEntryPoint && !this.args.noDebug) {
+                commands = [`-break-insert -t ${this.args.runToEntryPoint}`, "-exec-continue"];
+            } else if (this.args.noDebug || this.args.breakAfterReset === false) {
+                commands = ["-exec-continue"];
+            }
+        } else if (this.args.pvtSessionMode === SessionMode.Attach) {
+            commands = !this.args.noDebug ? [] : ["-exec-continue"];
+        } else if (this.args.pvtSessionMode === SessionMode.Launch || this.args.pvtSessionMode === SessionMode.Reset) {
+            commands = this.args.breakAfterReset ? [] : ["-exec-continue"];
+        }
+        this.continuing = commands.length > 0;
+        await this.sendCommandsWithWait(commands);
+
+        if (!this.isRunning()) {
+            // VSCode still things we are running althrough, we should be stopped at entry point
+            // The GdbMiInstance has the true status and if it is not running, we send a stopped event
+            // Also, users custom commands may have messed with the session state, so we ensure we
+            // notify VSCode of the stopped state here.
+            this.notifyStopped("entry", !this.args.noDebug, false);
+        }
+    }
+
+    protected sendCommandsWithWait(cmds: string[]): Promise<void> {
+        return new Promise<void>(async (resolve, reject) => {
+            for (const cmd of cmds) {
+                try {
+                    await this.gdbInstance!.sendCommand(cmd);
+                } catch (e) {
+                    reject(new Error(`Failed to send start command to GDB: ${cmd}\nError: ${e instanceof Error ? e.message : String(e)}`));
+                    return;
+                }
+            }
+            resolve();
+        });
     }
 
     protected subscribeToGdbEvents() {
@@ -561,7 +666,7 @@ export class GDBDebugSession extends SeqDebugSession {
         let doNotify = !this.args.noDebug;
         switch (reason) {
             case "entry":
-                // doNotify = false;
+                doNotify = false;
                 // getStack = false;
                 break;
             case "exited":
@@ -579,52 +684,64 @@ export class GDBDebugSession extends SeqDebugSession {
                     this.lastThreadsInfo = threadsInfo;
                 })
                 .catch((err) => {
-                    this.handleMsg(GdbEventNames.Stderr, `Failed to get thread info: ${err instanceof Error ? err.message : String(err)}\n`);
+                    this.handleMsg(GdbEventNames.Stderr, `mcu-debug: Failed to get thread info: ${err instanceof Error ? err.message : String(err)}\n`);
                 })
                 .finally(() => {
-                    if (doNotify) {
-                        this.notifyStopped(reason, true);
-                    }
+                    this.notifyStopped(reason, doNotify, true);
                 });
         }
     }
 
-    private notifyStopped(reason, doCustom = true) {
+    private notifyStopped(reason, doVSCode, doCustom) {
         const threadId = this.lastThreadsInfo?.currentThreadId || 1;
-        const ev: DebugProtocol.StoppedEvent = {
-            type: "event",
-            seq: 0,
-            event: "stopped",
-            body: {
-                reason: reason || "breakpoint",
-                threadId: threadId,
-                allThreadsStopped: true,
-            },
-        };
-        this.sendEvent(ev);
+        if (doVSCode) {
+            const ev: DebugProtocol.StoppedEvent = {
+                type: "event",
+                seq: 0,
+                event: "stopped",
+                body: {
+                    reason: reason || "breakpoint",
+                    threadId: threadId,
+                    allThreadsStopped: true,
+                },
+            };
+            this.sendEvent(ev);
+        }
         if (doCustom) {
             this.sendEvent(new CustomStoppedEvent(reason, threadId));
         }
     }
 
     handleBreakpointDeleted() {
-        throw new Error("Not yet implemented");
+        // throw new Error("Not yet implemented");
     }
     handleBreakpoint() {
-        throw new Error("Not yet implemented");
+        // throw new Error("Not yet implemented");
     }
     handleWatchpoint() {
-        throw new Error("Not yet implemented");
+        // throw new Error("Not yet implemented");
     }
     handleBreak() {
-        throw new Error("Not yet implemented");
+        // throw new Error("Not yet implemented");
     }
     handlePause() {
-        throw new Error("Not yet implemented");
+        // Nothing special to do here. Handled by general stop event
     }
     handleRunning() {
         this.clearForContinue();
         this.continuing = false;
+
+        const threadId = this.lastThreadsInfo?.currentThreadId || 1;
+        const ev: DebugProtocol.ContinuedEvent = {
+            type: "event",
+            seq: 0,
+            event: "continued",
+            body: {
+                threadId: threadId,
+                allThreadsContinued: true,
+            },
+        };
+        this.sendEvent(ev);
     }
     private clearForContinue() {
         this.varManager.clearForContinue();
@@ -635,14 +752,36 @@ export class GDBDebugSession extends SeqDebugSession {
     handleContinueFailed() {
         throw new Error("Not yet implemented");
     }
-    handleThreadCreated() {
-        throw new Error("Not yet implemented");
+
+    createThreadEvent(id: string, reason: "started" | "exited" | "selected"): DebugProtocol.ThreadEvent {
+        const ev: DebugProtocol.ThreadEvent = {
+            type: "event",
+            seq: 0,
+            event: "thread",
+            body: {
+                reason: reason,
+                threadId: parseInt(id, 10),
+            },
+        };
+        return ev;
     }
-    handleThreadExited() {
-        throw new Error("Not yet implemented");
+    handleThreadCreated(record: GdbMiRecord) {
+        const id = record.result["id"];
+        if (id) {
+            this.sendEvent(this.createThreadEvent(id, "started"));
+        }
     }
-    handleThreadSelected() {
-        throw new Error("Not yet implemented");
+    handleThreadExited(record: GdbMiRecord) {
+        const id = record.result["id"];
+        if (id) {
+            this.sendEvent(this.createThreadEvent(id, "exited"));
+        }
+    }
+    handleThreadSelected(record: GdbMiRecord) {
+        const id = record.result["id"];
+        if (id) {
+            this.sendEvent(this.createThreadEvent(id, "selected"));
+        }
     }
     handleThreadGroupExited() {
         throw new Error("Not yet implemented");

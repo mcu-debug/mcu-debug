@@ -160,13 +160,16 @@ export class GdbInstance extends EventEmitter {
 
     private handleOutputLine(line: string) {
         // Implementation to parse and handle a line of GDB output
+        if (line === "(gdb)") {
+            return;
+        }
         if (this.debugFlags.gdbTraces) {
-            this.log(Console, "--> " + line);
+            this.log(Console, "-> " + line);
         }
         const miOutput = parseGdbMiOut(line);
         if (miOutput) {
             if (this.debugFlags.gdbTracesParsed) {
-                this.log(Console, "~~> " + JSON.stringify(miOutput));
+                this.log(Console, "~~ " + JSON.stringify(miOutput));
             }
             if (miOutput.resultRecord) {
                 const token = parseInt(miOutput.resultRecord.token);
@@ -189,6 +192,14 @@ export class GdbInstance extends EventEmitter {
                             this.log(Stderr, `mi2.status = ${this.status}`);
                         }
                         this.emit(GdbEventNames.Running);
+                    } else if (record.outputType === "notify") {
+                        if (className === "thread-created") {
+                            this.emit(GdbEventNames.ThreadCreated, record);
+                        } else if (className === "thread-exited") {
+                            this.emit(GdbEventNames.ThreadExited, record);
+                        } else if (className === "thread-selected") {
+                            this.emit(GdbEventNames.ThreadSelected, record);
+                        }
                     }
                 } else if (record.recordType === "stream") {
                     if (record.outputType === Console) {

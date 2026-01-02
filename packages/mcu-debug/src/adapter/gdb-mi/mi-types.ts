@@ -101,6 +101,9 @@ export enum GdbEventNames {
     Stopped = "stopped",
     Running = "running",
     Exited = "exited",
+    ThreadCreated = "thread-created",
+    ThreadExited = "thread-exited",
+    ThreadSelected = "thread-selected",
 
     // There are really just a few message types for VSSCode
     Console = "console", // Intended for the debugger normal messages
