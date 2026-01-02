@@ -44,13 +44,37 @@ export class GDBDebugSession extends SeqDebugSession {
         this.serverSession = new GDBServerSession(this);
     }
 
+    handleErrResponse(response: DebugProtocol.Response, msg: string): void {
+        this.handleMsg(GdbEventNames.Stderr, msg + "\n");
+        this.sendErrorResponse(response, 1, msg);
+    }
     protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
         response.body = response.body || {};
         response.body.supportsConfigurationDoneRequest = true;
-        // Support all breakpoint types
-        response.body.supportsFunctionBreakpoints = true;
-        response.body.supportsConditionalBreakpoints = true;
-        response.body.supportsHitConditionalBreakpoints = true;
+
+        // response.body.supportsHitConditionalBreakpoints = true;
+        // response.body.supportsConditionalBreakpoints = true;
+        // response.body.supportsLogPoints = true;
+        // response.body.supportsFunctionBreakpoints = true;
+        // response.body.supportsEvaluateForHovers = true;
+        // response.body.supportsSetVariable = true;
+        // response.body.supportsSetExpression = true;
+
+        // We no longer support a 'Restart' request. However, VSCode will implement a replacement by terminating the
+        // current session and starting a new one from scratch. But, we still have to support the launch.json
+        // properties related to Restart but for Reset. This way, we don't break functionality.
+        response.body.supportsRestartRequest = false;
+
+        response.body.supportsGotoTargetsRequest = true;
+        response.body.supportSuspendDebuggee = true;
+        // response.body.supportTerminateDebuggee = true;
+        // response.body.supportsDataBreakpoints = true;
+        // response.body.supportsDisassembleRequest = true;
+        // response.body.supportsSteppingGranularity = true;
+        // response.body.supportsInstructionBreakpoints = true;
+        // response.body.supportsReadMemoryRequest = true;
+        // response.body.supportsWriteMemoryRequest = true;
+
         this.sendResponse(response);
     }
     protected async disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments, request?: DebugProtocol.Request): Promise<void> {
@@ -87,8 +111,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments, request?: DebugProtocol.Request): void {
         if (this.isBusy()) {
-            this.handleMsg(GdbEventNames.Stderr, "Continue request received while target is running. Ignoring.\n");
-            this.sendErrorResponse(response, 1, "Continue request received while target is running.");
+            this.handleErrResponse(response, "Continue request received while target is running.");
             return;
         }
         this.continuing = true;
@@ -98,7 +121,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
             })
             .catch((e) => {
-                this.sendErrorResponse(response, 1, `Continue request failed: ${e}`);
+                this.handleErrResponse(response, `Continue request failed: ${e}`);
             })
             .finally(() => {
                 this.clearForContinue();
@@ -111,7 +134,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
             })
             .catch((e) => {
-                this.sendErrorResponse(response, 1, `Next request failed: ${e}`);
+                this.handleErrResponse(response, `Next request failed: ${e}`);
             });
     }
     protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments, request?: DebugProtocol.Request): void {
@@ -121,7 +144,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
             })
             .catch((e) => {
-                this.sendErrorResponse(response, 1, `Next request failed: ${e}`);
+                this.handleErrResponse(response, `Next request failed: ${e}`);
             });
     }
     protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments, request?: DebugProtocol.Request): void {
@@ -131,7 +154,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
             })
             .catch((e) => {
-                this.sendErrorResponse(response, 1, `Next request failed: ${e}`);
+                this.handleErrResponse(response, `Next request failed: ${e}`);
             });
     }
     protected stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments, request?: DebugProtocol.Request): void {}
@@ -150,8 +173,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
             })
             .catch((e) => {
-                this.handleMsg(GdbEventNames.Stderr, `Pause request failed: ${e}\n`);
-                this.sendErrorResponse(response, 1, `Pause request failed: ${e}`);
+                this.handleErrResponse(response, `Pause request failed: ${e}`);
             });
     }
     protected sourceRequest(response: DebugProtocol.SourceResponse, args: DebugProtocol.SourceArguments, request?: DebugProtocol.Request): void {
@@ -204,7 +226,7 @@ export class GDBDebugSession extends SeqDebugSession {
             }
             response.body.totalFrames = frames.length;
         } catch (e) {
-            this.sendErrorResponse(response, 1, `Failed to get stack frames: ${e}`);
+            this.handleErrResponse(response, `Failed to get stack frames: ${e}`);
             return;
         }
         this.sendResponse(response);
@@ -214,12 +236,12 @@ export class GDBDebugSession extends SeqDebugSession {
         const scopes: DebugProtocol.Scope[] = [];
         const frameRef = this.frameHanedles.get(args.frameId);
         if (frameRef === undefined) {
-            this.sendErrorResponse(response, 1, `Invalid frame ID: ${args.frameId}`);
+            this.handleErrResponse(response, `Invalid frame ID: ${args.frameId}`);
             return;
         }
         const [threadId, frameId, scope] = decodeReference(frameRef);
         if (scope !== VariableScope.Scope) {
-            this.sendErrorResponse(response, 1, `Invalid scope for scopes request: ${VariableScope[scope]}`);
+            this.handleErrResponse(response, `Invalid scope for scopes request: ${VariableScope[scope]}`);
             return;
         }
         scopes.push({ name: "Local", variablesReference: encodeReference(threadId, frameId, VariableScope.Local), expensive: false });
@@ -252,7 +274,19 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected gotoTargetsRequest(response: DebugProtocol.GotoTargetsResponse, args: DebugProtocol.GotoTargetsArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+        response.body = { targets: [] };
+        if (args.source?.path && fs.existsSync(args.source.path)) {
+            this.gdbMiCommands
+                .sendGotoFileLine(args.source.path || "", args.line)
+                .then(() => {
+                    this.sendResponse(response);
+                })
+                .catch((e) => {
+                    this.handleErrResponse(response, `GotoTargets request failed: ${e}`);
+                });
+        } else {
+            this.sendResponse(response);
+        }
     }
     protected completionsRequest(response: DebugProtocol.CompletionsResponse, args: DebugProtocol.CompletionsArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
