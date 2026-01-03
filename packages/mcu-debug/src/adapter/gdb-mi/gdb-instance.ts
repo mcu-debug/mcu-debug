@@ -31,15 +31,16 @@ export class GdbInstance extends EventEmitter {
     gdbMajorVersion: number = 0;
     gdbMinorVersion: number = 0;
 
-    constructor(
-        private gdbPath: string,
-        private gdbArgs: string[] = [],
-    ) {
+    constructor() {
         super();
         this.miCommands = new MiCommands(this);
     }
 
-    start(cwd: string | undefined, init: string[], timeout: number = 1000, checkVers = true): Promise<void> {
+    IsRunning() {
+        return this.status === "running";
+    }
+
+    start(gdbPath: string, gdbArgs: string[], cwd: string | undefined, init: string[], timeout: number = 1000, checkVers = true): Promise<void> {
         return new Promise(async (resolve, reject) => {
             const doInitCmds = () => {
                 const promises = [];
@@ -55,8 +56,8 @@ export class GdbInstance extends EventEmitter {
                     });
             };
 
-            ServerConsoleLog(`Starting GDB: ${this.gdbPath} ${this.gdbArgs.join(" ")}, cwd=${cwd}`);
-            const child = spawn(this.gdbPath, this.gdbArgs, { cwd: cwd, env: process.env });
+            ServerConsoleLog(`Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}, cwd=${cwd}`);
+            const child = spawn(gdbPath, gdbArgs, { cwd: cwd, env: process.env });
             this.process = child;
             this.pid = child.pid!;
             ServerConsoleLog(`Started GDB: PID=${this.pid}`);
@@ -175,7 +176,12 @@ export class GdbInstance extends EventEmitter {
                 const token = parseInt(miOutput.resultRecord.token);
                 const pendingCmd = this.pendingCmds.get(token);
                 if (pendingCmd) {
-                    pendingCmd.resolve(miOutput);
+                    if (miOutput.resultRecord?.class === "error") {
+                        const errorMsg = miOutput.resultRecord.result["msg"] || "Unknown error";
+                        pendingCmd.reject(new Error(`GDB MI Error: ${errorMsg}`));
+                    } else {
+                        pendingCmd.resolve(miOutput);
+                    }
                     this.pendingCmds.delete(token);
                 } else {
                     this.log(Stderr, `No pending command for token ${token}`);

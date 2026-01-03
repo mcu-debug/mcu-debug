@@ -35,12 +35,14 @@ export class GDBDebugSession extends SeqDebugSession {
         return this.continuing || this.isRunning();
     }
 
-    protected frameHanedles = new ValueHandleRegistryPrimitive<number>();
-    protected varManager = new VariableManager();
+    protected varManager: VariableManager;
 
     constructor() {
         super();
+        this.gdbInstance = new GdbInstance();
         this.serverSession = new GDBServerSession(this);
+        this.gdbMiCommands = new MiCommands(this.gdbInstance);
+        this.varManager = new VariableManager(this.gdbInstance, this);
     }
 
     handleErrResponse(response: DebugProtocol.Response, msg: string): void {
@@ -118,6 +120,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.handleErrResponse(response, "Continue request received while target is running.");
             return;
         }
+        this.clearForContinue();
         this.continuing = true;
         this.gdbMiCommands!.sendContinue(undefined)
             .then(() => {
@@ -126,9 +129,6 @@ export class GDBDebugSession extends SeqDebugSession {
             })
             .catch((e) => {
                 this.handleErrResponse(response, `Continue request failed: ${e}`);
-            })
-            .finally(() => {
-                this.clearForContinue();
             });
     }
     protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments, request?: DebugProtocol.Request): void {
@@ -213,8 +213,7 @@ export class GDBDebugSession extends SeqDebugSession {
             const levels = args.levels || 40;
             const frames = await this.gdbMiCommands.sendStackListFrames(threadId, startFrame, startFrame + levels);
             for (const frame of frames) {
-                const ref = encodeReference(threadId, frame.level, VariableScope.Scope);
-                const handle = this.frameHanedles.add(ref);
+                const handle = this.varManager.addFrameInfo(threadId, frame.level, VariableScope.Local);
                 const stackFrame: DebugProtocol.StackFrame = {
                     id: handle,
                     name: frame.func || "<unknown>",
@@ -238,31 +237,37 @@ export class GDBDebugSession extends SeqDebugSession {
 
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments, request?: DebugProtocol.Request): void {
         const scopes: DebugProtocol.Scope[] = [];
-        const frameRef = this.frameHanedles.get(args.frameId);
-        if (frameRef === undefined) {
-            this.handleErrResponse(response, `Invalid frame ID: ${args.frameId}`);
+        try {
+            const add = (t: number, f: number, s: VariableScope): number => {
+                return this.varManager.addFrameInfo(t, f, s);
+            };
+            const [threadId, frameId, scope] = this.varManager.getFrameInfo(args.frameId);
+            scopes.push({ name: "Local", variablesReference: add(threadId, frameId, VariableScope.Local), expensive: false });
+            scopes.push({ name: "Static", variablesReference: add(0, 0, VariableScope.Static), expensive: false });
+            scopes.push({ name: "Global", variablesReference: add(0, 0, VariableScope.Global), expensive: true });
+            scopes.push({ name: "Registers", variablesReference: add(threadId, frameId, VariableScope.Registers), expensive: false });
+        } catch (e) {
+            this.handleErrResponse(response, `Failed to get scopes: ${e}`);
             return;
-        }
-        const [threadId, frameId, scope] = decodeReference(frameRef);
-        if (scope !== VariableScope.Scope) {
-            this.handleErrResponse(response, `Invalid scope for scopes request: ${VariableScope[scope]}`);
-            return;
-        }
-        scopes.push({ name: "Local", variablesReference: encodeReference(threadId, frameId, VariableScope.Local), expensive: false });
-        scopes.push({ name: "Global", variablesReference: encodeReference(0, 0, VariableScope.Global), expensive: true });
-        scopes.push({ name: "Static", variablesReference: encodeReference(0, 0, VariableScope.Static), expensive: false });
-        scopes.push({ name: "Registers", variablesReference: encodeReference(threadId, frameId, VariableScope.Registers), expensive: false });
-        for (const s of scopes) {
-            // We need to get a handle for the variablesReference
-            s.variablesReference = this.frameHanedles.add(s.variablesReference);
         }
 
         response.body = { scopes: scopes };
         this.sendResponse(response);
     }
 
-    protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments, request?: DebugProtocol.Request): void {
+    protected async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments, request?: DebugProtocol.Request): Promise<void> {
         response.body = { variables: [] };
+        if (this.isBusy()) {
+            this.handleErrResponse(response, "Variables request received while target is running.");
+            return;
+        }
+        try {
+            response.body.variables = await this.varManager.getVariables(args);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `Failed to get variables: ${e}`);
+            return;
+        }
         this.sendResponse(response);
     }
     protected setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments, request?: DebugProtocol.Request): void {
@@ -515,12 +520,10 @@ export class GDBDebugSession extends SeqDebugSession {
         try {
             const gdbPath = this.getGdbPath();
             const gdbArgs = ["-q", "--interpreter=mi3", ...(this.args.debuggerArgs || [])];
-            this.gdbInstance = new GdbInstance(gdbPath, gdbArgs);
             this.gdbInstance.debugFlags = this.args.debugFlags;
             this.handleMsg(GdbEventNames.Console, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
             this.subscribeToGdbEvents();
-            this.gdbMiCommands = new MiCommands(this.gdbInstance);
-            await this.gdbInstance.start(this.args.cwd, this.getInitCommands());
+            await this.gdbInstance.start(gdbPath, gdbArgs, this.args.cwd, this.getInitCommands());
         } catch (e) {
             throw e;
         }
@@ -677,6 +680,7 @@ export class GDBDebugSession extends SeqDebugSession {
             default:
         }
         this.lastThreadsInfo = null;
+        this.varManager.prepareForStopped(); // Yes, do it again here to be sure, may not have completed during a continue
         if (getStack) {
             this.gdbMiCommands
                 .sendThreadInfoAll()
@@ -745,7 +749,6 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     private clearForContinue() {
         this.varManager.clearForContinue();
-        this.frameHanedles.clear();
         this.lastThreadsInfo = null;
     }
 
