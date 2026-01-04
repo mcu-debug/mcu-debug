@@ -1168,6 +1168,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Show timestamps in debug output"
+                  },
+                  "disableGdbTimeouts": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Disable GDB command timeouts. Helpful for debugging extension"
                   }
                 }
               },
@@ -2439,6 +2444,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Show timestamps in debug output"
+                  },
+                  "disableGdbTimeouts": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Disable GDB command timeouts. Helpful for debugging extension"
                   }
                 }
               },

@@ -28,6 +28,7 @@ export class GdbInstance extends EventEmitter {
     private captureStdoutMode: boolean = false;
     public status: "running" | "stopped" | "none" = "none";
     public readonly miCommands: MiCommands;
+    public suppressConsoleOutput: boolean = false;
     gdbMajorVersion: number = 0;
     gdbMinorVersion: number = 0;
 
@@ -182,8 +183,10 @@ export class GdbInstance extends EventEmitter {
                         const errorMsg = miOutput.resultRecord.result["msg"] || "Unknown error";
                         pendingCmd.reject(new Error(`GDB MI Error: ${errorMsg}`));
                     } else {
-                        if (this.currentOutofBandRecords.length > 0) {
-                            miOutput.outOfBandRecords = [...this.currentOutofBandRecords, ...(miOutput.outOfBandRecords || [])];
+                        if (miOutput.outOfBandRecords.length == 0 && this.currentOutofBandRecords.length > 0) {
+                            // We don't have any outOfBandRecords in this output, but we have some saved, these
+                            // are from a console output from a previous command like -interpreter-exec
+                            miOutput.outOfBandRecords = this.currentOutofBandRecords;
                         }
                         pendingCmd.resolve(miOutput);
                     }
@@ -219,7 +222,9 @@ export class GdbInstance extends EventEmitter {
                             this.capturedStdout.push(record.result);
                         }
                         this.currentOutofBandRecords.push(record);
-                        this.log(Console, record.result);
+                        if (!this.suppressConsoleOutput) {
+                            this.log(Console, record.result);
+                        }
                     } else if (record.outputType === "target") {
                         this.log(Stdout, record.result);
                     } else if (record.outputType === "log") {
@@ -353,7 +358,7 @@ export class GdbInstance extends EventEmitter {
             };
 
             let timer: NodeJS.Timeout | undefined;
-            if (timeout > 250) {
+            if (timeout > 250 && !this.debugFlags.disableGdbTimeouts) {
                 timer = setTimeout(() => {
                     timer = undefined;
                     if (this.pendingCmds.has(seq)) {

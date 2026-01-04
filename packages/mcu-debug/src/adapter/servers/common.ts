@@ -263,6 +263,7 @@ export interface DebugFlags {
     vscodeRequests?: boolean;
     gdbTracesParsed?: boolean;
     timestamps?: boolean;
+    disableGdbTimeouts?: boolean;
     anyFlags?: boolean;
 }
 

@@ -289,39 +289,39 @@ export class VariableManager {
         this.dynamicContainer.clear();
         this.frameHandles.clear();
         this.registerValuesMap.clear();
-        this.clearGdbNames();
-        if (this.localGdbNames.size > 0) {
-            // This will prevent future name clashes, but indicates a bug
-            this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Internal error: Not all local GDB variables were deleted on continue: ${Array.from(this.localGdbNames).join(", ")}\n`);
-        }
     }
 
     private async clearGdbNames() {
         let promises = [];
+        let names: string[] = [];
         for (const name of this.localGdbNames) {
-            const p = this.gdbInstance
-                .sendCommand(`-var-delete ${name}`)
-                .then(() => {
-                    this.localGdbNames.delete(name);
-                })
-                .catch((e) => {
-                    if (this.debugSession.args.debugFlags.anyFlags) {
-                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error deleting GDB variable ${name} on continue: ${e}\n`);
-                    }
-                });
+            names.push(name);
+            const p = this.gdbInstance.sendCommand(`-var-delete ${name}`);
             promises.push(p);
         }
-        try {
-            await Promise.all(promises);
-        } catch (e) {
-            if (this.debugSession.args.debugFlags.anyFlags) {
-                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error deleting GDB variables on continue: ${e}\n`);
+        let count = 0;
+        for (const p of promises) {
+            try {
+                await p;
+                this.localGdbNames.delete(names[count]);
+            } catch (e) {
+                if (this.debugSession.args.debugFlags.anyFlags) {
+                    this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error deleting GDB variable ${names[count]} on continue: ${e}\n`);
+                }
             }
+            count++;
         }
     }
 
-    public prepareForStopped() {
+    public async prepareForStopped() {
         this.clearForContinue();
+        // We delete all gdb variable names on stopped rather than on continue to avoid issues with
+        // gdb beginning to run before we finish deleted the variables. Execution can continue in many
+        // ways (continue, step, next, etc) and it's hard to track them all. So, we do it here when we
+        // are sure gdb is stopped. Even if there is a collision, the worst that can happen is a variable name
+        // is reused which is unlikely but if the debugger is running fast enough, it could happen. The danger
+        // comes when a variable for same thread/frame is reused but it turns from scalar to compound or vice versa.
+        await this.clearGdbNames();
     }
 
     public getVarOrFrameInfo(handle: VariableReference): [number, number, VariableScope] {
@@ -589,6 +589,7 @@ export class VariableManager {
             return;
         }
         try {
+            this.gdbInstance.suppressConsoleOutput = true;
             const miOutput = await this.gdbInstance.sendCommand(`-interpreter-exec console "maint print reggroups"`);
             // Extract console output from out-of-band records
             const consoleLines = miOutput.outOfBandRecords.filter((record) => record.outputType === "console").map((record) => record.result);
@@ -612,6 +613,8 @@ export class VariableManager {
             if (this.debugSession.args.debugFlags.anyFlags) {
                 this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register groups: ${e}\n`);
             }
+        } finally {
+            this.gdbInstance.suppressConsoleOutput = false;
         }
     }
 
@@ -620,6 +623,7 @@ export class VariableManager {
             return;
         }
         try {
+            this.gdbInstance.suppressConsoleOutput = true;
             const miOutput = await this.gdbInstance.sendCommand(`-interpreter-exec console "maint print register-groups"`);
             // Extract console output from out-of-band records
             const consoleLines = miOutput.outOfBandRecords.filter((record) => record.outputType === "console").map((record) => record.result);
@@ -660,6 +664,8 @@ export class VariableManager {
             if (this.debugSession.args.debugFlags.anyFlags) {
                 this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register group mappings: ${e}\n`);
             }
+        } finally {
+            this.gdbInstance.suppressConsoleOutput = false;
         }
     }
 
