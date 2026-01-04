@@ -28,6 +28,7 @@ export class GDBDebugSession extends SeqDebugSession {
     public serverSession: GDBServerSession;
     public gdbMiCommands: MiCommands | null = null;
     public lastThreadsInfo: GdbMiThreadInfoList | null = null;
+    public suppressStoppedEvents: boolean = false;
     public continuing: boolean = false;
     public isRunning(): boolean {
         return this.gdbInstance?.status === "running";
@@ -107,6 +108,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments, request?: DebugProtocol.Request): void {
+        this.suppressStoppedEvents = true;
         this.bkptManager
             .setBreakPointsRequest(response, args, request)
             .then(() => {
@@ -114,6 +116,9 @@ export class GDBDebugSession extends SeqDebugSession {
             })
             .catch((e) => {
                 this.handleErrResponse(response, `SetBreakPoints request failed: ${e}`);
+            })
+            .finally(() => {
+                this.suppressStoppedEvents = false;
             });
     }
     protected setFunctionBreakPointsRequest(response: DebugProtocol.SetFunctionBreakpointsResponse, args: DebugProtocol.SetFunctionBreakpointsArguments, request?: DebugProtocol.Request): void {
@@ -684,6 +689,9 @@ export class GDBDebugSession extends SeqDebugSession {
     // Sometimes we get interrupted by other requests, so we store the latest thread info
     // and use that when needed. This works for All-Stop mode only for now.
     stopEvent(record: GdbMiRecord, reason?: string) {
+        if (this.suppressStoppedEvents) {
+            return;
+        }
         let getStack = true;
         let doNotify = !this.args.noDebug;
         switch (reason) {
