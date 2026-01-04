@@ -217,6 +217,18 @@ export class VariableContainerForGlobals extends VariableContainer {
  */
 
 export type VariableReference = number;
+// Register group information
+interface RegisterGroupInfo {
+    name: string;
+    type: "user" | "internal";
+}
+
+interface RegisterInfo {
+    name: string;
+    number: number;
+    groups: string[];
+}
+
 export class VariableManager {
     private globalContainer: VariableContainerForGlobals = new VariableContainerForGlobals();
     private localContainer: VariableContainer = new VariableContainer();
@@ -225,6 +237,8 @@ export class VariableManager {
     private containers = new Map<VariableScope, VariableContainer>();
     private localGdbNames: Set<string> = new Set<string>();
     private regFormat = "x"; // Default to Natural format
+    private registerGroups: RegisterGroupInfo[] = [];
+    private registerInfoMap = new Map<number, RegisterInfo>();
 
     constructor(
         private gdbInstance: GdbInstance,
@@ -324,6 +338,12 @@ export class VariableManager {
     }
 
     getVariableChildren(parent: VariableObject): Promise<DebugProtocol.Variable[]> {
+        // Check if this is a register group variable
+        if (parent.scope === VariableScope.RegistersVariable && !parent.gdbVarName) {
+            // This is a register group, get registers for this group
+            return this.getRegistersForGroup(parent);
+        }
+        
         const cmd = `-var-list-children --simple-values ${parent.gdbVarName}`;
         return this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
             const variables: DebugProtocol.Variable[] = [];
@@ -367,6 +387,80 @@ export class VariableManager {
                     } catch (e) {
                         if (this.debugSession.args.debugFlags.anyFlags) {
                             this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting child variable ${child["name"]}: ${e}\n`);
+                        }
+                    }
+                }
+            }
+            return variables;
+        });
+    }
+
+    /**
+     * Gets registers that belong to a specific group.
+     */
+    private async getRegistersForGroup(groupVar: VariableObject): Promise<DebugProtocol.Variable[]> {
+        const [threadId, frameId, _] = groupVar.getThreadFrameInfo();
+        const groupName = groupVar.type; // We stored the group name in the type field
+        const internalGroups = ["all", "save", "restore"];
+        
+        // Get all register values
+        const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
+        return await this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
+            const variables: DebugProtocol.Variable[] = [];
+            const regs = miOutput.resultRecord.result["register-values"];
+            if (Array.isArray(regs)) {
+                const container = this.getContainer(VariableScope.Registers);
+                for (const r of regs) {
+                    if (this.gdbInstance.IsRunning()) {
+                        break;
+                    }
+                    const regNumber = parseInt(r["number"]);
+                    const regInfo = this.registerInfoMap.get(regNumber);
+                    
+                    if (!regInfo) {
+                        continue;
+                    }
+                    
+                    // Filter based on group
+                    if (groupName === "misc") {
+                        // Misc group contains registers that only belong to internal groups
+                        const userGroups = regInfo.groups.filter(g => !internalGroups.includes(g));
+                        if (userGroups.length > 0) {
+                            continue; // This register belongs to a user group, skip it
+                        }
+                    } else {
+                        // Skip registers that don't belong to this group
+                        if (!regInfo.groups.includes(groupName)) {
+                            continue;
+                        }
+                    }
+                    
+                    const regName = regInfo.name;
+                    const key = new VariableKeys(groupVar.handle, regName, encodeReference(threadId, frameId, VariableScope.Registers));
+                    const existingVar = container.getVariableByKey(key);
+                    
+                    try {
+                        if (existingVar === undefined) {
+                            // Create a gdb variable for this register
+                            const gdbVarName = this.creatGdbName(regName.replace("$", "reg-"), threadId, frameId);
+                            const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
+                            await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
+                                const record = varCreateRecord.resultRecord.result;
+                                const [varObj] = container.parseMiVariable(regName, record, VariableScope.RegistersVariable, groupVar.handle, threadId, frameId);
+                                varObj.value = r["value"]; // Use this because it is better formatted
+                                if (varObj !== undefined) {
+                                    this.setFields(varObj);
+                                    variables.push(varObj.toProtocolVariable());
+                                }
+                            });
+                        } else {
+                            existingVar.value = r["value"];
+                            this.setFields(existingVar);
+                            variables.push(existingVar.toProtocolVariable());
+                        }
+                    } catch (e) {
+                        if (this.debugSession.args.debugFlags.anyFlags) {
+                            this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register variable ${regName}: ${e}\n`);
                         }
                     }
                 }
@@ -460,44 +554,169 @@ export class VariableManager {
             });
     }
 
+    private async getRegisterGroups(): Promise<void> {
+        if (this.registerGroups.length > 0) {
+            return;
+        }
+        try {
+            const miOutput = await this.gdbInstance.sendCommand(`interpreter-exec console "maint print reggroups"`);
+            // Extract console output from out-of-band records
+            const consoleLines = miOutput.outOfBandRecords
+                .filter(record => record.outputType === "console")
+                .map(record => record.result);
+            const consoleOutput = consoleLines.join("");
+            const lines = consoleOutput.split("\n");
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith("Group")) {
+                    continue; // Skip header or empty lines
+                }
+                const parts = trimmed.split(/\s+/);
+                if (parts.length >= 2) {
+                    const name = parts[0];
+                    const type = parts[1] as "user" | "internal";
+                    if (type === "user") {
+                        this.registerGroups.push({ name, type });
+                    }
+                }
+            }
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register groups: ${e}\n`);
+            }
+        }
+    }
+
+    private async getRegisterGroupMappings(): Promise<void> {
+        if (this.registerInfoMap.size > 0) {
+            return;
+        }
+        try {
+            const miOutput = await this.gdbInstance.sendCommand(`interpreter-exec console "maint print register-groups"`);
+            // Extract console output from out-of-band records
+            const consoleLines = miOutput.outOfBandRecords
+                .filter(record => record.outputType === "console")
+                .map(record => record.result);
+            const consoleOutput = consoleLines.join("");
+            const lines = consoleOutput.split("\n");
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith("Name")) {
+                    continue; // Skip header or empty lines
+                }
+                const parts = trimmed.split(/\s+/);
+                if (parts.length < 6) {
+                    continue; // Not enough columns
+                }
+                const name = parts[0];
+                if (!name || name === "''") {
+                    continue; // Skip blank names
+                }
+                const numberStr = parts[1];
+                const groupsStr = parts[parts.length - 1];
+                const number = parseInt(numberStr);
+                if (isNaN(number)) {
+                    continue;
+                }
+                const groups = groupsStr.split(",").map(g => g.trim()).filter(g => g);
+                this.registerInfoMap.set(number, { name: `$${name}`, number, groups });
+            }
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register group mappings: ${e}\n`);
+            }
+        }
+    }
+
     /**
-     *
-     * TODO: Current implementation is too simple. We create one flat list of all registers. What we want
-     * is to create groups for different register sets (core, fpu, sse, etc.) and have those as
-     * top level variables with children. Of course the groups vary by architecture so we need to get
-     * that info from somewhere. This is what I know
-     *
-     * `maint print reggroups` -> shows the register groups known to GDB. We can ignore groups marked
-     *  as "internal" type. Sample output:
-     *  Group      Type
-     * general    user
-     * float      user
-     * system     user
-     * vector     user
-     * all        user
-     * save       internal
-     * restore    internal
-     * cp_regs    user
-     *
-     * `maint print register-groups` -> shows all the registers. The first column is the register name
-     * and the last column is the comma separated set of groups it belongs to. We can use the first
-     * group as the parent group for the register. First line is the header. You can have blanks names
-     * which we can ignore.
-     *
-     * Example output:
-     *  Name         Nr  Rel Offset    Size  Type            Groups
-     *    r0          0    0      0       4  long            general,all,save,restore
-     *    ''         16   16     64       0 int0_t
-     *
-     * We are interested in columns 0, 1 and last. Anything less than 6 columns is ignored.
-     * If groups is empty, we can put it in a "misc" group. Capitalize the first letter of the group
-     * name for display.
-     *
-     * Insted of just using -data-list-register-names just once, we can also use the above commands
-     * to get the register names and groupings. We can cache the results for future use (only as an
-     * optimization) but they should only be shown when the user expands a  registe group.
+     * Returns register groups as top-level variables. Each group contains registers as children.
      */
     private async getRegisterVariables(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
+        // Fetch register groups and mappings
+        await this.getRegisterGroups();
+        await this.getRegisterGroupMappings();
+        
+        if (this.registerGroups.length === 0) {
+            // Fallback to old behavior if groups are not available
+            return this.getRegisterVariablesFlat(threadId, frameId);
+        }
+
+        const variables: DebugProtocol.Variable[] = [];
+        const container = this.getContainer(VariableScope.Registers);
+        
+        // Check if there are registers that don't belong to any user group
+        const internalGroups = ["all", "save", "restore"];
+        let hasMiscRegisters = false;
+        for (const [_, regInfo] of this.registerInfoMap) {
+            // Check if register only belongs to internal groups or no groups
+            const userGroups = regInfo.groups.filter(g => !internalGroups.includes(g));
+            if (userGroups.length === 0) {
+                hasMiscRegisters = true;
+                break;
+            }
+        }
+        
+        // Create a variable for each register group
+        for (const group of this.registerGroups) {
+            // Skip "all" group as it contains all registers and internal groups
+            if (internalGroups.includes(group.name)) {
+                continue;
+            }
+            
+            // Capitalize first letter for display
+            const displayName = group.name.charAt(0).toUpperCase() + group.name.slice(1);
+            
+            // Create a group variable
+            const key = new VariableKeys(0, displayName, encodeReference(threadId, frameId, VariableScope.Registers));
+            let groupVar = container.getVariableByKey(key) as VariableObject | undefined;
+            
+            if (groupVar === undefined) {
+                const [varObj, handle] = container.createVariable(
+                    VariableScope.RegistersVariable,
+                    0,
+                    displayName,
+                    "", // Value will be empty for group
+                    group.name, // Store group name in type field for later use
+                    threadId,
+                    frameId
+                );
+                groupVar = varObj;
+                groupVar.variablesReference = handle;
+            }
+            
+            variables.push(groupVar.toProtocolVariable());
+        }
+        
+        // Add Misc group if there are registers that don't belong to any user group
+        if (hasMiscRegisters) {
+            const key = new VariableKeys(0, "Misc", encodeReference(threadId, frameId, VariableScope.Registers));
+            let groupVar = container.getVariableByKey(key) as VariableObject | undefined;
+            
+            if (groupVar === undefined) {
+                const [varObj, handle] = container.createVariable(
+                    VariableScope.RegistersVariable,
+                    0,
+                    "Misc",
+                    "", // Value will be empty for group
+                    "misc", // Store group name in type field for later use
+                    threadId,
+                    frameId
+                );
+                groupVar = varObj;
+                groupVar.variablesReference = handle;
+            }
+            
+            variables.push(groupVar.toProtocolVariable());
+        }
+        
+        return variables;
+    }
+
+    /**
+     * Fallback method that returns a flat list of all registers.
+     * Used when register grouping information is not available.
+     */
+    private async getRegisterVariablesFlat(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
         const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
         await this.getRegisterNames();
         if (this.registerNames.size === 0) {
