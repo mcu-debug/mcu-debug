@@ -39,24 +39,22 @@ export class SourceBreakpoints {
 }
 
 export class FunctionBreakpoints {
-    functionName: string;
     breakpoints: Map<number, DebugProtocol.FunctionBreakpoint>;
 
-    constructor(functionName: string) {
-        this.functionName = functionName;
+    constructor() {
         this.breakpoints = new Map<number, DebugProtocol.FunctionBreakpoint>();
     }
 }
 
 export class BreakpointManager {
-    functionBreakpoints: Map<string, FunctionBreakpoints>;
+    functionBreakpoints: FunctionBreakpoints;
     fileBreakpoints: Map<string, SourceBreakpoints>;
 
     constructor(
         private gdbInstance: GdbInstance,
         private gdbSession: GDBDebugSession,
     ) {
-        this.functionBreakpoints = new Map<string, FunctionBreakpoints>();
+        this.functionBreakpoints = new FunctionBreakpoints();
         this.fileBreakpoints = new Map<string, SourceBreakpoints>();
     }
 
@@ -179,6 +177,71 @@ export class BreakpointManager {
                 counter++;
             }
             this.fileBreakpoints.set(sourceFile, fileBps);
+            response.body = {
+                breakpoints: bps,
+            };
+        });
+    }
+
+    public async setFunctionBreakPointsRequest(
+        response: DebugProtocol.SetFunctionBreakpointsResponse,
+        args: DebugProtocol.SetFunctionBreakpointsArguments,
+        request?: DebugProtocol.Request,
+    ): Promise<void> {
+        await this.executeWhileStopped(async () => {
+            const toDelete: number[] = [];
+            for (const [id, bp] of this.functionBreakpoints.breakpoints) {
+                toDelete.push(id);
+            }
+            await this.deleteBreakpoints(toDelete);
+            this.functionBreakpoints.breakpoints.clear();
+
+            const promises: Promise<any>[] = [];
+            for (const bp of args.breakpoints || []) {
+                // Prepopulate with unverified breakpoints
+                let bkptArgs = `--function "${bp.name}"`;
+                if (bp.condition) {
+                    bkptArgs += ` -c "${escapeGdbString(bp.condition)}"`;
+                }
+                if (bp.hitCondition) {
+                    bkptArgs += ` ${this.parseHitContion(bp.hitCondition)}`;
+                }
+                if (this.gdbSession.args.hardwareBreakpoints?.require) {
+                    bkptArgs += ` -h`;
+                }
+                const p = this.gdbInstance.sendCommand(`-break-insert ${bkptArgs}`);
+                promises.push(p);
+            }
+            const bps: DebugProtocol.Breakpoint[] = [];
+            let counter = 0;
+            for (const p of promises) {
+                try {
+                    const miOutput = await p;
+                    const bp = args.breakpoints ? args.breakpoints[counter] : null;
+                    const bpInfo = miOutput.resultRecord.result["bkpt"];
+                    const actualLine = parseInt(bpInfo["line"]);
+                    const bpId = parseInt(bpInfo["number"]);
+                    const dbgBp: DebugProtocol.Breakpoint = {
+                        id: bpId,
+                        verified: true,
+                        source: bpInfo["fullname"] || bpInfo["file"],
+                        line: actualLine,
+                        instructionReference: bpInfo["address"],
+                    };
+                    bps.push(dbgBp);
+                    if (bp) {
+                        this.functionBreakpoints.breakpoints.set(bpId, bp);
+                    }
+                } catch (err) {
+                    const name = args.breakpoints ? args.breakpoints[counter].name : "<unknown>";
+                    this.gdbSession.handleMsg(Stderr, `Error setting function breakpoint ${name}: ${err}`);
+                    bps.push({
+                        verified: false,
+                        message: err.message,
+                    } as DebugProtocol.Breakpoint);
+                }
+                counter++;
+            }
             response.body = {
                 breakpoints: bps,
             };

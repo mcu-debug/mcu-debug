@@ -60,10 +60,10 @@ export class GDBDebugSession extends SeqDebugSession {
         response.body = response.body || {};
         response.body.supportsConfigurationDoneRequest = true;
 
-        // response.body.supportsHitConditionalBreakpoints = true;
-        // response.body.supportsConditionalBreakpoints = true;
+        response.body.supportsHitConditionalBreakpoints = true;
+        response.body.supportsConditionalBreakpoints = true;
         // response.body.supportsLogPoints = true;
-        // response.body.supportsFunctionBreakpoints = true;
+        response.body.supportsFunctionBreakpoints = true;
         // response.body.supportsEvaluateForHovers = true;
         // response.body.supportsSetVariable = true;
         // response.body.supportsSetExpression = true;
@@ -108,7 +108,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments, request?: DebugProtocol.Request): void {
-        this.suppressStoppedEvents = true;
+        this.suppressStoppedEvents = this.gdbInstance.IsRunning();
         this.bkptManager
             .setBreakPointsRequest(response, args, request)
             .then(() => {
@@ -122,7 +122,18 @@ export class GDBDebugSession extends SeqDebugSession {
             });
     }
     protected setFunctionBreakPointsRequest(response: DebugProtocol.SetFunctionBreakpointsResponse, args: DebugProtocol.SetFunctionBreakpointsArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+        this.suppressStoppedEvents = this.gdbInstance.IsRunning();
+        this.bkptManager
+            .setFunctionBreakPointsRequest(response, args, request)
+            .then(() => {
+                this.sendResponse(response);
+            })
+            .catch((e) => {
+                this.handleErrResponse(response, `SetFunctionBreakPoints request failed: ${e}`);
+            })
+            .finally(() => {
+                this.suppressStoppedEvents = false;
+            });
     }
     protected setExceptionBreakPointsRequest(response: DebugProtocol.SetExceptionBreakpointsResponse, args: DebugProtocol.SetExceptionBreakpointsArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
