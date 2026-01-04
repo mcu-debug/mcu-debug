@@ -493,9 +493,9 @@ export class VariableManager {
      * If groups is empty, we can put it in a "misc" group. Capitalize the first letter of the group
      * name for display.
      *
-     * Insted of just using -data-list-register-names just once, we can also use the above commands
-     * to get the register names and groupings. We can cache the results for future use (only as an
-     * optimization) but they should only be shown when the user expands a  registe group.
+     * Insted of just using -data-list-register-names, we can also use the above commands
+     * to get the register names and groupings (on first use). We can cache the results for
+     * future use (only as an optimization) but they should only be shown when the user expands a  registe group.
      */
     private async getRegisterVariables(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
         const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
