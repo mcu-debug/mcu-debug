@@ -1022,3 +1022,57 @@ class DebugOptions {
     public file: string = "";
     public disassembly: boolean = false;
 }
+
+/**
+ * Converts a client-provided source file path to a canonical form for use as a map key.
+ * Handles relative paths, different path separators, drive letter normalization on Windows,
+ * file:// URI schemes, UNC paths, and WSL paths.
+ *
+ * @param sourcePath - The path from the client (may be relative, absolute, file:// URI, UNC, or WSL path)
+ * @returns A canonical absolute path suitable for use as a map key
+ */
+export function canonicalizePath(sourcePath: string): string {
+    // Handle file:// URIs
+    if (sourcePath.startsWith("file://")) {
+        // Remove file:// prefix and decode URI components
+        sourcePath = decodeURIComponent(sourcePath.substring(7));
+        // On Windows, file:///C:/... becomes /C:/... so we need to strip the leading /
+        if (os.platform() === "win32" && /^\/[a-zA-Z]:/.test(sourcePath)) {
+            sourcePath = sourcePath.substring(1);
+        }
+    }
+
+    // Handle WSL mount paths (/mnt/c/... -> C:/... when on Windows or in WSL)
+    const wslMountMatch = sourcePath.match(/^\/mnt\/([a-z])\//i);
+    if (wslMountMatch) {
+        const driveLetter = wslMountMatch[1].toUpperCase();
+        sourcePath = `${driveLetter}:/${sourcePath.substring(7)}`; // Skip "/mnt/c/"
+    }
+
+    // Convert to absolute path and normalize
+    let canonical = path.resolve(sourcePath);
+
+    // On Windows, normalize separators and drive letters
+    if (os.platform() === "win32") {
+        canonical = canonical.replace(/\\/g, "/");
+
+        // Normalize drive letter to uppercase (C:/ not c:/)
+        if (/^[a-z]:/.test(canonical)) {
+            canonical = canonical.charAt(0).toUpperCase() + canonical.slice(1);
+        }
+
+        // Normalize UNC paths (//server/share or \\server\share -> //SERVER/SHARE for consistency)
+        // UNC paths start with // or \\
+        if (canonical.startsWith("//")) {
+            const parts = canonical.substring(2).split("/");
+            if (parts.length >= 2) {
+                // Normalize server and share names to uppercase for consistent keys
+                parts[0] = parts[0].toUpperCase(); // server
+                parts[1] = parts[1].toUpperCase(); // share
+                canonical = "//" + parts.join("/");
+            }
+        }
+    }
+
+    return canonical;
+}

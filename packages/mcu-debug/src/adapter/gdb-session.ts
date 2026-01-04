@@ -1,8 +1,8 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
 import { Config } from "winston/lib/winston/config";
-import { Logger, logger, OutputEvent, Variable } from "@vscode/debugadapter";
-import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent } from "./servers/common";
+import { InitializedEvent, Logger, logger, OutputEvent, Variable } from "@vscode/debugadapter";
+import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent } from "./servers/common";
 import path from "path";
 import os from "os";
 import fs from "fs";
@@ -16,6 +16,7 @@ import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
 import { hexFormat } from "../frontend/utils";
+import { BreakpointManager } from "./breakpoints";
 export class SymbolManager {
     constructor() {}
 }
@@ -36,6 +37,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     protected varManager: VariableManager;
+    protected bkptManager: BreakpointManager;
 
     constructor() {
         super();
@@ -43,6 +45,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.serverSession = new GDBServerSession(this);
         this.gdbMiCommands = new MiCommands(this.gdbInstance);
         this.varManager = new VariableManager(this.gdbInstance, this);
+        this.bkptManager = new BreakpointManager(this.gdbInstance!, this);
     }
 
     handleErrResponse(response: DebugProtocol.Response, msg: string): void {
@@ -104,7 +107,14 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+        this.bkptManager
+            .setBreakPointsRequest(response, args, request)
+            .then(() => {
+                this.sendResponse(response);
+            })
+            .catch((e) => {
+                this.handleErrResponse(response, `SetBreakPoints request failed: ${e}`);
+            });
     }
     protected setFunctionBreakPointsRequest(response: DebugProtocol.SetFunctionBreakpointsResponse, args: DebugProtocol.SetFunctionBreakpointsArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
@@ -509,6 +519,15 @@ export class GDBDebugSession extends SeqDebugSession {
                 await this.startServer().catch((e) => {
                     return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}`);
                 });
+
+                // At this point, the program image should have been loaded, gdb and the server are connected
+                // and we are ready to go. However, the program may be running depending on the session mode and settings
+                // So, we now inform VSCode that the debugger has started. It will in turn set breakpoints, etc.
+                this.sendEvent(new InitializedEvent()); // This is when we tell that the debugger has really started
+
+                // After the above, VSCode will set various kinds of breakpoints, watchpoints, etc. When all those things
+                // happen, it will finally send a configDone request and now everything should be stable
+                this.sendEvent(new GenericCustomEvent("post-start-gdb", this.args));
                 finish();
             } catch (e) {
                 return finishWithError(`Launch/Attach request failed: ${e instanceof Error ? e.message : String(e)}`);

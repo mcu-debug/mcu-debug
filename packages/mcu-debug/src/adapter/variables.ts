@@ -390,7 +390,7 @@ export class VariableManager {
             }
             const container = this.getContainer(parent.scope);
             const [threadId, frameId, _] = parent.getThreadFrameInfo();
-            const children = await this.varListChildren(this.getContainer(parent.scope), parent, parent.gdbVarName, threadId, frameId);
+            const children = await this.varListChildren(container, parent, parent.gdbVarName, threadId, frameId);
             parent.children = children;
             const protoVars: DebugProtocol.Variable[] = [];
             for (const child of children) {
