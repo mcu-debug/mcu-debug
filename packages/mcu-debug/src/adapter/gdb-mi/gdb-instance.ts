@@ -159,9 +159,11 @@ export class GdbInstance extends EventEmitter {
         }
     }
 
+    private currentOutofBandRecords: GdbMiRecord[] = [];
     private handleOutputLine(line: string) {
         // Implementation to parse and handle a line of GDB output
         if (line === "(gdb)") {
+            this.currentOutofBandRecords = [];
             return;
         }
         if (this.debugFlags.gdbTraces) {
@@ -180,8 +182,12 @@ export class GdbInstance extends EventEmitter {
                         const errorMsg = miOutput.resultRecord.result["msg"] || "Unknown error";
                         pendingCmd.reject(new Error(`GDB MI Error: ${errorMsg}`));
                     } else {
+                        if (this.currentOutofBandRecords.length > 0) {
+                            miOutput.outOfBandRecords = [...this.currentOutofBandRecords, ...(miOutput.outOfBandRecords || [])];
+                        }
                         pendingCmd.resolve(miOutput);
                     }
+                    this.currentOutofBandRecords = [];
                     this.pendingCmds.delete(token);
                 } else {
                     this.log(Stderr, `No pending command for token ${token}`);
@@ -212,6 +218,7 @@ export class GdbInstance extends EventEmitter {
                         if (this.captureStdoutMode) {
                             this.capturedStdout.push(record.result);
                         }
+                        this.currentOutofBandRecords.push(record);
                         this.log(Console, record.result);
                     } else if (record.outputType === "target") {
                         this.log(Stdout, record.result);
