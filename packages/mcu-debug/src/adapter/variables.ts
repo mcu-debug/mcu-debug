@@ -226,6 +226,7 @@ export class VariableManager {
     private localGdbNames: Set<string> = new Set<string>();
     private regFormat = "x"; // Default to Natural format
     // Register grouping support
+    private static readonly REGGROUP_PREFIX = "@reggroup_";
     private registerGroups: Map<string, string> = new Map(); // group name -> group type (user/internal)
     private registerToGroups: Map<number, string[]> = new Map(); // register number -> group names
     private groupedRegistersCached = false;
@@ -325,8 +326,8 @@ export class VariableManager {
             }
             
             // Check if this is a register group variable
-            if (variable.name.startsWith("@reggroup_")) {
-                const groupName = variable.name.substring(10); // Remove "@reggroup_" prefix
+            if (variable.name.startsWith(VariableManager.REGGROUP_PREFIX)) {
+                const groupName = variable.name.substring(VariableManager.REGGROUP_PREFIX.length);
                 const [threadId, frameId, _] = variable.getThreadFrameInfo();
                 return this.getRegistersForGroup(groupName, threadId, frameId);
             }
@@ -615,9 +616,9 @@ export class VariableManager {
      * If groups is empty, we can put it in a "misc" group. Capitalize the first letter of the group
      * name for display.
      *
-     * Insted of just using -data-list-register-names, we can also use the above commands
+     * Instead of just using -data-list-register-names, we can also use the above commands
      * to get the register names and groupings (on first use). We can cache the results for
-     * future use (only as an optimization) but they should only be shown when the user expands a  registe group.
+     * future use (only as an optimization) but they should only be shown when the user expands a register group.
      */
     private async getRegisterVariables(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
         await this.getRegisterNames();
@@ -664,7 +665,7 @@ export class VariableManager {
             const displayName = groupName.charAt(0).toUpperCase() + groupName.slice(1);
             
             // Create a group variable
-            const key = new VariableKeys(0, `@reggroup_${groupName}`, encodeReference(threadId, frameId, VariableScope.Registers));
+            const key = new VariableKeys(0, `${VariableManager.REGGROUP_PREFIX}${groupName}`, encodeReference(threadId, frameId, VariableScope.Registers));
             let groupVar = container.getVariableByKey(key);
             
             if (groupVar === undefined) {
@@ -682,6 +683,41 @@ export class VariableManager {
                 variables.push(varObj.toProtocolVariable());
             } else {
                 groupVar.value = `${regCount} register(s)`;
+                if (groupVar.variablesReference === 0) {
+                    groupVar.variablesReference = groupVar.handle;
+                }
+                variables.push(groupVar.toProtocolVariable());
+            }
+        }
+
+        // Check if there are registers without any groups and create a "Misc" group for them
+        let miscRegCount = 0;
+        for (let i = 0; i < this.registerNames.size; i++) {
+            const regGroups = this.registerToGroups.get(i);
+            if (!regGroups || regGroups.length === 0) {
+                miscRegCount++;
+            }
+        }
+
+        if (miscRegCount > 0) {
+            const key = new VariableKeys(0, `${VariableManager.REGGROUP_PREFIX}misc`, encodeReference(threadId, frameId, VariableScope.Registers));
+            let groupVar = container.getVariableByKey(key);
+            
+            if (groupVar === undefined) {
+                const [varObj, handle] = container.createVariable(
+                    VariableScope.Registers,
+                    0,
+                    "Misc",
+                    `${miscRegCount} register(s)`,
+                    `reggroup`,
+                    threadId,
+                    frameId,
+                    undefined
+                );
+                varObj.variablesReference = handle;
+                variables.push(varObj.toProtocolVariable());
+            } else {
+                groupVar.value = `${miscRegCount} register(s)`;
                 if (groupVar.variablesReference === 0) {
                     groupVar.variablesReference = groupVar.handle;
                 }
@@ -766,8 +802,16 @@ export class VariableManager {
 
                     // Check if this register belongs to the requested group
                     const regGroups = this.registerToGroups.get(regNumber);
-                    if (!regGroups || !regGroups.includes(groupName)) {
-                        continue; // Skip registers not in this group
+                    
+                    // Special handling for "misc" group - registers without any groups
+                    if (groupName === "misc") {
+                        if (regGroups && regGroups.length > 0) {
+                            continue; // Skip registers that have groups
+                        }
+                    } else {
+                        if (!regGroups || !regGroups.includes(groupName)) {
+                            continue; // Skip registers not in this group
+                        }
                     }
 
                     const key = new VariableKeys(0, regName, encodeReference(threadId, frameId, VariableScope.Registers));
