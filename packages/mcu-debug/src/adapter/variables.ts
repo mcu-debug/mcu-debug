@@ -442,7 +442,7 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             // Create a gdb variable for this register
-                            const gdbVarName = this.creatGdbName(regName.replace("$", "reg-"), threadId, frameId);
+                            const gdbVarName = this.creatGdbName(regName.replaceAll("$", "reg-"), threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
                             await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
                                 const record = varCreateRecord.resultRecord.result;
@@ -741,7 +741,7 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             // We create a gdb variable in case the user wants to set it. Not really needed for viewing
-                            const gdbVarName = this.creatGdbName(regName.replace("$", "reg-"), threadId, frameId);
+                            const gdbVarName = this.creatGdbName(regName.replaceAll("$", "reg-"), threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
                             await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
                                 const record = varCreateRecord.resultRecord.result;
