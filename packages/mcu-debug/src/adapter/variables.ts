@@ -225,6 +225,11 @@ export class VariableManager {
     private containers = new Map<VariableScope, VariableContainer>();
     private localGdbNames: Set<string> = new Set<string>();
     private regFormat = "x"; // Default to Natural format
+    // Register grouping support
+    private static readonly REGGROUP_PREFIX = "@reggroup_";
+    private registerGroups: Map<string, string> = new Map(); // group name -> group type (user/internal)
+    private registerToGroups: Map<number, string[]> = new Map(); // register number -> group names
+    private groupedRegistersCached = false;
 
     constructor(
         private gdbInstance: GdbInstance,
@@ -319,6 +324,14 @@ export class VariableManager {
             if (variable === undefined) {
                 Promise.reject(new Error(`No variable found for reference ${args.variablesReference}`));
             }
+            
+            // Check if this is a register group variable
+            if (variable.name.startsWith(VariableManager.REGGROUP_PREFIX)) {
+                const groupName = variable.name.substring(VariableManager.REGGROUP_PREFIX.length);
+                const [threadId, frameId, _] = variable.getThreadFrameInfo();
+                return this.getRegistersForGroup(groupName, threadId, frameId);
+            }
+            
             return this.getVariableChildren(variable);
         }
     }
@@ -461,6 +474,116 @@ export class VariableManager {
     }
 
     /**
+     * Fetch register groups from GDB using "maint print reggroups"
+     * Groups marked as "internal" are ignored
+     */
+    private async fetchRegisterGroups(): Promise<void> {
+        if (this.groupedRegistersCached) {
+            return;
+        }
+
+        try {
+            const cmd = `interpreter-exec console "maint print reggroups"`;
+            const miOutput = await this.gdbInstance.sendCommand(cmd);
+            
+            // Extract console output from outOfBandRecords
+            let consoleOutput = "";
+            for (const record of miOutput.outOfBandRecords) {
+                if (record.recordType === "stream" && record.outputType === "console") {
+                    consoleOutput += record.result;
+                }
+            }
+            
+            // Parse the output line by line
+            const lines = consoleOutput.split("\n");
+            for (const line of lines) {
+                const trimmed = line.trim();
+                // Skip header and empty lines
+                if (!trimmed || trimmed.startsWith("Group") || trimmed.includes("---")) {
+                    continue;
+                }
+                
+                // Parse line format: "group_name    type"
+                const parts = trimmed.split(/\s+/);
+                if (parts.length >= 2) {
+                    const groupName = parts[0];
+                    const groupType = parts[1];
+                    
+                    // Only store user groups, ignore internal groups
+                    if (groupType === "user") {
+                        this.registerGroups.set(groupName, groupType);
+                    }
+                }
+            }
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register groups: ${e}\n`);
+            }
+        }
+    }
+
+    /**
+     * Fetch register-to-group mappings from GDB using "maint print register-groups"
+     * Maps each register number to its list of groups
+     */
+    private async fetchRegisterToGroupMappings(): Promise<void> {
+        if (this.groupedRegistersCached) {
+            return;
+        }
+
+        try {
+            const cmd = `interpreter-exec console "maint print register-groups"`;
+            const miOutput = await this.gdbInstance.sendCommand(cmd);
+            
+            // Extract console output from outOfBandRecords
+            let consoleOutput = "";
+            for (const record of miOutput.outOfBandRecords) {
+                if (record.recordType === "stream" && record.outputType === "console") {
+                    consoleOutput += record.result;
+                }
+            }
+            
+            // Parse the output line by line
+            const lines = consoleOutput.split("\n");
+            for (const line of lines) {
+                const trimmed = line.trim();
+                // Skip header and empty lines
+                if (!trimmed || trimmed.startsWith("Name") || trimmed.includes("---")) {
+                    continue;
+                }
+                
+                // Parse line format: "name  nr  rel  offset  size  type  groups"
+                const parts = trimmed.split(/\s+/);
+                if (parts.length >= 6) {
+                    const regName = parts[0];
+                    const regNrStr = parts[1];
+                    const groupsStr = parts[parts.length - 1]; // Last column is groups
+                    
+                    // Skip empty register names
+                    if (!regName || regName === "''") {
+                        continue;
+                    }
+                    
+                    const regNr = parseInt(regNrStr);
+                    if (!isNaN(regNr)) {
+                        // Parse comma-separated groups
+                        const groups = groupsStr.split(",").map(g => g.trim()).filter(g => g.length > 0);
+                        if (groups.length > 0) {
+                            this.registerToGroups.set(regNr, groups);
+                        }
+                    }
+                }
+            }
+            
+            this.groupedRegistersCached = true;
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register-to-group mappings: ${e}\n`);
+            }
+        }
+    }
+
+    /**
      *
      * TODO: Current implementation is too simple. We create one flat list of all registers. What we want
      * is to create groups for different register sets (core, fpu, sse, etc.) and have those as
@@ -493,16 +616,124 @@ export class VariableManager {
      * If groups is empty, we can put it in a "misc" group. Capitalize the first letter of the group
      * name for display.
      *
-     * Insted of just using -data-list-register-names just once, we can also use the above commands
-     * to get the register names and groupings. We can cache the results for future use (only as an
-     * optimization) but they should only be shown when the user expands a  registe group.
+     * Instead of just using -data-list-register-names, we can also use the above commands
+     * to get the register names and groupings (on first use). We can cache the results for
+     * future use (only as an optimization) but they should only be shown when the user expands a register group.
      */
     private async getRegisterVariables(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
-        const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
         await this.getRegisterNames();
         if (this.registerNames.size === 0) {
             return [];
         }
+
+        // Fetch register groups and mappings
+        await this.fetchRegisterGroups();
+        await this.fetchRegisterToGroupMappings();
+
+        // If we have register groups, return group variables
+        if (this.registerGroups.size > 0) {
+            return this.getRegisterGroupVariables(threadId, frameId);
+        }
+
+        // Fallback to flat register list if groups are not available
+        return this.getRegisterVariablesFlat(threadId, frameId);
+    }
+
+    /**
+     * Returns register group variables (General, Float, System, etc.)
+     * Each group is expandable to show its registers
+     */
+    private getRegisterGroupVariables(threadId: number, frameId: number): DebugProtocol.Variable[] {
+        const variables: DebugProtocol.Variable[] = [];
+        const container = this.getContainer(VariableScope.Registers);
+
+        // Create a variable for each register group
+        for (const [groupName, _] of this.registerGroups) {
+            // Count registers in this group
+            let regCount = 0;
+            for (const [_, groups] of this.registerToGroups) {
+                if (groups.includes(groupName)) {
+                    regCount++;
+                }
+            }
+
+            if (regCount === 0) {
+                continue; // Skip empty groups
+            }
+
+            // Capitalize first letter of group name
+            const displayName = groupName.charAt(0).toUpperCase() + groupName.slice(1);
+            
+            // Create a group variable
+            const key = new VariableKeys(0, `${VariableManager.REGGROUP_PREFIX}${groupName}`, encodeReference(threadId, frameId, VariableScope.Registers));
+            let groupVar = container.getVariableByKey(key);
+            
+            if (groupVar === undefined) {
+                const [varObj, handle] = container.createVariable(
+                    VariableScope.Registers,
+                    0,
+                    displayName,
+                    `${regCount} register(s)`,
+                    `reggroup`,
+                    threadId,
+                    frameId,
+                    undefined
+                );
+                varObj.variablesReference = handle;
+                variables.push(varObj.toProtocolVariable());
+            } else {
+                groupVar.value = `${regCount} register(s)`;
+                if (groupVar.variablesReference === 0) {
+                    groupVar.variablesReference = groupVar.handle;
+                }
+                variables.push(groupVar.toProtocolVariable());
+            }
+        }
+
+        // Check if there are registers without any groups and create a "Misc" group for them
+        let miscRegCount = 0;
+        for (let i = 0; i < this.registerNames.size; i++) {
+            const regGroups = this.registerToGroups.get(i);
+            if (!regGroups || regGroups.length === 0) {
+                miscRegCount++;
+            }
+        }
+
+        if (miscRegCount > 0) {
+            const key = new VariableKeys(0, `${VariableManager.REGGROUP_PREFIX}misc`, encodeReference(threadId, frameId, VariableScope.Registers));
+            let groupVar = container.getVariableByKey(key);
+            
+            if (groupVar === undefined) {
+                const [varObj, handle] = container.createVariable(
+                    VariableScope.Registers,
+                    0,
+                    "Misc",
+                    `${miscRegCount} register(s)`,
+                    `reggroup`,
+                    threadId,
+                    frameId,
+                    undefined
+                );
+                varObj.variablesReference = handle;
+                variables.push(varObj.toProtocolVariable());
+            } else {
+                groupVar.value = `${miscRegCount} register(s)`;
+                if (groupVar.variablesReference === 0) {
+                    groupVar.variablesReference = groupVar.handle;
+                }
+                variables.push(groupVar.toProtocolVariable());
+            }
+        }
+
+        return variables;
+    }
+
+    /**
+     * Fallback method that returns a flat list of all registers
+     * Used when register groups are not available
+     */
+    private async getRegisterVariablesFlat(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
+        const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
         return await this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
             const variables: DebugProtocol.Variable[] = [];
             const regs = miOutput.resultRecord.result["register-values"];
@@ -522,7 +753,73 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             // We create a gdb variable in case the user wants to set it. Not really needed for viewing
-                            const gdbVarName = this.creatGdbName(regName.replace("$", "reg-"), threadId, frameId);
+                            const gdbVarName = this.creatGdbName(regName.replace(/\$/g, "reg-"), threadId, frameId);
+                            const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
+                            await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
+                                const record = varCreateRecord.resultRecord.result;
+                                const [varObj] = container.parseMiVariable(regName, record, VariableScope.Registers, 0, threadId, frameId);
+                                varObj.value = r["value"]; // Use this because it is better formatted
+                                if (varObj !== undefined) {
+                                    this.setFields(varObj);
+                                    variables.push(varObj.toProtocolVariable());
+                                }
+                            });
+                        } else {
+                            existingVar.value = r["value"]; // No need for var-update for registers. AFAIK they are fresh each time
+                            this.setFields(existingVar);
+                            variables.push(existingVar.toProtocolVariable());
+                        }
+                    } catch (e) {
+                        if (this.debugSession.args.debugFlags.anyFlags) {
+                            this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register variable ${regName}: ${e}\n`);
+                        }
+                    }
+                }
+            }
+            return variables;
+        });
+    }
+
+    /**
+     * Returns registers for a specific register group
+     */
+    private async getRegistersForGroup(groupName: string, threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
+        const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
+        return await this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
+            const variables: DebugProtocol.Variable[] = [];
+            const regs = miOutput.resultRecord.result["register-values"];
+            if (Array.isArray(regs)) {
+                const container = this.getContainer(VariableScope.Registers);
+                for (const r of regs) {
+                    if (this.gdbInstance.IsRunning()) {
+                        break;
+                    }
+                    const regNumber = parseInt(r["number"]);
+                    const regName = this.registerNames.get(regNumber);
+                    if (regName === undefined) {
+                        continue;
+                    }
+
+                    // Check if this register belongs to the requested group
+                    const regGroups = this.registerToGroups.get(regNumber);
+                    
+                    // Special handling for "misc" group - registers without any groups
+                    if (groupName === "misc") {
+                        if (regGroups && regGroups.length > 0) {
+                            continue; // Skip registers that have groups
+                        }
+                    } else {
+                        if (!regGroups || !regGroups.includes(groupName)) {
+                            continue; // Skip registers not in this group
+                        }
+                    }
+
+                    const key = new VariableKeys(0, regName, encodeReference(threadId, frameId, VariableScope.Registers));
+                    const existingVar = container.getVariableByKey(key);
+                    try {
+                        if (existingVar === undefined) {
+                            // We create a gdb variable in case the user wants to set it. Not really needed for viewing
+                            const gdbVarName = this.creatGdbName(regName.replace(/\$/g, "reg-"), threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
                             await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
                                 const record = varCreateRecord.resultRecord.result;
