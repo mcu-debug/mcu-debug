@@ -1,6 +1,6 @@
 import { IValueIdentifiable, ValueHandleRegistry, ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { GdbEventNames, GdbMiRecord } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiOutput, GdbMiRecord } from "./gdb-mi/mi-types";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { toStringDecHexOctBin } from "./servers/common";
@@ -241,6 +241,7 @@ export class VariableManager {
     private regFormat = "x"; // Default to Natural format
     private registerGroups: RegisterGroupInfo[] = [];
     private registerInfoMap = new Map<number, RegisterInfo>();
+    private registerValuesMap: Map<number, GdbMiOutput> = new Map<number, GdbMiOutput>();
 
     constructor(
         private gdbInstance: GdbInstance,
@@ -283,11 +284,12 @@ export class VariableManager {
         return this.frameHandles.add(h);
     }
 
-    public async clearForContinue() {
+    public clearForContinue() {
         this.localContainer.clear();
         this.dynamicContainer.clear();
         this.frameHandles.clear();
-        await this.clearGdbNames();
+        this.registerValuesMap.clear();
+        this.clearGdbNames();
         if (this.localGdbNames.size > 0) {
             // This will prevent future name clashes, but indicates a bug
             this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Internal error: Not all local GDB variables were deleted on continue: ${Array.from(this.localGdbNames).join(", ")}\n`);
@@ -318,9 +320,8 @@ export class VariableManager {
         }
     }
 
-    public async prepareForStopped() {
-        this.frameHandles.clear();
-        await this.clearGdbNames();
+    public prepareForStopped() {
+        this.clearForContinue();
     }
 
     public getVarOrFrameInfo(handle: VariableReference): [number, number, VariableScope] {
@@ -421,9 +422,16 @@ export class VariableManager {
         const groupName = groupVar.type; // We stored the group name in the type field
         const internalGroups = ["all", "save", "restore"];
 
-        // Get all register values
-        const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
-        return await this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
+        try {
+            // Get all register values
+            const ref = encodeReference(threadId, frameId, VariableScope.Registers);
+            let miOutput: GdbMiOutput = this.registerValuesMap.get(ref);
+            if (!miOutput) {
+                const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
+                miOutput = await this.gdbInstance.sendCommand(cmd);
+                this.registerValuesMap.set(ref, miOutput);
+            }
+
             const variables: DebugProtocol.Variable[] = [];
             const regs = miOutput.resultRecord.result["register-values"];
             if (Array.isArray(regs)) {
@@ -484,7 +492,11 @@ export class VariableManager {
                 }
             }
             return variables;
-        });
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting registers for group ${groupName}: ${e}\n`);
+            }
+        }
     }
 
     creatGdbName(base: string, thread: number, frame: number): string {
