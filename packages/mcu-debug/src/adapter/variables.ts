@@ -1,6 +1,6 @@
 import { IValueIdentifiable, ValueHandleRegistry, ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { GdbEventNames, GdbMiRecord } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiOutput, GdbMiRecord } from "./gdb-mi/mi-types";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { toStringDecHexOctBin } from "./servers/common";
@@ -28,6 +28,7 @@ const ActualScopeMask = 0x7;
 const FrameIDMask = 0xffffff;
 const ThreadIDMask = 0x1ffffff;
 const ScopeMask = 0xf;
+const ScopeMaskSimple = 0x7;
 const ScopeBits = 4;
 const FrameIDBits = 24;
 const ThreadIDBits = 25;
@@ -220,7 +221,8 @@ export type VariableReference = number;
 // Register group information
 interface RegisterGroupInfo {
     name: string;
-    type: "user" | "internal";
+    type: string;
+    registers: string[];
 }
 
 interface RegisterInfo {
@@ -239,6 +241,7 @@ export class VariableManager {
     private regFormat = "x"; // Default to Natural format
     private registerGroups: RegisterGroupInfo[] = [];
     private registerInfoMap = new Map<number, RegisterInfo>();
+    private registerValuesMap: Map<number, GdbMiOutput> = new Map<number, GdbMiOutput>();
 
     constructor(
         private gdbInstance: GdbInstance,
@@ -258,7 +261,7 @@ export class VariableManager {
     }
 
     public getContainer(scope: VariableScope): VariableContainer {
-        let container = this.containers.get(scope);
+        let container = this.containers.get(scope & ActualScopeMask);
         if (!container) {
             throw new Error(`No container for scope ${VariableScope[scope]}`);
         }
@@ -281,11 +284,12 @@ export class VariableManager {
         return this.frameHandles.add(h);
     }
 
-    public async clearForContinue() {
+    public clearForContinue() {
         this.localContainer.clear();
         this.dynamicContainer.clear();
         this.frameHandles.clear();
-        await this.clearGdbNames();
+        this.registerValuesMap.clear();
+        this.clearGdbNames();
         if (this.localGdbNames.size > 0) {
             // This will prevent future name clashes, but indicates a bug
             this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Internal error: Not all local GDB variables were deleted on continue: ${Array.from(this.localGdbNames).join(", ")}\n`);
@@ -316,20 +320,35 @@ export class VariableManager {
         }
     }
 
-    public async prepareForStopped() {
-        this.frameHandles.clear();
-        await this.clearGdbNames();
+    public prepareForStopped() {
+        this.clearForContinue();
+    }
+
+    public getVarOrFrameInfo(handle: VariableReference): [number, number, VariableScope] {
+        if (handle & VariableTypeMask) {
+            const scope = handle & ScopeMask;
+            const container = this.getContainer(scope);
+            const variable = container.getVariableByRef(handle);
+            if (variable === undefined) {
+                throw new Error(`No variable found for reference ${handle}`);
+            }
+            const [threadId, frameId, _] = variable.getThreadFrameInfo();
+            return [threadId, frameId, scope];
+        } else {
+            return this.getFrameInfo(handle);
+        }
     }
 
     public getVariables(args: DebugProtocol.VariablesArguments): Promise<DebugProtocol.Variable[]> {
-        const [threadId, frameId, scope] = this.getFrameInfo(args.variablesReference);
+        const [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference);
         if (scope === VariableScope.Local) {
             return this.getLocalVariables(threadId, frameId);
         } else if (scope === VariableScope.Registers) {
             return this.getRegisterVariables(threadId, frameId);
         } else if (scope & VariableTypeMask) {
             // If this is a variable, we need to get is thread/frame ids from the variable itself
-            const variable = this.localContainer.getVariableByRef(args.variablesReference);
+            const container = this.getContainer(scope);
+            const variable = container.getVariableByRef(args.variablesReference);
             if (variable === undefined) {
                 Promise.reject(new Error(`No variable found for reference ${args.variablesReference}`));
             }
@@ -343,7 +362,7 @@ export class VariableManager {
             // This is a register group, get registers for this group
             return this.getRegistersForGroup(parent);
         }
-        
+
         const cmd = `-var-list-children --simple-values ${parent.gdbVarName}`;
         return this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
             const variables: DebugProtocol.Variable[] = [];
@@ -402,10 +421,17 @@ export class VariableManager {
         const [threadId, frameId, _] = groupVar.getThreadFrameInfo();
         const groupName = groupVar.type; // We stored the group name in the type field
         const internalGroups = ["all", "save", "restore"];
-        
-        // Get all register values
-        const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
-        return await this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
+
+        try {
+            // Get all register values
+            const ref = encodeReference(threadId, frameId, VariableScope.Registers);
+            let miOutput: GdbMiOutput = this.registerValuesMap.get(ref);
+            if (!miOutput) {
+                const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
+                miOutput = await this.gdbInstance.sendCommand(cmd);
+                this.registerValuesMap.set(ref, miOutput);
+            }
+
             const variables: DebugProtocol.Variable[] = [];
             const regs = miOutput.resultRecord.result["register-values"];
             if (Array.isArray(regs)) {
@@ -416,15 +442,15 @@ export class VariableManager {
                     }
                     const regNumber = parseInt(r["number"]);
                     const regInfo = this.registerInfoMap.get(regNumber);
-                    
+
                     if (!regInfo) {
                         continue;
                     }
-                    
+
                     // Filter based on group
                     if (groupName === "misc") {
                         // Misc group contains registers that only belong to internal groups
-                        const userGroups = regInfo.groups.filter(g => !internalGroups.includes(g));
+                        const userGroups = regInfo.groups.filter((g) => !internalGroups.includes(g));
                         if (userGroups.length > 0) {
                             continue; // This register belongs to a user group, skip it
                         }
@@ -434,11 +460,11 @@ export class VariableManager {
                             continue;
                         }
                     }
-                    
+
                     const regName = regInfo.name;
                     const key = new VariableKeys(groupVar.handle, regName, encodeReference(threadId, frameId, VariableScope.Registers));
                     const existingVar = container.getVariableByKey(key);
-                    
+
                     try {
                         if (existingVar === undefined) {
                             // Create a gdb variable for this register
@@ -466,7 +492,11 @@ export class VariableManager {
                 }
             }
             return variables;
-        });
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting registers for group ${groupName}: ${e}\n`);
+            }
+        }
     }
 
     creatGdbName(base: string, thread: number, frame: number): string {
@@ -559,11 +589,9 @@ export class VariableManager {
             return;
         }
         try {
-            const miOutput = await this.gdbInstance.sendCommand(`interpreter-exec console "maint print reggroups"`);
+            const miOutput = await this.gdbInstance.sendCommand(`-interpreter-exec console "maint print reggroups"`);
             // Extract console output from out-of-band records
-            const consoleLines = miOutput.outOfBandRecords
-                .filter(record => record.outputType === "console")
-                .map(record => record.result);
+            const consoleLines = miOutput.outOfBandRecords.filter((record) => record.outputType === "console").map((record) => record.result);
             const consoleOutput = consoleLines.join("");
             const lines = consoleOutput.split("\n");
             for (const line of lines) {
@@ -574,9 +602,9 @@ export class VariableManager {
                 const parts = trimmed.split(/\s+/);
                 if (parts.length >= 2) {
                     const name = parts[0];
-                    const type = parts[1] as "user" | "internal";
-                    if (type === "user") {
-                        this.registerGroups.push({ name, type });
+                    const type = parts[1];
+                    if (type !== "internal") {
+                        this.registerGroups.push({ name, type, registers: [] });
                     }
                 }
             }
@@ -592,14 +620,10 @@ export class VariableManager {
             return;
         }
         try {
-            const miOutput = await this.gdbInstance.sendCommand(`interpreter-exec console "maint print register-groups"`);
+            const miOutput = await this.gdbInstance.sendCommand(`-interpreter-exec console "maint print register-groups"`);
             // Extract console output from out-of-band records
-            const consoleLines = miOutput.outOfBandRecords
-                .filter(record => record.outputType === "console")
-                .map(record => record.result);
-            const consoleOutput = consoleLines.join("");
-            const lines = consoleOutput.split("\n");
-            for (const line of lines) {
+            const consoleLines = miOutput.outOfBandRecords.filter((record) => record.outputType === "console").map((record) => record.result);
+            for (const line of consoleLines) {
                 const trimmed = line.trim();
                 if (!trimmed || trimmed.startsWith("Name")) {
                     continue; // Skip header or empty lines
@@ -618,9 +642,20 @@ export class VariableManager {
                 if (isNaN(number)) {
                     continue;
                 }
-                const groups = groupsStr.split(",").map(g => g.trim()).filter(g => g);
+                const groups = groupsStr
+                    .split(",")
+                    .map((g) => g.trim())
+                    .filter((g) => g);
                 this.registerInfoMap.set(number, { name: `$${name}`, number, groups });
+                for (const groupName of groups) {
+                    const group = this.registerGroups.find((g) => g.name === groupName);
+                    if (group) {
+                        group.registers.push(`$${name}`);
+                    }
+                }
             }
+            // Delete empty groups
+            this.registerGroups = this.registerGroups.filter((g) => g.registers.length > 0);
         } catch (e) {
             if (this.debugSession.args.debugFlags.anyFlags) {
                 this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register group mappings: ${e}\n`);
@@ -635,7 +670,7 @@ export class VariableManager {
         // Fetch register groups and mappings
         await this.getRegisterGroups();
         await this.getRegisterGroupMappings();
-        
+
         if (this.registerGroups.length === 0) {
             // Fallback to old behavior if groups are not available
             return this.getRegisterVariablesFlat(threadId, frameId);
@@ -643,33 +678,33 @@ export class VariableManager {
 
         const variables: DebugProtocol.Variable[] = [];
         const container = this.getContainer(VariableScope.Registers);
-        
+
         // Check if there are registers that don't belong to any user group
         const internalGroups = ["all", "save", "restore"];
         let hasMiscRegisters = false;
         for (const [_, regInfo] of this.registerInfoMap) {
             // Check if register only belongs to internal groups or no groups
-            const userGroups = regInfo.groups.filter(g => !internalGroups.includes(g));
+            const userGroups = regInfo.groups.filter((g) => !internalGroups.includes(g));
             if (userGroups.length === 0) {
                 hasMiscRegisters = true;
                 break;
             }
         }
-        
+
         // Create a variable for each register group
         for (const group of this.registerGroups) {
             // Skip "all" group as it contains all registers and internal groups
             if (internalGroups.includes(group.name)) {
                 continue;
             }
-            
+
             // Capitalize first letter for display
             const displayName = group.name.charAt(0).toUpperCase() + group.name.slice(1);
-            
+
             // Create a group variable
             const key = new VariableKeys(0, displayName, encodeReference(threadId, frameId, VariableScope.Registers));
             let groupVar = container.getVariableByKey(key) as VariableObject | undefined;
-            
+
             if (groupVar === undefined) {
                 const [varObj, handle] = container.createVariable(
                     VariableScope.RegistersVariable,
@@ -678,20 +713,20 @@ export class VariableManager {
                     "", // Value will be empty for group
                     group.name, // Store group name in type field for later use
                     threadId,
-                    frameId
+                    frameId,
                 );
                 groupVar = varObj;
                 groupVar.variablesReference = handle;
             }
-            
+
             variables.push(groupVar.toProtocolVariable());
         }
-        
+
         // Add Misc group if there are registers that don't belong to any user group
         if (hasMiscRegisters) {
             const key = new VariableKeys(0, "Misc", encodeReference(threadId, frameId, VariableScope.Registers));
             let groupVar = container.getVariableByKey(key) as VariableObject | undefined;
-            
+
             if (groupVar === undefined) {
                 const [varObj, handle] = container.createVariable(
                     VariableScope.RegistersVariable,
@@ -700,15 +735,15 @@ export class VariableManager {
                     "", // Value will be empty for group
                     "misc", // Store group name in type field for later use
                     threadId,
-                    frameId
+                    frameId,
                 );
                 groupVar = varObj;
                 groupVar.variablesReference = handle;
             }
-            
+
             variables.push(groupVar.toProtocolVariable());
         }
-        
+
         return variables;
     }
 
