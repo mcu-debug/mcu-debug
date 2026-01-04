@@ -4,6 +4,7 @@ import { GdbEventNames, GdbMiOutput, GdbMiRecord } from "./gdb-mi/mi-types";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { toStringDecHexOctBin } from "./servers/common";
+import { Variable } from "@vscode/debugadapter";
 
 const VariableTypeMask = 1 << 3; // Indicates this is a variable type key for a given scope
 
@@ -50,10 +51,9 @@ export class VariableKeys implements IValueIdentifiable {
         public readonly parent: number,
         public readonly name: string,
         public readonly frameRef: number,
-        public readonly evaluateName?: string,
     ) {}
     toValueKey(): string {
-        return `${this.frameRef}|${this.name}|${this.parent}|${this.evaluateName || ""}`;
+        return `${this.frameRef}|${this.name}|${this.parent} || ""}`;
     }
 }
 
@@ -66,18 +66,17 @@ export class VariableObject extends VariableKeys implements DebugProtocol.Variab
         parent: number,
         name: string,
         frameRef: number,
-        evaluateName: string | undefined,
         public value: string,
         public type: string,
-        public exp: string = "", // Junk field to be removed later
-        public fullExp: string = "", // Junk field to be removed later
+        public exp: string = "",
+        public evaluateName: string = "",
         public id: number = 0, // Junk field to be removed later
-        public children: { [key: string]: string } = {}, // Junk field to be removed later
+        public children: VariableObject[] = [],
         public dynamic: boolean = false, // Mi field
         public hasMore: boolean = false, // Mi field
         public displayHint: string = "", // Mi field
     ) {
-        super(parent, name, frameRef, evaluateName);
+        super(parent, name, frameRef);
         this.scope |= VariableTypeMask;
     }
 
@@ -131,16 +130,15 @@ export class VariableObject extends VariableKeys implements DebugProtocol.Variab
 // the handle (see VariableManager.createVariable)
 export class VariableContainer {
     private variableHandles = new ValueHandleRegistry<VariableKeys>();
-    public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number, evaluateName?: string): [VariableObject, number] {
+    public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number): [VariableObject, number] {
         const varRef = encodeReference(threadId, frameId, scope & ActualScopeMask);
-        const variable = new VariableObject(scope, parent, name, varRef, evaluateName, value, type);
+        const variable = new VariableObject(scope, parent, name, varRef, value, type);
         const handle = this.variableHandles.addObject(variable);
         variable.handle = (handle << ScopeBits) | (scope & ScopeMask); // Shift left to make room for scope bits
         return [variable, variable.handle];
     }
 
     public parseMiVariable(name: string, record: GdbMiRecord, scope: VariableScope, parent: number, threadId: number, frameId: number): [VariableObject | undefined, number | undefined] {
-        const gdbVarName = record["name"];
         const value = record["value"];
         const type = record["type"] || "unknown";
         if (name === undefined || value === undefined) {
@@ -148,7 +146,9 @@ export class VariableContainer {
         }
         // Mi variables don't have scope, parent, frameRef, evaluateName info
         const [varObj, handle] = this.createVariable(scope, parent, name, value, type, threadId, frameId);
-        varObj.gdbVarName = gdbVarName;
+        varObj.gdbVarName = record["name"];
+        varObj.exp = record["exp"] || name;
+        varObj.evaluateName = varObj.exp; // For now, fullExp is same as exp. It may change later. For root variables, they are the same
         varObj.applyChanges(record);
         return [varObj, handle];
     }
@@ -183,17 +183,17 @@ export class VariableContainerForGlobals extends VariableContainer {
     private fildIdToFile = new Map<number, string>();
     private nextFileId = 1; // Start from 1, 0 means all files
 
-    public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName?: string, evaluateName?: string): [VariableObject, number] {
+    public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName?: string): [VariableObject, number] {
         let fileId = fileName ? this.fileToIdMap.get(fileName) : 0;
         if (fileName && fileId === undefined) {
             fileId = this.nextFileId++;
             this.fileToIdMap.set(fileName, fileId);
             this.fildIdToFile.set(fileId, fileName);
         }
-        return super.createVariable(scope, parent, name, value, type, fileId || 0, 0, evaluateName);
+        return super.createVariable(scope, parent, name, value, type, fileId || 0, 0);
     }
 
-    public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number, evaluateName?: string): [VariableObject, number] {
+    public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number): [VariableObject, number] {
         throw new Error("Use createGlobalVariable for globals/statics");
     }
 }
@@ -356,62 +356,53 @@ export class VariableManager {
         }
     }
 
-    getVariableChildren(parent: VariableObject): Promise<DebugProtocol.Variable[]> {
-        // Check if this is a register group variable
-        if (parent.scope === VariableScope.RegistersVariable && !parent.gdbVarName) {
-            // This is a register group, get registers for this group
-            return this.getRegistersForGroup(parent);
-        }
-
-        const cmd = `-var-list-children --simple-values ${parent.gdbVarName}`;
-        return this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
-            const variables: DebugProtocol.Variable[] = [];
-            const children = miOutput.resultRecord.result["children"];
-            if (Array.isArray(children)) {
-                const container = this.getContainer(parent.scope);
-                for (const child of children) {
-                    if (this.gdbInstance.IsRunning()) {
-                        break;
-                    }
-                    const exp = child["exp"];
-                    const fullExp = `${parent.fullExp}.${exp}`;
-                    const key = new VariableKeys(parent.handle, child["name"], parent.frameRef);
-                    const existingVar = container.getVariableByKey(key);
-                    try {
-                        if (existingVar === undefined) {
-                            const [threadId, frameId, _] = parent.getThreadFrameInfo();
-                            const varName = child["name"];
-                            const gdbVarName = this.creatGdbName(varName, threadId, frameId);
-                            const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${parent.gdbVarName}.${varName}`;
-                            await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
-                                const record = varCreateRecord.resultRecord.result;
-                                const [varObj, handle] = container.parseMiVariable(varName, record, parent.scope, parent.handle, threadId, frameId);
-                                if (varObj !== undefined) {
-                                    variables.push(varObj.toProtocolVariable());
-                                    if (record["numchildren"] && parseInt(record["numchildren"]) > 0) {
-                                        varObj.variablesReference = handle!;
-                                    }
-                                }
-                            });
-                        } else {
-                            await this.gdbInstance.sendCommand(`-var-update --simple-values ${existingVar.gdbVarName}`).then((varUpdateRecord) => {
-                                const record = varUpdateRecord.resultRecord.result;
-                                if (record["in_scope"] && record["in_scope"] !== "true") {
-                                    return; // Variable is out of scope, skip it. Not sure why this would happen
-                                }
-                                existingVar.applyChanges(record);
-                                variables.push(existingVar.toProtocolVariable());
-                            });
-                        }
-                    } catch (e) {
-                        if (this.debugSession.args.debugFlags.anyFlags) {
-                            this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting child variable ${child["name"]}: ${e}\n`);
-                        }
-                    }
+    public async varListChildren(container: VariableContainer, parent: VariableObject, name: string, threadId: number, frameId: number): Promise<VariableObject[]> {
+        const miOutput = await this.gdbInstance.sendCommand(`var-list-children --simple-values "${name}"`);
+        const keywords = ["private", "protected", "public"];
+        const children = miOutput.resultRecord.result["children"] || [];
+        const ret: VariableObject[] = [];
+        for (const item of children) {
+            const gdbVarName = item["name"];
+            const exp = item["exp"];
+            if (exp && exp.startsWith("<anonymous ")) {
+                ret.push(...(await this.varListChildren(container, parent, gdbVarName, threadId, frameId)));
+            } else if (exp && keywords.find((x) => x === exp)) {
+                ret.push(...(await this.varListChildren(container, parent, gdbVarName, threadId, frameId)));
+            } else {
+                const [child, handle] = container.parseMiVariable(item["exp"], item, parent.scope, parent.handle, threadId, frameId);
+                child.evaluateName = /^\d+$/.test(child.exp) ? `${parent.evaluateName}[${child.exp}]` : `${parent.evaluateName}.${child.exp}`;
+                if (item["numchild"] && parseInt(item["numchild"]) > 0) {
+                    child.variablesReference = handle!;
                 }
+                child.applyChanges(item);
+                ret.push(child);
             }
-            return variables;
-        });
+        }
+        return ret;
+    }
+
+    async getVariableChildren(parent: VariableObject): Promise<DebugProtocol.Variable[]> {
+        try {
+            // Check if this is a register group variable
+            if (parent.scope === VariableScope.RegistersVariable && !parent.gdbVarName) {
+                // This is a register group, get registers for this group
+                return this.getRegistersForGroup(parent);
+            }
+            const container = this.getContainer(parent.scope);
+            const [threadId, frameId, _] = parent.getThreadFrameInfo();
+            const children = await this.varListChildren(this.getContainer(parent.scope), parent, parent.gdbVarName, threadId, frameId);
+            parent.children = children;
+            const protoVars: DebugProtocol.Variable[] = [];
+            for (const child of children) {
+                protoVars.push(child.toProtocolVariable());
+            }
+            return protoVars;
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting children for variable ${parent.evaluateName}: ${e}\n`);
+            }
+            return Promise.reject(e);
+        }
     }
 
     /**
@@ -532,10 +523,10 @@ export class VariableManager {
                                 const record = varCreateRecord.resultRecord.result;
                                 const [varObj, handle] = container.parseMiVariable(varName, record, VariableScope.LocalVariable, 0, threadId, frameId);
                                 if (varObj !== undefined) {
-                                    variables.push(varObj.toProtocolVariable());
-                                    if (record["numchildren"] && parseInt(record["numchildren"]) > 0) {
+                                    if (record["numchild"] && parseInt(record["numchild"]) > 0) {
                                         varObj.variablesReference = handle!;
                                     }
+                                    variables.push(varObj.toProtocolVariable());
                                 }
                             });
                         } else {

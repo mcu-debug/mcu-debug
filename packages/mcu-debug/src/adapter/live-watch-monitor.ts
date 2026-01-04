@@ -274,12 +274,12 @@ export class VariablesHandler {
                         }
                     } else {
                         children = await miDebugger.varListChildren(args.variablesReference, id.name);
-                        pVar.children = {}; // Clear in case type changed, dynamic variable, etc.
+                        pVar.children = []; // Clear in case type changed, dynamic variable, etc.
                         for (const child of children || []) {
                             const varId = this.findOrCreateVariable(child);
                             child.id = varId;
                             if (/^\d+$/.test(child.exp)) {
-                                child.fullExp = `${pVar.fullExp || pVar.exp}[${child.exp}]`;
+                                child.evaluateName = `${pVar.evaluateName || pVar.exp}[${child.exp}]`;
                             } else {
                                 let suffix = "." + child.exp; // A normal suffix
                                 if (child.exp.startsWith("<anonymous")) {
@@ -296,7 +296,7 @@ export class VariablesHandler {
                                     // of anonymous stuff. Might as well store all of them or set-value will not work.
                                     pVar.children[child.exp] = child.name;
                                 }
-                                child.fullExp = `${pVar.fullExp || pVar.exp}${suffix}`;
+                                child.evaluateName = `${pVar.evaluateName || pVar.exp}${suffix}`;
                             }
                             vars.push(child.toProtocolVariable());
                         }
