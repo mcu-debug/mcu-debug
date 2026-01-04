@@ -463,9 +463,9 @@ export class VariableManager {
     /**
      *
      * TODO: Current implementation is too simple. We create one flat list of all registers. What we want
-     * is to create groups for different register sets (core, fpu, mpu, etc.) and have those as
+     * is to create groups for different register sets (core, fpu, sse, etc.) and have those as
      * top level variables with children. Of course the groups vary by architecture so we need to get
-     * that info from somewhere. Not sure GDB provides that. This is what I know
+     * that info from somewhere. This is what I know
      *
      * `maint print reggroups` -> shows the register groups known to GDB. We can ignore groups marked
      *  as "internal" type. Sample output:
@@ -492,6 +492,10 @@ export class VariableManager {
      * We are interested in columns 0, 1 and last. Anything less than 6 columns is ignored.
      * If groups is empty, we can put it in a "misc" group. Capitalize the first letter of the group
      * name for display.
+     *
+     * Insted of just using -data-list-register-names just once, we can also use the above commands
+     * to get the register names and groupings. We can cache the results for future use (only as an
+     * optimization) but they should only be shown when the user expands a  registe group.
      */
     private async getRegisterVariables(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
         const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
