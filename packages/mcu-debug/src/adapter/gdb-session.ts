@@ -8,7 +8,7 @@ import os from "os";
 import fs from "fs";
 import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
 import { decodeReference, encodeReference, VariableContainer, VariableManager, VariableScope } from "./variables";
@@ -302,9 +302,61 @@ export class GDBDebugSession extends SeqDebugSession {
     protected setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
-    protected evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+    protected async evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, request?: DebugProtocol.Request): Promise<void> {
+        response.body = {
+            result: "",
+            variablesReference: 0,
+        };
+        try {
+            if (args.context === "repl") {
+                await this.evalRepl(args.expression, response);
+                return;
+            }
+        } catch (e) {
+            this.handleErrResponse(response, `Evaluate request failed: ${e}`);
+        }
     }
+    private async evalRepl(expr: string, response: DebugProtocol.EvaluateResponse): Promise<void> {
+        expr = expr.trim().replace(/"/g, '\\"');
+        // These commands have special handling in the REPL. For some reason, they don't work well or at all
+        const mappings: { [key: string]: string } = {
+            continue: "-exec-continue",
+            c: "-exec-continue",
+            cont: "-exec-continue",
+            step: "-exec-step",
+            s: "-exec-step",
+            next: "-exec-next",
+            n: "-exec-next",
+            finish: "-exec-finish",
+            f: "-exec-finish",
+            break: "-break-insert",
+            b: "-break-insert",
+            run: "-exec-run",
+            r: "-exec-run",
+        };
+        const splits = expr.split(/\s+/);
+        const cmd = mappings[splits[0]];
+        if (cmd) {
+            expr = cmd + " " + splits.slice(1).join(" ");
+        }
+        const isMi = expr.startsWith("-");
+        if (!expr.startsWith("-")) {
+            expr = `-interpreter-exec console "${expr}"`;
+        }
+        this.handleMsg(Stdout, `${expr}\n`);
+        await this.gdbInstance
+            .sendCommand(expr)
+            .then((out) => {
+                if (isMi) {
+                    this.handleMsg(Stdout, `^done\n`);
+                }
+                this.sendResponse(response);
+            })
+            .catch((e) => {
+                this.handleErrResponse(response, `Evaluate request '${expr}' failed: ${e}`);
+            });
+    }
+
     protected stepInTargetsRequest(response: DebugProtocol.StepInTargetsResponse, args: DebugProtocol.StepInTargetsArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }

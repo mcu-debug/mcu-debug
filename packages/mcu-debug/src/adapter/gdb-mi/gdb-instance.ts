@@ -170,7 +170,7 @@ export class GdbInstance extends EventEmitter {
         if (this.debugFlags.gdbTraces) {
             this.log(Console, "-> " + line);
         }
-        const miOutput = parseGdbMiOut(line);
+        let miOutput = parseGdbMiOut(line);
         if (miOutput) {
             if (this.debugFlags.gdbTracesParsed) {
                 this.log(Console, "~~ " + JSON.stringify(miOutput));
@@ -183,12 +183,14 @@ export class GdbInstance extends EventEmitter {
                         const errorMsg = miOutput.resultRecord.result["msg"] || "Unknown error";
                         pendingCmd.reject(new Error(`GDB MI Error: ${errorMsg}`));
                     } else {
+                        const saved = { ...miOutput };
                         if (miOutput.outOfBandRecords.length == 0 && this.currentOutofBandRecords.length > 0) {
                             // We don't have any outOfBandRecords in this output, but we have some saved, these
                             // are from a console output from a previous command like -interpreter-exec
                             miOutput.outOfBandRecords = this.currentOutofBandRecords;
                         }
                         pendingCmd.resolve(miOutput);
+                        miOutput = saved;
                     }
                     this.currentOutofBandRecords = [];
                     this.pendingCmds.delete(token);
