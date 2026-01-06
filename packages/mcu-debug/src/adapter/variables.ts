@@ -879,7 +879,7 @@ export class VariableManager {
             suffix = "";
         }
 
-        const okChars = /[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_,]/g;
+        const okChars = /[^a-zA-Z0-9_,]/g;
         const gdbName = "W-" + newExpr.replaceAll(okChars, "-");
 
         return [this.createGdbName(gdbName, thread, frame), newExpr, suffix];
@@ -948,6 +948,93 @@ export class VariableManager {
                 variablesReference: 0,
             };
         }
+    }
+
+    public async setVariable(args: DebugProtocol.SetVariableArguments): Promise<DebugProtocol.SetVariableResponse["body"]> {
+        const varObject = this.getVariableObject(args.variablesReference);
+        if (!varObject) {
+            throw new Error(`Variable reference ${args.variablesReference} not found`);
+        }
+
+        // Find the child variable by name
+        const scope = varObject.scope;
+        const container = this.getContainer(scope);
+        const [threadId, frameId, _] = varObject.getThreadFrameInfo();
+
+        // Look for the variable in the container
+        const childKey = new VariableKeys(args.variablesReference, args.name, encodeReference(threadId, frameId, scope));
+        const childVar = container.getVariableByKey(childKey);
+
+        if (!childVar || !childVar.gdbVarName) {
+            throw new Error(`Variable ${args.name} not found or has no GDB name`);
+        }
+
+        // Use -var-assign to set the value
+        const cmd = `-var-assign ${childVar.gdbVarName} "${args.value}"`;
+        const miOutput = await this.gdbInstance.sendCommand(cmd);
+        const record = miOutput.resultRecord.result;
+
+        if (!record || !record["value"]) {
+            throw new Error(`Failed to set variable ${args.name}`);
+        }
+
+        // Update the variable with the new value
+        childVar.value = record["value"];
+        childVar.variablesReference = 0; // Reset children when value changes
+
+        return {
+            value: childVar.value,
+            variablesReference: childVar.variablesReference,
+        };
+    }
+
+    public async setExpression(args: DebugProtocol.SetExpressionArguments): Promise<DebugProtocol.SetExpressionResponse["body"]> {
+        const [thread, frame, _] = args.frameId ? this.getVarOrFrameInfo(args.frameId!) : [0, 0, VariableScope.Global];
+        const scope = VariableScope.WatchVariable;
+        const container = this.getContainer(scope);
+
+        // Check if this expression already exists as a watch variable
+        const existingVar = container.getVariableByKey(new VariableKeys(0, args.expression.trim(), encodeReference(thread, frame, scope)));
+
+        let gdbVarName: string;
+
+        if (existingVar && existingVar.gdbVarName) {
+            // Use existing variable
+            gdbVarName = existingVar.gdbVarName;
+        } else {
+            // Create a new variable for this expression
+            const [gdbName, expr, _suffix] = this.fmtExpr(args.expression, thread, frame);
+            let cmd = `-var-create --thread ${thread} --frame ${frame} ${gdbName} * "${expr}"`;
+            if (thread === 0 && frame === 0) {
+                cmd = `-var-create ${gdbName} @ "${expr}"`;
+            }
+            const miOutput = await this.gdbInstance.sendCommand(cmd);
+            const record = miOutput.resultRecord.result;
+            if (!record) {
+                throw new Error(`Failed to create variable for expression ${args.expression}`);
+            }
+            gdbVarName = gdbName;
+
+            // Store the variable
+            const value = record["value"] ?? "";
+            const [newVar, _handle] = container.createVariable(scope, 0, args.expression.trim(), value, record["type"], thread, frame);
+            newVar.applyChanges(record);
+            newVar.gdbVarName = gdbName;
+        }
+
+        // Use -var-assign to set the value
+        const cmd = `-var-assign ${gdbVarName} "${args.value}"`;
+        const miOutput = await this.gdbInstance.sendCommand(cmd);
+        const record = miOutput.resultRecord.result;
+
+        if (!record || !record["value"]) {
+            throw new Error(`Failed to set expression ${args.expression}`);
+        }
+
+        return {
+            value: record["value"],
+            variablesReference: 0,
+        };
     }
 }
 

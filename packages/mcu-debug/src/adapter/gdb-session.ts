@@ -70,8 +70,8 @@ export class GDBDebugSession extends SeqDebugSession {
         response.body.supportsLogPoints = true;
         response.body.supportsFunctionBreakpoints = true;
         response.body.supportsEvaluateForHovers = true;
-        // response.body.supportsSetVariable = true;
-        // response.body.supportsSetExpression = true;
+        response.body.supportsSetVariable = true;
+        response.body.supportsSetExpression = true;
 
         // We no longer support a 'Restart' request. However, VSCode will implement a replacement by terminating the
         // current session and starting a new one from scratch. But, we still have to support the launch.json
@@ -87,7 +87,7 @@ export class GDBDebugSession extends SeqDebugSession {
         // response.body.supportsSteppingGranularity = true;
         // response.body.supportsInstructionBreakpoints = true;
         response.body.supportsReadMemoryRequest = true;
-        // response.body.supportsWriteMemoryRequest = true;
+        response.body.supportsWriteMemoryRequest = true;
 
         this.sendResponse(response);
     }
@@ -306,11 +306,29 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         this.sendResponse(response);
     }
-    protected setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+    protected async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments, request?: DebugProtocol.Request): Promise<void> {
+        if (this.isBusy()) {
+            this.handleErrResponse(response, "SetVariable request received while target is running.");
+            return;
+        }
+        try {
+            response.body = await this.varManager.setVariable(args);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `SetVariable request failed: ${e}`);
+        }
     }
-    protected setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+    protected async setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments, request?: DebugProtocol.Request): Promise<void> {
+        if (this.isBusy()) {
+            this.handleErrResponse(response, "SetExpression request received while target is running.");
+            return;
+        }
+        try {
+            response.body = await this.varManager.setExpression(args);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `SetExpression request failed: ${e}`);
+        }
     }
     protected async evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, request?: DebugProtocol.Request): Promise<void> {
         if (this.isBusy()) {
@@ -503,8 +521,54 @@ export class GDBDebugSession extends SeqDebugSession {
             this.handleErrResponse(response, `Read memory error: ${error.toString()}`);
         }
     }
-    protected writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+    protected async writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments, request?: DebugProtocol.Request): Promise<void> {
+        try {
+            if (this.isBusy()) {
+                this.busyError(response, args);
+                return;
+            }
+
+            // Parse memory reference per DAP spec: "0x" prefix = hex, no prefix = decimal
+            const parseAddress = (addr: string): bigint => {
+                const trimmed = addr.trim();
+                return BigInt(trimmed);
+            };
+
+            const startAddress = parseAddress(args.memoryReference);
+            const offset = BigInt(args.offset || 0);
+            const useAddr = startAddress + offset;
+
+            // Format as hex with 0x prefix
+            const formatAddress = (addr: bigint): string => {
+                return "0x" + addr.toString(16);
+            };
+
+            const useAddrHex = formatAddress(useAddr);
+
+            // Convert base64 data to hex string (no 0x prefix for GDB command)
+            const hexData = Buffer.from(args.data, "base64").toString("hex");
+
+            if (hexData.length === 0) {
+                response.body = {
+                    bytesWritten: 0,
+                };
+                this.sendResponse(response);
+                return;
+            }
+
+            const command = `-data-write-memory-bytes "${useAddrHex}" "${hexData}"`;
+            await this.gdbInstance.sendCommand(command);
+
+            // Calculate bytes written (each hex pair is one byte)
+            const bytesWritten = hexData.length / 2;
+
+            response.body = {
+                bytesWritten: bytesWritten,
+            };
+            this.sendResponse(response);
+        } catch (error) {
+            this.handleErrResponse(response, `Write memory error: ${error.toString()}`);
+        }
     }
     protected disassembleRequest(response: DebugProtocol.DisassembleResponse, args: DebugProtocol.DisassembleArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
