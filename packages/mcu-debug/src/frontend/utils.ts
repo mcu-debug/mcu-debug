@@ -1,27 +1,33 @@
 export function hexFormat(value: number, padding: number = 8, includePrefix: boolean = true): string {
     let base = (value >>> 0).toString(16);
-    base = base.padStart(padding, '0');
-    return includePrefix ? '0x' + base : base;
+    base = base.padStart(padding, "0");
+    return includePrefix ? "0x" + base : base;
+}
+
+export function hexFormat64(value: bigint, padding: number = 16, includePrefix: boolean = true): string {
+    let base = value.toString(16);
+    base = base.padStart(padding, "0");
+    return includePrefix ? "0x" + base : base;
 }
 
 export function binaryFormat(value: number, padding: number = 0, includePrefix: boolean = true, group: boolean = false): string {
     let base = (value >>> 0).toString(2);
     while (base.length < padding) {
-        base = '0' + base;
+        base = "0" + base;
     }
 
     if (group) {
         const nibRem = 4 - (base.length % 4);
         for (let i = 0; i < nibRem; i++) {
-            base = '0' + base;
+            base = "0" + base;
         }
         const groups = base.match(/[01]{4}/g);
-        base = groups.join(' ');
+        base = groups.join(" ");
 
         base = base.substring(nibRem);
     }
 
-    return includePrefix ? '0b' + base : base;
+    return includePrefix ? "0b" + base : base;
 }
 
 export function createMask(offset: number, width: number) {
@@ -41,38 +47,38 @@ export function extractBits(value: number, offset: number, width: number) {
 }
 
 export function parseInteger(value: string): number {
-    if ((/^0b([01]+)$/i).test(value)) {
+    if (/^0b([01]+)$/i.test(value)) {
         return parseInt(value.substring(2), 2);
     }
-    if ((/^0x([0-9a-f]+)$/i).test(value)) {
+    if (/^0x([0-9a-f]+)$/i.test(value)) {
         return parseInt(value.substring(2), 16);
     }
-    if ((/^[0-9]+/i).test(value)) {
+    if (/^[0-9]+/i.test(value)) {
         return parseInt(value, 10);
     }
-    if ((/^#[0-1]+/i).test(value)) {
+    if (/^#[0-1]+/i.test(value)) {
         return parseInt(value.substring(1), 2);
     }
     return undefined;
 }
 
 export function parseDimIndex(spec: string, count: number): string[] {
-    if (spec.indexOf(',') !== -1) {
-        const components = spec.split(',').map((c) => c.trim());
+    if (spec.indexOf(",") !== -1) {
+        const components = spec.split(",").map((c) => c.trim());
         if (components.length !== count) {
-            throw new Error('dimIndex Element has invalid specification.');
+            throw new Error("dimIndex Element has invalid specification.");
         }
         return components;
     }
 
     if (/^([0-9]+)-([0-9]+)$/i.test(spec)) {
-        const parts = spec.split('-').map((p) => parseInteger(p));
+        const parts = spec.split("-").map((p) => parseInteger(p));
         const start = parts[0];
         const end = parts[1];
 
         const numElements = end - start + 1;
         if (numElements < count) {
-            throw new Error('dimIndex Element has invalid specification.');
+            throw new Error("dimIndex Element has invalid specification.");
         }
 
         const components: string[] = [];
@@ -89,7 +95,7 @@ export function parseDimIndex(spec: string, count: number): string[] {
 
         const numElements = end - start + 1;
         if (numElements < count) {
-            throw new Error('dimIndex Element has invalid specification.');
+            throw new Error("dimIndex Element has invalid specification.");
         }
 
         const components: string[] = [];

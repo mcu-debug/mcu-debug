@@ -15,7 +15,7 @@ import { decodeReference, encodeReference, VariableContainer, VariableManager, V
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
-import { hexFormat } from "../frontend/utils";
+import { hexFormat, hexFormat64 } from "../frontend/utils";
 import { BreakpointManager } from "./breakpoints";
 export class SymbolManager {
     constructor() {}
@@ -50,12 +50,16 @@ export class GDBDebugSession extends SeqDebugSession {
         this.bkptManager = new BreakpointManager(this.gdbInstance!, this);
     }
 
-    handleErrResponse(response: DebugProtocol.Response, msg: string): void {
+    public handleErrResponse(response: DebugProtocol.Response, msg: string, message?: DebugProtocol.Message): void {
         if (!msg.startsWith("mcu-debug")) {
             msg = "mcu-debug: " + msg;
         }
         this.handleMsg(GdbEventNames.Stderr, msg + "\n");
-        this.sendErrorResponse(response, 1, msg);
+        this.sendErrorResponse(response, message ?? 1, msg);
+    }
+    public busyError(response: DebugProtocol.Response, args: any) {
+        response.message = "notStopped";
+        this.handleErrResponse(response, "Target is running. Cannot process request now.", { id: 2, format: "Busy" });
     }
     protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
         response.body = response.body || {};
@@ -82,7 +86,7 @@ export class GDBDebugSession extends SeqDebugSession {
         // response.body.supportsDisassembleRequest = true;
         // response.body.supportsSteppingGranularity = true;
         // response.body.supportsInstructionBreakpoints = true;
-        // response.body.supportsReadMemoryRequest = true;
+        response.body.supportsReadMemoryRequest = true;
         // response.body.supportsWriteMemoryRequest = true;
 
         this.sendResponse(response);
@@ -430,8 +434,74 @@ export class GDBDebugSession extends SeqDebugSession {
             Promise.resolve();
         }
     }
-    protected readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+
+    protected async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments, request?: DebugProtocol.Request): Promise<void> {
+        try {
+            if (this.isBusy()) {
+                this.busyError(response, args);
+                return;
+            }
+
+            // Parse memory reference per DAP spec: "0x" prefix = hex, no prefix = decimal
+            const parseAddress = (addr: string): bigint => {
+                const trimmed = addr.trim();
+                // BigInt handles both "0x..." (hex) and plain numbers (decimal)
+                return BigInt(trimmed);
+            };
+
+            const startAddress = parseAddress(args.memoryReference);
+            const length = args.count;
+            const offset = BigInt(args.offset || 0);
+            const useAddr = startAddress + offset;
+
+            // Format as hex with 0x prefix - no padding to allow flexibility for 32/64-bit
+            const formatAddress = (addr: bigint): string => {
+                return "0x" + addr.toString(16);
+            };
+
+            const useAddrHex = formatAddress(useAddr);
+
+            if (length === 0) {
+                response.body = {
+                    address: useAddrHex,
+                    data: "",
+                };
+                this.sendResponse(response);
+                return;
+            }
+
+            const command = `-data-read-memory-bytes "${useAddrHex}" ${length}`;
+            const miOutput = await this.gdbInstance.sendCommand(command);
+            const record = miOutput.resultRecord.result;
+            const memoryArray = record["memory"];
+
+            if (!memoryArray || !Array.isArray(memoryArray) || memoryArray.length === 0) {
+                throw new Error("No memory data returned from GDB");
+            }
+
+            // Error out if GDB returned multiple memory chunks (e.g., spanning regions)
+            if (memoryArray.length > 1) {
+                throw new Error(`Memory request spans multiple regions (${memoryArray.length} chunks). This can happen when memory crosses protection boundaries or unmapped regions.`);
+            }
+
+            const memory = memoryArray[0];
+
+            // GDB always returns hex with "0x" prefix - parse back to BigInt
+            const begin = parseAddress(memory["begin"] || "0x0");
+            const recordOffset = parseAddress(memory["offset"] || "0x0");
+            const actualStart = begin + recordOffset; // BigInt arithmetic stays 64-bit clean
+
+            const contents = memory["contents"] || "";
+            const b64Data = Buffer.from(contents, "hex").toString("base64");
+
+            response.body = {
+                data: b64Data,
+                address: formatAddress(actualStart),
+            };
+            this.sendResponse(response);
+        } catch (error) {
+            this.handleErrResponse(response, `Read memory error: ${error.toString()}`);
+        }
     }
     protected writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
