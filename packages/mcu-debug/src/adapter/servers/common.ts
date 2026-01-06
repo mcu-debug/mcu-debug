@@ -264,6 +264,7 @@ export interface DebugFlags {
     gdbTracesParsed?: boolean;
     timestamps?: boolean;
     disableGdbTimeouts?: boolean;
+    pathResolution?: boolean;
     anyFlags?: boolean;
 }
 

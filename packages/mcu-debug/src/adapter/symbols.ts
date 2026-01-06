@@ -1,7 +1,7 @@
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { SpawnLineReader, SymbolFile, validateELFHeader } from "./servers/common";
+import { SpawnLineReader, SymbolFile, validateELFHeader, canonicalizePath } from "./servers/common";
 // import { IntervalTree, Interval } from "node-interval-tree";
 import { Interval, IntervalTree } from "@flatten-js/interval-tree";
 
@@ -344,7 +344,7 @@ export class SymbolTable {
         if (match) {
             if (match[7] === "d" && match[8] === "f") {
                 if (match[11]) {
-                    cxt.curObjFile = SymbolTable.NormalizePath(match[11].trim());
+                    cxt.curObjFile = canonicalizePath(match[11].trim());
                 } else {
                     // This can happen with C++. Inline and template methods/variables/functions/etc. are listed with
                     // an empty file association. So, symbols after this line can come from multiple compilation
@@ -379,11 +379,18 @@ export class SymbolTable {
             const addr = parseInt(match[1], 16);
             const section = symF.sectionMap[secName];
             const newaddr = addr + (section ? addr - section.addressOrig : offset);
+
+            // Canonicalize file path and add variations
+            let canonicalFile = cxt.curObjFile;
+            if (canonicalFile) {
+                this.addPathVariations(canonicalFile);
+            }
+
             const sym: SymbolInformation = {
                 addressOrig: addr,
                 address: newaddr,
                 name: name,
-                file: cxt.curObjFile,
+                file: canonicalFile,
                 type: type,
                 scope: scope,
                 section: secName,
@@ -549,7 +556,7 @@ export class SymbolTable {
         if (match) {
             const offset = symF.offset || 0;
             const address = parseInt(match[1], 16) + offset;
-            const file = SymbolTable.NormalizePath(match[2]);
+            const file = canonicalizePath(match[2]);
             this.addressToFileOrig.set(address, file);
             this.addPathVariations(file);
         }
@@ -673,12 +680,23 @@ export class SymbolTable {
     }
 
     private addPathVariations(fileString: string) {
-        const curName = SymbolTable.NormalizePath(fileString);
-        const curSimpleName = path.basename(curName);
-        this.addToFileMap(curSimpleName, curSimpleName);
-        this.addToFileMap(curSimpleName, curName);
-        this.addToFileMap(curName, curSimpleName);
-        return { curSimpleName, curName };
+        const canonical = canonicalizePath(fileString);
+        const basename = path.basename(canonical);
+
+        // Bidirectional mapping: basename <-> canonical
+        this.addToFileMap(basename, canonical);
+        this.addToFileMap(canonical, basename);
+
+        // Add partial paths (e.g., src/utils/helper.c -> utils/helper.c, helper.c)
+        const parts = canonical.split("/");
+        for (let i = 1; i < parts.length; i++) {
+            const partial = parts.slice(i).join("/");
+            this.addToFileMap(partial, canonical);
+            this.addToFileMap(canonical, partial);
+        }
+
+        this.logPathResolution(`Added variations for ${fileString} -> canonical: ${canonical}, basename: ${basename}`);
+        return { curSimpleName: basename, curName: canonical };
     }
 
     public getFunctionAtAddress(address: number): SymbolInformation {
@@ -701,16 +719,6 @@ export class SymbolTable {
     }
 
     public async getStaticVariableNames(file: string): Promise<string[]> {
-        /*
-        if (this.varsByFile) {
-            const nfile = SymbolTable.NormalizePath(file);
-            const obj = this.varsByFile[nfile] || this.varsByFile[file];
-            if (obj) {
-                return obj.staticNames; // Could be empty array
-            }
-            return null;
-        }
-            */
         await this.finishNmSymbols();
         const syms = this.getStaticVariables(file);
         const ret = syms.map((s) => s.name);
@@ -721,53 +729,95 @@ export class SymbolTable {
         if (!file) {
             return [];
         }
-        const nfile = SymbolTable.NormalizePath(file);
-        let ret = this.staticsByFile[file];
-        if (!ret) {
-            ret = [];
-            for (const s of this.staticVars) {
-                if (s.file === nfile || s.file === file) {
-                    ret.push(s);
-                } else {
-                    const maps = this.fileMap[s.file];
-                    if (maps && maps.indexOf(nfile) !== -1) {
+
+        const canonical = canonicalizePath(file);
+        this.logPathResolution(`Looking up static variables for: ${file} (canonical: ${canonical})`);
+
+        // Check cache with canonical path
+        let ret = this.staticsByFile[canonical];
+        if (ret) {
+            this.logPathResolution(`  Found ${ret.length} cached statics for ${canonical}`);
+            return ret;
+        }
+
+        // Build list of search variants
+        const searchVariants = new Set<string>([canonical, path.basename(canonical)]);
+        const knownVariants = this.fileMap[canonical];
+        if (knownVariants) {
+            knownVariants.forEach((v) => searchVariants.add(v));
+        }
+
+        ret = [];
+        for (const s of this.staticVars) {
+            if (!s.file) continue;
+
+            // Direct match
+            if (searchVariants.has(s.file)) {
+                ret.push(s);
+                continue;
+            }
+
+            // Check symbol's file variants
+            const symFileVariants = this.fileMap[s.file];
+            if (symFileVariants) {
+                for (const variant of searchVariants) {
+                    if (symFileVariants.includes(variant)) {
                         ret.push(s);
-                    } else if (maps && maps.indexOf(file) !== -1) {
-                        ret.push(s);
+                        break;
                     }
                 }
             }
-            this.staticsByFile[file] = ret;
         }
+
+        this.logPathResolution(`  Found ${ret.length} static variables after variant search`);
+        this.staticsByFile[canonical] = ret;
         return ret;
     }
 
     public getFunctionByName(name: string, file?: string): SymbolInformation {
         if (file) {
-            // Try to find static function first
-            const nfile = SymbolTable.NormalizePath(file);
+            const canonical = canonicalizePath(file);
+            this.logPathResolution(`Looking up function ${name} in file: ${file} (canonical: ${canonical})`);
+
             const syms = this.staticFuncsMap[name];
             if (syms) {
+                // Build search variants
+                const searchVariants = new Set<string>([canonical, path.basename(canonical)]);
+                const knownVariants = this.fileMap[canonical];
+                if (knownVariants) {
+                    knownVariants.forEach((v) => searchVariants.add(v));
+                }
+
+                // Try direct matches first
                 for (const s of syms) {
-                    // Try exact matches first (maybe not needed)
-                    if (s.file === file || s.file === nfile) {
+                    if (s.file && searchVariants.has(s.file)) {
+                        this.logPathResolution(`  Found static function ${name} via direct match: ${s.file}`);
                         return s;
                     }
                 }
+
+                // Try variant matches
                 for (const s of syms) {
-                    // Try any match
-                    const maps = this.fileMap[s.file]; // Bunch of files/aliases that may have the same symbol name
-                    if (maps && maps.indexOf(nfile) !== -1) {
-                        return s;
-                    } else if (maps && maps.indexOf(file) !== -1) {
-                        return s;
+                    if (!s.file) continue;
+                    const symFileVariants = this.fileMap[s.file];
+                    if (symFileVariants) {
+                        for (const variant of searchVariants) {
+                            if (symFileVariants.includes(variant)) {
+                                this.logPathResolution(`  Found static function ${name} via variant match: ${s.file} ~ ${variant}`);
+                                return s;
+                            }
+                        }
                     }
                 }
+                this.logPathResolution(`  No static match found for ${name}, trying global scope`);
             }
         }
 
         // Fall back to global scope
         const ret = this.globalFuncsMap[name];
+        if (ret) {
+            this.logPathResolution(`  Found global function: ${name}`);
+        }
         return ret;
     }
 
@@ -778,18 +828,41 @@ export class SymbolTable {
 
         if (file) {
             // If a file is given only search for static variables by file
-            const nfile = SymbolTable.NormalizePath(file);
+            const canonical = canonicalizePath(file);
+            this.logPathResolution(`Looking up variable ${name} in file: ${file} (canonical: ${canonical})`);
+
+            const searchVariants = new Set<string>([canonical, path.basename(canonical)]);
+            const knownVariants = this.fileMap[canonical];
+            if (knownVariants) {
+                knownVariants.forEach((v) => searchVariants.add(v));
+            }
+
             for (const s of this.staticVars) {
-                if (s.name === name && (s.file === file || s.file === nfile)) {
+                if (s.name !== name || !s.file) continue;
+
+                if (searchVariants.has(s.file)) {
+                    this.logPathResolution(`  Found static variable ${name} in ${s.file}`);
                     return s;
                 }
+
+                const symFileVariants = this.fileMap[s.file];
+                if (symFileVariants) {
+                    for (const variant of searchVariants) {
+                        if (symFileVariants.includes(variant)) {
+                            this.logPathResolution(`  Found static variable ${name} via variant: ${s.file} ~ ${variant}`);
+                            return s;
+                        }
+                    }
+                }
             }
+            this.logPathResolution(`  No static variable ${name} found in ${file}`);
             return null;
         }
 
         // Try globals first and then statics
         for (const s of this.globalVars.concat(this.staticVars)) {
             if (s.name === name) {
+                this.logPathResolution(`Found ${s.scope === SymbolScope.Global ? "global" : "static"} variable: ${name}`);
                 return s;
             }
         }
@@ -797,31 +870,16 @@ export class SymbolTable {
         return null;
     }
 
+    /**
+     * @deprecated Use canonicalizePath from common.ts instead
+     */
     public static NormalizePath(pathName: string): string {
-        if (!pathName) {
-            return pathName;
-        }
-        if (os.platform() === "win32") {
-            // Do this so path.normalize works properly
-            pathName = pathName.replace(/\//g, "\\");
-        } else {
-            pathName = pathName.replace(/\\/g, "/");
-        }
-        pathName = path.normalize(pathName);
-        if (os.platform() === "win32") {
-            pathName = pathName.toLowerCase();
-        }
-        return pathName;
+        return canonicalizePath(pathName);
     }
-}
 
-function getProp(ary: any, name: string): any {
-    if (ary) {
-        for (const item of ary) {
-            if (item[0] === name) {
-                return item[1];
-            }
+    private logPathResolution(message: string): void {
+        if (this.gdbSession.args.debugFlags?.pathResolution) {
+            this.gdbSession.handleMsg(Stderr, `[PathRes] ${message}\n`);
         }
     }
-    return undefined;
 }
