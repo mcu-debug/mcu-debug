@@ -6,7 +6,7 @@ import { GDBDebugSession } from "./gdb-session";
 import { toStringDecHexOctBin } from "./servers/common";
 import { Variable } from "@vscode/debugadapter";
 
-const VariableTypeMask = 1 << 3; // Indicates this is a variable type key for a given scope
+export const VariableTypeMask = 1 << 3; // Indicates this is a variable type key for a given scope
 
 export enum VariableScope {
     Global = 0,
@@ -14,12 +14,12 @@ export enum VariableScope {
     Local = 2,
     Registers = 3,
     Scope = 4, // Dummy scope for top level variable categories
+    Watch = 5,
     LocalVariable = VariableTypeMask | VariableScope.Local, // Local variable
     RegistersVariable = VariableTypeMask | VariableScope.Registers, // Register variable
     GlobalVariable = VariableTypeMask | VariableScope.Global, // Global variable
     StaticVariable = VariableTypeMask | VariableScope.Static, // Static variable
-    Watch = VariableTypeMask | 0x5, // Dynamic watch variable
-    Hover = VariableTypeMask | 0x6, // Dynamic hover variable
+    WatchVariable = VariableTypeMask | 0x5, // Dynamic watch variable
 }
 
 // We have a total of 53 bits of precision in a JavaScript number
@@ -139,9 +139,9 @@ export class VariableContainer {
     }
 
     public parseMiVariable(name: string, record: GdbMiRecord, scope: VariableScope, parent: number, threadId: number, frameId: number): [VariableObject | undefined, number | undefined] {
-        const value = record["value"];
+        const value = record["value"] ?? "";
         const type = record["type"] || "unknown";
-        if (name === undefined || value === undefined) {
+        if (name === undefined) {
             return [undefined, undefined];
         }
         // Mi variables don't have scope, parent, frameRef, evaluateName info
@@ -257,15 +257,29 @@ export class VariableManager {
 
         // These scopes are dynamic and can be released individually
         this.containers.set(VariableScope.Watch, this.dynamicContainer);
-        this.containers.set(VariableScope.Hover, this.dynamicContainer);
     }
 
     public getContainer(scope: VariableScope): VariableContainer {
-        let container = this.containers.get(scope & ActualScopeMask);
+        const container = this.getContainerRaw(scope);
         if (!container) {
             throw new Error(`No container for scope ${VariableScope[scope]}`);
         }
         return container;
+    }
+    public getContainerRaw(scope: VariableScope): VariableContainer {
+        const container = this.containers.get(scope & ActualScopeMask);
+        return container;
+    }
+    public getVariableObject(handle: VariableReference): VariableObject | undefined {
+        if (handle & VariableTypeMask) {
+            const scope = handle & ScopeMask;
+            const container = this.getContainerRaw(scope);
+            if (container) {
+                const variable = container.getVariableByRef(handle);
+                return variable;
+            }
+        }
+        return undefined;
     }
 
     public hasFrameHandle(handle: VariableReference): boolean {
@@ -369,7 +383,11 @@ export class VariableManager {
             } else if (exp && keywords.find((x) => x === exp)) {
                 ret.push(...(await this.varListChildren(container, parent, gdbVarName, threadId, frameId)));
             } else {
-                const [child, handle] = container.parseMiVariable(item["exp"], item, parent.scope, parent.handle, threadId, frameId);
+                const [child, handle] = container.parseMiVariable(exp, item, parent.scope, parent.handle, threadId, frameId);
+                if (!child) {
+                    this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Warning: Could not parse child variable ${item["exp"]} of parent ${name}\n`);
+                    continue;
+                }
                 child.evaluateName = /^\d+$/.test(child.exp) ? `${parent.evaluateName}[${child.exp}]` : `${parent.evaluateName}.${child.exp}`;
                 if (item["numchild"] && parseInt(item["numchild"]) > 0) {
                     child.variablesReference = handle!;
@@ -459,7 +477,7 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             // Create a gdb variable for this register
-                            const gdbVarName = this.creatGdbName(regName.replaceAll("$", "reg-"), threadId, frameId);
+                            const gdbVarName = this.createGdbName(regName.replaceAll("$", "reg-"), threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
                             await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
                                 const record = varCreateRecord.resultRecord.result;
@@ -490,7 +508,7 @@ export class VariableManager {
         }
     }
 
-    creatGdbName(base: string, thread: number, frame: number): string {
+    createGdbName(base: string, thread: number, frame: number): string {
         let ret = `${base}-${thread}-${frame}`;
         let count = 1;
         while (this.localGdbNames.has(ret)) {
@@ -517,7 +535,7 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             const varName = v["name"];
-                            const gdbVarName = this.creatGdbName(varName, threadId, frameId);
+                            const gdbVarName = this.createGdbName(varName, threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${varName}`;
                             await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
                                 const record = varCreateRecord.resultRecord.result;
@@ -773,7 +791,7 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             // We create a gdb variable in case the user wants to set it. Not really needed for viewing
-                            const gdbVarName = this.creatGdbName(regName.replaceAll("$", "reg-"), threadId, frameId);
+                            const gdbVarName = this.createGdbName(regName.replaceAll("$", "reg-"), threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
                             await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
                                 const record = varCreateRecord.resultRecord.result;
@@ -848,6 +866,89 @@ export class VariableManager {
             // TODO: Update existing variables?
         }
     }
+
+    private fmtExpr(expr: string, thread: number, frame: number): [string, string, string] {
+        expr = expr.trim();
+        let newExpr = "";
+        let suffix = expr.match(/,[bdtonxX]$/)?.[0];
+        if (suffix) {
+            newExpr = expr.slice(0, -suffix.length);
+            suffix = suffix.slice(1); // Remove leading comma
+        } else {
+            newExpr = expr;
+            suffix = "";
+        }
+
+        const okChars = /[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_,]/g;
+        const gdbName = "W-" + newExpr.replaceAll(okChars, "-");
+
+        return [this.createGdbName(gdbName, thread, frame), newExpr, suffix];
+    }
+
+    public async evaluateExpression(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): Promise<void> {
+        try {
+            const [thread, frame, _] = args.frameId ? this.getVarOrFrameInfo(args.frameId!) : [0, 0, VariableScope.Global];
+            const scope = VariableScope.WatchVariable;
+            const container = this.getContainer(scope);
+            const existingVar = container.getVariableByKey(new VariableKeys(0, args.expression.trim(), encodeReference(thread, frame, scope)));
+            if (existingVar === undefined) {
+                const [gdbName, expr, suffix] = this.fmtExpr(args.expression, thread, frame);
+                let cmd = `-var-create --thread ${thread} --frame ${frame} ${gdbName} * "${expr}"`;
+                if (thread === 0 && frame === 0) {
+                    cmd = `-var-create ${gdbName} @ "${expr}"`;
+                }
+                const miOutput = await this.gdbInstance.sendCommand(cmd);
+                const record = miOutput.resultRecord.result;
+                if (!record) {
+                    throw new Error(`No result record for expression ${args.expression}`);
+                }
+                let value = record["value"] ?? "";
+                if (suffix) {
+                    const fmt = formatMap[suffix];
+                    if (!fmt) {
+                        throw new Error(`Invalid format suffix: ${suffix}`);
+                    }
+                    const formatCmd = `-var-set-format ${gdbName} ${fmt}`;
+                    const fmtOutput = await this.gdbInstance.sendCommand(formatCmd);
+                    value = fmtOutput.resultRecord.result["value"];
+                    record.value = value;
+                }
+                const [newVar, handle] = container.createVariable(scope, 0, args.expression.trim(), value, record["type"], thread, frame);
+                newVar.applyChanges(record);
+                newVar.gdbVarName = gdbName;
+                if (record["numchild"] && parseInt(record["numchild"]) > 0) {
+                    newVar.variablesReference = handle!;
+                }
+                response.body = {
+                    result: newVar.value,
+                    variablesReference: newVar.variablesReference,
+                };
+                return;
+            } else {
+                // Update existing variable
+                const cmd = `-var-update  --simple-values ${existingVar.gdbVarName}`;
+                const miOutput = await this.gdbInstance.sendCommand(cmd);
+                const record = miOutput.resultRecord.result;
+                if (record["in_scope"] && record["in_scope"] !== "true") {
+                    return Promise.reject(new Error(`Variable ${args.expression} is out of scope`));
+                }
+                existingVar.applyChanges(record);
+                response.body = {
+                    result: existingVar.value,
+                    variablesReference: existingVar.variablesReference,
+                };
+                return;
+            }
+        } catch (e) {
+            if (args.context === "watch") {
+                return Promise.reject(e);
+            }
+            response.body = {
+                result: "",
+                variablesReference: 0,
+            };
+        }
+    }
 }
 
 export function createMask(offset: number, width: number) {
@@ -873,3 +974,12 @@ export class ExtendedVariable {
         public options: any,
     ) {}
 }
+export const formatMap: { [key: string]: string } = {
+    t: "binary",
+    b: "binary",
+    o: "octal",
+    d: "decimal",
+    n: "natural",
+    x: "hexadecimal",
+    X: "zero-hexadecimal",
+};

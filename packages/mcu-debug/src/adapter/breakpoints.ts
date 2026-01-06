@@ -46,9 +46,16 @@ export class FunctionBreakpoints {
     }
 }
 
+export class DataBreakpoint {
+    breakpoints: Map<number, DebugProtocol.DataBreakpoint>;
+    constructor() {
+        this.breakpoints = new Map<number, DebugProtocol.DataBreakpoint>();
+    }
+}
 export class BreakpointManager {
     functionBreakpoints: FunctionBreakpoints;
     fileBreakpoints: Map<string, SourceBreakpoints>;
+    dataBreakpoints: DataBreakpoint;
 
     constructor(
         private gdbInstance: GdbInstance,
@@ -56,6 +63,7 @@ export class BreakpointManager {
     ) {
         this.functionBreakpoints = new FunctionBreakpoints();
         this.fileBreakpoints = new Map<string, SourceBreakpoints>();
+        this.dataBreakpoints = new DataBreakpoint();
     }
 
     /**
@@ -134,6 +142,7 @@ export class BreakpointManager {
             const promises: Promise<any>[] = [];
             for (const bp of args.breakpoints || []) {
                 // Prepopulate with unverified breakpoints
+                let isHwBp = false;
                 let args = `--source "${sourceFile}" --line ${bp.line}`;
                 if (bp.condition) {
                     args += ` -c "${escapeGdbString(bp.condition)}"`;
@@ -142,9 +151,21 @@ export class BreakpointManager {
                     args += ` ${this.parseHitContion(bp.hitCondition)}`;
                 }
                 if (this.gdbSession.args.hardwareBreakpoints?.require) {
-                    args += ` -h`;
+                    isHwBp = true;
+                    args += " -h";
                 }
-                const p = this.gdbInstance.sendCommand(`-break-insert ${args}`);
+                const cmd = bp.logMessage ? "dprintf-insert" : "break-insert";
+                if (bp.logMessage) {
+                    if (isHwBp) {
+                        this.gdbSession.handleMsg(
+                            Stderr,
+                            `Warning: GDB does not support hardware dprintf breakpoints. Ignoring hardware breakpoint request for breakpoint at ${sourceFile}:${bp.line}\n`,
+                        );
+                    } else {
+                        args += " " + bp.logMessage;
+                    }
+                }
+                const p = this.gdbInstance.sendCommand(`-${cmd} ${args}`);
                 promises.push(p);
             }
             const bps: DebugProtocol.Breakpoint[] = [];
@@ -207,7 +228,7 @@ export class BreakpointManager {
                     bkptArgs += ` ${this.parseHitContion(bp.hitCondition)}`;
                 }
                 if (this.gdbSession.args.hardwareBreakpoints?.require) {
-                    bkptArgs += ` -h`;
+                    bkptArgs += " -h";
                 }
                 const p = this.gdbInstance.sendCommand(`-break-insert ${bkptArgs}`);
                 promises.push(p);
@@ -224,9 +245,12 @@ export class BreakpointManager {
                     const dbgBp: DebugProtocol.Breakpoint = {
                         id: bpId,
                         verified: true,
-                        source: bpInfo["fullname"] || bpInfo["file"],
+                        source: {
+                            name: bpInfo["file"] || bpInfo["fullname"],
+                            path: bpInfo["fullname"] || bpInfo["file"],
+                        } as DebugProtocol.Source,
                         line: actualLine,
-                        instructionReference: bpInfo["address"],
+                        instructionReference: bpInfo["addr"],
                     };
                     bps.push(dbgBp);
                     if (bp) {
@@ -242,6 +266,58 @@ export class BreakpointManager {
                 }
                 counter++;
             }
+            response.body = { breakpoints: bps };
+        });
+    }
+
+    async setDataBreakPointsRequest(response: DebugProtocol.SetDataBreakpointsResponse, args: DebugProtocol.SetDataBreakpointsArguments, request: DebugProtocol.Request): Promise<void> {
+        await this.executeWhileStopped(async () => {
+            const toDelete: number[] = [];
+            for (const [id, bp] of this.dataBreakpoints.breakpoints) {
+                toDelete.push(id);
+            }
+            await this.deleteBreakpoints(toDelete);
+            this.dataBreakpoints.breakpoints.clear();
+
+            const promises: Promise<any>[] = [];
+            for (const bp of args.breakpoints || []) {
+                const aType = bp.accessType === "read" ? "-r" : bp.accessType === "readWrite" ? "-a" : "";
+                let bkptArgs = `--access ${aType}`;
+                /**
+                * These options have to set separately as GDB MI does not parse them correctly
+                if (bp.condition) {
+                    bkptArgs += ` -c "${escapeGdbString(bp.condition)}"`;
+                }
+                */
+                const p = this.gdbInstance.sendCommand(`-break-watch ${bkptArgs} "${bp.dataId}"`);
+                promises.push(p);
+            }
+            const bps: DebugProtocol.Breakpoint[] = [];
+            let counter = 0;
+            for (const p of promises) {
+                try {
+                    const miOutput = await p;
+                    const bp = args.breakpoints ? args.breakpoints[counter] : null;
+                    const bpInfo = miOutput.resultRecord.result["wpt"];
+                    const bpId = parseInt(bpInfo["number"]);
+                    const dbgBp: DebugProtocol.Breakpoint = {
+                        id: bpId,
+                        verified: true,
+                    };
+                    bps.push(dbgBp);
+                    if (bp) {
+                        this.dataBreakpoints.breakpoints.set(bpId, bp);
+                    }
+                } catch (err) {
+                    const dataId = args.breakpoints ? args.breakpoints[counter].dataId : "<unknown>";
+                    this.gdbSession.handleMsg(Stderr, `Error setting data breakpoint for ${dataId}: ${err}`);
+                    bps.push({
+                        verified: false,
+                        message: err.message,
+                    } as DebugProtocol.Breakpoint);
+                }
+                counter++;
+            }
             response.body = {
                 breakpoints: bps,
             };
@@ -250,6 +326,9 @@ export class BreakpointManager {
 
     private async deleteBreakpoints(list: number[]): Promise<void> {
         try {
+            if (list.length === 0) {
+                return;
+            }
             await this.gdbInstance.sendCommand(`-break-delete ${list.join(" ")}`);
         } catch (err) {
             throw new Error(`Error deleting old breakpoints, so new ones can be set: ${err}`);

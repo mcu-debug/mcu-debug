@@ -11,7 +11,7 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
-import { decodeReference, encodeReference, VariableContainer, VariableManager, VariableScope } from "./variables";
+import { decodeReference, encodeReference, VariableContainer, VariableManager, VariableObject, VariableScope, VariableTypeMask } from "./variables";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
@@ -28,10 +28,11 @@ export class GDBDebugSession extends SeqDebugSession {
     public serverSession: GDBServerSession;
     public gdbMiCommands: MiCommands | null = null;
     public lastThreadsInfo: GdbMiThreadInfoList | null = null;
-    public suppressStoppedEvents: boolean = false;
+    public suppressStoppedEvents: boolean = true;
     public continuing: boolean = false;
+    configurationDone: boolean = false;
     public isRunning(): boolean {
-        return this.gdbInstance?.status === "running";
+        return this.gdbInstance.IsRunning();
     }
     public isBusy(): boolean {
         return this.continuing || this.isRunning();
@@ -62,9 +63,9 @@ export class GDBDebugSession extends SeqDebugSession {
 
         response.body.supportsHitConditionalBreakpoints = true;
         response.body.supportsConditionalBreakpoints = true;
-        // response.body.supportsLogPoints = true;
+        response.body.supportsLogPoints = true;
         response.body.supportsFunctionBreakpoints = true;
-        // response.body.supportsEvaluateForHovers = true;
+        response.body.supportsEvaluateForHovers = true;
         // response.body.supportsSetVariable = true;
         // response.body.supportsSetExpression = true;
 
@@ -75,8 +76,9 @@ export class GDBDebugSession extends SeqDebugSession {
 
         response.body.supportsGotoTargetsRequest = true;
         response.body.supportSuspendDebuggee = true;
+        response.body.supportsValueFormattingOptions = true;
         // response.body.supportTerminateDebuggee = true;
-        // response.body.supportsDataBreakpoints = true;
+        response.body.supportsDataBreakpoints = true;
         // response.body.supportsDisassembleRequest = true;
         // response.body.supportsSteppingGranularity = true;
         // response.body.supportsInstructionBreakpoints = true;
@@ -107,38 +109,42 @@ export class GDBDebugSession extends SeqDebugSession {
     protected restartRequest(response: DebugProtocol.RestartResponse, args: DebugProtocol.RestartArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
-    protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments, request?: DebugProtocol.Request): void {
-        this.suppressStoppedEvents = this.gdbInstance.IsRunning();
-        this.bkptManager
-            .setBreakPointsRequest(response, args, request)
-            .then(() => {
-                this.sendResponse(response);
-            })
-            .catch((e) => {
-                this.handleErrResponse(response, `SetBreakPoints request failed: ${e}`);
-            })
-            .finally(() => {
-                this.suppressStoppedEvents = false;
-            });
+    protected async setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments, request?: DebugProtocol.Request): Promise<void> {
+        try {
+            response.body = { breakpoints: [] };
+            this.suppressStoppedEvents = this.gdbInstance.IsRunning();
+            await this.bkptManager.setBreakPointsRequest(response, args, request);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `SetBreakPoints request failed: ${e}`);
+        } finally {
+            this.suppressStoppedEvents = false;
+            Promise.resolve();
+        }
     }
-    protected setFunctionBreakPointsRequest(response: DebugProtocol.SetFunctionBreakpointsResponse, args: DebugProtocol.SetFunctionBreakpointsArguments, request?: DebugProtocol.Request): void {
-        this.suppressStoppedEvents = this.gdbInstance.IsRunning();
-        this.bkptManager
-            .setFunctionBreakPointsRequest(response, args, request)
-            .then(() => {
-                this.sendResponse(response);
-            })
-            .catch((e) => {
-                this.handleErrResponse(response, `SetFunctionBreakPoints request failed: ${e}`);
-            })
-            .finally(() => {
-                this.suppressStoppedEvents = false;
-            });
+    protected async setFunctionBreakPointsRequest(
+        response: DebugProtocol.SetFunctionBreakpointsResponse,
+        args: DebugProtocol.SetFunctionBreakpointsArguments,
+        request?: DebugProtocol.Request,
+    ): Promise<void> {
+        try {
+            response.body = { breakpoints: [] };
+            this.suppressStoppedEvents = this.gdbInstance.IsRunning();
+            await this.bkptManager.setFunctionBreakPointsRequest(response, args, request);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `SetFunctionBreakPoints request failed: ${e}`);
+        } finally {
+            this.suppressStoppedEvents = false;
+            Promise.resolve();
+        }
     }
     protected setExceptionBreakPointsRequest(response: DebugProtocol.SetExceptionBreakpointsResponse, args: DebugProtocol.SetExceptionBreakpointsArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
     protected configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments, request?: DebugProtocol.Request): void {
+        this.configurationDone = true;
+        this.emit("configurationDone");
         this.sendResponse(response);
     }
     protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments, request?: DebugProtocol.Request): void {
@@ -303,14 +309,20 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected async evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, request?: DebugProtocol.Request): Promise<void> {
+        if (this.isBusy()) {
+            this.handleErrResponse(response, "Evaluate request received while target is running.");
+            return;
+        }
         response.body = {
             result: "",
             variablesReference: 0,
         };
         try {
             if (args.context === "repl") {
-                await this.evalRepl(args.expression, response);
-                return;
+                return await this.evalRepl(args.expression, response);
+            } else {
+                await this.varManager.evaluateExpression(response, args);
+                this.sendResponse(response);
             }
         } catch (e) {
             this.handleErrResponse(response, `Evaluate request failed: ${e}`);
@@ -386,10 +398,37 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected dataBreakpointInfoRequest(response: DebugProtocol.DataBreakpointInfoResponse, args: DebugProtocol.DataBreakpointInfoArguments, request?: DebugProtocol.Request): void {
+        response.body = {
+            dataId: null,
+            description: "Invalid data breakpoint location",
+            accessTypes: undefined,
+            canPersist: false,
+        };
+
+        const ref = args.variablesReference;
+        const varObject = this.varManager.getVariableObject(ref);
+        if (!varObject || varObject.scope === VariableScope.RegistersVariable || varObject.scope === VariableScope.WatchVariable) {
+            this.sendResponse(response);
+            return;
+        }
+
+        const fullName = varObject.evaluateName || varObject.name;
+        response.body.dataId = fullName; // Used to identify the data breakpoint in setDataBreakpointsRequest
+        response.body.description = fullName; // What is displayed in the Breakpoints window
+        response.body.accessTypes = ["read", "write", "readWrite"];
         this.sendResponse(response);
     }
-    protected setDataBreakpointsRequest(response: DebugProtocol.SetDataBreakpointsResponse, args: DebugProtocol.SetDataBreakpointsArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+    protected async setDataBreakpointsRequest(response: DebugProtocol.SetDataBreakpointsResponse, args: DebugProtocol.SetDataBreakpointsArguments, request?: DebugProtocol.Request): Promise<void> {
+        try {
+            this.suppressStoppedEvents = this.gdbInstance.IsRunning();
+            await this.bkptManager.setDataBreakPointsRequest(response, args, request);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `SetDataBreakpoints request failed: ${e}`);
+        } finally {
+            this.suppressStoppedEvents = false;
+            Promise.resolve();
+        }
     }
     protected readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
@@ -568,10 +607,6 @@ export class GDBDebugSession extends SeqDebugSession {
 
     private async launchAttachRequest(response: DebugProtocol.LaunchResponse, noDebug: boolean): Promise<void> {
         return new Promise<void>(async (resolve, _reject) => {
-            const finish = () => {
-                this.sendResponse(response);
-                resolve();
-            };
             const finishWithError = (message: string) => {
                 this.handleErrResponse(response, message);
                 resolve();
@@ -579,7 +614,9 @@ export class GDBDebugSession extends SeqDebugSession {
             try {
                 this.getSymbolAndLoadCommands();
 
-                this.handleRunning(); // Assume we are running at the beginning, so VSCode doesn't send any requests too early
+                // Question? Should we supress all running/stopped events until we are fully started? VSCode can
+                // easily get confused if we send stopped/running events too early
+                // this.handleRunning(); // Assume we are running at the beginning, so VSCode doesn't send any requests too early
                 await this.startGdb().catch((e) => {
                     return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}`);
                 });
@@ -587,6 +624,9 @@ export class GDBDebugSession extends SeqDebugSession {
                 await this.startServer().catch((e) => {
                     return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}`);
                 });
+
+                // Let client know we are done with the launch/attach request and ready.
+                this.sendResponse(response);
 
                 // At this point, the program image should have been loaded, gdb and the server are connected
                 // and we are ready to go. However, the program may be running depending on the session mode and settings
@@ -596,7 +636,13 @@ export class GDBDebugSession extends SeqDebugSession {
                 // After the above, VSCode will set various kinds of breakpoints, watchpoints, etc. When all those things
                 // happen, it will finally send a configDone request and now everything should be stable
                 this.sendEvent(new GenericCustomEvent("post-start-gdb", this.args));
-                finish();
+
+                // This part of the process happens after we have sent the initialized event
+                // and responded to the launch/attach request. Or else, configrationDoneRequest
+                // will never happen
+                await this.postStartServer();
+
+                resolve();
             } catch (e) {
                 return finishWithError(`Launch/Attach request failed: ${e instanceof Error ? e.message : String(e)}`);
             }
@@ -604,23 +650,25 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private async startGdb(): Promise<void> {
-        try {
-            const gdbPath = this.getGdbPath();
-            const gdbArgs = ["-q", "--interpreter=mi3", ...(this.args.debuggerArgs || [])];
-            this.gdbInstance.debugFlags = this.args.debugFlags;
-            this.handleMsg(GdbEventNames.Console, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
-            this.subscribeToGdbEvents();
-            await this.gdbInstance.start(gdbPath, gdbArgs, this.args.cwd, this.getInitCommands());
-        } catch (e) {
-            throw e;
-        }
+        const gdbPath = this.getGdbPath();
+        const gdbArgs = ["-q", "--interpreter=mi3", ...(this.args.debuggerArgs || [])];
+        this.gdbInstance.debugFlags = this.args.debugFlags;
+        this.handleMsg(GdbEventNames.Console, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
+        this.subscribeToGdbEvents();
+        await this.gdbInstance.start(gdbPath, gdbArgs, this.args.cwd, this.getInitCommands());
     }
 
     private async startServer(): Promise<void> {
         const mode = this.args.pvtSessionMode;
         await this.serverSession.startServer(); // Can throw
         await this.sendCommandsWithWait(this.getConnectCommands()); // Can throw
+    }
+
+    private async postStartServer(): Promise<void> {
         if (this.isRunning()) {
+            // We should not be running here, unless the user did something in the post-launch/attach commands
+            this.suppressStoppedEvents = false;
+            this.handleMsg(Stderr, "mcu-debug: Target is running after initial connection commands. Skipping session mode commands.\n");
             return;
         }
         await this.runSessionModeCommands();
@@ -685,28 +733,67 @@ export class GDBDebugSession extends SeqDebugSession {
         return commands;
     }
 
+    protected async sendContinueWhenPossible(): Promise<void> {
+        return new Promise<void>(async (resolve, reject) => {
+            const tryContinue = async () => {
+                try {
+                    this.continuing = true;
+                    await this.gdbMiCommands.sendContinue(undefined);
+                } catch (e) {
+                    this.handleMsg(Stderr, `mcu-debug: Failed to send continue command: ${e instanceof Error ? e.message : String(e)}\n`);
+                }
+            };
+            if (this.configurationDone === false) {
+                this.once("configurationDone", async () => {
+                    resolve();
+                    if (!this.isRunning()) {
+                        await tryContinue();
+                    }
+                });
+            } else if (this.isRunning()) {
+                resolve();
+            } else {
+                resolve();
+                await tryContinue();
+            }
+        });
+    }
+
     protected async runSessionModeCommands(): Promise<void> {
         let commands = [];
+        let needsContinue = false;
         if (this.args.pvtSessionMode === SessionMode.Launch || this.args.pvtSessionMode === SessionMode.Reset) {
             if (!this.args.breakAfterReset && this.args.runToEntryPoint && !this.args.noDebug) {
-                commands = [`-break-insert -t ${this.args.runToEntryPoint}`, "-exec-continue"];
+                commands = [`-break-insert -t ${this.args.runToEntryPoint}`];
+                needsContinue = true;
             } else if (this.args.noDebug || this.args.breakAfterReset === false) {
-                commands = ["-exec-continue"];
+                needsContinue = true;
             }
         } else if (this.args.pvtSessionMode === SessionMode.Attach) {
-            commands = !this.args.noDebug ? [] : ["-exec-continue"];
+            needsContinue = !this.args.noDebug ? false : true;
         } else if (this.args.pvtSessionMode === SessionMode.Launch || this.args.pvtSessionMode === SessionMode.Reset) {
-            commands = this.args.breakAfterReset ? [] : ["-exec-continue"];
+            needsContinue = this.args.breakAfterReset ? false : true;
         }
-        this.continuing = commands.length > 0;
         await this.sendCommandsWithWait(commands);
+        this.suppressStoppedEvents = false;
 
-        if (!this.isRunning()) {
-            // VSCode still things we are running althrough, we should be stopped at entry point
+        if (needsContinue) {
+            if (!this.isRunning()) {
+                // this.notifyStopped("entry", !this.args.noDebug, false);
+            }
+            this.sendContinueWhenPossible().catch((e) => {
+                this.handleMsg(Stderr, `mcu-debug: Failed to continue after session mode commands: ${e instanceof Error ? e.message : String(e)}\n`);
+            });
+        } else if (!this.isRunning()) {
+            // VSCode still thinks we are running although, we should be stopped at entry point
             // The GdbMiInstance has the true status and if it is not running, we send a stopped event
             // Also, users custom commands may have messed with the session state, so we ensure we
             // notify VSCode of the stopped state here.
             this.notifyStopped("entry", !this.args.noDebug, false);
+        } else {
+            // Send the following to ensure VSCode knows we are running. Now everyone shuld be in sync
+            // The gdbInstance has the true status.
+            this.handleRunning();
         }
     }
 
@@ -745,7 +832,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     quitEvent() {
-        throw new Error("Not yet implemented");
+        // throw new Error("Not yet implemented");
     }
 
     // Unlike in cortex-debug, we get the thread info here before sending the stop event
@@ -877,6 +964,6 @@ export class GDBDebugSession extends SeqDebugSession {
         }
     }
     handleThreadGroupExited() {
-        throw new Error("Not yet implemented");
+        // throw new Error("Not yet implemented");
     }
 }
