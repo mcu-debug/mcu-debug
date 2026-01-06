@@ -231,22 +231,16 @@ export class SymbolTable {
      *
      * We avoid splitting the output(s) into lines and then parse line at a time.
      */
-    public loadSymbols(): Promise<void> {
-        return new Promise(async (resolve) => {
-            const reportTimes = false;
-            try {
-                await this.loadFromObjdumpAndNm();
-
-                this.categorizeSymbols();
-                this.sortGlobalVars();
-                resolve();
-            } catch (e) {
-                // We treat this is non-fatal, but why did it fail?
-                this.gdbSession.handleMsg(Stderr, `Error: objdump failed! statics/globals/functions may not be properly classified: ${e.toString()}\n`);
-                this.gdbSession.handleMsg(Stderr, "    ENOENT means program not found. If that is not the issue, please report this problem.\n");
-                resolve();
-            }
-        });
+    public async loadSymbols(): Promise<void> {
+        try {
+            await this.loadFromObjdumpAndNm();
+            this.categorizeSymbols();
+            this.sortGlobalVars();
+        } catch (e) {
+            // We treat this is non-fatal, but why did it fail?
+            this.gdbSession.handleMsg(Stderr, `Error: objdump failed! statics/globals/functions may not be properly classified: ${e.toString()}\n`);
+            this.gdbSession.handleMsg(Stderr, "    ENOENT means program not found. If that is not the issue, please report this problem.\n");
+        }
     }
 
     private rttSymbol: SymbolInformation;
@@ -287,7 +281,7 @@ export class SymbolTable {
         if (!line) {
             return line === "" ? true : false;
         }
-        const entry = RegExp(/^\s*[0-9]+\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+(.*)$/);
+        const entry = /^\s*[0-9]+\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+(.*)$/;
         // Header:
         // Idx Name          Size      VMA       LMA       File off  Algn
         // Sample entry:
@@ -403,110 +397,104 @@ export class SymbolTable {
         return true;
     }
 
-    private loadFromObjdumpAndNm() {
-        return new Promise<void>(async (resolves, reject) => {
-            let rejected = false;
-            const objdumpPromises: ExecPromise[] = [];
-            for (const symbolFile of this.executables) {
-                const executable = symbolFile.file;
-                if (!validateELFHeader(executable)) {
-                    this.gdbSession.handleMsg(Stderr, `Warn: ${executable} is not an ELF file format. Some features won't work -- Globals, Locals, disassembly, etc.`);
-                    continue;
-                }
-                try {
-                    const spawnOpts = { cwd: this.gdbSession.args.cwd };
-                    // eslint-disable-next-line no-constant-condition
-                    if (true) {
-                        const objdumpStart = Date.now();
-                        const objDumpArgs = [
-                            "--syms", // Of course, we want symbols
-                            "-C", // Demangle
-                            "-h", // Want section headers
-                            "-w", // Don't wrap lines (wide format)
-                            executable,
-                        ];
-                        const cxt = new ObjectReaderContext(new SpawnLineReader());
-                        cxt.setCallback(this.readObjdumpHeaderLine.bind(this, cxt, symbolFile));
-                        cxt.reader.on("error", (e) => {
-                            rejected = true;
-                            reject(e);
-                        });
-                        cxt.reader.on("exit", (code, signal) => {
-                            if (code !== 0) {
-                                this.gdbSession.handleMsg(Stderr, `'objdump' exited with a nonzero exit status ${code}, ${signal}. File: ${executable}\n`);
-                            }
-                        });
-                        cxt.reader.on("close", (code, signal) => {
-                            if (trace || this.gdbSession.args.showDevDebugOutput) {
-                                const ms = Date.now() - objdumpStart;
-                                this.gdbSession.handleMsg(Stderr, `Finished reading symbols from objdump: Time: ${ms} ms. File: ${executable}\n`);
-                            }
-                        });
-
-                        if (trace || this.gdbSession.args.showDevDebugOutput) {
-                            this.gdbSession.handleMsg(Stderr, `Reading symbols from ${this.objdumpPath} ${objDumpArgs.join(" ")}\n`);
-                        }
-                        objdumpPromises.push({
-                            args: [this.objdumpPath, ...objDumpArgs],
-                            promise: cxt.reader.startWithProgram(this.objdumpPath, objDumpArgs, spawnOpts, cxt.getCallback()),
-                        });
-                    }
-
-                    // eslint-disable-next-line no-constant-condition
-                    if (true) {
-                        const nmStart = Date.now();
-                        const nmProg = replaceProgInPath(this.objdumpPath, /objdump/i, "nm");
-                        const nmArgs = [
-                            "--defined-only",
-                            "-S", // Want size as well
-                            "-l", // File/line info
-                            "-C", // Demangle
-                            "-p", // don't bother sorting
-                            // Do not use posix format. It is inaccurate
-                            executable,
-                        ];
-                        const cxt = new ObjectReaderContext(new SpawnLineReader());
-                        cxt.setCallback(this.readNmSymbolLine.bind(this, cxt, symbolFile));
-                        cxt.reader.on("error", (e) => {
-                            // eslint-disable-next-line @stylistic/max-len
-                            this.gdbSession.handleMsg(Stderr, `Error: ${nmProg} failed! statics/global/functions may not be properly classified: ${e.toString()}\n`);
-                            this.gdbSession.handleMsg(Stderr, "    Expecting `nm` next to `objdump`. If that is not the problem please report this.\n");
-                            this.nmPromises = [];
-                        });
-                        cxt.reader.on("exit", (code, signal) => {
-                            if (code !== 0) {
-                                this.gdbSession.handleMsg(Stderr, `'nm' exited with a nonzero exit status ${code}, ${signal}. File: ${executable}\n`);
-                            }
-                        });
-                        cxt.reader.on("close", () => {
-                            if (trace || this.gdbSession.args.showDevDebugOutput) {
-                                const ms = Date.now() - nmStart;
-                                this.gdbSession.handleMsg(Stderr, `Finished reading symbols from nm: Time: ${ms} ms. File: ${executable}\n`);
-                            }
-                        });
-
-                        if (trace || this.gdbSession.args.showDevDebugOutput) {
-                            this.gdbSession.handleMsg(Stderr, `Reading symbols from ${nmProg} ${nmArgs.join(" ")}\n`);
-                        }
-                        this.nmPromises.push({
-                            args: [nmProg, ...nmArgs],
-                            promise: cxt.reader.startWithProgram(nmProg, nmArgs, spawnOpts, cxt.getCallback()),
-                        });
-                    }
-                } catch (e) {
-                    if (!rejected) {
-                        rejected = true;
-                        reject(e);
-                        return;
-                    }
-                }
+    private async loadFromObjdumpAndNm(): Promise<void> {
+        const objdumpPromises: ExecPromise[] = [];
+        for (const symbolFile of this.executables) {
+            const executable = symbolFile.file;
+            if (!validateELFHeader(executable)) {
+                this.gdbSession.handleMsg(Stderr, `Warn: ${executable} is not an ELF file format. Some features won't work -- Globals, Locals, disassembly, etc.`);
+                continue;
             }
-            // Yes, we launch both programs and wait for both to finish. Running them back to back
-            // takes almost twice as much time. Neither should technically fail.
-            await this.waitOnProgs(objdumpPromises);
-            // Yes, we don't wait for this. We have enough to move on
-            this.finishNmSymbols();
-            resolves();
+            try {
+                const spawnOpts = { cwd: this.gdbSession.args.cwd };
+                // eslint-disable-next-line no-constant-condition
+                if (true) {
+                    const objdumpStart = Date.now();
+                    const objDumpArgs = [
+                        "--syms", // Of course, we want symbols
+                        "-C", // Demangle
+                        "-h", // Want section headers
+                        "-w", // Don't wrap lines (wide format)
+                        executable,
+                    ];
+                    const cxt = new ObjectReaderContext(new SpawnLineReader());
+                    cxt.setCallback(this.readObjdumpHeaderLine.bind(this, cxt, symbolFile));
+                    cxt.reader.on("error", (e) => {
+                        this.gdbSession.handleMsg(Stderr, `Error: objdump failed for ${executable}: ${e.toString()}\n`);
+                    });
+                    cxt.reader.on("exit", (code, signal) => {
+                        if (code !== 0) {
+                            this.gdbSession.handleMsg(Stderr, `'objdump' exited with a nonzero exit status ${code}, ${signal}. File: ${executable}\n`);
+                        }
+                    });
+                    cxt.reader.on("close", (code, signal) => {
+                        if (trace || this.gdbSession.args.showDevDebugOutput) {
+                            const ms = Date.now() - objdumpStart;
+                            this.gdbSession.handleMsg(Stderr, `Finished reading symbols from objdump: Time: ${ms} ms. File: ${executable}\n`);
+                        }
+                    });
+
+                    if (trace || this.gdbSession.args.showDevDebugOutput) {
+                        this.gdbSession.handleMsg(Stderr, `Reading symbols from ${this.objdumpPath} ${objDumpArgs.join(" ")}\n`);
+                    }
+                    objdumpPromises.push({
+                        args: [this.objdumpPath, ...objDumpArgs],
+                        promise: cxt.reader.startWithProgram(this.objdumpPath, objDumpArgs, spawnOpts, cxt.getCallback()),
+                    });
+                }
+
+                // eslint-disable-next-line no-constant-condition
+                if (true) {
+                    const nmStart = Date.now();
+                    const nmProg = replaceProgInPath(this.objdumpPath, /objdump/i, "nm");
+                    const nmArgs = [
+                        "--defined-only",
+                        "-S", // Want size as well
+                        "-l", // File/line info
+                        "-C", // Demangle
+                        "-p", // don't bother sorting
+                        // Do not use posix format. It is inaccurate
+                        executable,
+                    ];
+                    const cxt = new ObjectReaderContext(new SpawnLineReader());
+                    cxt.setCallback(this.readNmSymbolLine.bind(this, cxt, symbolFile));
+                    cxt.reader.on("error", (e) => {
+                        // eslint-disable-next-line @stylistic/max-len
+                        this.gdbSession.handleMsg(Stderr, `Error: ${nmProg} failed for ${executable}! File-to-symbol mapping for this file may be incomplete: ${e.toString()}\n`);
+                        this.gdbSession.handleMsg(Stderr, "    Expecting `nm` next to `objdump`. If that is not the problem please report this.\n");
+                    });
+                    cxt.reader.on("exit", (code, signal) => {
+                        if (code !== 0) {
+                            this.gdbSession.handleMsg(Stderr, `'nm' exited with a nonzero exit status ${code}, ${signal}. File: ${executable}\n`);
+                        }
+                    });
+                    cxt.reader.on("close", () => {
+                        if (trace || this.gdbSession.args.showDevDebugOutput) {
+                            const ms = Date.now() - nmStart;
+                            this.gdbSession.handleMsg(Stderr, `Finished reading symbols from nm: Time: ${ms} ms. File: ${executable}\n`);
+                        }
+                    });
+
+                    if (trace || this.gdbSession.args.showDevDebugOutput) {
+                        this.gdbSession.handleMsg(Stderr, `Reading symbols from ${nmProg} ${nmArgs.join(" ")}\n`);
+                    }
+                    this.nmPromises.push({
+                        args: [nmProg, ...nmArgs],
+                        promise: cxt.reader.startWithProgram(nmProg, nmArgs, spawnOpts, cxt.getCallback()),
+                    });
+                }
+            } catch (e) {
+                this.gdbSession.handleMsg(Stderr, `Error launching objdump/nm for ${executable}: ${e.toString()}\n`);
+            }
+        }
+        // Yes, we launch both programs and wait for both to finish. Running them back to back
+        // takes almost twice as much time. Neither should technically fail.
+        await this.waitOnProgs(objdumpPromises);
+
+        // Don't wait for nm to finish - it continues in background (lazy loading)
+        // File-to-symbol mappings will be completed when first accessed
+        this.finishNmSymbols().catch((e) => {
+            this.gdbSession.handleMsg(Stderr, `Error processing nm symbols: ${e.toString()}\n`);
         });
     }
 
@@ -521,37 +509,38 @@ export class SymbolTable {
         return Promise.resolve();
     }
 
-    private finishNmSymbolsPromise: Promise<void>;
+    private finishNmSymbolsPromise: Promise<void> | null = null;
     private finishNmSymbols(): Promise<void> {
         if (!this.nmPromises.length) {
             return Promise.resolve();
         }
-        if (this.finishNmSymbolsPromise) {
-            return this.finishNmSymbolsPromise;
+        if (!this.finishNmSymbolsPromise) {
+            this.finishNmSymbolsPromise = this.doFinishNmSymbols();
         }
-
-        this.finishNmSymbolsPromise = new Promise<void>(async (resolve) => {
-            try {
-                await this.waitOnProgs(this.nmPromises);
-                // This part needs to run after both of the above finished
-                for (const item of this.addressToFileOrig) {
-                    const syms = this.symbolsByAddressOrig.get(item[0]);
-                    if (syms) {
-                        for (const sym of syms) {
-                            sym.file = item[1];
-                        }
-                    } else {
-                        console.error("Unknown symbol address. Need to investigate", hexFormat(item[0]), item);
-                    }
-                }
-            } catch (e) {
-                // console.log('???');
-            } finally {
-                this.addressToFileOrig.clear();
-                this.nmPromises = [];
-            }
-        });
         return this.finishNmSymbolsPromise;
+    }
+
+    private async doFinishNmSymbols(): Promise<void> {
+        try {
+            await this.waitOnProgs(this.nmPromises);
+            // This part needs to run after nm processes finished
+            // Maps addresses to source files for better symbol classification
+            for (const item of this.addressToFileOrig) {
+                const syms = this.symbolsByAddressOrig.get(item[0]);
+                if (syms) {
+                    for (const sym of syms) {
+                        sym.file = item[1];
+                    }
+                } else {
+                    console.error("Unknown symbol address. Need to investigate", hexFormat(item[0]), item);
+                }
+            }
+        } catch (e) {
+            this.gdbSession.handleMsg(Stderr, `Error in nm symbol processing: ${e.toString()}\n`);
+        } finally {
+            this.addressToFileOrig.clear();
+            this.nmPromises = [];
+        }
     }
 
     private addressToFileOrig: Map<number, string> = new Map<number, string>(); // These are addresses used before re-mapped via symbol-files
@@ -836,30 +825,3 @@ function getProp(ary: any, name: string): any {
     }
     return undefined;
 }
-
-/*
-interface SymInfoFromGdb {
-    name: string;
-    line: number;
-}
-class VariablesInFile {
-    public statics: SymInfoFromGdb[] = [];
-    public globals: SymInfoFromGdb[] = [];
-    public staticNames: string[] = [];
-    constructor(public filename: string) {}
-    public add(item: GdbMiOutput) {
-        const record = item.resultRecord.result;
-        const isStatic = (record["description"] || "").startsWith("static");
-        const tmp: SymInfoFromGdb = {
-            name: record["name"],
-            line: parseInt(record["line"]) || 1,
-        };
-        if (isStatic) {
-            this.statics.push(tmp);
-            this.staticNames.push(tmp.name);
-        } else {
-            this.globals.push(tmp);
-        }
-    }
-}
-*/
