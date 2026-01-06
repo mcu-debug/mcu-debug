@@ -3261,6 +3261,7 @@
     "prettier": "^3.7.4"
   },
   "dependencies": {
+    "@flatten-js/interval-tree": "^2.0.3",
     "@mcu-debug/shared": "*",
     "@vscode/extension-telemetry": "^1.2.0",
     "applicationinsights": "^3.12.1",
