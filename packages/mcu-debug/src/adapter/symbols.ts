@@ -30,7 +30,7 @@ export interface SymbolInformation {
     address: number;
     length: number;
     name: string;
-    file: number | string; // The actual file name parsed (more reliable with nm)
+    file: /* number |*/ string; // The actual file name parsed (more reliable with nm)
     section?: string; // Not available with nm
     type: SymbolType;
     scope: SymbolScope;
@@ -175,18 +175,20 @@ export class SymbolTable {
     private staticVars: SymbolInformation[] = [];
     private staticFuncsMap: { [key: string]: SymbolInformation[] } = {}; // Key is function name
     private fileMap: { [key: string]: string[] } = {}; // Potential list of file aliases we found
+    private processedPathVariations = new Set<string>(); // Track files already processed for path variations
     public symbolsAsIntervalTree: IntervalTree<SymbolNode> = new IntervalTree<SymbolNode>();
     public symbolsByAddress: AddressToSym = new AddressToSym();
     public symbolsByAddressOrig: AddressToSym = new AddressToSym();
     // private varsByFile: { [path: string]: VariablesInFile } = null;
     private nmPromises: ExecPromise[] = [];
+    private executables: SymbolFile[] = [];
 
     private objdumpPath: string;
 
-    constructor(
-        private gdbSession: GDBDebugSession,
-        private executables: SymbolFile[],
-    ) {
+    constructor(private gdbSession: GDBDebugSession) {}
+
+    public initialize(executables: SymbolFile[]) {
+        this.executables = executables;
         const args = this.gdbSession.args;
         this.objdumpPath = args.objdumpPath;
         if (!this.objdumpPath) {
@@ -681,6 +683,13 @@ export class SymbolTable {
 
     private addPathVariations(fileString: string) {
         const canonical = canonicalizePath(fileString);
+
+        // Only process each unique file once
+        if (this.processedPathVariations.has(canonical)) {
+            return { curSimpleName: path.basename(canonical), curName: canonical };
+        }
+        this.processedPathVariations.add(canonical);
+
         const basename = path.basename(canonical);
 
         // Bidirectional mapping: basename <-> canonical

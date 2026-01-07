@@ -59,6 +59,7 @@ export class MiCommands {
 
     /// Execution context commands
 
+    /*
     /// Thread commands. Note that GDB MI has some redundancy here. It gives an object
     /// with duplicate keys for thread id and number of threads according to the docs.
     /// That does not seem to be the case in practice, so we just use one of them.
@@ -82,6 +83,7 @@ export class MiCommands {
                 .catch(reject);
         });
     }
+*/
 
     sendThreadInfoAll(): Promise<GdbMiThreadInfoList> {
         return new Promise<GdbMiThreadInfoList>((resolve, reject) => {
@@ -106,7 +108,8 @@ export class MiCommands {
         });
     }
 
-    sendStackListFrames(threadId: number, startFrame: number, endFrame: number): Promise<GdbMiFrame[]> {
+    sendStackListFrames(thread: GdbMiThreadIF, startFrame: number, endFrame: number): Promise<GdbMiFrame[]> {
+        const threadId = thread.id;
         const cmd = `-stack-list-frames --thread ${threadId} ${startFrame} ${endFrame}`;
         return new Promise<GdbMiFrame[]>((resolve, reject) => {
             this.gdbInstance
@@ -125,6 +128,9 @@ export class MiCommands {
                                 frames.push(new GdbMiFrame(fr));
                             }
                         }
+                        for (const frame of frames) {
+                            thread.setFrame(frame, frame.level);
+                        }
                         resolve(frames);
                     } catch (e) {
                         reject(e);
@@ -136,13 +142,16 @@ export class MiCommands {
     }
 }
 
+/*
 export class GdbMiThreadsList {
     threadIds: number[];
+    threads: Map<number, GdbMiThreadIF>;
     currentThreadId: number;
     numberOfThreads: number;
 
     constructor(miOutput: GdbMiOutput) {
-        this.threadIds = [];
+        this.threadIds = new Array<number>();
+        this.threads = new Map<number, GdbMiThreadIF>();
         this.currentThreadId = -1;
         this.numberOfThreads = 0;
 
@@ -178,6 +187,7 @@ export class GdbMiThreadsList {
         }
     }
 }
+    */
 export class GdbMiFrame implements GdbMiFrameIF {
     level: number;
     addr: string;
@@ -214,7 +224,8 @@ export class GdbMiFrame implements GdbMiFrameIF {
 export class GdbMiThread implements GdbMiThreadIF {
     id: number;
     targetId: string;
-    frame: GdbMiFrameIF;
+    topFrame: GdbMiFrame;
+    frames: GdbMiFrame[]; // Unlike threads, levels start at 0, so it is safe to use an array here
     name: string;
     details?: string;
     state?: string;
@@ -225,7 +236,8 @@ export class GdbMiThread implements GdbMiThreadIF {
         this.targetId = miThreadInfo["target-id"];
         this.name = miThreadInfo["name"];
         this.details = miThreadInfo["details"];
-        this.frame = new GdbMiFrame(miThreadInfo["frame"]);
+        this.topFrame = new GdbMiFrame(miThreadInfo["frame"]);
+        this.frames = [];
         if (miThreadInfo["state"]) {
             this.state = miThreadInfo["state"];
         }
@@ -242,21 +254,34 @@ export class GdbMiThread implements GdbMiThreadIF {
         }
         this.name = name;
     }
+    setFrame(frame: GdbMiFrame, ix: number) {
+        if (ix > this.frames.length) {
+            throw new Error("Frame index out of bounds");
+        } else if (ix === this.frames.length) {
+            this.frames.push(frame);
+        } else {
+            this.frames[ix] = frame;
+        }
+    }
 }
 
 export class GdbMiThreadInfoList {
-    threads: GdbMiThread[];
+    threadMap: Map<number, GdbMiThreadIF>;
+    threadsAry: GdbMiThreadIF[]; // Unlike threads, do not index into this array by thread id. Use it as a list. Already sorted by id.
     currentThreadId: number | undefined;
 
     constructor(miOutput: GdbMiOutput) {
-        this.threads = [];
+        this.threadMap = new Map<number, GdbMiThreadIF>();
         const record = miOutput.resultRecord;
         if (record) {
             const threadInfos = (record.result as any)["threads"];
             if (Array.isArray(threadInfos)) {
                 for (const ti of threadInfos) {
-                    this.threads.push(new GdbMiThread(ti));
+                    const thread = new GdbMiThread(ti);
+                    this.threadMap.set(thread.id, thread);
                 }
+                this.threadsAry = Array.from(this.threadMap.values());
+                this.threadsAry.sort((a, b) => a.id - b.id);
             }
         }
         const currentThreadIdStr = (record.result as any)["current-thread-id"];

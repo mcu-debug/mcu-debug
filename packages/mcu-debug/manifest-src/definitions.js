@@ -368,6 +368,7 @@ module.exports = {
             vscodeRequests: { type: "boolean", default: false, description: "Enable VSCode Request/Response trace output" },
             gdbTracesParsed: { type: "boolean", default: false, description: "Enable parsed GDB MI output" },
             timestamps: { type: "boolean", default: false, description: "Show timestamps in debug output" },
+            pathResolution: { type: "boolean", default: false, description: "Show path resolution when reading symbols" },
             disableGdbTimeouts: { type: "boolean", default: false, description: "Disable GDB command timeouts. Helpful for debugging extension" },
         },
     },

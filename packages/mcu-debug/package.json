@@ -1169,6 +1169,11 @@
                     "default": false,
                     "description": "Show timestamps in debug output"
                   },
+                  "pathResolution": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show path resolution when reading symbols"
+                  },
                   "disableGdbTimeouts": {
                     "type": "boolean",
                     "default": false,
@@ -2444,6 +2449,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Show timestamps in debug output"
+                  },
+                  "pathResolution": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show path resolution when reading symbols"
                   },
                   "disableGdbTimeouts": {
                     "type": "boolean",

@@ -2,7 +2,7 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
 import { Config } from "winston/lib/winston/config";
 import { InitializedEvent, Logger, logger, OutputEvent, Variable } from "@vscode/debugadapter";
-import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent } from "./servers/common";
+import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath } from "./servers/common";
 import path from "path";
 import os from "os";
 import fs from "fs";
@@ -10,8 +10,8 @@ import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
-import { ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
-import { decodeReference, encodeReference, VariableContainer, VariableManager, VariableObject, VariableScope, VariableTypeMask } from "./variables";
+import { VariableManager, VariableScope } from "./variables";
+import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
@@ -31,6 +31,8 @@ export class GDBDebugSession extends SeqDebugSession {
     public suppressStoppedEvents: boolean = true;
     public continuing: boolean = false;
     configurationDone: boolean = false;
+    public fileMap: Map<string, number> = new Map();
+    private loadSymbolsPromise: Promise<void> | null = null;
     public isRunning(): boolean {
         return this.gdbInstance.IsRunning();
     }
@@ -40,6 +42,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
     protected varManager: VariableManager;
     protected bkptManager: BreakpointManager;
+    public symbolTable: SymbolTable;
 
     constructor() {
         super();
@@ -48,6 +51,8 @@ export class GDBDebugSession extends SeqDebugSession {
         this.gdbMiCommands = new MiCommands(this.gdbInstance);
         this.varManager = new VariableManager(this.gdbInstance, this);
         this.bkptManager = new BreakpointManager(this.gdbInstance!, this);
+        this.symbolTable = new SymbolTable(this);
+        this.getFileId(VariableManager.GlobalFileName); // Make sure global file ID is always 1
     }
 
     public handleErrResponse(response: DebugProtocol.Response, msg: string, message?: DebugProtocol.Message): void {
@@ -221,16 +226,20 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     protected threadsRequest(response: DebugProtocol.ThreadsResponse, request?: DebugProtocol.Request): void {
         response.body = { threads: [] };
-        if (this.isBusy()) {
-            this.handleMsg(GdbEventNames.Stderr, "mcu-debug: Threads request received while target is running. Returning empty thread list.\n");
-        } else if (this.lastThreadsInfo) {
-            for (const t of this.lastThreadsInfo.threads) {
-                response.body.threads.push({ id: t.id, name: t.name });
+        try {
+            if (this.isBusy()) {
+                this.handleMsg(GdbEventNames.Stderr, "mcu-debug: Threads request received while target is running. Returning empty thread list.\n");
+            } else if (this.lastThreadsInfo) {
+                for (const t of this.lastThreadsInfo.threadsAry) {
+                    response.body.threads.push({ id: t.id, name: t.target_id || `Thread ${t.id}` });
+                }
+            } else {
+                response.body.threads.push({ id: 1, name: "Unnamed Thread" });
             }
-        } else {
-            response.body.threads.push({ id: 1, name: "Unnamed Thread" });
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `Failed to get threads: ${e}`);
         }
-        this.sendResponse(response);
     }
 
     protected terminateThreadsRequest(response: DebugProtocol.TerminateThreadsResponse, args: DebugProtocol.TerminateThreadsArguments, request?: DebugProtocol.Request): void {
@@ -247,7 +256,8 @@ export class GDBDebugSession extends SeqDebugSession {
             const threadId = args.threadId;
             const startFrame = args.startFrame || 0;
             const levels = args.levels || 40;
-            const frames = await this.gdbMiCommands.sendStackListFrames(threadId, startFrame, startFrame + levels);
+            const thread = this.lastThreadsInfo?.threadMap.get(threadId);
+            const frames = await this.gdbMiCommands.sendStackListFrames(thread, startFrame, startFrame + levels);
             for (const frame of frames) {
                 const handle = this.varManager.addFrameInfo(threadId, frame.level, VariableScope.Local);
                 const stackFrame: DebugProtocol.StackFrame = {
@@ -264,11 +274,27 @@ export class GDBDebugSession extends SeqDebugSession {
                 response.body.stackFrames.push(stackFrame);
             }
             response.body.totalFrames = frames.length;
+            this.sendResponse(response);
         } catch (e) {
             this.handleErrResponse(response, `Failed to get stack frames: ${e}`);
             return;
         }
-        this.sendResponse(response);
+    }
+
+    protected fileMapReverse: Map<number, string> = new Map();
+    protected getFileId(filePath: string): number {
+        const path = canonicalizePath(filePath);
+        const existing = this.fileMap.get(path);
+        if (existing === undefined) {
+            const ix = this.fileMap.size;
+            this.fileMap.set(path, ix);
+            this.fileMapReverse.set(ix, path);
+            return ix;
+        }
+        return existing;
+    }
+    public getFileById(fileId: number): string {
+        return this.fileMapReverse.get(fileId) ?? "";
     }
 
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments, request?: DebugProtocol.Request): void {
@@ -278,8 +304,20 @@ export class GDBDebugSession extends SeqDebugSession {
                 return this.varManager.addFrameInfo(t, f, s);
             };
             const [threadId, frameId, scope] = this.varManager.getFrameInfo(args.frameId);
+            const thread = this.lastThreadsInfo?.threadMap.get(threadId);
+            const frame = thread?.frames ? thread.frames[frameId] : undefined;
+            let fileId = 0,
+                fullFileId = 0;
+            if (frame.file) {
+                fileId = this.getFileId(frame.file);
+            }
+            if (frame.fullname) {
+                fullFileId = this.getFileId(frame.fullname);
+            }
+            const useFname = frame.file || frame.fullname ? `-> ${frame.file || frame.fullname}` : "";
+            const statics = `Static${useFname}`;
             scopes.push({ name: "Local", variablesReference: add(threadId, frameId, VariableScope.Local), expensive: false });
-            scopes.push({ name: "Static", variablesReference: add(0, 0, VariableScope.Static), expensive: false });
+            scopes.push({ name: statics, variablesReference: add(fileId, fullFileId, VariableScope.Static), expensive: false });
             scopes.push({ name: "Global", variablesReference: add(0, 0, VariableScope.Global), expensive: true });
             scopes.push({ name: "Registers", variablesReference: add(threadId, frameId, VariableScope.Registers), expensive: false });
         } catch (e) {
@@ -590,7 +628,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected timeStart = Date.now();
     protected timeLast = this.timeStart;
     protected wrapTimeStamp(str: string): string {
-        if (this.args.debugFlags.anyFlags && this.args.debugFlags.timestamps) {
+        if (this.args.debugFlags.timestamps) {
             return this.wrapTimeStampRaw(str);
         } else {
             return str;
@@ -683,7 +721,7 @@ export class GDBDebugSession extends SeqDebugSession {
         args.graphConfig = args.graphConfig || [];
 
         args.debugFlags = args.debugFlags || {};
-        args.debugFlags.gdbTraces = args.debugFlags.gdbTraces || args.debugFlags.gdbTracesParsed || args.debugFlags.timestamps;
+        args.debugFlags.gdbTraces = args.debugFlags.gdbTraces || args.debugFlags.gdbTracesParsed;
         args.debugFlags.anyFlags = Object.values(args.debugFlags).some((v) => v === true);
 
         if (args.executable && !path.isAbsolute(args.executable)) {
@@ -740,47 +778,86 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private async launchAttachRequest(response: DebugProtocol.LaunchResponse, noDebug: boolean): Promise<void> {
-        return new Promise<void>(async (resolve, _reject) => {
-            const finishWithError = (message: string) => {
-                this.handleErrResponse(response, message);
-                resolve();
+        const finishWithError = (message: string) => {
+            this.handleErrResponse(response, message);
+        };
+        try {
+            const showTimes = this.args.debugFlags.timestamps;
+            const reportTime = (stage: string) => {
+                if (showTimes) {
+                    this.handleMsg(Stderr, `Debug Time: ${stage} - ${Date.now() - this.timeStart} ms\n`);
+                }
             };
-            try {
-                this.getSymbolAndLoadCommands();
+            this.getSymbolAndLoadCommands();
 
-                // Question? Should we supress all running/stopped events until we are fully started? VSCode can
-                // easily get confused if we send stopped/running events too early
-                // this.handleRunning(); // Assume we are running at the beginning, so VSCode doesn't send any requests too early
-                await this.startGdb().catch((e) => {
-                    return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}`);
-                });
-                await this.sendCommandsWithWait(this.gdbInitCommands);
-                await this.startServer().catch((e) => {
-                    return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}`);
-                });
+            // Question? Should we supress all running/stopped events until we are fully started? VSCode can
+            // easily get confused if we send stopped/running events too early
+            // this.handleRunning(); // Assume we are running at the beginning, so VSCode doesn't send any requests too early
+            await this.startGdb().catch((e) => {
+                return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}`);
+            });
+            reportTime("GDB Ready");
 
-                // Let client know we are done with the launch/attach request and ready.
-                this.sendResponse(response);
+            const loadSymbolsPromise = this.loadSymbols();
+            await this.sendCommandsWithWait(this.gdbInitCommands);
+            await this.startServer().catch((e) => {
+                return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}`);
+            });
+            reportTime("GDB Server Ready");
 
-                // At this point, the program image should have been loaded, gdb and the server are connected
-                // and we are ready to go. However, the program may be running depending on the session mode and settings
-                // So, we now inform VSCode that the debugger has started. It will in turn set breakpoints, etc.
-                this.sendEvent(new InitializedEvent()); // This is when we tell that the debugger has really started
+            // Let client know we are done with the launch/attach request and ready.
+            this.sendResponse(response);
 
-                // After the above, VSCode will set various kinds of breakpoints, watchpoints, etc. When all those things
-                // happen, it will finally send a configDone request and now everything should be stable
-                this.sendEvent(new GenericCustomEvent("post-start-gdb", this.args));
+            // At this point, the program image should have been loaded, gdb and the server are connected
+            // and we are ready to go. However, the program may be running depending on the session mode and settings
+            // So, we now inform VSCode that the debugger has started. It will in turn set breakpoints, etc.
+            this.sendEvent(new InitializedEvent()); // This is when we tell that the debugger has really started
 
-                // This part of the process happens after we have sent the initialized event
-                // and responded to the launch/attach request. Or else, configrationDoneRequest
-                // will never happen
-                await this.postStartServer();
+            // After the above, VSCode will set various kinds of breakpoints, watchpoints, etc. When all those things
+            // happen, it will finally send a configDone request and now everything should be stable
+            this.sendEvent(new GenericCustomEvent("post-start-gdb", this.args));
 
-                resolve();
-            } catch (e) {
-                return finishWithError(`Launch/Attach request failed: ${e instanceof Error ? e.message : String(e)}`);
+            // This part of the process happens after we have sent the initialized event
+            // and responded to the launch/attach request. Or else, configrationDoneRequest
+            // will never happen
+            await this.postStartServer();
+
+            // Following can be deferred to configurationDone
+            await loadSymbolsPromise;
+            reportTime("Ready for full debugging");
+        } catch (e) {
+            return finishWithError(`Launch/Attach request failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+    }
+
+    private async loadSymbols(): Promise<void> {
+        try {
+            const execs: SymbolFile[] = this.args.symbolFiles || [defSymbolFile(this.args.executable)];
+            this.symbolTable.initialize(execs);
+            await this.symbolTable.loadSymbols();
+            if (this.args.rttConfig.enabled) {
+                const symName = this.symbolTable.rttSymbolName;
+                if (!this.args.rttConfig.address) {
+                    this.handleMsg(Stderr, 'INFO: "rttConfig.address" not specified. Defaulting to "auto"\n');
+                    this.args.rttConfig.address = "auto";
+                }
+                if (this.args.rttConfig.address === "auto") {
+                    const rttSym = this.symbolTable.getGlobalOrStaticVarByName(symName);
+                    if (!rttSym) {
+                        this.args.rttConfig.enabled = false;
+                        this.handleMsg(Stderr, `Could not find symbol '${symName}' in executable. ` + "Make sure you compile/link with debug ON or you can specify your own RTT address\n");
+                    } else {
+                        const searchStr = this.args.rttConfig.searchId || "SEGGER RTT";
+                        this.args.rttConfig.address = hexFormat(rttSym.address);
+                        this.args.rttConfig.searchSize = Math.max(this.args.rttConfig.searchSize || 0, searchStr.length);
+                        this.args.rttConfig.searchId = searchStr;
+                        this.args.rttConfig.clearSearch = this.args.rttConfig.clearSearch === undefined ? true : this.args.rttConfig.clearSearch;
+                    }
+                }
             }
-        });
+        } catch (e) {
+            this.handleMsg(Stderr, `WARNING: Loading symbols failed. Please report this issue. Debugging may still work ${e}\n`);
+        }
     }
 
     private async startGdb(): Promise<void> {

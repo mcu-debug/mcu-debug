@@ -53,7 +53,7 @@ export class VariableKeys implements IValueIdentifiable {
         public readonly frameRef: number,
     ) {}
     toValueKey(): string {
-        return `${this.frameRef}|${this.name}|${this.parent} || ""}`;
+        return `${this.parent}|${this.name}|${this.frameRef}`;
     }
 }
 
@@ -61,6 +61,7 @@ export class VariableObject extends VariableKeys implements DebugProtocol.Variab
     public variablesReference: number = 0; // This is set only if the variable has children
     public handle = 0; // This comes from  VariableManager, can be used as variablesReference if needed
     public gdbVarName?: string; // The GDB variable name associated with this object, if any
+    public fileName?: string; // For global/static variables, the file they belong to
     constructor(
         public readonly scope: VariableScope,
         parent: number,
@@ -152,6 +153,12 @@ export class VariableContainer {
         varObj.applyChanges(record);
         return [varObj, handle];
     }
+    public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName: string): [VariableObject, number] {
+        throw new Error("Use VariableContainerForGlobals for global/static variables. Wrongly constructed VariableContainer.");
+    }
+    public parseMiGlobalVariable(name: string, record: GdbMiRecord, scope: VariableScope, parent: number, fileName: string): [VariableObject | undefined, number | undefined] {
+        throw new Error("Use VariableContainerForGlobals for global/static variables. Wrongly constructed VariableContainer.");
+    }
 
     public getVariableByKey(key: VariableKeys): VariableObject | undefined {
         return this.variableHandles.getObjectByKey(key) as VariableObject | undefined;
@@ -176,25 +183,47 @@ export class VariableContainer {
     }
 }
 
-// This containuer is for locals and globals only. These don't have a thread/frame assosciated with them
+// This container is for locals and globals only. These don't have a thread/frame associated with them
 // But we will use the ThreadID for a file identifier for globals/statics. ThreadID = 0 means all files.
 export class VariableContainerForGlobals extends VariableContainer {
     private fileToIdMap = new Map<string, number>();
-    private fildIdToFile = new Map<number, string>();
+    private fileIdToFile = new Map<number, string>();
     private nextFileId = 1; // Start from 1, 0 means all files
 
-    public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName?: string): [VariableObject, number] {
+    public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName: string): [VariableObject, number] {
         let fileId = fileName ? this.fileToIdMap.get(fileName) : 0;
         if (fileName && fileId === undefined) {
             fileId = this.nextFileId++;
             this.fileToIdMap.set(fileName, fileId);
-            this.fildIdToFile.set(fileId, fileName);
+            this.fileIdToFile.set(fileId, fileName);
         }
-        return super.createVariable(scope, parent, name, value, type, fileId || 0, 0);
+        const [varObj, handle] = super.createVariable(scope, parent, name, value, type, fileId || 0, 0);
+        varObj.fileName = fileName;
+        return [varObj, handle];
     }
 
     public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number): [VariableObject, number] {
-        throw new Error("Use createGlobalVariable for globals/statics");
+        throw new Error("Use createGlobalVariable for globals/statics, Wrongly constructed VariableContainerForGlobals.");
+    }
+
+    public parseMiVariable(name: string, record: GdbMiRecord, scope: VariableScope, parent: number, threadId: number, frameId: number): [VariableObject | undefined, number | undefined] {
+        throw new Error("Use parseMiGlobalVariable for globals/statics, Wrongly constructed VariableContainerForGlobals.");
+    }
+
+    public parseMiGlobalVariable(name: string, record: GdbMiRecord, scope: VariableScope, parent: number, fileName: string): [VariableObject | undefined, number | undefined] {
+        const value = record["value"] ?? "";
+        const type = record["type"] || "unknown";
+        if (name === undefined) {
+            return [undefined, undefined];
+        }
+
+        // Mi variables don't have scope, parent, frameRef, evaluateName info
+        const [varObj, handle] = this.createGlobalVariable(scope, parent, name, value, type, fileName);
+        varObj.gdbVarName = record["name"];
+        varObj.exp = record["exp"] || name;
+        varObj.evaluateName = varObj.exp; // For now, fullExp is same as exp. It may change later. For root variables, they are the same
+        varObj.applyChanges(record);
+        return [varObj, handle];
     }
 }
 
@@ -232,6 +261,7 @@ interface RegisterInfo {
 }
 
 export class VariableManager {
+    public static readonly GlobalFileName = ":global:";
     private globalContainer: VariableContainerForGlobals = new VariableContainerForGlobals();
     private localContainer: VariableContainer = new VariableContainer();
     private dynamicContainer: VariableContainer = new VariableContainer();
@@ -259,21 +289,22 @@ export class VariableManager {
         this.containers.set(VariableScope.Watch, this.dynamicContainer);
     }
 
+    // All containers are created in the constructor. Then are make for the
+    // roots of type of the variables they are and dictates their lifecycle
+    // Local variables (on the stack) are released on continue, Global/static
+    // variables are never released, are a not associated with a thread/frame
     public getContainer(scope: VariableScope): VariableContainer {
-        const container = this.getContainerRaw(scope);
+        const container = this.containers.get(scope & ActualScopeMask);
         if (!container) {
             throw new Error(`No container for scope ${VariableScope[scope]}`);
         }
         return container;
     }
-    public getContainerRaw(scope: VariableScope): VariableContainer {
-        const container = this.containers.get(scope & ActualScopeMask);
-        return container;
-    }
+
     public getVariableObject(handle: VariableReference): VariableObject | undefined {
         if (handle & VariableTypeMask) {
             const scope = handle & ScopeMask;
-            const container = this.getContainerRaw(scope);
+            const container = this.getContainer(scope);
             if (container) {
                 const variable = container.getVariableByRef(handle);
                 return variable;
@@ -359,6 +390,10 @@ export class VariableManager {
             return this.getLocalVariables(threadId, frameId);
         } else if (scope === VariableScope.Registers) {
             return this.getRegisterVariables(threadId, frameId);
+        } else if (scope === VariableScope.Global) {
+            return this.getGlobalVariables(threadId);
+        } else if (scope === VariableScope.Static) {
+            return this.getStaticVariables(threadId, frameId);
         } else if (scope & VariableTypeMask) {
             // If this is a variable, we need to get is thread/frame ids from the variable itself
             const container = this.getContainer(scope);
@@ -370,7 +405,15 @@ export class VariableManager {
         }
     }
 
-    public async varListChildren(container: VariableContainer, parent: VariableObject, name: string, threadId: number, frameId: number): Promise<VariableObject[]> {
+    public async varListChildren(container: VariableContainer | VariableContainerForGlobals, parent: VariableObject, name: string, threadId: number, frameId: number): Promise<VariableObject[]> {
+        const createVariable = (name: string, item: any) => {
+            const scope = parent.scope & ActualScopeMask;
+            if (scope === VariableScope.Global || scope === VariableScope.Static) {
+                return container.parseMiGlobalVariable(name, item, parent.scope, parent.handle, parent.fileName);
+            } else {
+                return container.parseMiVariable(name, item, parent.scope, parent.handle, threadId, frameId);
+            }
+        };
         const miOutput = await this.gdbInstance.sendCommand(`var-list-children --simple-values "${name}"`);
         const keywords = ["private", "protected", "public"];
         const children = miOutput.resultRecord.result["children"] || [];
@@ -383,16 +426,17 @@ export class VariableManager {
             } else if (exp && keywords.find((x) => x === exp)) {
                 ret.push(...(await this.varListChildren(container, parent, gdbVarName, threadId, frameId)));
             } else {
-                const [child, handle] = container.parseMiVariable(exp, item, parent.scope, parent.handle, threadId, frameId);
+                const [child, handle] = createVariable(exp, item);
                 if (!child) {
                     this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Warning: Could not parse child variable ${item["exp"]} of parent ${name}\n`);
                     continue;
                 }
-                child.evaluateName = /^\d+$/.test(child.exp) ? `${parent.evaluateName}[${child.exp}]` : `${parent.evaluateName}.${child.exp}`;
                 if (item["numchild"] && parseInt(item["numchild"]) > 0) {
                     child.variablesReference = handle!;
                 }
                 child.applyChanges(item);
+                child.evaluateName = constructEvaluateName(parent.evaluateName, parent.type, child.exp);
+                // this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Created child ${handle} ${child.evaluateName}: ${JSON.stringify(child)}\n`);
                 ret.push(child);
             }
         }
@@ -762,6 +806,122 @@ export class VariableManager {
         return variables;
     }
 
+    public async getGlobalVariables(threadId: number): Promise<DebugProtocol.Variable[]> {
+        try {
+            const vars = this.debugSession.symbolTable.getGlobalVariables();
+            const variables: DebugProtocol.Variable[] = [];
+            const container = this.globalContainer;
+            for (const v of vars) {
+                if (this.gdbInstance.IsRunning()) {
+                    break;
+                }
+                const key = new VariableKeys(0, v.name, encodeReference(threadId, 0, VariableScope.Global));
+                const existingVar = container.getVariableByKey(key);
+                try {
+                    if (existingVar === undefined) {
+                        const gdbVarName = this.createGdbName("G-" + v.name, threadId, 0);
+                        // There should be a better way to create a global variable by name but gdb mi doesn't seem to
+                        // have a way to do it directly. So we use var-create with @ for scope which works for globals/statics
+                        // because it can still collide with a local variable of same name in current frame, but that is rare enough to ignore for now.
+                        // There HAS to be a better way to do this, I just couldn't find it in gdb mi docs.
+                        const cmd = `-var-create ${gdbVarName} @ ${v.name}`;
+                        await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
+                            const record = varCreateRecord.resultRecord.result;
+                            const [varObj, handle] = container.parseMiGlobalVariable(v.name, record, VariableScope.GlobalVariable, 0, VariableManager.GlobalFileName);
+                            if (varObj !== undefined) {
+                                if (record["numchild"] && parseInt(record["numchild"]) > 0) {
+                                    varObj.variablesReference = handle!;
+                                }
+                                variables.push(varObj.toProtocolVariable());
+                            }
+                        });
+                    } else {
+                        await this.gdbInstance.sendCommand(`-var-update --simple-values ${existingVar.gdbVarName}`).then((varUpdateRecord) => {
+                            const record = varUpdateRecord.resultRecord.result;
+                            if (record["in_scope"] && record["in_scope"] !== "true") {
+                                return; // Variable is out of scope, skip it. Not sure why this would happen
+                            }
+                            existingVar.applyChanges(record);
+                            variables.push(existingVar.toProtocolVariable());
+                        });
+                    }
+                } catch (e) {
+                    if (this.debugSession.args.debugFlags.anyFlags) {
+                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting global variable ${v.name}: ${e}\n`);
+                    }
+                }
+            }
+            return variables;
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting global variables: ${e}\n`);
+            }
+        }
+        return [];
+    }
+
+    public async getStaticVariables(fileId: number, fullFileId: number): Promise<DebugProtocol.Variable[]> {
+        try {
+            const variables: DebugProtocol.Variable[] = [];
+            const container = this.globalContainer;
+            const fileName = this.debugSession.getFileById(fileId);
+            const fullFileName = this.debugSession.getFileById(fullFileId);
+            let useName = fullFileName;
+            let vars = this.debugSession.symbolTable.getStaticVariables(fullFileName);
+            if (vars.length === 0 && fullFileId !== fileId) {
+                // Try again with just file name
+                vars = this.debugSession.symbolTable.getStaticVariables(fileName);
+                useName = fileName;
+            }
+            for (const v of vars) {
+                if (this.gdbInstance.IsRunning()) {
+                    break;
+                }
+                const key = new VariableKeys(0, v.name, encodeReference(fileId, fullFileId, VariableScope.StaticVariable));
+                const existingVar = container.getVariableByKey(key);
+                try {
+                    if (existingVar === undefined) {
+                        const gdbVarName = this.createGdbName("S-" + v.name, fileId, fullFileId);
+                        // There should be a better way to create a global variable by name but gdb mi doesn't seem to
+                        // have a way to do it directly. So we use var-create with @ for scope which works for globals/statics
+                        // because it can still collide with a local variable of same name in current frame, but that is rare enough to ignore for now.
+                        // There HAS to be a better way to do this, I just couldn't find it in gdb mi docs.
+                        const cmd = `-var-create ${gdbVarName} @ ${v.name}`;
+                        await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
+                            const record = varCreateRecord.resultRecord.result;
+                            const [varObj, handle] = container.parseMiGlobalVariable(v.name, record, VariableScope.StaticVariable, 0, useName);
+                            if (varObj !== undefined) {
+                                if (record["numchild"] && parseInt(record["numchild"]) > 0) {
+                                    varObj.variablesReference = handle!;
+                                }
+                                variables.push(varObj.toProtocolVariable());
+                            }
+                        });
+                    } else {
+                        await this.gdbInstance.sendCommand(`-var-update --simple-values ${existingVar.gdbVarName}`).then((varUpdateRecord) => {
+                            const record = varUpdateRecord.resultRecord.result;
+                            if (record["in_scope"] && record["in_scope"] !== "true") {
+                                return; // Variable is out of scope, skip it. Not sure why this would happen
+                            }
+                            existingVar.applyChanges(record);
+                            variables.push(existingVar.toProtocolVariable());
+                        });
+                    }
+                } catch (e) {
+                    if (this.debugSession.args.debugFlags.anyFlags) {
+                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting global variable ${v.name}: ${e}\n`);
+                    }
+                }
+            }
+            return variables;
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting global variables: ${e}\n`);
+            }
+        }
+        return [];
+    }
+
     /**
      * Fallback method that returns a flat list of all registers.
      * Used when register grouping information is not available.
@@ -913,7 +1073,8 @@ export class VariableManager {
                     value = fmtOutput.resultRecord.result["value"];
                     record.value = value;
                 }
-                const [newVar, handle] = container.createVariable(scope, 0, args.expression.trim(), value, record["type"], thread, frame);
+                // const [newVar, handle] = container.createVariable(scope, 0, args.expression.trim(), value, record["type"], thread, frame);
+                const [newVar, handle] = container.parseMiVariable(args.expression.trim(), record, scope, 0, thread, frame);
                 newVar.applyChanges(record);
                 newVar.gdbVarName = gdbName;
                 if (record["numchild"] && parseInt(record["numchild"]) > 0) {
@@ -950,27 +1111,28 @@ export class VariableManager {
         }
     }
 
+    /**
+     * This method for all items in the Varianles view and children of Watch expressions, but not for
+     * top-level Watch expressions (those are handled by setExpression).
+     */
     public async setVariable(args: DebugProtocol.SetVariableArguments): Promise<DebugProtocol.SetVariableResponse["body"]> {
-        const varObject = this.getVariableObject(args.variablesReference);
-        if (!varObject) {
-            throw new Error(`Variable reference ${args.variablesReference} not found`);
+        let [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference);
+        const actualScope = scope & ActualScopeMask; // Scope for the container
+        let targetKey: VariableKeys;
+        const container = this.getContainer(actualScope);
+        if (args.variablesReference & VariableTypeMask) {
+            const parentObject = this.getVariableObject(args.variablesReference);
+            targetKey = new VariableKeys(parentObject.handle, args.name, encodeReference(threadId, frameId, actualScope));
+        } else {
+            targetKey = new VariableKeys(0, args.name, encodeReference(threadId, frameId, actualScope));
         }
 
-        // Find the child variable by name
-        const scope = varObject.scope;
-        const container = this.getContainer(scope);
-        const [threadId, frameId, _] = varObject.getThreadFrameInfo();
-
-        // Look for the variable in the container
-        const childKey = new VariableKeys(args.variablesReference, args.name, encodeReference(threadId, frameId, scope));
-        const childVar = container.getVariableByKey(childKey);
-
-        if (!childVar || !childVar.gdbVarName) {
+        const targetVar = container.getVariableByKey(targetKey);
+        if (!targetVar || !targetVar.gdbVarName) {
             throw new Error(`Variable ${args.name} not found or has no GDB name`);
         }
-
         // Use -var-assign to set the value
-        const cmd = `-var-assign ${childVar.gdbVarName} "${args.value}"`;
+        const cmd = `-var-assign ${targetVar.gdbVarName} "${args.value}"`;
         const miOutput = await this.gdbInstance.sendCommand(cmd);
         const record = miOutput.resultRecord.result;
 
@@ -979,15 +1141,18 @@ export class VariableManager {
         }
 
         // Update the variable with the new value
-        childVar.value = record["value"];
-        childVar.variablesReference = 0; // Reset children when value changes
+        targetVar.value = record["value"];
+        // targetVar.variablesReference = 0; // Reset children when value changes
 
         return {
-            value: childVar.value,
-            variablesReference: childVar.variablesReference,
+            value: targetVar.value,
+            variablesReference: targetVar.variablesReference,
         };
     }
 
+    /**
+     * This method is called to set the value of top-level expressions (watches)
+     */
     public async setExpression(args: DebugProtocol.SetExpressionArguments): Promise<DebugProtocol.SetExpressionResponse["body"]> {
         const [thread, frame, _] = args.frameId ? this.getVarOrFrameInfo(args.frameId!) : [0, 0, VariableScope.Global];
         const scope = VariableScope.WatchVariable;
@@ -1070,3 +1235,67 @@ export const formatMap: { [key: string]: string } = {
     x: "hexadecimal",
     X: "zero-hexadecimal",
 };
+
+/**
+ *
+ * This method can only handle simple parent expressions and child names. In real life, GDB makes up
+ * some impresive contusions for children of expressions like: &x -> *&x -> [0] as exp's returned
+ * where x is and arrau of (say) ints (int x[10];). If you look carefully it makes sense. &x is a pointer
+ * to the array, *&x dereferences it back to the array, and [0] gets the first element.
+ *
+ * Simply concatenating them creates invalid expressions
+ *
+ * This is our best effort to reconstruct valid expressions for GDB to evaluate.
+ */
+function constructEvaluateName(parentExpr: string, parentType: string, childName: string): string {
+    const isNumeric = /^\d+$/.test(childName);
+    const isArrayLike = isNumeric || childName.startsWith("[");
+    const isPointer = checkIsPointer(parentType);
+
+    let separator = "";
+    let suffix = childName;
+
+    if (isArrayLike) {
+        if (isNumeric) {
+            suffix = `[${childName}]`;
+        }
+        separator = "";
+    } else {
+        separator = isPointer ? "->" : ".";
+    }
+
+    // Wrap parent if it's complex to avoid precedence issues.
+    // Allowed safe characters for "simple names" or chained access: alphanumeric, _, [], ., >, - (for ->)
+    // If we encounter *, &, +, etc, we define it as unsafe/complex.
+    // Cases handled:
+    // *p + [0] -> (*p)[0]
+    // &s + .x -> (&s).x
+    // (cast)v + .x -> ((cast)v).x
+    const isSafeSequence = /^[a-zA-Z0-9_\[\]\.\->]+$/.test(parentExpr);
+
+    // Check for already wrapped (simple heuristic)
+    const isAlreadyWrapped = parentExpr.startsWith("(") && parentExpr.endsWith(")");
+
+    let safeParent = parentExpr;
+    // Apply wrapping if unsafe.
+    if (!isSafeSequence && !isAlreadyWrapped) {
+        safeParent = `(${parentExpr})`;
+    }
+
+    let ret = `${safeParent}${separator}${suffix}`;
+    ret = ret.replaceAll("*&", ""); // Simplify *& to nothing
+    ret = ret.replaceAll("..", "."); // Simplify .. to .
+    return ret;
+}
+
+function checkIsPointer(type: string): boolean {
+    if (!type) return false;
+    type = type.trim();
+    // Standard pointer: "int *"
+    if (type.endsWith("*")) return true;
+    // A cast pointer: "(int *)"
+    if (/\*\)+$/.test(type)) return true;
+    // Pointer to array or function: "int (*)[10]"
+    if (/\(\*\)/.test(type)) return true;
+    return false;
+}
