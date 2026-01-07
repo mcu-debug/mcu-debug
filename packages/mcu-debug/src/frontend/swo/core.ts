@@ -398,7 +398,7 @@ export class SWOCore extends SWORTTCoreBase {
             if (packet.port === 2) {
                 if (this.webview) {
                     const pc = parseUnsigned(packet.data);
-                    const symbol = this.getFunctionAtAddress(pc);
+                    const symbol = this.getFunctionAtAddress(BigInt(pc));
 
                     const message: GrapherProgramCounterMessage = {
                         type: "program-counter",
@@ -458,8 +458,8 @@ export class SWOCore extends SWORTTCoreBase {
         this.connected = false;
     }
 
-    public getFunctionAtAddress(address: number): SymbolInformation | undefined {
-        const matches = this.functionSymbols.filter((s) => s.address <= address && s.address + s.length > address);
+    public getFunctionAtAddress(address: bigint): SymbolInformation | undefined {
+        const matches = this.functionSymbols.filter((s) => s.address <= address && s.address + BigInt(s.length) > address);
         if (!matches || matches.length === 0) {
             return undefined;
         }
