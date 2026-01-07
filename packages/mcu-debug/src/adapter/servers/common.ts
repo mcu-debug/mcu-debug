@@ -222,13 +222,13 @@ export interface RTTConfiguration {
 
 export interface ElfSection {
     name: string;
-    address: number; // New base address
-    addressOrig: number; // original base address in Elf file
+    address: bigint; // New base address
+    addressOrig: bigint; // original base address in Elf file
 }
 export interface SymbolFile {
     file: string;
-    offset?: number;
-    textaddress?: number;
+    offset?: bigint;
+    textaddress?: bigint;
     sections: ElfSection[];
     sectionMap: { [name: string]: ElfSection };
 }
@@ -384,7 +384,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
 export interface DisassemblyInstruction {
     address: string;
     functionName: string;
-    offset: number;
+    offset: bigint;
     instruction: string;
     opcodes: string;
 }

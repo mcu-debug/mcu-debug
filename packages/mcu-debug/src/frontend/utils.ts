@@ -10,6 +10,23 @@ export function hexFormat64(value: bigint, padding: number = 16, includePrefix: 
     return includePrefix ? "0x" + base : base;
 }
 
+// Format as hex with 0x prefix - no padding to allow flexibility for 32/64-bit
+export function formatAddress(addr: bigint): string {
+    return "0x" + addr.toString(16);
+}
+
+// Parse memory reference per DAP spec: "0x" prefix = hex, no prefix = decimal
+
+export function parseAddress(addr: string): bigint {
+    const trimmed = addr.trim();
+    // BigInt handles both "0x..." (hex) and plain numbers (decimal)
+    return BigInt(trimmed);
+}
+
+export function parseBigint(value: string): bigint {
+    return parseAddress(value);
+}
+
 export function binaryFormat(value: number, padding: number = 0, includePrefix: boolean = true, group: boolean = false): string {
     let base = (value >>> 0).toString(2);
     while (base.length < padding) {

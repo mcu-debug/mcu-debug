@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { STLinkServerController } from "../adapter/servers/stlink";
 import { GDBServerConsole } from "./server_console";
+import { parseAddress } from "./utils";
 import {
     ADAPTER_DEBUG_MODE,
     ChainedConfigurations,
@@ -312,7 +313,7 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 isIntString = val.match(/^0[x][0-9a-f]+/i) || val.match(/^[0-9]+/);
             }
             if (isIntString) {
-                obj[prop] = parseInt(val);
+                obj[prop] = parseAddress(val);
             } else if (typeof obj[prop] !== "number") {
                 vscode.window.showErrorMessage(`Invalid "${prop}" value ${val} for ${where}. Must be a number or a string." +
                     " Use a string starting with "0x" for a hexadecimal number`);

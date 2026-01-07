@@ -6,7 +6,7 @@ import { SpawnLineReader, SymbolFile, validateELFHeader, canonicalizePath } from
 import { Interval, IntervalTree } from "@flatten-js/interval-tree";
 
 import { GDBDebugSession } from "./gdb-session";
-import { hexFormat } from "../frontend/utils";
+import { formatAddress, parseAddress, parseBigint } from "../frontend/utils";
 import { GdbMiOutput } from "./gdb-mi/mi-types";
 import { Stderr } from "./gdb-mi/mi-types";
 import { DisassemblyInstruction } from "../adapter/servers/common";
@@ -26,8 +26,8 @@ export enum SymbolScope {
 }
 
 export interface SymbolInformation {
-    addressOrig: number;
-    address: number;
+    addressOrig: bigint;
+    address: bigint;
     length: number;
     name: string;
     file: /* number |*/ string; // The actual file name parsed (more reliable with nm)
@@ -40,7 +40,7 @@ export interface SymbolInformation {
     hidden: boolean;
 }
 
-const OBJDUMP_SYMBOL_RE = RegExp(/^([0-9a-f]{8})\s([lg !])([w ])([C ])([W ])([I ])([dD ])([FfO ])\s(.*?)\t([0-9a-f]+)\s(.*)$/);
+const OBJDUMP_SYMBOL_RE = RegExp(/^([0-9a-f]+)\s([lg !])([w ])([C ])([W ])([I ])([dD ])([FfO ])\s(.*?)\t([0-9a-f]+)\s(.*)$/);
 const NM_SYMBOL_RE = RegExp(/^([0-9a-f]+).*\t(.+):[0-9]+/); // For now, we only need two things
 const debugConsoleLogging = false;
 const TYPE_MAP: { [id: string]: SymbolType } = {
@@ -76,49 +76,52 @@ export class ObjectReaderContext {
     }
 }
 
-export class SymbolNode {
-    readonly addrRange: [number, number];
+export class SymbolNode extends Interval {
+    // readonly addrRange: [bigint, bigint];
     constructor(
         public readonly symbol: SymbolInformation, // Only functions and objects
-        low: number, // Inclusive near as I can tell
-        high: number, // Inclusive near as I can tell
+        low: bigint, // Inclusive near as I can tell
+        high: bigint, // Inclusive near as I can tell
     ) {
-        this.addrRange = [low, high];
+        super(low, high);
+    }
+    clone(): Interval {
+        return new SymbolNode(this.symbol, this.low as bigint, this.high as bigint);
     }
 }
 
 interface IMemoryRegion {
     name: string;
-    size: number;
-    vmaStart: number; // Virtual memory address
-    vmaStartOrig: number;
-    lmaStart: number; // Load memory address
+    size: bigint;
+    vmaStart: bigint; // Virtual memory address
+    vmaStartOrig: bigint;
+    lmaStart: bigint; // Load memory address
     attrs: string[];
 }
 export class MemoryRegion implements IMemoryRegion {
-    public vmaEnd: number; // Inclusive
-    public lmaEnd: number; // Exclusive
+    public vmaEnd: bigint; // Inclusive
+    public lmaEnd: bigint; // Exclusive
     public name: string;
-    public size: number;
-    public vmaStart: number;
-    public lmaStart: number;
-    public vmaStartOrig: number;
+    public size: bigint;
+    public vmaStart: bigint;
+    public lmaStart: bigint;
+    public vmaStartOrig: bigint;
     public attrs: string[];
     constructor(obj: IMemoryRegion) {
         Object.assign(this, obj);
-        this.vmaEnd = this.vmaStart + this.size + 1;
-        this.lmaEnd = this.lmaStart + this.size + 1;
+        this.vmaEnd = this.vmaStart + this.size + 1n;
+        this.lmaEnd = this.lmaStart + this.size + 1n;
     }
 
-    public inVmaRegion(addr: number) {
+    public inVmaRegion(addr: bigint) {
         return addr >= this.vmaStart && addr < this.vmaEnd;
     }
 
-    public inLmaRegion(addr: number) {
+    public inLmaRegion(addr: bigint) {
         return addr >= this.lmaStart && addr < this.lmaEnd;
     }
 
-    public inRegion(addr: number) {
+    public inRegion(addr: bigint) {
         return this.inVmaRegion(addr) || this.inLmaRegion(addr);
     }
 }
@@ -155,7 +158,7 @@ interface ExecPromise {
     promise: Promise<any>;
 }
 
-class AddressToSym extends Map<number, SymbolInformation[]> {
+class AddressToSym extends Map<bigint, SymbolInformation[]> {
     constructor(...args: any[]) {
         super(...args);
     }
@@ -260,14 +263,14 @@ export class SymbolTable {
 
         this.allSymbols.push(sym);
         if (sym.type === SymbolType.Function || sym.length > 0) {
-            const treeSym = new SymbolNode(sym, sym.address, sym.address + Math.max(1, sym.length) - 1);
-            this.symbolsAsIntervalTree.insert(treeSym.addrRange, treeSym);
+            const treeSym = new SymbolNode(sym, sym.address, sym.address + BigInt(Math.max(1, sym.length) - 1));
+            this.symbolsAsIntervalTree.insert(treeSym, treeSym);
         }
         this.addSymbolToTrees(sym);
     }
 
     private addSymbolToTrees(sym: SymbolInformation) {
-        const add = (symt: AddressToSym, address: number) => {
+        const add = (symt: AddressToSym, address: bigint) => {
             const info = symt.get(address);
             if (info) {
                 info.push(sym);
@@ -301,11 +304,11 @@ export class SymbolTable {
                 return true;
             }
             const name = match[1];
-            const offset = symF.offset || 0;
-            const vmaOrig = parseInt(match[3], 16);
+            const offset = symF.offset || 0n;
+            const vmaOrig = BigInt("0x" + match[3].trim());
             let vmaStart = vmaOrig + offset;
             const section = symF.sectionMap[name];
-            if (name === ".text" && typeof symF.textaddress === "number") {
+            if (name === ".text" && typeof symF.textaddress === "bigint") {
                 vmaStart = symF.textaddress;
                 if (!section) {
                     symF.sections.push({
@@ -322,10 +325,10 @@ export class SymbolTable {
             }
             const region = new MemoryRegion({
                 name: name,
-                size: parseInt(match[2], 16), // size
+                size: parseBigint("0x" + match[2].trim()), // size
                 vmaStart: vmaStart, // vma
                 vmaStartOrig: vmaOrig,
-                lmaStart: parseInt(match[4], 16), // lma
+                lmaStart: parseBigint("0x" + match[4].trim()), // lma
                 attrs: attrs,
             });
             this.memoryRegions.push(region);
@@ -377,8 +380,8 @@ export class SymbolTable {
                 return true;
             }
 
-            const offset = symF.offset || 0;
-            const addr = parseInt(match[1], 16);
+            const offset = symF.offset || 0n;
+            const addr: bigint = parseBigint("0x" + match[1].trim());
             const section = symF.sectionMap[secName];
             const newaddr = addr + (section ? addr - section.addressOrig : offset);
 
@@ -541,7 +544,7 @@ export class SymbolTable {
                         sym.file = item[1];
                     }
                 } else {
-                    console.error("Unknown symbol address. Need to investigate", hexFormat(item[0]), item);
+                    console.error("Unknown symbol address. Need to investigate", formatAddress(item[0]), item);
                 }
             }
         } catch (e) {
@@ -552,12 +555,12 @@ export class SymbolTable {
         }
     }
 
-    private addressToFileOrig: Map<number, string> = new Map<number, string>(); // These are addresses used before re-mapped via symbol-files
+    private addressToFileOrig: Map<bigint, string> = new Map<bigint, string>(); // These are addresses used before re-mapped via symbol-files
     private readNmSymbolLine(cxt: ObjectReaderContext, symF: SymbolFile, line: string, err: any): boolean {
         const match = line && line.match(NM_SYMBOL_RE);
         if (match) {
-            const offset = symF.offset || 0;
-            const address = parseInt(match[1], 16) + offset;
+            const offset = symF.offset || 0n;
+            const address = parseAddress("0x" + match[1].trim()) + offset;
             const file = canonicalizePath(match[2]);
             this.addressToFileOrig.set(address, file);
             this.addPathVariations(file);
@@ -566,10 +569,10 @@ export class SymbolTable {
     }
 
     public updateSymbolSize(node: SymbolNode, len: number) {
-        this.symbolsAsIntervalTree.remove(node.addrRange, node);
+        this.symbolsAsIntervalTree.remove(node, node);
         node.symbol.length = len;
-        node = new SymbolNode(node.symbol, node.addrRange[0], node.addrRange[1] + len - 1);
-        this.symbolsAsIntervalTree.insert(node.addrRange, node);
+        node = new SymbolNode(node.symbol, node.low as bigint, (node.high as bigint) + BigInt(len) - 1n);
+        this.symbolsAsIntervalTree.insert(node, node);
     }
 
     private sortGlobalVars() {
@@ -708,8 +711,8 @@ export class SymbolTable {
         return { curSimpleName: basename, curName: canonical };
     }
 
-    public getFunctionAtAddress(address: number): SymbolInformation {
-        const symNodes = this.symbolsAsIntervalTree.search([address, address]);
+    public getFunctionAtAddress(address: bigint): SymbolInformation {
+        const symNodes = this.symbolsAsIntervalTree.search(new Interval(address, address));
         for (const symNode of symNodes) {
             if (symNode && symNode.symbol.type === SymbolType.Function) {
                 return symNode.symbol;

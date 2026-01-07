@@ -3,9 +3,9 @@ import { SeqDebugSession } from "./seq-debug-session";
 import { Config } from "winston/lib/winston/config";
 import { InitializedEvent, Logger, logger, OutputEvent, Variable } from "@vscode/debugadapter";
 import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath } from "./servers/common";
-import path from "path";
 import os from "os";
 import fs from "fs";
+import path from "path";
 import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr, Stdout } from "./gdb-mi/mi-types";
@@ -15,11 +15,8 @@ import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
-import { hexFormat, hexFormat64 } from "../frontend/utils";
+import { formatAddress, parseAddress } from "../frontend/utils";
 import { BreakpointManager } from "./breakpoints";
-export class SymbolManager {
-    constructor() {}
-}
 
 export class GDBDebugSession extends SeqDebugSession {
     public args = {} as ConfigurationArguments;
@@ -498,22 +495,10 @@ export class GDBDebugSession extends SeqDebugSession {
                 return;
             }
 
-            // Parse memory reference per DAP spec: "0x" prefix = hex, no prefix = decimal
-            const parseAddress = (addr: string): bigint => {
-                const trimmed = addr.trim();
-                // BigInt handles both "0x..." (hex) and plain numbers (decimal)
-                return BigInt(trimmed);
-            };
-
             const startAddress = parseAddress(args.memoryReference);
             const length = args.count;
             const offset = BigInt(args.offset || 0);
             const useAddr = startAddress + offset;
-
-            // Format as hex with 0x prefix - no padding to allow flexibility for 32/64-bit
-            const formatAddress = (addr: bigint): string => {
-                return "0x" + addr.toString(16);
-            };
 
             const useAddrHex = formatAddress(useAddr);
 
@@ -566,21 +551,9 @@ export class GDBDebugSession extends SeqDebugSession {
                 return;
             }
 
-            // Parse memory reference per DAP spec: "0x" prefix = hex, no prefix = decimal
-            const parseAddress = (addr: string): bigint => {
-                const trimmed = addr.trim();
-                return BigInt(trimmed);
-            };
-
             const startAddress = parseAddress(args.memoryReference);
             const offset = BigInt(args.offset || 0);
             const useAddr = startAddress + offset;
-
-            // Format as hex with 0x prefix
-            const formatAddress = (addr: bigint): string => {
-                return "0x" + addr.toString(16);
-            };
-
             const useAddrHex = formatAddress(useAddr);
 
             // Convert base64 data to hex string (no 0x prefix for GDB command)
@@ -848,7 +821,7 @@ export class GDBDebugSession extends SeqDebugSession {
                         this.handleMsg(Stderr, `Could not find symbol '${symName}' in executable. ` + "Make sure you compile/link with debug ON or you can specify your own RTT address\n");
                     } else {
                         const searchStr = this.args.rttConfig.searchId || "SEGGER RTT";
-                        this.args.rttConfig.address = hexFormat(rttSym.address);
+                        this.args.rttConfig.address = formatAddress(rttSym.address);
                         this.args.rttConfig.searchSize = Math.max(this.args.rttConfig.searchSize || 0, searchStr.length);
                         this.args.rttConfig.searchId = searchStr;
                         this.args.rttConfig.clearSearch = this.args.rttConfig.clearSearch === undefined ? true : this.args.rttConfig.clearSearch;
@@ -894,8 +867,8 @@ export class GDBDebugSession extends SeqDebugSession {
             // If you just used 'add-symbol-file' debugging works but RTOS detection fails
             // for most debuggers.
             for (const symF of this.args.symbolFiles) {
-                const offset = symF.offset ? `-o ${hexFormat(symF.offset)}"` : "";
-                let otherArgs = typeof symF.textaddress === "number" ? ` ${hexFormat(symF.textaddress)}"` : "";
+                const offset = symF.offset ? `-o ${formatAddress(symF.offset)}"` : "";
+                let otherArgs = typeof symF.textaddress === "bigint" ? ` ${formatAddress(symF.textaddress)}"` : "";
                 for (const section of symF.sections) {
                     otherArgs += ` -s ${section.name} ${section.address}`;
                 }
