@@ -408,7 +408,7 @@ export interface GDBServerController extends EventEmitter {
     setArguments(args: ConfigurationArguments): void;
 
     customRequest(command: string, response: DebugProtocol.Response, args: any): boolean;
-    initCommands(): string[];
+    connectCommands(): string[];
     launchCommands(): string[];
     attachCommands(): string[];
     resetCommands(): string[];

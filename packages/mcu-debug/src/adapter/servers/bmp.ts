@@ -26,7 +26,7 @@ export class BMPServerController extends EventEmitter implements GDBServerContro
         return false;
     }
 
-    public initCommands(): string[] {
+    public connectCommands(): string[] {
         if (!this.args) {
             throw new Error("Arguments not set");
         }

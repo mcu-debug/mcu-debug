@@ -85,60 +85,43 @@ export class MiCommands {
     }
 */
 
-    sendThreadInfoAll(): Promise<GdbMiThreadInfoList> {
-        return new Promise<GdbMiThreadInfoList>((resolve, reject) => {
+    async sendThreadInfoAll(): Promise<GdbMiThreadInfoList> {
+        try {
             const cmd = "-thread-info";
-            this.gdbInstance
-                .sendCommand(cmd)
-                .then((output) => {
-                    try {
-                        const record = output.resultRecord;
-                        if (!record) {
-                            reject(new Error("No result record in thread-info output"));
-                            return;
-                        }
-                        const threadInfoList = new GdbMiThreadInfoList(output);
-                        resolve(threadInfoList);
-                    } catch (e) {
-                        reject(e);
-                        return;
-                    }
-                })
-                .catch(reject);
-        });
+            const output = await this.gdbInstance.sendCommand(cmd);
+            const record = output.resultRecord.result;
+            if (!record) {
+                throw new Error("No result record in thread-info output");
+            }
+            const threadInfoList = new GdbMiThreadInfoList(output);
+            return threadInfoList;
+        } catch (e) {
+            return Promise.reject(e);
+        }
     }
 
-    sendStackListFrames(thread: GdbMiThreadIF, startFrame: number, endFrame: number): Promise<GdbMiFrame[]> {
-        const threadId = thread.id;
-        const cmd = `-stack-list-frames --thread ${threadId} ${startFrame} ${endFrame}`;
-        return new Promise<GdbMiFrame[]>((resolve, reject) => {
-            this.gdbInstance
-                .sendCommand(cmd)
-                .then((output) => {
-                    try {
-                        const record = output.resultRecord;
-                        if (!record) {
-                            reject(new Error("No result record in stack-list-frames output"));
-                            return;
-                        }
-                        const framesRaw = (record.result as any)["stack"];
-                        const frames: GdbMiFrame[] = [];
-                        if (Array.isArray(framesRaw)) {
-                            for (const fr of framesRaw) {
-                                frames.push(new GdbMiFrame(fr));
-                            }
-                        }
-                        for (const frame of frames) {
-                            thread.setFrame(frame, frame.level);
-                        }
-                        resolve(frames);
-                    } catch (e) {
-                        reject(e);
-                        return;
-                    }
-                })
-                .catch(reject);
-        });
+    async sendStackListFrames(thread: GdbMiThreadIF, startFrame: number, endFrame: number): Promise<void> {
+        try {
+            const threadId = thread.id;
+            const cmd = `-stack-list-frames --thread ${threadId} ${startFrame} ${endFrame}`;
+            const output = await this.gdbInstance.sendCommand(cmd);
+            const record = output.resultRecord.result;
+            if (!record) {
+                throw new Error("No result record in stack-list-frames output");
+            }
+            const framesRaw = (record as any)["stack"];
+            const frames: GdbMiFrame[] = [];
+            if (Array.isArray(framesRaw)) {
+                for (const fr of framesRaw) {
+                    frames.push(new GdbMiFrame(fr));
+                }
+            }
+            for (const frame of frames) {
+                thread.setFrame(frame, frame.level);
+            }
+        } catch (e) {
+            return Promise.reject(e);
+        }
     }
 }
 
@@ -224,7 +207,6 @@ export class GdbMiFrame implements GdbMiFrameIF {
 export class GdbMiThread implements GdbMiThreadIF {
     id: number;
     targetId: string;
-    topFrame: GdbMiFrame;
     frames: GdbMiFrame[]; // Unlike threads, levels start at 0, so it is safe to use an array here
     name: string;
     details?: string;
@@ -236,8 +218,10 @@ export class GdbMiThread implements GdbMiThreadIF {
         this.targetId = miThreadInfo["target-id"];
         this.name = miThreadInfo["name"];
         this.details = miThreadInfo["details"];
-        this.topFrame = new GdbMiFrame(miThreadInfo["frame"]);
         this.frames = [];
+        if (miThreadInfo["frame"]) {
+            this.frames.push(new GdbMiFrame(miThreadInfo["frame"]));
+        }
         if (miThreadInfo["state"]) {
             this.state = miThreadInfo["state"];
         }
@@ -267,21 +251,18 @@ export class GdbMiThread implements GdbMiThreadIF {
 
 export class GdbMiThreadInfoList {
     threadMap: Map<number, GdbMiThreadIF>;
-    threadsAry: GdbMiThreadIF[]; // Unlike threads, do not index into this array by thread id. Use it as a list. Already sorted by id.
     currentThreadId: number | undefined;
 
     constructor(miOutput: GdbMiOutput) {
         this.threadMap = new Map<number, GdbMiThreadIF>();
         const record = miOutput.resultRecord;
-        if (record) {
+        if (record && record.result) {
             const threadInfos = (record.result as any)["threads"];
             if (Array.isArray(threadInfos)) {
                 for (const ti of threadInfos) {
                     const thread = new GdbMiThread(ti);
                     this.threadMap.set(thread.id, thread);
                 }
-                this.threadsAry = Array.from(this.threadMap.values());
-                this.threadsAry.sort((a, b) => a.id - b.id);
             }
         }
         const currentThreadIdStr = (record.result as any)["current-thread-id"];
@@ -291,5 +272,11 @@ export class GdbMiThreadInfoList {
                 this.currentThreadId = tid;
             }
         }
+    }
+
+    getSortedThreadList(): GdbMiThreadIF[] {
+        const threadsAry = Array.from(this.threadMap.values());
+        threadsAry.sort((a, b) => a.id - b.id);
+        return threadsAry;
     }
 }

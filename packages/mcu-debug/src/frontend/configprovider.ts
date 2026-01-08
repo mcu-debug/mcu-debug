@@ -482,18 +482,22 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
     private setOsSpecficConfigSetting(config: ConfigOptions, dstName: string, propName: string = "") {
         if (!config[dstName]) {
             propName = propName || dstName;
-            const settings = vscode.workspace.getConfiguration("mcu-debug");
-            const obj = settings[propName];
-            if (obj !== undefined && obj !== null) {
-                if (typeof obj === "object") {
-                    const osName = os.platform();
-                    const osOverride = osName === "win32" ? "windows" : osName === "darwin" ? "osx" : "linux";
-                    const val = obj[osOverride];
-                    if (val !== undefined) {
-                        config[dstName] = obj[osOverride];
+            for (const configName of ["mcu-debug", "cortex-debug"]) {
+                const settings = vscode.workspace.getConfiguration(configName);
+                const obj = settings[propName];
+                if (obj !== undefined && obj !== null) {
+                    if (typeof obj === "object") {
+                        const osName = os.platform();
+                        const osOverride = osName === "win32" ? "windows" : osName === "darwin" ? "osx" : "linux";
+                        const val = obj[osOverride];
+                        if (val !== undefined) {
+                            config[dstName] = obj[osOverride];
+                            return;
+                        }
+                    } else {
+                        config[dstName] = obj;
+                        return;
                     }
-                } else {
-                    config[dstName] = obj;
                 }
             }
         }

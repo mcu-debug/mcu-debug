@@ -282,7 +282,7 @@ export class BreakpointManager {
             const promises: Promise<any>[] = [];
             for (const bp of args.breakpoints || []) {
                 const aType = bp.accessType === "read" ? "-r" : bp.accessType === "readWrite" ? "-a" : "";
-                let bkptArgs = `--access ${aType}`;
+                let bkptArgs = ` ${aType}`;
                 /**
                 * These options have to set separately as GDB MI does not parse them correctly
                 if (bp.condition) {
@@ -298,8 +298,18 @@ export class BreakpointManager {
                 try {
                     const miOutput = await p;
                     const bp = args.breakpoints ? args.breakpoints[counter] : null;
-                    const bpInfo = miOutput.resultRecord.result["wpt"];
-                    const bpId = parseInt(bpInfo["number"]);
+                    const result = miOutput.resultRecord.result;
+                    let bpId = -1;
+                    for (const key of Object.keys(result)) {
+                        if (key.endsWith("wpt")) {
+                            const bpInfo = result[key];
+                            bpId = parseInt(bpInfo["number"]);
+                            break;
+                        }
+                    }
+                    if (bpId === -1) {
+                        throw new Error(`Could not find breakpoint information returned from GDB ${miOutput}`);
+                    }
                     const dbgBp: DebugProtocol.Breakpoint = {
                         id: bpId,
                         verified: true,

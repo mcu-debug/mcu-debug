@@ -29,7 +29,6 @@ const ActualScopeMask = 0x7;
 const FrameIDMask = 0xffffff;
 const ThreadIDMask = 0x1ffffff;
 const ScopeMask = 0xf;
-const ScopeMaskSimple = 0x7;
 const ScopeBits = 4;
 const FrameIDBits = 24;
 const ThreadIDBits = 25;
@@ -43,6 +42,10 @@ export function encodeReference(threadId: number, frameId: number, scope: Variab
 
 export function getScopeFromReference(varRef: number): VariableScope {
     return varRef & ScopeMask;
+}
+
+export function getVariableClass(scope: VariableScope): VariableScope {
+    return scope & ActualScopeMask;
 }
 
 // These are the fields that uniquely identify a variable
@@ -301,6 +304,10 @@ export class VariableManager {
         return container;
     }
 
+    //
+    // This is only for variables with children. Leaf variables don't have a variablesReference
+    //  but they do have a handle but no way to tell VSCode that.
+    //
     public getVariableObject(handle: VariableReference): VariableObject | undefined {
         if (handle & VariableTypeMask) {
             const scope = handle & ScopeMask;
@@ -311,6 +318,29 @@ export class VariableManager {
             }
         }
         return undefined;
+    }
+
+    public getVariableFullName(parentRef: VariableReference, name: string): string | undefined {
+        try {
+            const [_threadId, _frameId, scope] = this.getVarOrFrameInfo(parentRef);
+            if ((scope & VariableTypeMask) === 0) {
+                return name;
+            }
+            const container = this.getContainer(scope);
+            const variable = container.getVariableByRef(parentRef);
+            if (variable === undefined) {
+                return undefined;
+            }
+            const parentName = variable.evaluateName;
+            for (const child of variable.children || []) {
+                if (child.name === name) {
+                    return child.evaluateName;
+                }
+            }
+            return `${parentName}.${name}`;
+        } catch {
+            return undefined;
+        }
     }
 
     public hasFrameHandle(handle: VariableReference): boolean {

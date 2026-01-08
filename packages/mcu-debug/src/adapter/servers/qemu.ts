@@ -28,7 +28,7 @@ export class QEMUServerController extends EventEmitter implements GDBServerContr
         return false;
     }
 
-    public initCommands(): string[] {
+    public connectCommands(): string[] {
         const gdbport = this.ports[createPortName(this.args.targetProcessor)];
 
         return [`target-select extended-remote localhost:${gdbport}`];

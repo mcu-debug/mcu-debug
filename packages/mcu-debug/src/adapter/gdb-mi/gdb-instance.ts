@@ -29,6 +29,8 @@ export class GdbInstance extends EventEmitter {
     public status: "running" | "stopped" | "none" = "none";
     public readonly miCommands: MiCommands;
     public suppressConsoleOutput: boolean = false;
+    public gdbPath: string = "arm-none-eabi-gdb";
+    public gdbArgs: string[] = ["--interpreter=mi3", "-q"];
     gdbMajorVersion: number = 0;
     gdbMinorVersion: number = 0;
 
@@ -42,6 +44,8 @@ export class GdbInstance extends EventEmitter {
     }
 
     start(gdbPath: string, gdbArgs: string[], cwd: string | undefined, init: string[], timeout: number = 1000, checkVers = true): Promise<void> {
+        this.gdbPath = gdbPath;
+        this.gdbArgs = gdbArgs;
         return new Promise(async (resolve, reject) => {
             const doInitCmds = () => {
                 const promises = [];
@@ -77,8 +81,12 @@ export class GdbInstance extends EventEmitter {
                         this.log(GdbEventNames.Stderr, `ERROR: GDB version ${this.gdbMajorVersion}.${this.gdbMinorVersion} is not supported. Please upgrade to GDB version 9.1 or higher.`);
                         this.log(GdbEventNames.Stderr, "    This can result in silent failures");
                     }
-                    doInitCmds();
-                    resolve();
+                    try {
+                        doInitCmds();
+                        resolve();
+                    } catch (e) {
+                        reject(e);
+                    }
                     return;
                 } catch (e) {
                     ServerConsoleLog("Failed to get GDB version using $_gdb_major/minor, falling back to -gdb-version");
@@ -87,14 +95,24 @@ export class GdbInstance extends EventEmitter {
                 this.sendCommand("-gdb-version", timeout)
                     .then(() => {
                         this.parseVersionInfo();
-                        doInitCmds();
+                        try {
+                            doInitCmds();
+                            resolve();
+                        } catch (e) {
+                            reject(e);
+                        }
                     })
                     .catch(() => {
                         this.captureStdoutMode = false;
                         reject(new Error("GDB did not respond to -gdb-version command"));
                     });
             } else {
-                doInitCmds();
+                try {
+                    doInitCmds();
+                    resolve();
+                } catch (e) {
+                    reject(e);
+                }
             }
         });
     }

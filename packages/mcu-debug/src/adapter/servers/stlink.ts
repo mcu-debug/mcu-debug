@@ -146,7 +146,7 @@ export class STLinkServerController extends EventEmitter implements GDBServerCon
         return false;
     }
 
-    public initCommands(): string[] {
+    public connectCommands(): string[] {
         const gdbport = this.ports[createPortName(this.args.targetProcessor)];
         return [`target-select extended-remote localhost:${gdbport}`];
     }

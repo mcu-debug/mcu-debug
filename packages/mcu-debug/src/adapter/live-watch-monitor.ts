@@ -1,8 +1,9 @@
+import * as process from "process";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { Handles } from "@vscode/debugadapter";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
-import { decodeReference } from "./variables";
+import { decodeReference, VariableManager } from "./variables";
 import { VariableObject, ExtendedVariable } from "./variables";
 import * as crypto from "crypto";
 import { GdbEventNames, Stderr, MIError, MINode } from "./gdb-mi/mi-types";
@@ -387,6 +388,8 @@ export class VariablesHandler {
 export class LiveWatchMonitor {
     public miDebugger: GdbInstance | undefined;
     protected varHandler: VariablesHandler;
+    protected varManager: VariableManager;
+    protected liveWatchEnabled: boolean = false;
     constructor(private mainSession: GDBDebugSession) {
         this.varHandler = new VariablesHandler(
             (): number | undefined => 1,
@@ -394,14 +397,44 @@ export class LiveWatchMonitor {
             (r: DebugProtocol.Response, a: any) => {},
             (r: DebugProtocol.Response, code: number, msg: string) => {},
         );
+        this.miDebugger = new GdbInstance();
+        this.varManager = new VariableManager(this.miDebugger, this.mainSession);
     }
 
-    public setupEvents(mi2: GdbInstance) {
-        this.miDebugger = mi2;
+    public start(gdbCommands: string[]): void {
+        this.miDebugger.debugFlags = this.mainSession.args.debugFlags;
+        const exe = this.mainSession.gdbInstance.gdbPath;
+        const args = this.mainSession.gdbInstance.gdbArgs;
+        gdbCommands.push('interpreter-exec console "set stack-cache off"');
+        gdbCommands.push('interpreter-exec console "set remote interrupt-on-connect off"');
+        gdbCommands.push(...this.mainSession.getServerConnectCommands());
+        this.miDebugger
+            .start(exe, args, process.cwd(), [], 10 * 1000, false)
+            .then(() => {
+                this.handleMsg(Stderr, `Started GDB process ${exe} ${args.join(" ")}\n`);
+                this.setupEvents();
+                for (const cmd of gdbCommands) {
+                    this.miDebugger!.sendCommand(cmd).catch((err) => {
+                        this.handleMsg(Stderr, `Error with command '${cmd}': ${err.toString()}\n`);
+                    });
+                }
+                this.liveWatchEnabled = true;
+            })
+            .catch((err) => {
+                this.handleMsg(Stderr, `Could not start/initialize Live GDB process: ${err.toString()}\n`);
+                this.handleMsg(Stderr, `Live watch expressions will not work.\n`);
+            });
+    }
+
+    protected handleMsg(type: GdbEventNames, msg: string) {
+        this.mainSession.handleMsg(type, "LiveGDB: " + msg);
+    }
+
+    protected setupEvents() {
         this.miDebugger.on("quit", this.quitEvent.bind(this));
         this.miDebugger.on("exited-normally", this.quitEvent.bind(this));
         this.miDebugger.on("msg", (type: GdbEventNames, msg: string) => {
-            this.mainSession.handleMsg(type, "LiveGDB: " + msg);
+            this.handleMsg(type, msg);
         });
 
         /*
@@ -431,6 +464,7 @@ export class LiveWatchMonitor {
 
     protected quitEvent() {
         // this.miDebugger = undefined;
+        this.liveWatchEnabled = false;
     }
 
     public evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): Promise<void> {

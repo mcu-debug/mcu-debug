@@ -1,10 +1,10 @@
-import { DebugProtocol } from '@vscode/debugprotocol';
-import { ConfigurationArguments, GDBServerController, SWOConfigureEvent, createPortName, genDownloadCommands, getGDBSWOInitCommands } from './common';
-import { EventEmitter } from 'events';
+import { DebugProtocol } from "@vscode/debugprotocol";
+import { ConfigurationArguments, GDBServerController, SWOConfigureEvent, createPortName, genDownloadCommands, getGDBSWOInitCommands } from "./common";
+import { EventEmitter } from "events";
 
 export class PyOCDServerController extends EventEmitter implements GDBServerController {
-    public readonly name: string = 'PyOCD';
-    public readonly portsNeeded: string[] = ['gdbPort', 'consolePort', 'swoPort'];
+    public readonly name: string = "PyOCD";
+    public readonly portsNeeded: string[] = ["gdbPort", "consolePort", "swoPort"];
 
     private args = {} as ConfigurationArguments;
     private ports: { [name: string]: number } = {};
@@ -25,36 +25,29 @@ export class PyOCDServerController extends EventEmitter implements GDBServerCont
         return false;
     }
 
-    public initCommands(): string[] {
+    public connectCommands(): string[] {
         const gdbport = this.ports[createPortName(this.args.targetProcessor)];
 
         return [
             `target-select extended-remote localhost:${gdbport}`,
             // Following needed for SWO and accessing some peripherals.
             // Generally not a good thing to do
-            'interpreter-exec console "set mem inaccessible-by-default off"'
+            'interpreter-exec console "set mem inaccessible-by-default off"',
         ];
     }
 
     public launchCommands(): string[] {
-        const commands = [
-            ...genDownloadCommands(this.args, ['interpreter-exec console "monitor reset halt"']),
-            'interpreter-exec console "monitor reset halt"'
-        ];
+        const commands = [...genDownloadCommands(this.args, ['interpreter-exec console "monitor reset halt"']), 'interpreter-exec console "monitor reset halt"'];
         return commands;
     }
 
     public attachCommands(): string[] {
-        const commands = [
-            'interpreter-exec console "monitor halt"'
-        ];
+        const commands = ['interpreter-exec console "monitor halt"'];
         return commands;
     }
 
     public resetCommands(): string[] {
-        const commands: string[] = [
-            'interpreter-exec console "monitor reset"'
-        ];
+        const commands: string[] = ['interpreter-exec console "monitor reset"'];
         return commands;
     }
 
@@ -73,7 +66,7 @@ export class PyOCDServerController extends EventEmitter implements GDBServerCont
     }
 
     public serverExecutable(): string {
-        const exeName = 'pyocd';
+        const exeName = "pyocd";
         const ret = this.args.serverpath ? this.args.serverpath : exeName;
         return ret;
     }
@@ -83,42 +76,33 @@ export class PyOCDServerController extends EventEmitter implements GDBServerCont
     }
 
     public serverArguments(): string[] {
-        const gdbport = this.ports['gdbPort'];
-        const telnetport = this.ports['consolePort'];
+        const gdbport = this.ports["gdbPort"];
+        const telnetport = this.ports["consolePort"];
 
-        let serverargs = [
-            'gdbserver',
-            '--port', gdbport.toString(),
-            '--telnet-port', telnetport.toString()
-        ];
+        let serverargs = ["gdbserver", "--port", gdbport.toString(), "--telnet-port", telnetport.toString()];
 
         if (this.args.boardId) {
-            serverargs.push('--board');
+            serverargs.push("--board");
             serverargs.push(this.args.boardId);
         }
 
         if (this.args.targetId) {
-            serverargs.push('--target');
+            serverargs.push("--target");
             serverargs.push(this.args.targetId.toString());
         }
 
         if (this.args.cmsisPack) {
-            serverargs.push('--pack');
+            serverargs.push("--pack");
             serverargs.push(this.args.cmsisPack.toString());
         }
 
         if (this.args.swoConfig.enabled) {
             const source = this.args.swoConfig.source;
-            if ((source === 'probe') || (source === 'socket') || (source === 'file')) {
-                const swoPort = this.ports[createPortName(this.args.targetProcessor, 'swoPort')];
+            if (source === "probe" || source === "socket" || source === "file") {
+                const swoPort = this.ports[createPortName(this.args.targetProcessor, "swoPort")];
                 const cpuF = this.args.swoConfig.cpuFrequency;
-                const swoF = this.args.swoConfig.swoFrequency || '1';
-                const args = [
-                    '-O', 'enable_swv=1',
-                    '-O', 'swv_raw_enable=true',
-                    '-O', `swv_raw_port=${swoPort}`,
-                    '-O', `swv_system_clock=${cpuF}`,
-                    '-O', `swv_clock=${swoF}`];
+                const swoF = this.args.swoConfig.swoFrequency || "1";
+                const args = ["-O", "enable_swv=1", "-O", "swv_raw_enable=true", "-O", `swv_raw_port=${swoPort}`, "-O", `swv_system_clock=${cpuF}`, "-O", `swv_clock=${swoF}`];
                 serverargs.push(...args);
             }
         }
@@ -137,20 +121,26 @@ export class PyOCDServerController extends EventEmitter implements GDBServerCont
     public serverLaunchCompleted(): void {
         if (this.args.swoConfig.enabled) {
             const source = this.args.swoConfig.source;
-            if ((source === 'probe') || (source === 'socket') || (source === 'file')) {
-                const swoPortNm = createPortName(this.args.targetProcessor, 'swoPort');
-                this.emit('event', new SWOConfigureEvent({
-                    type: 'socket',
-                    args: this.args,
-                    port: this.ports[swoPortNm].toString(10)
-                }));
-            } else if (source === 'serial') {
-                this.emit('event', new SWOConfigureEvent({
-                    type: 'serial',
-                    args: this.args,
-                    device: this.args.swoConfig.source,
-                    baudRate: this.args.swoConfig.swoFrequency
-                }));
+            if (source === "probe" || source === "socket" || source === "file") {
+                const swoPortNm = createPortName(this.args.targetProcessor, "swoPort");
+                this.emit(
+                    "event",
+                    new SWOConfigureEvent({
+                        type: "socket",
+                        args: this.args,
+                        port: this.ports[swoPortNm].toString(10),
+                    }),
+                );
+            } else if (source === "serial") {
+                this.emit(
+                    "event",
+                    new SWOConfigureEvent({
+                        type: "serial",
+                        args: this.args,
+                        device: this.args.swoConfig.source,
+                        baudRate: this.args.swoConfig.swoFrequency,
+                    }),
+                );
             }
         }
     }

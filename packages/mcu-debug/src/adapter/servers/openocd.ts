@@ -73,14 +73,14 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
         return false;
     }
 
-    public initCommands(): string[] {
+    public connectCommands(): string[] {
         const gdbport = this.ports[createPortName(this.args.targetProcessor)];
 
         return [`target-select extended-remote localhost:${gdbport}`];
     }
 
     public liveGdbInitCommands(): string[] {
-        return this.initCommands();
+        return this.connectCommands();
     }
 
     // ST/OpenOCD HACK: There are two problems.

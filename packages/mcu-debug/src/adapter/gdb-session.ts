@@ -10,32 +10,39 @@ import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
-import { VariableManager, VariableScope } from "./variables";
+import { getVariableClass, VariableManager, VariableScope } from "./variables";
 import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
 import { formatAddress, parseAddress } from "../frontend/utils";
 import { BreakpointManager } from "./breakpoints";
+import { LiveWatchMonitor } from "./live-watch-monitor";
 
+function COMMAND_MAP(c: string): string {
+    if (!c) {
+        return c;
+    }
+    c = c.trim();
+    if (["continue", "c", "cont"].find((s) => s === c)) {
+        // For some reason doing a continue in one of the commands from launch.json does not work with gdb when in MI mode
+        // Maybe it is version dependent
+        return "exec-continue --all";
+    }
+    return c.startsWith("-") ? c : `-interpreter-exec console "${c.replace(/"/g, '\\"')}"`;
+}
 export class GDBDebugSession extends SeqDebugSession {
     public args = {} as ConfigurationArguments;
-    public gdbInstance: GdbInstance | null = null;
-    public liveGdbInstance: GdbInstance | null = null;
+    public gdbInstance: GdbInstance;
+    public gdbLiveInstance: GdbInstance;
     public serverSession: GDBServerSession;
-    public gdbMiCommands: MiCommands | null = null;
-    public lastThreadsInfo: GdbMiThreadInfoList | null = null;
+    public gdbMiCommands: MiCommands;
+    public lastThreadsInfo: GdbMiThreadInfoList;
+    public liveWatchMonitor: LiveWatchMonitor;
     public suppressStoppedEvents: boolean = true;
     public continuing: boolean = false;
     configurationDone: boolean = false;
     public fileMap: Map<string, number> = new Map();
-    private loadSymbolsPromise: Promise<void> | null = null;
-    public isRunning(): boolean {
-        return this.gdbInstance.IsRunning();
-    }
-    public isBusy(): boolean {
-        return this.continuing || this.isRunning();
-    }
 
     protected varManager: VariableManager;
     protected bkptManager: BreakpointManager;
@@ -44,12 +51,21 @@ export class GDBDebugSession extends SeqDebugSession {
     constructor() {
         super();
         this.gdbInstance = new GdbInstance();
+        this.gdbLiveInstance = new GdbInstance();
         this.serverSession = new GDBServerSession(this);
         this.gdbMiCommands = new MiCommands(this.gdbInstance);
         this.varManager = new VariableManager(this.gdbInstance, this);
         this.bkptManager = new BreakpointManager(this.gdbInstance!, this);
         this.symbolTable = new SymbolTable(this);
+        this.liveWatchMonitor = new LiveWatchMonitor(this);
         this.getFileId(VariableManager.GlobalFileName); // Make sure global file ID is always 1
+    }
+
+    public isRunning(): boolean {
+        return this.gdbInstance.IsRunning();
+    }
+    public isBusy(): boolean {
+        return this.continuing || this.isRunning();
     }
 
     public handleErrResponse(response: DebugProtocol.Response, msg: string, message?: DebugProtocol.Message): void {
@@ -58,6 +74,13 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         this.handleMsg(GdbEventNames.Stderr, msg + "\n");
         this.sendErrorResponse(response, message ?? 1, msg);
+    }
+    public handleResponseMsg(response: DebugProtocol.Response, msg: string, message?: DebugProtocol.Message): void {
+        if (!msg.startsWith("mcu-debug")) {
+            msg = "mcu-debug: " + msg;
+        }
+        this.handleMsg(GdbEventNames.Stderr, msg + "\n");
+        this.sendResponse(response);
     }
     public busyError(response: DebugProtocol.Response, args: any) {
         response.message = "notStopped";
@@ -221,17 +244,17 @@ export class GDBDebugSession extends SeqDebugSession {
     protected sourceRequest(response: DebugProtocol.SourceResponse, args: DebugProtocol.SourceArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
-    protected threadsRequest(response: DebugProtocol.ThreadsResponse, request?: DebugProtocol.Request): void {
+    protected async threadsRequest(response: DebugProtocol.ThreadsResponse, request?: DebugProtocol.Request): Promise<void> {
         response.body = { threads: [] };
         try {
             if (this.isBusy()) {
-                this.handleMsg(GdbEventNames.Stderr, "mcu-debug: Threads request received while target is running. Returning empty thread list.\n");
-            } else if (this.lastThreadsInfo) {
-                for (const t of this.lastThreadsInfo.threadsAry) {
-                    response.body.threads.push({ id: t.id, name: t.target_id || `Thread ${t.id}` });
-                }
-            } else {
-                response.body.threads.push({ id: 1, name: "Unnamed Thread" });
+                this.handleResponseMsg(response, "mcu-debug: Threads request received while target is running. Returning empty thread list.\n");
+                return;
+            }
+            this.lastThreadsInfo = await this.gdbMiCommands.sendThreadInfoAll();
+            const threads = this.lastThreadsInfo?.getSortedThreadList() || [];
+            for (const t of threads) {
+                response.body.threads.push({ id: t.id, name: t.target_id || `Thread ${t.id}` });
             }
             this.sendResponse(response);
         } catch (e) {
@@ -254,8 +277,12 @@ export class GDBDebugSession extends SeqDebugSession {
             const startFrame = args.startFrame || 0;
             const levels = args.levels || 40;
             const thread = this.lastThreadsInfo?.threadMap.get(threadId);
-            const frames = await this.gdbMiCommands.sendStackListFrames(thread, startFrame, startFrame + levels);
-            for (const frame of frames) {
+            if (!thread) {
+                this.handleResponseMsg(response, `Thread with id ${threadId} not found.`);
+                return;
+            }
+            await this.gdbMiCommands.sendStackListFrames(thread, startFrame, startFrame + levels);
+            for (const frame of thread.frames || []) {
                 const handle = this.varManager.addFrameInfo(threadId, frame.level, VariableScope.Local);
                 const stackFrame: DebugProtocol.StackFrame = {
                     id: handle,
@@ -270,7 +297,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 };
                 response.body.stackFrames.push(stackFrame);
             }
-            response.body.totalFrames = frames.length;
+            response.body.totalFrames = thread.frames ? thread.frames.length : 0;
             this.sendResponse(response);
         } catch (e) {
             this.handleErrResponse(response, `Failed to get stack frames: ${e}`);
@@ -302,7 +329,15 @@ export class GDBDebugSession extends SeqDebugSession {
             };
             const [threadId, frameId, scope] = this.varManager.getFrameInfo(args.frameId);
             const thread = this.lastThreadsInfo?.threadMap.get(threadId);
-            const frame = thread?.frames ? thread.frames[frameId] : undefined;
+            if (!thread) {
+                this.handleResponseMsg(response, `Thread with id ${threadId} not found.`);
+                return;
+            }
+            const frame = thread?.frames.length > frameId ? thread.frames[frameId] : undefined;
+            if (!frame) {
+                this.handleErrResponse(response, `Frame with id ${frameId} not found in thread ${threadId}.`);
+                return;
+            }
             let fileId = 0,
                 fullFileId = 0;
             if (frame.file) {
@@ -455,25 +490,41 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendResponse(response);
     }
     protected dataBreakpointInfoRequest(response: DebugProtocol.DataBreakpointInfoResponse, args: DebugProtocol.DataBreakpointInfoArguments, request?: DebugProtocol.Request): void {
-        response.body = {
-            dataId: null,
-            description: "Invalid data breakpoint location",
-            accessTypes: undefined,
-            canPersist: false,
-        };
+        try {
+            response.body = {
+                dataId: null,
+                description: "Invalid data breakpoint location",
+                accessTypes: undefined,
+                canPersist: false,
+            };
 
-        const ref = args.variablesReference;
-        const varObject = this.varManager.getVariableObject(ref);
-        if (!varObject || varObject.scope === VariableScope.RegistersVariable || varObject.scope === VariableScope.WatchVariable) {
+            const ref = args.variablesReference;
+            const scope = getVariableClass(ref);
+            if (scope === VariableScope.Registers) {
+                response.body.description = "Data breakpoints are not supported on registers.";
+                this.sendResponse(response);
+                return;
+            }
+            if (scope === VariableScope.Local) {
+                response.body.canPersist = false;
+            } else {
+                // What about watch variables? Could the persist? Depends on what it is. Let GDB/user decide.
+                response.body.canPersist = true;
+            }
+
+            const varName = this.varManager.getVariableFullName(ref, args.name);
+            if (!varName) {
+                this.sendResponse(response);
+                return;
+            }
+
+            response.body.dataId = varName; // Used to identify the data breakpoint in setDataBreakpointsRequest
+            response.body.description = varName; // What is displayed in the Breakpoints window
+            response.body.accessTypes = ["read", "write", "readWrite"];
             this.sendResponse(response);
-            return;
+        } catch (e) {
+            this.handleErrResponse(response, `DataBreakpointInfo request failed: ${e}`);
         }
-
-        const fullName = varObject.evaluateName || varObject.name;
-        response.body.dataId = fullName; // Used to identify the data breakpoint in setDataBreakpointsRequest
-        response.body.description = fullName; // What is displayed in the Breakpoints window
-        response.body.accessTypes = ["read", "write", "readWrite"];
-        this.sendResponse(response);
     }
     protected async setDataBreakpointsRequest(response: DebugProtocol.SetDataBreakpointsResponse, args: DebugProtocol.SetDataBreakpointsArguments, request?: DebugProtocol.Request): Promise<void> {
         try {
@@ -678,7 +729,7 @@ export class GDBDebugSession extends SeqDebugSession {
         return cmds;
     }
 
-    private getInitCommands(): string[] {
+    private getGdbStartCommands(): string[] {
         return [
             "-gdb-set mi-async on",
             'interpreter-exec console "set print demangle on"',
@@ -755,13 +806,20 @@ export class GDBDebugSession extends SeqDebugSession {
             this.handleErrResponse(response, message);
         };
         try {
-            const showTimes = this.args.debugFlags.timestamps;
+            this.on("configurationDone", () => {
+                if (this.args.liveWatch?.enabled) {
+                    this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbInitCommands]);
+                }
+            });
+            const showTimes = this.args.debugFlags.timestamps || this.args.debugFlags.gdbTraces;
             const reportTime = (stage: string) => {
                 if (showTimes) {
                     this.handleMsg(Stderr, `Debug Time: ${stage} - ${Date.now() - this.timeStart} ms\n`);
                 }
             };
             this.getSymbolAndLoadCommands();
+            // Go ahead and start loading symbols in parallel to gdb and gdb server startup
+            const loadSymbolsPromise = this.loadSymbols();
 
             // Question? Should we supress all running/stopped events until we are fully started? VSCode can
             // easily get confused if we send stopped/running events too early
@@ -771,12 +829,13 @@ export class GDBDebugSession extends SeqDebugSession {
             });
             reportTime("GDB Ready");
 
-            const loadSymbolsPromise = this.loadSymbols();
-            await this.sendCommandsWithWait(this.gdbInitCommands);
+            const gdbInitPromise = this.sendCommandsWithWait(this.gdbInitCommands);
             await this.startServer().catch((e) => {
                 return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}`);
             });
             reportTime("GDB Server Ready");
+            await gdbInitPromise;
+            reportTime("GDB Init Commands Sent");
 
             // Let client know we are done with the launch/attach request and ready.
             this.sendResponse(response);
@@ -839,7 +898,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.gdbInstance.debugFlags = this.args.debugFlags;
         this.handleMsg(GdbEventNames.Console, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
         this.subscribeToGdbEvents();
-        await this.gdbInstance.start(gdbPath, gdbArgs, this.args.cwd, this.getInitCommands());
+        await this.gdbInstance.start(gdbPath, gdbArgs, this.args.cwd, this.getGdbStartCommands());
     }
 
     private async startServer(): Promise<void> {
@@ -889,13 +948,13 @@ export class GDBDebugSession extends SeqDebugSession {
         }
     }
 
-    private getServerConnectCommands() {
+    public getServerConnectCommands() {
         // server init commands simply makes a tcp connection. It should not halt
         // the program. After the connection is established, we should load all the
         // symbols -- especially before a halt
         const cmds: string[] = [
             // 'interpreter-exec console "set debug remote 1"',
-            ...(this.serverSession.serverController.initCommands() || []),
+            ...(this.serverSession.serverController.connectCommands() || []),
             ...this.symInitCommands,
         ];
         return cmds;
@@ -904,15 +963,15 @@ export class GDBDebugSession extends SeqDebugSession {
         const commands = this.getServerConnectCommands();
 
         if (this.args.pvtSessionMode === SessionMode.Attach) {
-            commands.push(...this.args.preAttachCommands);
-            const attachCommands = this.args.overrideAttachCommands != null ? this.args.overrideAttachCommands : this.serverSession.serverController.attachCommands();
+            commands.push(...this.args.preAttachCommands.map(COMMAND_MAP));
+            const attachCommands = this.args.overrideAttachCommands != null ? this.args.overrideAttachCommands.map(COMMAND_MAP) : this.serverSession.serverController.attachCommands().map(COMMAND_MAP);
             commands.push(...attachCommands);
-            commands.push(...this.args.postAttachCommands);
+            commands.push(...this.args.postAttachCommands.map(COMMAND_MAP));
         } else {
-            commands.push(...this.args.preLaunchCommands);
-            const launchCommands = this.args.overrideLaunchCommands != null ? this.args.overrideLaunchCommands : this.serverSession.serverController.launchCommands();
+            commands.push(...this.args.preLaunchCommands.map(COMMAND_MAP));
+            const launchCommands = this.args.overrideLaunchCommands != null ? this.args.overrideLaunchCommands.map(COMMAND_MAP) : this.serverSession.serverController.launchCommands().map(COMMAND_MAP);
             commands.push(...launchCommands);
-            commands.push(...this.args.postLaunchCommands);
+            commands.push(...this.args.postLaunchCommands.map(COMMAND_MAP));
         }
         return commands;
     }
@@ -1026,35 +1085,19 @@ export class GDBDebugSession extends SeqDebugSession {
         if (this.suppressStoppedEvents) {
             return;
         }
-        let getStack = true;
         let doNotify = !this.args.noDebug;
         switch (reason) {
             case "entry":
                 doNotify = false;
-                // getStack = false;
                 break;
             case "exited":
             case "exited-normally":
                 // TODO: Handle exit properly, send TerminatedEvent
-                getStack = false;
                 break;
             default:
         }
-        this.lastThreadsInfo = null;
         this.varManager.prepareForStopped(); // Yes, do it again here to be sure, may not have completed during a continue
-        if (getStack) {
-            this.gdbMiCommands
-                .sendThreadInfoAll()
-                .then((threadsInfo) => {
-                    this.lastThreadsInfo = threadsInfo;
-                })
-                .catch((err) => {
-                    this.handleMsg(GdbEventNames.Stderr, `mcu-debug: Failed to get thread info: ${err instanceof Error ? err.message : String(err)}\n`);
-                })
-                .finally(() => {
-                    this.notifyStopped(reason, doNotify, true);
-                });
-        }
+        this.notifyStopped(reason, doNotify, true);
     }
 
     private notifyStopped(reason, doVSCode, doCustom) {
@@ -1110,7 +1153,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     private clearForContinue() {
         this.varManager.clearForContinue();
-        this.lastThreadsInfo = null;
+        // this.lastThreadsInfo = null;
     }
 
     handleContinueFailed() {

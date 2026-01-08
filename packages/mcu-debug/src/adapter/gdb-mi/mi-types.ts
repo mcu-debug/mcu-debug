@@ -18,8 +18,7 @@ export interface GdbMiFrameIF {
 export interface GdbMiThreadIF {
     id: number;
     target_id?: string;
-    topFrame: GdbMiFrameIF; // This is the frame -info-threads shows
-    frames?: GdbMiFrameIF[]; // These are the frames from -stack-list-frames
+    frames: GdbMiFrameIF[]; // These are the frames from -stack-list-frames
     state?: string;
     core?: number;
 

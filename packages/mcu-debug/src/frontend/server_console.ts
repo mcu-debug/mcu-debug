@@ -99,7 +99,7 @@ export class GDBServerConsoleInstance {
             this.sendToBackend(data);
         });
         if (this.toBackend === null) {
-            magentaWrite("Waiting for gdb server to start...", this.ptyTerm);
+            magentaWrite("Waiting for gdb server to start...\n", this.ptyTerm);
             this.ptyTerm.pause();
         } else {
             magentaWrite("Resuming connection to gdb server...\n", this.ptyTerm);
