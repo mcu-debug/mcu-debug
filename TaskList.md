@@ -10,9 +10,10 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] stopAtEntryPoint
   - [x] Launch Request
   - [ ] Attach Request
+  - [ ] Detach (properly, FW should continue on detach)
   - [ ] Terminate (do total shutdown, only needed for some gdb servers)
-  - [ ] Reset
-- [ ] 64-bit support
+  - [ ] Reset (we dont support Restart, this is better)
+- [ ] `New:` 64-bit support
   - [x] In Symbol table
 - [x] Variables
   - [x] Local Variables
@@ -28,8 +29,11 @@ Following are listed in no particular order. They are grouped by functionality.
 - [ ] Debug/Trace
   - [ ] SWO
   - [ ] RTT
-  - [ ] Rust RTT support
+  - [ ] `New:` Rust RTT support
 - [ ] Rust Language support (debug works, but some things in Variable window could be better)
+- [ ] General
+   - [ ] `New:` Source Maps
+   - [ ] `New:` Telemetry
 - [x] Execution
   - [x] Pause
   - [x] Continue
@@ -42,11 +46,12 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] Data breakpoints
   - [ ] Logpoints
 - [ ] LiveWatch. This may be a push design vs a pull design in Cortex-Debug
-  - [ ] SetVar
-  - [ ] SetExpr
+  - [ ] `New:` SetVar
+  - [ ] `New:` SetExpr
 - [ ] Disassembly. Needs total overhaul, even more generic processor/ISA support
-  - [ ] 64-bit support
-  - [ ]  Instruction breakpoints
+  - [ ] Basic
+  - [ ] `New:` 64-bit support
+  - [ ] Instruction breakpoints
 - [ ] **Multi-core orchestration**
 - [ ] **Remote Gdb-server support. New design, new feature. Better support for containers, wsl, remote labs**
 
@@ -60,7 +65,7 @@ Following are listed in no particular order. They are grouped by functionality.
 
 Other Extensions
  - [ ] Memory View Compatibility. Especially in failure conditions
-   - [ ] See if Memory view can be dynamic
+   - [ ] See if Memory view can be dynamic (update without pausing)
  - [ ] Peripheral View Compatibility
  - [ ] RTOS View Compatibility
-   - [ ] See if RTOS view can be dynamic
+   - [ ] See if RTOS view can be dynamic (update without pausing)
