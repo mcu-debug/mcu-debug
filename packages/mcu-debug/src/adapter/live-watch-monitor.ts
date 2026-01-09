@@ -27,12 +27,12 @@ export class VariablesHandler {
 
     public async clearCachedVars(miDebugger: GdbInstance): Promise<void> {
         if (this.cachedChangeList) {
-            const poromises = [];
+            const promises = [];
             for (const name of Object.keys(this.cachedChangeList)) {
-                poromises.push(miDebugger.sendCommand(`var-delete ${name}`));
+                promises.push(miDebugger.sendCommand(`var-delete ${name}`));
             }
             this.cachedChangeList = {};
-            const results = await Promise.allSettled(poromises);
+            const results = await Promise.allSettled(promises);
             results.filter((r) => r.status === "rejected").forEach((r) => console.error("clearCachedValues", r.reason));
         }
     }

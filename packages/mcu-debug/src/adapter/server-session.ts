@@ -1,3 +1,4 @@
+import { EventEmitter } from "events";
 import * as child_process from "child_process";
 import * as net from "net";
 import { JLinkServerController } from "./servers/jlink";
@@ -28,14 +29,16 @@ const SERVER_TYPE_MAP: { [key: string]: any } = {
     external: ExternalServerController,
 };
 
-export class GDBServerSession {
+export class GDBServerSession extends EventEmitter {
     public serverController: GDBServerController;
     private process: child_process.ChildProcess | null = null;
     private consoleSocket: net.Socket | null = null;
     public ports: { [name: string]: number } = {};
     public usingParentServer: boolean = false;
+    private clientRequestedStop: boolean = false;
 
     constructor(private session: GDBDebugSession) {
+        super();
         const serverType = session.args.servertype || "openocd";
         const ServerControllerClass = SERVER_TYPE_MAP[serverType.toLowerCase()];
         if (!ServerControllerClass) {
@@ -157,12 +160,20 @@ export class GDBServerSession {
                     clearInterval(timer);
                     clearTimeout(timeout);
                     reject(new Error(`Server exited with code ${code}`));
+                } else if (!this.clientRequestedStop) {
+                    this.emit("server-exited", code, signal);
+                }
+                this.process = null;
+                if (this.consoleSocket) {
+                    this.consoleSocket.destroy();
+                    this.consoleSocket = null;
                 }
             });
         });
     }
 
     public async stopServer(): Promise<void> {
+        this.clientRequestedStop = true;
         if (this.process) {
             // Check if process is still running before killing
             if (this.process.exitCode === null && this.process.signalCode === null) {

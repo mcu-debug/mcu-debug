@@ -9,9 +9,9 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] breakAfterReset
   - [x] stopAtEntryPoint
   - [x] Launch Request
-  - [ ] Attach Request
-  - [ ] Detach (properly, FW should continue on detach)
-  - [ ] Terminate (do total shutdown, only needed for some gdb servers)
+  - [X] Attach Request
+  - [X] Detach (properly, FW should continue on detach)
+  - [X] Terminate (do total shutdown, only needed for some gdb servers)
   - [ ] Reset (we dont support Restart, this is better)
 - [ ] `New:` 64-bit support
   - [x] In Symbol table

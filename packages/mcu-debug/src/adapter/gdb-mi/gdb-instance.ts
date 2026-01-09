@@ -12,12 +12,30 @@ import { MiCommands } from "./mi-commands";
 class PendingCmdPromise {
     constructor(
         public readonly seq: number,
+        public readonly cmd: string,
         public readonly resolve: (value: GdbMiOutput) => void,
         public readonly reject: (reason?: any) => void,
     ) {}
 }
 
 export class GdbInstance extends EventEmitter {
+    private sessionEnding: boolean = false;
+    detach() {
+        throw new Error("Method not implemented.");
+    }
+    evalExpression(arg0: string, arg1: number, arg2: number) {
+        throw new Error("Method not implemented.");
+    }
+    varListChildren(variablesReference: number, name: string): VariableObject[] | PromiseLike<VariableObject[]> {
+        // exit with error code != 0
+        throw new Error("Method not implemented.");
+    }
+    varCreate(arg0: number, exp: string, varObjName: string, ...args: any[]): VariableObject | PromiseLike<VariableObject> {
+        throw new Error("Method not implemented.");
+    }
+    varUpdate(arg0: any, arg1: number, arg2: number, ...args: any): Promise<MINode> {
+        throw new Error("Method not implemented.");
+    }
     // ... other methods and properties ...
     pid: number = 0;
     process: ChildProcess | null = null;
@@ -41,6 +59,10 @@ export class GdbInstance extends EventEmitter {
 
     IsRunning() {
         return this.status === "running";
+    }
+
+    IsGdbRunning() {
+        return this.process !== null;
     }
 
     start(gdbPath: string, gdbArgs: string[], cwd: string | undefined, init: string[], timeout: number = 1000, checkVers = true): Promise<void> {
@@ -212,7 +234,7 @@ export class GdbInstance extends EventEmitter {
                     }
                     this.currentOutofBandRecords = [];
                     this.pendingCmds.delete(token);
-                } else {
+                } else if (!this.sessionEnding) {
                     this.log(Stderr, `No pending command for token ${token}`);
                 }
             }
@@ -299,7 +321,7 @@ export class GdbInstance extends EventEmitter {
     // Not sure why GDB sometimes refuses to exit cleanly, even after a proper detach/disconnect
     // The code here looks silly, but it's an attempt to cover all bases. Also, some gdb-servers
     // misbehave and do not handle detach/disconnect properly, perhaps causing GDB to hang on exit.
-    stop(): Promise<void> {
+    async stop(): Promise<void> {
         if (!this.process) {
             return Promise.resolve();
         }
@@ -323,6 +345,7 @@ export class GdbInstance extends EventEmitter {
                 }
             };
 
+            this.sessionEnding = true;
             // Set up listeners for process exit
             proc.removeAllListeners();
             proc.on("exit", doResolve);
@@ -339,13 +362,13 @@ export class GdbInstance extends EventEmitter {
                     proc.stdin.write(`${seq}-gdb-exit\n`);
                 }
             } catch (e) {
-                ServerConsoleLog(`Error sending exit command: ${e}`);
+                ServerConsoleLog(`Error sending -gdb-exit command: ${e}`);
             }
 
             // Force kill if it doesn't exit
             setTimeout(() => {
                 if (!isResolved) {
-                    ServerConsoleLog(`GDB (PID ${pid}) did not exit, sending SIGKILL`);
+                    ServerConsoleLog(`GDB (PID ${pid}) did not exit when requested, sending SIGKILL`);
                     proc.kill("SIGKILL");
                     // Fallback if even SIGKILL doesn't trigger exit event
                     setTimeout(doResolve, 100);
@@ -392,6 +415,7 @@ export class GdbInstance extends EventEmitter {
                 seq,
                 new PendingCmdPromise(
                     seq,
+                    command,
                     (val) => {
                         clearTimer();
                         resolve(val);
@@ -419,27 +443,5 @@ export class GdbInstance extends EventEmitter {
         } else {
             return this.sendCommand(`interpreter-exec console "${command}"`);
         }
-    }
-
-    /// Junk methods to be removed later
-    varUpdate(expr: string, threadId: number, frameId: number): Promise<MINode> {
-        throw new Error("Method not implemented.");
-    }
-
-    varCreate(ref: number, expr: string, name: string, scope: string = "-", threadId: number = -1, frameId: number = -1): Promise<VariableObject> {
-        throw new Error("Method not implemented.");
-    }
-
-    varAssign(name: string, expr: string, threadId: number = -1, frameId: number = -1): Promise<VariableObject> {
-        throw new Error("Method not implemented.");
-    }
-    varListChildren(variablesReference: number, name: string): VariableObject[] | PromiseLike<VariableObject[] | undefined> | undefined {
-        throw new Error("Method not implemented.");
-    }
-    evalExpression(arg0: string, arg1: number, arg2: number): Thenable<any> {
-        throw new Error("Method not implemented.");
-    }
-    detach() {
-        throw new Error("Method TBD implemented.");
     }
 }

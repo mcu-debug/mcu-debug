@@ -334,7 +334,7 @@ export class BreakpointManager {
         });
     }
 
-    private async deleteBreakpoints(list: number[]): Promise<void> {
+    public async deleteBreakpoints(list: number[]): Promise<void> {
         try {
             if (list.length === 0) {
                 return;
@@ -344,7 +344,13 @@ export class BreakpointManager {
             throw new Error(`Error deleting old breakpoints, so new ones can be set: ${err}`);
         }
     }
-    // ... existing code ...
+    public async deleteAllBreakpoints(): Promise<void> {
+        try {
+            await this.gdbInstance.sendCommand("-break-delete");
+        } catch (err) {
+            throw new Error(`Error deleting old breakpoints, so new ones can be set: ${err}`);
+        }
+    }
 }
 
 export function escapeGdbString(str: string): string {
