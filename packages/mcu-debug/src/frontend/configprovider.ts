@@ -267,9 +267,6 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
         }
         this.validateLoadAndSymbolFiles(config, cwd);
 
-        const extension = vscode.extensions.getExtension("marus25.mcu-debug");
-        config.pvtVersion = extension?.packageJSON?.version || "<unknown version>";
-
         if (config.liveWatch?.enabled) {
             const supportedList = ["openocd", "jlink", "stlink"];
             if (supportedList.indexOf(config.servertype) < 0) {

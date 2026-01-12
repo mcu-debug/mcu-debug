@@ -92,6 +92,8 @@ export class GdbInstance extends EventEmitter {
             child.on("error", this.handleError.bind(this));
             child.stderr.on("data", this.handleStderrData.bind(this));
             child.stdout.on("data", this.handleStdoutData.bind(this));
+            child.stdout.on("close", this.handleStdoutClose.bind(this));
+            child.stderr.on("close", this.handleStderrClose.bind(this));
 
             if (checkVers) {
                 try {
@@ -184,6 +186,23 @@ export class GdbInstance extends EventEmitter {
             const line = this.stdoutBuf.slice(0, index).trim();
             this.stdoutBuf = this.stdoutBuf.slice(index + 1);
             this.handleOutputLine(line);
+        }
+    }
+
+    private handleStdoutClose() {
+        if (this.stdoutBuf.length > 0) {
+            const line = this.stdoutBuf.trim();
+            this.stdoutBuf = "";
+            this.handleStdoutData(Buffer.from(line));
+        }
+        this.pendingCmds.clear();
+    }
+
+    private handleStderrClose() {
+        if (this.stderrBuf.length > 0) {
+            const line = this.stderrBuf.trim();
+            this.stderrBuf = "";
+            this.emit("stderr", line);
         }
     }
 
@@ -382,8 +401,8 @@ export class GdbInstance extends EventEmitter {
             command = "-" + command;
         }
         return new Promise((resolve, reject) => {
-            if (!this.process || !this.process.stdin || !this.process.stdin.writable) {
-                return reject(new Error("GDB process is not running or its stdin is not writable"));
+            if (!this.process || !this.process.stdin || !this.process.stdin.writable || this.sessionEnding || !this.process.stdout || !this.process.stdout.readable) {
+                return reject(new Error("GDB process is not running or its stdin/stdout is not writable/readable"));
             }
 
             const seq = this.cmdSeq++;

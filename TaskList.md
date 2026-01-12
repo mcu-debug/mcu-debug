@@ -12,7 +12,7 @@ Following are listed in no particular order. They are grouped by functionality.
   - [X] Attach Request
   - [X] Detach (properly, FW should continue on detach)
   - [X] Terminate (do total shutdown, only needed for some gdb servers)
-  - [ ] Reset (we dont support Restart, this is better)
+  - [ ] Reset (VSCode handles Restart, Reset is better, faster)
 - [ ] `New:` 64-bit support
   - [x] In Symbol table
 - [x] Variables
@@ -44,6 +44,8 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] File:line breakpoints
   - [x] Function breakpoints
   - [x] Data breakpoints
+    - [ ] Support a constant.
+    - [ ] A general expression that may not be a variable
   - [ ] Logpoints
 - [ ] LiveWatch. This may be a push design vs a pull design in Cortex-Debug
   - [ ] `New:` SetVar

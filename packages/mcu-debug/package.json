@@ -3249,13 +3249,14 @@
   },
   "scripts": {
     "generate-manifest": "node scripts/update-package-json.js",
-    "compile": "npm run generate-manifest && npm run check-types && node esbuild.js",
+    "update-commit-hash": "node scripts/commit-hash.js",
+    "compile": "npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
     "check-types": "tsc --noEmit",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "vscode:prepublish": "npm run package",
-    "package": "npm run generate-manifest && npm run check-types && node esbuild.js --production"
+    "package": "npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js --production"
   },
   "devDependencies": {
     "@types/hasbin": "^1.2.2",

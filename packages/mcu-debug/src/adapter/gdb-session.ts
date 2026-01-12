@@ -19,6 +19,7 @@ import { formatAddress, parseAddress } from "../frontend/utils";
 import { BreakpointManager } from "./breakpoints";
 import { LiveWatchMonitor } from "./live-watch-monitor";
 import { ServerConsoleLog } from "./server-console-log";
+import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 
 function COMMAND_MAP(c: string): string {
     if (!c) {
@@ -911,6 +912,13 @@ export class GDBDebugSession extends SeqDebugSession {
                     this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbInitCommands]);
                 }
             });
+            this.handleMsg(Stdout, `MCU-Debug: Embedded MCU debug adapter version ${pkgJsonVersion} (${gitCommitHash}). ` + "Usage info: https://github.com/mcu-debug/mcu-debug#usage");
+            if (this.args.debugFlags.anyFlags) {
+                this.handleMsg(Stderr, "Debug Flags Enabled. launch.json after processing by VSCode and MCU-Debug:\n");
+                const jsonStr = JSON.stringify(this.args, null, 2);
+                this.handleMsg(Stderr, jsonStr + "\n");
+            }
+
             const showTimes = this.args.debugFlags.timestamps || this.args.debugFlags.gdbTraces;
             const reportTime = (stage: string) => {
                 if (showTimes) {
@@ -1068,15 +1076,15 @@ export class GDBDebugSession extends SeqDebugSession {
         const commands = this.getServerConnectCommands();
 
         if (this.args.pvtSessionMode === SessionMode.Attach) {
-            commands.push(...this.args.preAttachCommands.map(COMMAND_MAP));
+            commands.push(...(this.args.preAttachCommands?.map(COMMAND_MAP) ?? []));
             const attachCommands = this.args.overrideAttachCommands != null ? this.args.overrideAttachCommands.map(COMMAND_MAP) : this.serverSession.serverController.attachCommands().map(COMMAND_MAP);
             commands.push(...attachCommands);
-            commands.push(...this.args.postAttachCommands.map(COMMAND_MAP));
+            commands.push(...(this.args.postAttachCommands?.map(COMMAND_MAP) ?? []));
         } else {
-            commands.push(...this.args.preLaunchCommands.map(COMMAND_MAP));
+            commands.push(...(this.args.preLaunchCommands?.map(COMMAND_MAP) ?? []));
             const launchCommands = this.args.overrideLaunchCommands != null ? this.args.overrideLaunchCommands.map(COMMAND_MAP) : this.serverSession.serverController.launchCommands().map(COMMAND_MAP);
             commands.push(...launchCommands);
-            commands.push(...this.args.postLaunchCommands.map(COMMAND_MAP));
+            commands.push(...(this.args.postLaunchCommands?.map(COMMAND_MAP) ?? []));
         }
         return commands;
     }
@@ -1125,7 +1133,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 // If breakAfterReset is true -> Stay Stopped (needsContinue = false)
                 // If breakAfterReset is false -> Continue
                 needsContinue = !this.args.breakAfterReset;
-                const cmds = this.args.postStartSessionCommands.map(COMMAND_MAP);
+                const cmds = this.args.postStartSessionCommands?.map(COMMAND_MAP) ?? [];
                 commands.push(...cmds);
             }
         } else if (this.args.pvtSessionMode === SessionMode.Attach) {
