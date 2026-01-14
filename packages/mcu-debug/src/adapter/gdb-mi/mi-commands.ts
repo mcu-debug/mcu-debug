@@ -123,54 +123,23 @@ export class MiCommands {
             return Promise.reject(e);
         }
     }
-}
 
-/*
-export class GdbMiThreadsList {
-    threadIds: number[];
-    threads: Map<number, GdbMiThreadIF>;
-    currentThreadId: number;
-    numberOfThreads: number;
-
-    constructor(miOutput: GdbMiOutput) {
-        this.threadIds = new Array<number>();
-        this.threads = new Map<number, GdbMiThreadIF>();
-        this.currentThreadId = -1;
-        this.numberOfThreads = 0;
-
-        const record = miOutput.resultRecord;
-        if (record) {
-            const threadIdsResult = (record.result as any)["thread-ids"];
-            // Unfortunately GDB MI returns duplicate keys here according to the docs, so we have to
-            // handle that case. The MI parser appends suffixes to duplicate keys.
-            if (threadIdsResult && typeof threadIdsResult === "object") {
-                for (const key in threadIdsResult) {
-                    if (key.startsWith("thread-id")) {
-                        const tId = parseInt(threadIdsResult[key] as string);
-                        if (!isNaN(tId)) {
-                            this.threadIds.push(tId);
-                        }
-                    }
-                }
-            }
-            const currentThreadIdStr = (record.result as any)["current-thread-id"];
-            if (currentThreadIdStr) {
-                const tid = parseInt(currentThreadIdStr);
-                if (!isNaN(tid)) {
-                    this.currentThreadId = tid;
-                }
-            }
-            const numberOfThreadsStr = (record.result as any)["number-of-threads"];
-            if (numberOfThreadsStr) {
-                const num = parseInt(numberOfThreadsStr);
-                if (!isNaN(num)) {
-                    this.numberOfThreads = num;
-                }
+    async sendFlushRegs(): Promise<void> {
+        try {
+            const cmd = `-interpreter-exec console "maintenance flush register-cache"`;
+            await this.gdbInstance.sendCommand(cmd);
+            return Promise.resolve();
+        } catch (e) {
+            try {
+                const cmd = `-interpreter-exec console "flushregs"`;
+                await this.gdbInstance.sendCommand(cmd);
+                return Promise.resolve();
+            } catch (e) {
+                return Promise.reject(e);
             }
         }
     }
 }
-    */
 export class GdbMiFrame implements GdbMiFrameIF {
     level: number;
     addr: string;

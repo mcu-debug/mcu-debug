@@ -130,11 +130,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private endSession: boolean = false;
-    protected async finishSession(
-        response: DebugProtocol.DisconnectResponse | DebugProtocol.TerminateResponse,
-        args: DebugProtocol.DisconnectArguments,
-        request?: DebugProtocol.Request,
-    ): Promise<void> {
+    protected async finishSession(response: DebugProtocol.DisconnectResponse | DebugProtocol.TerminateResponse, args: DebugProtocol.DisconnectArguments): Promise<void> {
         const done = () => {
             this.sendResponse(response);
             this.sendEvent(new TerminatedEvent());
@@ -211,8 +207,24 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         done();
     }
-    protected async disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments, request?: DebugProtocol.Request): Promise<void> {
-        await this.finishSession(response, args, request);
+    protected async disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments): Promise<void> {
+        // We have a problem here. It is not clear in the case of managed life-cycles what the children are supposed to do.
+        // If we try to wait for children to exit cleanly and then exit ourselves, we are having issues (when not in server mode
+        // which is always the case for production).
+        //
+        // If we wait for a timeout or event and the child exits in the meantime, VSCode is killing the parent while we are still
+        // not yet done terminating ourselves. So, let the children terminate and in the meantime, at the same time we terminate ourselves
+        // What really happens is that when/if we terminate first, the server (if any) is killed and the children will automatically die
+        // but not gracefully.
+        //
+        // We have a catchall exit handler defined in server.ts but hopefully, we can get rid of that
+        //
+        // Maybe longer term, what might be better is that we enter server mode ourselves. For another day
+        if (this.args.chainedConfigurations?.enabled) {
+            // this.serverConsoleLog("Begin disconnectRequest children");
+            this.sendEvent(new GenericCustomEvent("session-terminating", args));
+        }
+        await this.finishSession(response, args);
     }
     protected launchRequest(response: DebugProtocol.LaunchResponse, args: ConfigurationArguments, request?: DebugProtocol.Request): void {
         args.pvtSessionMode = SessionMode.Launch;
@@ -228,7 +240,7 @@ export class GDBDebugSession extends SeqDebugSession {
         const newArgs: DebugProtocol.DisconnectArguments = {
             terminateDebuggee: true,
         };
-        await this.finishSession(response, newArgs, request);
+        await this.finishSession(response, newArgs);
     }
     protected restartRequest(response: DebugProtocol.RestartResponse, args: DebugProtocol.RestartArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
@@ -733,6 +745,148 @@ export class GDBDebugSession extends SeqDebugSession {
             this.handleErrResponse(response, `Write memory error: ${error.toString()}`);
         }
     }
+    protected async customRequest(command: string, response: DebugProtocol.Response, args: any) {
+        const retFunc = () => {
+            this.handleErrResponse(response, `Debugger is busy. Cannot process custom request '${command}' now.`);
+        };
+
+        if (this.serverSession.serverController.customRequest(command, response, args)) {
+            return retFunc();
+        }
+
+        const isBusy = this.isBusy();
+        switch (command) {
+            case "liveEvaluate":
+                if (this.gdbLiveInstance) {
+                    const r: DebugProtocol.EvaluateResponse = {
+                        ...response,
+                        body: {
+                            result: undefined,
+                            variablesReference: undefined,
+                        },
+                    };
+                    // await this.gdbLiveInstance.evaluateRequest(r, args);
+                } else {
+                    this.sendResponse(response);
+                }
+                break;
+            case "liveCacheRefresh":
+                if (this.gdbLiveInstance) {
+                    // await this.gdbLiveInstance.refreshLiveCache(args);
+                }
+                this.sendResponse(response);
+                break;
+            case "liveVariables":
+                if (this.gdbLiveInstance) {
+                    const r: DebugProtocol.VariablesResponse = {
+                        ...response,
+                        body: {
+                            variables: [],
+                        },
+                    };
+                    // return this.gdbLiveInstance.variablesRequest(r, args);
+                } else {
+                    this.sendResponse(response);
+                }
+                break;
+            case "is-global-or-static": {
+                const varRef = args.varRef;
+                // const id = this.variableHandles.get(varRef);
+                // const ret = this.isVarRefGlobalOrStatic(varRef, id);
+                // response.body = { success: ret };
+                this.sendResponse(response);
+                break;
+            }
+            case "load-function-symbols":
+                response.body = { functionSymbols: this.symbolTable.getFunctionSymbols() };
+                this.sendResponse(response);
+                break;
+            case "get-arguments":
+                response.body = this.args;
+                this.sendResponse(response);
+                break;
+            case "set-var-format":
+                this.args.variableUseNaturalFormat = args && args.hex ? false : true;
+                // this.setGdbOutputRadix();
+                this.sendResponse(response);
+                break;
+            case "disassemble":
+                // this.disassember.customDisassembleRequest(response, args);
+                break;
+            case "execute-command": {
+                const cmd = COMMAND_MAP(args?.command as string);
+                if (cmd) {
+                    this.gdbInstance.sendCommand(cmd).then(
+                        (output) => {
+                            response.body = { miOutput: output };
+                            this.sendResponse(response);
+                        },
+                        (error) => {
+                            response.body = error;
+                            this.handleErrResponse(response, `Execute command failed: ${error}`);
+                        },
+                    );
+                }
+                break;
+            }
+            case "reset-device":
+                this.doResetDevice(response, args);
+                break;
+            case "custom-stop-debugging":
+                //this.serverConsoleLog(`Got request ${command}`);
+                await this.finishSession(response, args);
+                break;
+            case "notified-children-to-terminate": // We never get this request
+                //this.serverConsoleLog(`Got request ${command}`);
+                this.emit("children-terminating");
+                this.sendResponse(response);
+                break;
+            case "rtt-poll": {
+                if (this.serverSession.serverController.rttPoll) {
+                    this.serverSession.serverController.rttPoll();
+                }
+                break;
+            }
+            case "swo-connected": {
+                // this.swoLaunched?.();
+                // this.swoLaunched = undefined;
+                break;
+            }
+            default:
+                response.body = { error: "Invalid command." };
+                this.sendResponse(response);
+                break;
+        }
+    }
+
+    protected async doResetDevice(response: DebugProtocol.RestartResponse, args: DebugProtocol.RestartArguments): Promise<void> {
+        try {
+            this.suppressStoppedEvents = true;
+            const mode = SessionMode.Reset;
+            this.args.pvtSessionMode = mode;
+            const commands = [];
+            commands.push(...(this.args.preResetCommands?.map(COMMAND_MAP) || []));
+            const resetCommands = this.args.overrideResetCommands ? this.args.overrideResetCommands.map(COMMAND_MAP) : this.serverSession.serverController.resetCommands().map(COMMAND_MAP) || [];
+            commands.push(...resetCommands);
+            commands.push(...(this.args.postResetCommands?.map(COMMAND_MAP) || []));
+
+            await this.sendCommandsWithWait(commands);
+            if (this.args.chainedConfigurations && this.args.chainedConfigurations.enabled) {
+                setTimeout(() => {
+                    // Maybe this delay should be handled in the front-end
+                    // this.serverConsoleLog(`Begin ${mode} children`);
+                    this.sendEvent(new GenericCustomEvent(`session-${mode}`, args));
+                }, 250);
+            }
+            this.args.pvtSessionMode = mode;
+            await this.runSessionModeCommands();
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `Reset device failed: ${e}`);
+        }
+        return Promise.resolve();
+    }
+
     protected disassembleRequest(response: DebugProtocol.DisassembleResponse, args: DebugProtocol.DisassembleArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
@@ -1164,10 +1318,20 @@ export class GDBDebugSession extends SeqDebugSession {
             // The GdbMiInstance has the true status and if it is not running, we send a stopped event
             // Also, users custom commands may have messed with the session state, so we ensure we
             // notify VSCode of the stopped state here.
+            try {
+                await this.gdbMiCommands.sendFlushRegs();
+            } catch (e) {
+                this.handleMsg(Stderr, `mcu-debug: Warning: Failed to flush registers before sending stopped event: ${e instanceof Error ? e.message : String(e)}\n`);
+            }
             this.notifyStopped("entry", !this.args.noDebug, false);
         } else {
             // Send the following to ensure VSCode knows we are running. Now everyone shuld be in sync
             // The gdbInstance has the true status.
+            try {
+                await this.gdbMiCommands.sendFlushRegs();
+            } catch (e) {
+                this.handleMsg(Stderr, `mcu-debug: Warning: Failed to flush registers before sending running event: ${e instanceof Error ? e.message : String(e)}\n`);
+            }
             this.handleRunning();
         }
     }

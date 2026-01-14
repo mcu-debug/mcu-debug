@@ -42,8 +42,6 @@ export class GdbInstance extends EventEmitter {
     public debugFlags: DebugFlags = {};
     private cmdSeq: number = 1;
     private pendingCmds: Map<number, PendingCmdPromise> = new Map();
-    private capturedStdout: string[] = [];
-    private captureStdoutMode: boolean = false;
     public status: "running" | "stopped" | "none" = "none";
     public readonly miCommands: MiCommands;
     public suppressConsoleOutput: boolean = false;
@@ -113,12 +111,16 @@ export class GdbInstance extends EventEmitter {
                     }
                     return;
                 } catch (e) {
-                    ServerConsoleLog("Failed to get GDB version using $_gdb_major/minor, falling back to -gdb-version");
+                    // these convenience variables don't exist in older GDB versions
+                    ServerConsoleLog("Failed to get GDB version using $_gdb_major/minor variables");
+                    reject(new Error("Failed to get GDB version using $_gdb_major/minor variables. GDB version 9.1 or higher is required."));
                 }
-                this.captureStdoutMode = true;
+                /*
                 this.sendCommand("-gdb-version", timeout)
-                    .then(() => {
-                        this.parseVersionInfo();
+                    .then((output) => {
+                        this.log(GdbEventNames.Stdout, output.toString());
+                        const lines = output.outOfBandRecords.filter((rec) => rec.recordType === "stream" && rec.outputType === "console");
+                        this.parseVersionInfo(lines.map((rec) => rec.result));
                         try {
                             doInitCmds();
                             resolve();
@@ -127,9 +129,9 @@ export class GdbInstance extends EventEmitter {
                         }
                     })
                     .catch(() => {
-                        this.captureStdoutMode = false;
                         reject(new Error("GDB did not respond to -gdb-version command"));
                     });
+                    */
             } else {
                 try {
                     doInitCmds();
@@ -145,9 +147,9 @@ export class GdbInstance extends EventEmitter {
         this.emit("msg", type, msg);
     }
 
-    private parseVersionInfo() {
-        const regex = RegExp(/^GNU gdb.*\s(\d+)\.(\d+)[^\r\n]*/gm);
-        for (const str of this.capturedStdout) {
+    private parseVersionInfo(lines: string[]) {
+        const regex = RegExp(/^GNU gdb.*\s(\d+)\.(\d+)\.(\d+)[^\r\n]*/gm);
+        for (const str of lines) {
             const match = regex.exec(str);
             if (match !== null) {
                 this.gdbMajorVersion = parseInt(match[1]);
@@ -156,15 +158,11 @@ export class GdbInstance extends EventEmitter {
                     this.log(GdbEventNames.Stderr, `ERROR: GDB version ${this.gdbMajorVersion}.${this.gdbMinorVersion} is not supported. Please upgrade to GDB version 9.1 or higher.`);
                     this.log(GdbEventNames.Stderr, "    This can result in silent failures");
                 }
-                this.captureStdoutMode = false;
-                this.capturedStdout = [];
                 return;
             }
         }
         this.log(Stderr, "ERROR: Could not determine gdb-version number (regex failed). We need version >= 9.1. Please report this problem.");
         this.log(Stderr, "    This can result in silent failures");
-        this.captureStdoutMode = false;
-        this.capturedStdout = [];
     }
 
     private handleExit(code: number | null, signal: NodeJS.Signals | null) {
@@ -279,9 +277,6 @@ export class GdbInstance extends EventEmitter {
                     }
                 } else if (record.recordType === "stream") {
                     if (record.outputType === Console) {
-                        if (this.captureStdoutMode) {
-                            this.capturedStdout.push(record.result);
-                        }
                         this.currentOutofBandRecords.push(record);
                         if (!this.suppressConsoleOutput) {
                             this.log(Console, record.result);

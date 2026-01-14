@@ -2,7 +2,7 @@
 
 Following are listed in no particular order. They are grouped by functionality. 
 
-- [ ] Lifecycle
+- [x] Lifecycle
   - [x] GDB Launch
   - [x] nm/objdump Launch
   - [x] Server Launch
@@ -12,7 +12,7 @@ Following are listed in no particular order. They are grouped by functionality.
   - [X] Attach Request
   - [X] Detach (properly, FW should continue on detach)
   - [X] Terminate (do total shutdown, only needed for some gdb servers)
-  - [ ] Reset (VSCode handles Restart, Reset is better, faster)
+  - [x] Reset (VSCode handles Restart, Reset is better, faster)
 - [ ] `New:` 64-bit support
   - [x] In Symbol table
 - [x] Variables
