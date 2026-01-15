@@ -4,6 +4,15 @@ import * as vscode from "vscode";
 import { getPathRelative, LiveWatchConfig } from "../../adapter/servers/common";
 // import { BaseNode } from "./nodes/basenode";
 import { DebugProtocol } from "@vscode/debugprotocol";
+import {
+    EvaluateLiveResponse,
+    EvaluateRequestLiveArguments,
+    UpdateVariablesLiveArguments,
+    UpdateVariablesLiveResponse,
+    VariablesLiveResponse,
+    VariablesRequestLiveArguments,
+} from "../../adapter/custom-requests";
+import { VarUpdateRecord } from "../../adapter/gdb-mi/mi-types";
 
 interface SaveVarState {
     expanded: boolean;
@@ -19,6 +28,7 @@ export class LiveVariableNode extends TreeItem {
     public expanded: boolean = false;
     public children: LiveVariableNode[] = [];
     public variablesReference: number = 0;
+    public gdbName: string = "";
     public session: vscode.DebugSession | undefined;
     protected prevValue: string = "";
 
@@ -29,11 +39,13 @@ export class LiveVariableNode extends TreeItem {
         protected value = "", // Current value
         protected type = "", // C/C++ Type if any
         variablesReference = 0,
+        gdbName = "",
     ) {
         // Variable reference returned by the debugger (only valid per-session)
         super(name);
         this.parent = parent;
         this.variablesReference = variablesReference;
+        this.gdbName = gdbName;
     }
 
     public getParent(): LiveVariableNode | undefined {
@@ -78,6 +90,34 @@ export class LiveVariableNode extends TreeItem {
             }
         }
         return undefined;
+    }
+
+    updateFromGdb(update: VarUpdateRecord): Promise<void> {
+        return new Promise<void>((resolve) => {
+            const inScope = update.in_scope === "true";
+            if (!inScope) {
+                this.value = "<not in scope>";
+                // Todo: Clear children?
+                this.expanded = false;
+                this.children = undefined;
+                resolve();
+                return;
+            }
+            this.value = update.value;
+            this.type = update.type_changed === "true" && update.new_type ? update.new_type : this.type;
+            if (update.new_num_children !== undefined) {
+                const numchildren = parseInt(update.new_num_children);
+                if (numchildren === 0) {
+                    this.expanded = false;
+                    this.children = undefined;
+                    // this.variablesReference = 0; Keep it, we could use it later, if we get children again
+                } else {
+                    this.refreshChildren(resolve);
+                    return;
+                }
+            }
+            resolve();
+        });
     }
 
     public getTreeItem(): TreeItem | Promise<TreeItem> {
@@ -182,7 +222,7 @@ export class LiveVariableNode extends TreeItem {
         this.session = undefined;
         if (valuesToo) {
             this.value = this.type = this.prevValue = "";
-            this.variablesReference = 0;
+            // this.variablesReference = 0;
         }
         for (const child of this.children || []) {
             child.reset(valuesToo);
@@ -194,11 +234,13 @@ export class LiveVariableNode extends TreeItem {
     private refreshChildren(resolve: () => void) {
         if (!LiveWatchTreeProvider.session || this.session !== LiveWatchTreeProvider.session) {
             resolve();
-        } else if (this.expanded && this.variablesReference > 0) {
+        } else if (this.expanded && (this.variablesReference > 0 || this.gdbName)) {
             // TODO: Implement limits on number of children in adapter and then here
             // const start = this.children?.length ?? 0;
-            const varg: DebugProtocol.VariablesArguments = {
+            const varg: VariablesRequestLiveArguments = {
+                command: "variablesLive",
                 variablesReference: this.variablesReference,
+                gdbName: this.gdbName,
                 // start: start,
                 // count: 32
                 // filter: this.namedVariables > 0 ? 'named' : 'indexed'
@@ -211,13 +253,14 @@ export class LiveVariableNode extends TreeItem {
                     children: child.children,
                 };
             }
-            this.session.customRequest("liveVariables", varg).then(
-                (result) => {
-                    if (!result?.variables?.length) {
+            this.session.customRequest(varg.command, varg).then(
+                (result_) => {
+                    if (!result_?.variables?.length) {
                         this.children = undefined;
                     } else {
+                        const result = result_ as VariablesLiveResponse;
                         this.children = [];
-                        for (const variable of result.variables ?? []) {
+                        for (const variable of result.body.variables ?? []) {
                             const ch = new LiveVariableNode(
                                 this,
                                 variable.name,
@@ -225,6 +268,7 @@ export class LiveVariableNode extends TreeItem {
                                 variable.value || "",
                                 variable.type || "", // This will become tooltip
                                 variable.variablesReference ?? 0,
+                                variable.gdbName || "",
                             );
                             const oldState = oldStateMap[ch.name];
                             if (oldState) {
@@ -242,6 +286,7 @@ export class LiveVariableNode extends TreeItem {
                             const p = new Promise<void>((resolve) => {
                                 child.refreshChildren(resolve);
                             });
+                            promises.push(p);
                         }
                     }
                     Promise.allSettled(promises).finally(() => {
@@ -274,22 +319,22 @@ export class LiveVariableNode extends TreeItem {
                 return;
             }
             if (this.expr) {
-                const arg: DebugProtocol.EvaluateArguments = {
+                const arg: EvaluateRequestLiveArguments = {
+                    command: "evaluateLive",
                     expression: this.expr,
-                    context: "hover",
+                    context: "watch",
                 };
-                session.customRequest("liveEvaluate", arg).then(
-                    (result) => {
-                        if (result && result.result !== undefined) {
-                            const oldType = this.type;
+                session.customRequest(arg.command, arg).then(
+                    (result_) => {
+                        if (result_ && result_.body !== undefined) {
+                            const result = result_.body as EvaluateLiveResponse["body"];
                             this.value = result.result;
                             this.type = result.type;
                             this.variablesReference = result.variablesReference ?? 0;
                             this.namedVariables = result.namedVariables ?? 0;
                             this.indexedVariables = result.indexedVariables ?? 0;
-                            if (oldType !== this.type) {
-                                this.children = this.variablesReference ? [] : undefined;
-                            }
+                            this.gdbName = result.gdbName;
+                            this.children = this.variablesReference ? [] : undefined;
                             this.refreshChildren(resolve);
                         } else {
                             this.value = `<Failed to evaluate ${this.expr}>`;
@@ -406,6 +451,7 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
     public readonly onDidChangeTreeData: Event<LiveVariableNode | undefined> = this._onDidChangeTreeData.event;
 
     private static stateVersion = 2;
+    public gdbNameToNodeMap: Map<string, LiveVariableNode> = new Map<string, LiveVariableNode>();
     private variables: LiveVariableNode;
     public static session: vscode.DebugSession | undefined;
     public state: vscode.TreeItemCollapsibleState;
@@ -479,22 +525,29 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
                 restart(0);
             } else {
                 const start = Date.now();
+                const arg: UpdateVariablesLiveArguments = {
+                    command: "updateVariablesLive",
+                };
                 // The following will update all the variables in the backend cache in bulk
-                session
-                    .customRequest("liveCacheRefresh", {
-                        deleteAll: false, // Delete gdb-vars?
-                    })
-                    .then(() => {
-                        this.variables.refresh(session).finally(() => {
-                            const elapsed = Date.now() - start;
-                            // console.log(`Refreshed in ${elapsed} ms`);
-                            this.fire();
-                            if (elapsed > this.timeoutMs) {
-                                console.error("??????? over flow ????");
-                            }
-                            restart(elapsed);
-                        });
+                session.customRequest(arg.command, arg).then((result) => {
+                    const updateRsp = result as UpdateVariablesLiveResponse;
+                    const promises = [];
+                    for (const update of updateRsp.body.updates) {
+                        const node = this.gdbNameToNodeMap.get(update.name);
+                        if (node) {
+                            promises.push(node.updateFromGdb(update));
+                        }
+                    }
+                    Promise.allSettled(promises).finally(() => {
+                        const elapsed = Date.now() - start;
+                        // console.log(`Refreshed in ${elapsed} ms`);
+                        this.fire();
+                        if (elapsed > this.timeoutMs) {
+                            console.error("??????? live-watch timer overflow ????");
+                        }
+                        restart(elapsed);
                     });
+                });
             }
         } else {
             this.fire();
@@ -614,7 +667,7 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
             return; // Should never happen
         }
         const opts: vscode.InputBoxOptions = {
-            placeHolder: "Enter a valid C/gdb expression. Must be a global variable expression",
+            placeHolder: "Enter a valid C/gdb expression. Must be a global variable/expression",
             ignoreFocusOut: true,
             value: node.getName(),
             prompt: "Enter Live Watch Expression",

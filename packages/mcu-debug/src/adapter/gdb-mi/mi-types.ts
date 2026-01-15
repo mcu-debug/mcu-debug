@@ -213,3 +213,16 @@ export class MINode implements MIInfo {
         return MINode.valueOf(this.resultRecords.results, path);
     }
 }
+
+export interface VarUpdateRecord {
+    name: string;
+    value: string;
+    in_scope: "true" | "false" | "invalid";
+    type_changed: "true" | "false";
+    new_type?: string;
+    new_num_children?: string;
+    displayhint?: string;
+    has_more?: "1";
+    dynamic?: "1";
+    new_children?: any[];
+}

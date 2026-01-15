@@ -3239,7 +3239,7 @@
       "debug": [
         {
           "id": "mcu-debug.liveWatch",
-          "name": "Cortex Live Watch",
+          "name": "MCU Debug Live Watch",
           "icon": "images/live-view.png",
           "contextualTitle": "Live Watch",
           "when": "debugType == mcu-debug"

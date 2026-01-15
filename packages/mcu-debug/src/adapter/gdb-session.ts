@@ -756,7 +756,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
         const isBusy = this.isBusy();
         switch (command) {
-            case "liveEvaluate":
+            case "evaluateLive":
                 if (this.gdbLiveInstance) {
                     const r: DebugProtocol.EvaluateResponse = {
                         ...response,
@@ -770,13 +770,13 @@ export class GDBDebugSession extends SeqDebugSession {
                     this.sendResponse(response);
                 }
                 break;
-            case "liveCacheRefresh":
+            case "updateVariablesLive":
                 if (this.gdbLiveInstance) {
-                    // await this.gdbLiveInstance.refreshLiveCache(args);
+                    await this.liveWatchMonitor.refreshLiveCache(response, args);
                 }
                 this.sendResponse(response);
                 break;
-            case "liveVariables":
+            case "variablesLive":
                 if (this.gdbLiveInstance) {
                     const r: DebugProtocol.VariablesResponse = {
                         ...response,
@@ -784,7 +784,7 @@ export class GDBDebugSession extends SeqDebugSession {
                             variables: [],
                         },
                     };
-                    // return this.gdbLiveInstance.variablesRequest(r, args);
+                    return this.liveWatchMonitor.variablesRequest(r, args);
                 } else {
                     this.sendResponse(response);
                 }

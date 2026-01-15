@@ -1,10 +1,10 @@
 import { IValueIdentifiable, ValueHandleRegistry, ValueHandleRegistryPrimitive } from "@mcu-debug/shared";
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { GdbEventNames, GdbMiOutput, GdbMiRecord } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiOutput, GdbMiRecord, VarUpdateRecord } from "./gdb-mi/mi-types";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { toStringDecHexOctBin } from "./servers/common";
-import { Variable } from "@vscode/debugadapter";
+import { GdbProtocolVariable } from "./custom-requests";
 
 export const VariableTypeMask = 1 << 3; // Indicates this is a variable type key for a given scope
 
@@ -60,7 +60,7 @@ export class VariableKeys implements IValueIdentifiable {
     }
 }
 
-export class VariableObject extends VariableKeys implements DebugProtocol.Variable {
+export class VariableObject extends VariableKeys implements GdbProtocolVariable {
     public variablesReference: number = 0; // This is set only if the variable has children
     public handle = 0; // This comes from  VariableManager, can be used as variablesReference if needed
     public gdbVarName?: string; // The GDB variable name associated with this object, if any
@@ -100,7 +100,7 @@ export class VariableObject extends VariableKeys implements DebugProtocol.Variab
     } {
         throw new Error("Method not implemented.");
     }
-    toProtocolVariable(): DebugProtocol.Variable {
+    toProtocolVariable(): GdbProtocolVariable {
         return this;
     }
 
@@ -108,7 +108,7 @@ export class VariableObject extends VariableKeys implements DebugProtocol.Variab
         return decodeReference(this.frameRef);
     }
 
-    public applyChanges(record: GdbMiRecord): void {
+    public applyChanges(record: VarUpdateRecord): void {
         if (record["value"] !== undefined) {
             // How can this be undefined?
             this.value = record["value"];
@@ -153,7 +153,7 @@ export class VariableContainer {
         varObj.gdbVarName = record["name"];
         varObj.exp = record["exp"] || name;
         varObj.evaluateName = varObj.exp; // For now, fullExp is same as exp. It may change later. For root variables, they are the same
-        varObj.applyChanges(record);
+        varObj.applyChanges(record as any as VarUpdateRecord);
         return [varObj, handle];
     }
     public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName: string): [VariableObject, number] {
@@ -225,7 +225,7 @@ export class VariableContainerForGlobals extends VariableContainer {
         varObj.gdbVarName = record["name"];
         varObj.exp = record["exp"] || name;
         varObj.evaluateName = varObj.exp; // For now, fullExp is same as exp. It may change later. For root variables, they are the same
-        varObj.applyChanges(record);
+        varObj.applyChanges(record as any as VarUpdateRecord);
         return [varObj, handle];
     }
 }
@@ -414,7 +414,7 @@ export class VariableManager {
         }
     }
 
-    public getVariables(args: DebugProtocol.VariablesArguments): Promise<DebugProtocol.Variable[]> {
+    public getVariables(args: DebugProtocol.VariablesArguments): Promise<GdbProtocolVariable[]> {
         const [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference);
         if (scope === VariableScope.Local) {
             return this.getLocalVariables(threadId, frameId);
@@ -435,7 +435,7 @@ export class VariableManager {
         }
     }
 
-    public async varListChildren(container: VariableContainer | VariableContainerForGlobals, parent: VariableObject, name: string, threadId: number, frameId: number): Promise<VariableObject[]> {
+    public async varListChildren(container: VariableContainer | VariableContainerForGlobals, parent: VariableObject, gdbName: string, threadId: number, frameId: number): Promise<VariableObject[]> {
         const createVariable = (name: string, item: any) => {
             const scope = parent.scope & ActualScopeMask;
             if (scope === VariableScope.Global || scope === VariableScope.Static) {
@@ -444,7 +444,7 @@ export class VariableManager {
                 return container.parseMiVariable(name, item, parent.scope, parent.handle, threadId, frameId);
             }
         };
-        const miOutput = await this.gdbInstance.sendCommand(`var-list-children --simple-values "${name}"`);
+        const miOutput = await this.gdbInstance.sendCommand(`var-list-children --simple-values "${gdbName}"`);
         const keywords = ["private", "protected", "public"];
         const children = miOutput.resultRecord.result["children"] || [];
         const ret: VariableObject[] = [];
@@ -458,7 +458,7 @@ export class VariableManager {
             } else {
                 const [child, handle] = createVariable(exp, item);
                 if (!child) {
-                    this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Warning: Could not parse child variable ${item["exp"]} of parent ${name}\n`);
+                    this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Warning: Could not parse child variable ${item["exp"]} of parent ${gdbName}\n`);
                     continue;
                 }
                 if (item["numchild"] && parseInt(item["numchild"]) > 0) {
@@ -466,6 +466,18 @@ export class VariableManager {
                 }
                 child.applyChanges(item);
                 child.evaluateName = constructEvaluateName(parent.evaluateName, parent.type, child.exp);
+                if (/[^\d\w\.]/i.test(parent.evaluateName) && !/^\d+$/.test(child.exp)) {
+                    try {
+                        const cmd = "-var-info-path-expression " + child.gdbVarName;
+                        const pathOutput = await this.gdbInstance.sendCommand(cmd);
+                        const pathRecord = pathOutput.resultRecord?.result;
+                        if (pathRecord && pathRecord["path_expr"]) {
+                            child.evaluateName = pathRecord["path_expr"];
+                        }
+                    } catch (e) {
+                        // Ignore errors here
+                    }
+                }
                 // this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Created child ${handle} ${child.evaluateName}: ${JSON.stringify(child)}\n`);
                 ret.push(child);
             }
@@ -473,7 +485,7 @@ export class VariableManager {
         return ret;
     }
 
-    async getVariableChildren(parent: VariableObject): Promise<DebugProtocol.Variable[]> {
+    async getVariableChildren(parent: VariableObject): Promise<GdbProtocolVariable[]> {
         try {
             // Check if this is a register group variable
             if (parent.scope === VariableScope.RegistersVariable && !parent.gdbVarName) {
@@ -484,7 +496,7 @@ export class VariableManager {
             const [threadId, frameId, _] = parent.getThreadFrameInfo();
             const children = await this.varListChildren(container, parent, parent.gdbVarName, threadId, frameId);
             parent.children = children;
-            const protoVars: DebugProtocol.Variable[] = [];
+            const protoVars: GdbProtocolVariable[] = [];
             for (const child of children) {
                 protoVars.push(child.toProtocolVariable());
             }
@@ -500,7 +512,7 @@ export class VariableManager {
     /**
      * Gets registers that belong to a specific group.
      */
-    private async getRegistersForGroup(groupVar: VariableObject): Promise<DebugProtocol.Variable[]> {
+    private async getRegistersForGroup(groupVar: VariableObject): Promise<GdbProtocolVariable[]> {
         const [threadId, frameId, _] = groupVar.getThreadFrameInfo();
         const groupName = groupVar.type; // We stored the group name in the type field
         const internalGroups = ["all", "save", "restore"];
@@ -515,7 +527,7 @@ export class VariableManager {
                 this.registerValuesMap.set(ref, miOutput);
             }
 
-            const variables: DebugProtocol.Variable[] = [];
+            const variables: GdbProtocolVariable[] = [];
             const regs = miOutput.resultRecord.result["register-values"];
             if (Array.isArray(regs)) {
                 const container = this.getContainer(VariableScope.Registers);
@@ -593,10 +605,10 @@ export class VariableManager {
         return ret;
     }
 
-    private async getLocalVariables(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
+    private async getLocalVariables(threadId: number, frameId: number): Promise<GdbProtocolVariable[]> {
         const cmd = `-stack-list-variables --thread ${threadId} --frame ${frameId} --simple-values`;
         return await this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
-            const variables: DebugProtocol.Variable[] = [];
+            const variables: GdbProtocolVariable[] = [];
             const vars = miOutput.resultRecord.result["variables"];
             if (Array.isArray(vars)) {
                 const container = this.getContainer(VariableScope.Local);
@@ -755,7 +767,7 @@ export class VariableManager {
     /**
      * Returns register groups as top-level variables. Each group contains registers as children.
      */
-    private async getRegisterVariables(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
+    private async getRegisterVariables(threadId: number, frameId: number): Promise<GdbProtocolVariable[]> {
         // Fetch register groups and mappings
         await this.getRegisterGroups();
         await this.getRegisterGroupMappings();
@@ -765,7 +777,7 @@ export class VariableManager {
             return this.getRegisterVariablesFlat(threadId, frameId);
         }
 
-        const variables: DebugProtocol.Variable[] = [];
+        const variables: GdbProtocolVariable[] = [];
         const container = this.getContainer(VariableScope.Registers);
 
         // Check if there are registers that don't belong to any user group
@@ -836,10 +848,10 @@ export class VariableManager {
         return variables;
     }
 
-    public async getGlobalVariables(threadId: number): Promise<DebugProtocol.Variable[]> {
+    public async getGlobalVariables(threadId: number): Promise<GdbProtocolVariable[]> {
         try {
             const vars = this.debugSession.symbolTable.getGlobalVariables();
-            const variables: DebugProtocol.Variable[] = [];
+            const variables: GdbProtocolVariable[] = [];
             const container = this.globalContainer;
             for (const v of vars) {
                 if (this.gdbInstance.IsRunning()) {
@@ -890,9 +902,9 @@ export class VariableManager {
         return [];
     }
 
-    public async getStaticVariables(fileId: number, fullFileId: number): Promise<DebugProtocol.Variable[]> {
+    public async getStaticVariables(fileId: number, fullFileId: number): Promise<GdbProtocolVariable[]> {
         try {
-            const variables: DebugProtocol.Variable[] = [];
+            const variables: GdbProtocolVariable[] = [];
             const container = this.globalContainer;
             const fileName = this.debugSession.getFileById(fileId);
             const fullFileName = this.debugSession.getFileById(fullFileId);
@@ -956,14 +968,14 @@ export class VariableManager {
      * Fallback method that returns a flat list of all registers.
      * Used when register grouping information is not available.
      */
-    private async getRegisterVariablesFlat(threadId: number, frameId: number): Promise<DebugProtocol.Variable[]> {
+    private async getRegisterVariablesFlat(threadId: number, frameId: number): Promise<GdbProtocolVariable[]> {
         const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
         await this.getRegisterNames();
         if (this.registerNames.size === 0) {
             return [];
         }
         return await this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
-            const variables: DebugProtocol.Variable[] = [];
+            const variables: GdbProtocolVariable[] = [];
             const regs = miOutput.resultRecord.result["register-values"];
             if (Array.isArray(regs)) {
                 const container = this.getContainer(VariableScope.Registers);
@@ -1231,6 +1243,20 @@ export class VariableManager {
             variablesReference: 0,
         };
     }
+
+    public async updateAllVariables(): Promise<VarUpdateRecord[]> {
+        try {
+            const cmd = `-var-update --all-values *`;
+            const miOutput = await this.gdbInstance.sendCommand(cmd);
+            const records = miOutput.resultRecord.result["changelist"];
+            return records;
+        } catch (e) {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error updating all variables: ${e}\n`);
+            }
+            return [];
+        }
+    }
 }
 
 export function createMask(offset: number, width: number) {
@@ -1249,13 +1275,6 @@ export function extractBits(value: number, offset: number, width: number) {
     return bvalue;
 }
 
-/// Junk types to be removed later
-export class ExtendedVariable {
-    constructor(
-        public name: string,
-        public options: any,
-    ) {}
-}
 export const formatMap: { [key: string]: string } = {
     t: "binary",
     b: "binary",
