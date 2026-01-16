@@ -5,6 +5,9 @@ import { GDBDebugSession } from "./gdb-session";
 import { VariableManager } from "./variables";
 import { GdbEventNames, Stderr, MIError, MINode } from "./gdb-mi/mi-types";
 import { expandValue } from "./gdb-mi/gdb_expansion";
+import { VariableScope } from "./var-scopes";
+import { UpdateVariablesLiveArguments, UpdateVariablesLiveResponse } from "./custom-requests";
+import { Container } from "winston";
 export class LiveWatchMonitor {
     public miDebugger: GdbInstance | undefined;
     protected varManager: VariableManager;
@@ -87,6 +90,7 @@ export class LiveWatchMonitor {
             if (this.mainSession.args.debugFlags.anyFlags) {
                 this.mainSession.handleMsg(Stderr, `LiveGDB: Evaluated ${args.expression}\n`);
             }
+            this.mainSession.sendResponse(response);
         } catch (e: any) {
             this.mainSession.handleErrResponse(response, `LiveGDB: Error evaluating expression: ${e.toString()}\n`);
         }
@@ -108,14 +112,23 @@ export class LiveWatchMonitor {
     }
 
     // Calling this will also enable caching for the future of the session
-    public async refreshLiveCache(response: DebugProtocol.Response, args: RefreshAllArguments): Promise<void> {
+    public async updateVariablesLive(response: UpdateVariablesLiveResponse, args: UpdateVariablesLiveArguments): Promise<void> {
         try {
-            if (args.deleteAll) {
-                // await this.varManager.clearCachedVars(this.miDebugger!);
-                return Promise.resolve();
+            response.body = { updates: [] };
+            const container = this.varManager.getContainer(VariableScope.Watch);
+            if (args.deleteGdbVars && args.deleteGdbVars.length > 0) {
+                for (const gdbVarName of args.deleteGdbVars) {
+                    await container.deleteObjectByGdbName(gdbVarName, this.miDebugger!, (name) => {
+                        if (this.mainSession.args.debugFlags.anyFlags) {
+                            this.mainSession.handleMsg(Stderr, `LiveGDB: Warning: Could not delete live watch GDB variable '${name}'\n`);
+                        }
+                    });
+                }
             }
-            const updates = await this.varManager.updateAllVariables();
-            response.body = { updates: updates };
+            if (!args.noVarUpdate && container.numberOfGdbVariables() > 0) {
+                const updates = await this.varManager.updateAllVariables();
+                response.body = { updates: updates };
+            }
             this.mainSession.sendResponse(response);
         } catch (e: any) {
             this.mainSession.handleErrResponse(response, `LiveGDB: Error refreshing live cache: ${e.toString()}\n`);
@@ -134,10 +147,4 @@ export class LiveWatchMonitor {
             console.error("LiveWatchMonitor.quit", e);
         }
     }
-}
-
-interface RefreshAllArguments {
-    // Delete all gdb variables and the cache. This should be done when a live expression is deleted,
-    // but otherwise, it is not needed
-    deleteAll: boolean;
 }

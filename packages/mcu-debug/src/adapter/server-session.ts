@@ -11,11 +11,12 @@ import { PEServerController } from "./servers/pemicro";
 import { QEMUServerController } from "./servers/qemu";
 import { ExternalServerController } from "./servers/external";
 import { GDBDebugSession } from "./gdb-session";
-import { createPortName, GDBServerController, GenericCustomEvent } from "./servers/common";
+import { createPortName, GDBServerController, GenericCustomEvent, quoteShellCmdLine } from "./servers/common";
 import { GdbEventNames, Stderr } from "./gdb-mi/mi-types";
 import { TcpPortScanner } from "@mcu-debug/shared";
 import path from "path";
 import { match } from "assert";
+import { greenFormat } from "../frontend/ansi-helpers";
 
 const SERVER_TYPE_MAP: { [key: string]: any } = {
     jlink: JLinkServerController,
@@ -82,15 +83,20 @@ export class GDBServerSession extends EventEmitter {
             return;
         }
 
-        // Connect to the frontend console
-        if (this.session.args.gdbServerConsolePort) {
-            await this.connectConsole(this.session.args.gdbServerConsolePort).catch((e) => {
-                this.session.handleMsg(GdbEventNames.Stderr, `Could not connect to debug console: ${e.message}\n`);
-            });
-        }
-
         return new Promise<void>(async (resolve, reject) => {
+            // Connect to the frontend console
+            if (this.session.args.gdbServerConsolePort) {
+                try {
+                    await this.connectConsole(this.session.args.gdbServerConsolePort);
+                } catch (e) {
+                    this.session.handleMsg(GdbEventNames.Stderr, `Could not connect to debug console: ${e.message}\n`);
+                    reject(e);
+                    return;
+                }
+            }
             this.session.handleMsg(GdbEventNames.Console, `Starting GDB-Server: ${executable} ${args.join(" ")}\n`);
+            this.consoleSocket.write(greenFormat(quoteShellCmdLine([executable, ...args]) + "\n"));
+
             this.process = child_process.spawn(executable, args, {
                 cwd: serverCwd,
                 env: process.env,

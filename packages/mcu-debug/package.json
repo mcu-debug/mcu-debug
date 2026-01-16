@@ -467,8 +467,8 @@
     "debuggers": [
       {
         "type": "mcu-debug",
-        "label": "Cortex Debug",
-        "program": "./dist/debugadapter.js",
+        "label": "MCU Debug",
+        "program": "./dist/adapter.js",
         "runtime": "node",
         "languages": [
           "c",
@@ -546,8 +546,15 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Deprecated: Restart is now handled by VSCode. Change to preResetCommands if you use the Reset button.",
-                "deprecationMessage": "Restart is now handled by VSCode. Change to preResetCommands if you use the Reset button."
+                "description": "Commands to be executed prior to a Reset operation, before the reset is sent to the target."
+              },
+              "postResetCommands": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Commands to be executed after a Reset operation, after the reset is sent to the target."
               },
               "postRestartCommands": {
                 "default": [],
@@ -1148,6 +1155,9 @@
               "debugFlags": {
                 "description": "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",
                 "type": "object",
+                "default": {
+                  "gdbTraces": false
+                },
                 "properties": {
                   "gdbTraces": {
                     "type": "boolean",
@@ -1827,8 +1837,15 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Deprecated: Restart is now handled by VSCode. Change to preResetCommands if you use the Reset button.",
-                "deprecationMessage": "Restart is now handled by VSCode. Change to preResetCommands if you use the Reset button."
+                "description": "Commands to be executed prior to a Reset operation, before the reset is sent to the target."
+              },
+              "postResetCommands": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Commands to be executed after a Reset operation, after the reset is sent to the target."
               },
               "postRestartCommands": {
                 "default": [],
@@ -2429,6 +2446,9 @@
               "debugFlags": {
                 "description": "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",
                 "type": "object",
+                "default": {
+                  "gdbTraces": false
+                },
                 "properties": {
                   "gdbTraces": {
                     "type": "boolean",
@@ -3043,7 +3063,7 @@
           {
             "type": "mcu-debug",
             "request": "launch",
-            "name": "Cortex Debug: J-Link",
+            "name": "MCU Debug: J-Link",
             "servertype": "jlink",
             "device": "STM32F103C8",
             "interface": "swd",
@@ -3053,7 +3073,7 @@
         ],
         "configurationSnippets": [
           {
-            "label": "Cortex Debug: JLink",
+            "label": "MCU Debug: JLink",
             "description": "Debugs an embedded ARM Cortex-M microcontroller using GDB + JLink",
             "body": {
               "cwd": "^\"\\${workspaceFolder}\"",
@@ -3070,7 +3090,7 @@
             }
           },
           {
-            "label": "Cortex Debug: OpenOCD",
+            "label": "MCU Debug: OpenOCD",
             "description": "Debugs an embedded ARM Cortex-M microcontroller using GDB + OpenOCD",
             "body": {
               "cwd": "^\"\\${workspaceRoot}\"",
@@ -3088,7 +3108,7 @@
             }
           },
           {
-            "label": "Cortex Debug: ST-LINK",
+            "label": "MCU Debug: ST-LINK",
             "description": "Debugs an embedded ARM Cortex-M microcontroller using GDB + STMicroelectronic's ST-LINK_gdbserver part of STM32CubeIDE",
             "body": {
               "cwd": "^\"\\${workspaceFolder}\"",
@@ -3104,7 +3124,7 @@
             }
           },
           {
-            "label": "Cortex Debug: PyOCD",
+            "label": "MCU Debug: PyOCD",
             "description": "Debugs an embedded ARM Cortex-M microcontroller using GDB + PyOCD",
             "body": {
               "cwd": "^\"\\${workspaceFolder}\"",
@@ -3120,19 +3140,19 @@
             }
           },
           {
-            "label": "Cortex Debug: ST-Util",
-            "description": "Debugs an embedded ARM Cortex-M microcontroller using GDB + Texane's st-util GDB Server (https://github.com/texane/stlink)",
+            "label": "MCU Debug: ST-Link",
+            "description": "Debugs an embedded ARM Cortex-M microcontroller using GDB + Texane's stlink GDB Server",
             "body": {
               "cwd": "^\"\\${workspaceFolder}\"",
               "executable": "${1:./bin/executable.elf}",
-              "name": "${6:Debug with ST-Util}",
+              "name": "${6:Debug with ST-Link}",
               "request": "launch",
               "type": "mcu-debug",
               "runToEntryPoint": "main",
               "debugFlags": {
                 "gdbTraces": false
               },
-              "servertype": "stutil"
+              "servertype": "stlink"
             }
           }
         ]

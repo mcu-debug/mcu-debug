@@ -3,51 +3,23 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import { GdbEventNames, GdbMiOutput, GdbMiRecord, VarUpdateRecord } from "./gdb-mi/mi-types";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
-import { toStringDecHexOctBin } from "./servers/common";
-import { GdbProtocolVariable } from "./custom-requests";
+import { copyInterfaceProperties, toStringDecHexOctBin } from "./servers/common";
+import { GdbProtocolVariable, GdbProtocolVariableTemplate } from "./custom-requests";
+import { VariableScope, VariableTypeMask, decodeReference, encodeReference, ActualScopeMask, ScopeBits, ScopeMask } from "./var-scopes";
 
-export const VariableTypeMask = 1 << 3; // Indicates this is a variable type key for a given scope
-
-export enum VariableScope {
-    Global = 0,
-    Static = 1,
-    Local = 2,
-    Registers = 3,
-    Scope = 4, // Dummy scope for top level variable categories
-    Watch = 5,
-    LocalVariable = VariableTypeMask | VariableScope.Local, // Local variable
-    RegistersVariable = VariableTypeMask | VariableScope.Registers, // Register variable
-    GlobalVariable = VariableTypeMask | VariableScope.Global, // Global variable
-    StaticVariable = VariableTypeMask | VariableScope.Static, // Static variable
-    WatchVariable = VariableTypeMask | 0x5, // Dynamic watch variable
-}
-
-// We have a total of 53 bits of precision in a JavaScript number
-// So, we use 24 bits for the frame ID and 25 bits for the thread ID and 4 bits for scope.
-// MSB of Scope identifies if this is a variable or a frame reference
-const ActualScopeMask = 0x7;
-const FrameIDMask = 0xffffff;
-const ThreadIDMask = 0x1ffffff;
-const ScopeMask = 0xf;
-const ScopeBits = 4;
-const FrameIDBits = 24;
-const ThreadIDBits = 25;
-export function decodeReference(varRef: number): [number, number, VariableScope] {
-    return [varRef >>> (FrameIDBits + ScopeBits), (varRef >>> ScopeBits) & FrameIDMask, varRef & ScopeMask];
-}
-
-export function encodeReference(threadId: number, frameId: number, scope: VariableScope): number {
-    return ((threadId & ThreadIDMask) << (FrameIDBits + ScopeBits)) | ((frameId & FrameIDMask) << ScopeBits) | (scope & ScopeMask);
-}
-
-export function getScopeFromReference(varRef: number): VariableScope {
-    return varRef & ScopeMask;
-}
-
-export function getVariableClass(scope: VariableScope): VariableScope {
-    return scope & ActualScopeMask;
-}
-
+const containerPrefix: { [key in VariableScope]: string } = {
+    [VariableScope.Global]: "G-",
+    [VariableScope.Static]: "S-",
+    [VariableScope.Local]: "L-",
+    [VariableScope.Registers]: "R-",
+    [VariableScope.Scope]: "C-",
+    [VariableScope.Watch]: "W-",
+    [VariableScope.LocalVariable]: "L-",
+    [VariableScope.RegistersVariable]: "R-",
+    [VariableScope.GlobalVariable]: "G-",
+    [VariableScope.StaticVariable]: "S-",
+    [VariableScope.WatchVariable]: "W-",
+};
 // These are the fields that uniquely identify a variable
 export class VariableKeys implements IValueIdentifiable {
     constructor(
@@ -100,8 +72,9 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
     } {
         throw new Error("Method not implemented.");
     }
+
     toProtocolVariable(): GdbProtocolVariable {
-        return this;
+        return copyInterfaceProperties<GdbProtocolVariable, VariableObject>(this, GdbProtocolVariableTemplate);
     }
 
     public getThreadFrameInfo(): [number, number, VariableScope] {
@@ -133,9 +106,15 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
 // the variable again if needed. You can also get the scope of a handle by looking at the lower bits of
 // the handle (see VariableManager.createVariable)
 export class VariableContainer {
+    protected gdbVarNameToObjMap = new Map<string, VariableObject>();
     private variableHandles = new ValueHandleRegistry<VariableKeys>();
+    constructor(public readonly scope: VariableScope) {}
+
+    public calcFrameRef(threadIdOrFileId: number, frameId: number, scope: VariableScope): number {
+        return encodeReference(threadIdOrFileId, frameId, scope & ActualScopeMask);
+    }
     public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number): [VariableObject, number] {
-        const varRef = encodeReference(threadId, frameId, scope & ActualScopeMask);
+        const varRef = this.calcFrameRef(threadId, frameId, scope & ActualScopeMask);
         const variable = new VariableObject(scope, parent, name, varRef, value, type);
         const handle = this.variableHandles.addObject(variable);
         variable.handle = (handle << ScopeBits) | (scope & ScopeMask); // Shift left to make room for scope bits
@@ -151,6 +130,7 @@ export class VariableContainer {
         // Mi variables don't have scope, parent, frameRef, evaluateName info
         const [varObj, handle] = this.createVariable(scope, parent, name, value, type, threadId, frameId);
         varObj.gdbVarName = record["name"];
+        this.gdbVarNameToObjMap.set(varObj.gdbVarName, varObj);
         varObj.exp = record["exp"] || name;
         varObj.evaluateName = varObj.exp; // For now, fullExp is same as exp. It may change later. For root variables, they are the same
         varObj.applyChanges(record as any as VarUpdateRecord);
@@ -181,8 +161,46 @@ export class VariableContainer {
     public getScopeFromHandle(handle: number): VariableScope {
         return handle & ScopeMask;
     }
-    public clear() {
+    public async clear(gdbInstance: GdbInstance, delErr?: (str: string) => void): Promise<void> {
         this.variableHandles.clear();
+        const promises: Promise<any>[] = [];
+        for (const key of this.gdbVarNameToObjMap.keys()) {
+            const obj = this.gdbVarNameToObjMap.get(key);
+            if (obj.parent === 0) {
+                // only delete roots. that will also delete children
+                const p = gdbInstance?.sendCommand(`-var-delete ${key}`).catch(() => {
+                    delErr?.(key);
+                });
+                if (p) {
+                    promises.push(p);
+                }
+            }
+        }
+        await Promise.all(promises);
+        this.gdbVarNameToObjMap.clear();
+    }
+    public async deleteObjectByGdbName(gdbVarName: string, gdbInstance: GdbInstance, delErr?: (str: string) => void): Promise<boolean> {
+        const obj = this.gdbVarNameToObjMap.get(gdbVarName);
+        if (obj) {
+            this.variableHandles.release(obj.handle >>> ScopeBits);
+            if (obj.parent === 0) {
+                gdbInstance?.sendCommand(`-var-delete ${gdbVarName}`).catch(() => {
+                    delErr?.(gdbVarName);
+                });
+                this.gdbVarNameToObjMap.delete(gdbVarName);
+                return true;
+            } else {
+                this.gdbVarNameToObjMap.delete(gdbVarName);
+                return true;
+            }
+        }
+        return false;
+    }
+    public hasGdbName(gdbVarName: string): boolean {
+        return this.gdbVarNameToObjMap.has(gdbVarName);
+    }
+    public numberOfGdbVariables(): number {
+        return this.gdbVarNameToObjMap.size;
     }
 }
 
@@ -194,15 +212,20 @@ export class VariableContainerForGlobals extends VariableContainer {
     private nextFileId = 1; // Start from 1, 0 means all files
 
     public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName: string): [VariableObject, number] {
+        const fileId = this.getFileId(fileName);
+        const [varObj, handle] = super.createVariable(scope, parent, name, value, type, fileId || 0, 0);
+        varObj.fileName = fileName;
+        return [varObj, handle];
+    }
+
+    public getFileId(fileName: string) {
         let fileId = fileName ? this.fileToIdMap.get(fileName) : 0;
         if (fileName && fileId === undefined) {
             fileId = this.nextFileId++;
             this.fileToIdMap.set(fileName, fileId);
             this.fileIdToFile.set(fileId, fileName);
         }
-        const [varObj, handle] = super.createVariable(scope, parent, name, value, type, fileId || 0, 0);
-        varObj.fileName = fileName;
-        return [varObj, handle];
+        return fileId;
     }
 
     public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number): [VariableObject, number] {
@@ -223,6 +246,7 @@ export class VariableContainerForGlobals extends VariableContainer {
         // Mi variables don't have scope, parent, frameRef, evaluateName info
         const [varObj, handle] = this.createGlobalVariable(scope, parent, name, value, type, fileName);
         varObj.gdbVarName = record["name"];
+        this.gdbVarNameToObjMap.set(varObj.gdbVarName, varObj);
         varObj.exp = record["exp"] || name;
         varObj.evaluateName = varObj.exp; // For now, fullExp is same as exp. It may change later. For root variables, they are the same
         varObj.applyChanges(record as any as VarUpdateRecord);
@@ -265,12 +289,11 @@ interface RegisterInfo {
 
 export class VariableManager {
     public static readonly GlobalFileName = ":global:";
-    private globalContainer: VariableContainerForGlobals = new VariableContainerForGlobals();
-    private localContainer: VariableContainer = new VariableContainer();
-    private dynamicContainer: VariableContainer = new VariableContainer();
+    private globalContainer: VariableContainerForGlobals = new VariableContainerForGlobals(VariableScope.Global);
+    private localContainer: VariableContainer = new VariableContainer(VariableScope.Local);
+    private dynamicContainer: VariableContainer = new VariableContainer(VariableScope.Watch);
     private frameHandles = new ValueHandleRegistryPrimitive<number>();
     private containers = new Map<VariableScope, VariableContainer>();
-    private localGdbNames: Set<string> = new Set<string>();
     private regFormat = "x"; // Default to Natural format
     private registerGroups: RegisterGroupInfo[] = [];
     private registerInfoMap = new Map<number, RegisterInfo>();
@@ -359,44 +382,20 @@ export class VariableManager {
         return this.frameHandles.add(h);
     }
 
-    public clearForContinue() {
-        this.localContainer.clear();
-        this.dynamicContainer.clear();
+    public async clearForContinue() {
+        const err = (str: string) => {
+            if (this.debugSession.args.debugFlags.anyFlags) {
+                this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error deleting GDB variable ${str} on stop/continue\n`);
+            }
+        };
+        await this.localContainer.clear(this.gdbInstance, err);
+        await this.dynamicContainer.clear(this.gdbInstance, err);
         this.frameHandles.clear();
         this.registerValuesMap.clear();
     }
 
-    private async clearGdbNames() {
-        let promises = [];
-        let names: string[] = [];
-        for (const name of this.localGdbNames) {
-            names.push(name);
-            const p = this.gdbInstance.sendCommand(`-var-delete ${name}`);
-            promises.push(p);
-        }
-        let count = 0;
-        for (const p of promises) {
-            try {
-                await p;
-                this.localGdbNames.delete(names[count]);
-            } catch (e) {
-                if (this.debugSession.args.debugFlags.anyFlags) {
-                    this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error deleting GDB variable ${names[count]} on continue: ${e}\n`);
-                }
-            }
-            count++;
-        }
-    }
-
     public async prepareForStopped() {
-        this.clearForContinue();
-        // We delete all gdb variable names on stopped rather than on continue to avoid issues with
-        // gdb beginning to run before we finish deleted the variables. Execution can continue in many
-        // ways (continue, step, next, etc) and it's hard to track them all. So, we do it here when we
-        // are sure gdb is stopped. Even if there is a collision, the worst that can happen is a variable name
-        // is reused which is unlikely but if the debugger is running fast enough, it could happen. The danger
-        // comes when a variable for same thread/frame is reused but it turns from scalar to compound or vice versa.
-        await this.clearGdbNames();
+        await this.clearForContinue();
     }
 
     public getVarOrFrameInfo(handle: VariableReference): [number, number, VariableScope] {
@@ -421,7 +420,7 @@ export class VariableManager {
         } else if (scope === VariableScope.Registers) {
             return this.getRegisterVariables(threadId, frameId);
         } else if (scope === VariableScope.Global) {
-            return this.getGlobalVariables(threadId);
+            return this.getGlobalVariables();
         } else if (scope === VariableScope.Static) {
             return this.getStaticVariables(threadId, frameId);
         } else if (scope & VariableTypeMask) {
@@ -444,7 +443,7 @@ export class VariableManager {
                 return container.parseMiVariable(name, item, parent.scope, parent.handle, threadId, frameId);
             }
         };
-        const miOutput = await this.gdbInstance.sendCommand(`var-list-children --simple-values "${gdbName}"`);
+        const miOutput = await this.gdbInstance.sendCommand(`var-list-children --all-values "${gdbName}"`);
         const keywords = ["private", "protected", "public"];
         const children = miOutput.resultRecord.result["children"] || [];
         const ret: VariableObject[] = [];
@@ -563,17 +562,16 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             // Create a gdb variable for this register
-                            const gdbVarName = this.createGdbName(regName.replaceAll("$", "reg-"), threadId, frameId);
+                            const gdbVarName = this.createGdbName(container, regName.replaceAll("$", "reg-"), threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
-                            await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
-                                const record = varCreateRecord.resultRecord.result;
-                                const [varObj] = container.parseMiVariable(regName, record, VariableScope.RegistersVariable, groupVar.handle, threadId, frameId);
-                                varObj.value = r["value"]; // Use this because it is better formatted
-                                if (varObj !== undefined) {
-                                    this.setFields(varObj);
-                                    variables.push(varObj.toProtocolVariable());
-                                }
-                            });
+                            const varCreateRecord = await this.gdbInstance.sendCommand(cmd);
+                            const record = varCreateRecord.resultRecord.result;
+                            const [varObj] = container.parseMiVariable(regName, record, VariableScope.RegistersVariable, groupVar.handle, threadId, frameId);
+                            varObj.value = r["value"]; // Use this because it is better formatted
+                            if (varObj !== undefined) {
+                                this.setFields(varObj);
+                                variables.push(varObj.toProtocolVariable());
+                            }
                         } else {
                             existingVar.value = r["value"];
                             this.setFields(existingVar);
@@ -594,19 +592,19 @@ export class VariableManager {
         }
     }
 
-    createGdbName(base: string, thread: number, frame: number): string {
-        let ret = `${base}-${thread}-${frame}`;
+    createGdbName(container: VariableContainer, base: string, thread: number, frame: number): string {
+        const prefix = containerPrefix[container.scope];
+        let ret = `${prefix}${base}-${thread}-${frame}`;
         let count = 1;
-        while (this.localGdbNames.has(ret)) {
-            ret = `${base}-${thread}-${frame}-${count}`;
+        while (container.hasGdbName(ret)) {
+            ret = `${prefix}${base}-${thread}-${frame}-${count}`;
             count++;
         }
-        this.localGdbNames.add(ret);
         return ret;
     }
 
     private async getLocalVariables(threadId: number, frameId: number): Promise<GdbProtocolVariable[]> {
-        const cmd = `-stack-list-variables --thread ${threadId} --frame ${frameId} --simple-values`;
+        const cmd = `-stack-list-variables --thread ${threadId} --frame ${frameId} --all-values`;
         return await this.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
             const variables: GdbProtocolVariable[] = [];
             const vars = miOutput.resultRecord.result["variables"];
@@ -621,27 +619,26 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             const varName = v["name"];
-                            const gdbVarName = this.createGdbName(varName, threadId, frameId);
+                            const gdbVarName = this.createGdbName(container, varName, threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${varName}`;
-                            await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
-                                const record = varCreateRecord.resultRecord.result;
-                                const [varObj, handle] = container.parseMiVariable(varName, record, VariableScope.LocalVariable, 0, threadId, frameId);
-                                if (varObj !== undefined) {
-                                    if (record["numchild"] && parseInt(record["numchild"]) > 0) {
-                                        varObj.variablesReference = handle!;
-                                    }
-                                    variables.push(varObj.toProtocolVariable());
+                            const varCreateRecord = await this.gdbInstance.sendCommand(cmd);
+                            const record = varCreateRecord.resultRecord.result;
+                            const [varObj, handle] = container.parseMiVariable(varName, record, VariableScope.LocalVariable, 0, threadId, frameId);
+                            if (varObj !== undefined) {
+                                if (record["numchild"] && parseInt(record["numchild"]) > 0) {
+                                    varObj.variablesReference = handle!;
                                 }
-                            });
+                                variables.push(varObj.toProtocolVariable());
+                            }
                         } else {
-                            await this.gdbInstance.sendCommand(`-var-update --simple-values ${existingVar.gdbVarName}`).then((varUpdateRecord) => {
-                                const record = varUpdateRecord.resultRecord.result;
-                                if (record["in_scope"] && record["in_scope"] !== "true") {
-                                    return; // Variable is out of scope, skip it. Not sure why this would happen
-                                }
+                            const varUpdateRecord = await this.gdbInstance.sendCommand(`-var-update --all-values ${existingVar.gdbVarName}`);
+                            const record = varUpdateRecord.resultRecord?.result["changelist"]?.[0];
+                            if (record && (!record["in_scope"] || record["in_scope"] === "true")) {
                                 existingVar.applyChanges(record);
-                                variables.push(existingVar.toProtocolVariable());
-                            });
+                            } else if (record && record["in_scope"] && record["in_scope"] !== "true") {
+                                existingVar.value = "not in scope?";
+                            }
+                            variables.push(existingVar.toProtocolVariable());
                         }
                     } catch (e) {
                         if (this.debugSession.args.debugFlags.anyFlags) {
@@ -848,44 +845,45 @@ export class VariableManager {
         return variables;
     }
 
-    public async getGlobalVariables(threadId: number): Promise<GdbProtocolVariable[]> {
+    public async getGlobalVariables(): Promise<GdbProtocolVariable[]> {
         try {
             const vars = this.debugSession.symbolTable.getGlobalVariables();
             const variables: GdbProtocolVariable[] = [];
             const container = this.globalContainer;
+            const fileId = container.getFileId(VariableManager.GlobalFileName);
+            const useRef = container.calcFrameRef(fileId, 0, VariableScope.GlobalVariable);
             for (const v of vars) {
                 if (this.gdbInstance.IsRunning()) {
                     break;
                 }
-                const key = new VariableKeys(0, v.name, encodeReference(threadId, 0, VariableScope.Global));
+                const key = new VariableKeys(0, v.name, useRef);
                 const existingVar = container.getVariableByKey(key);
                 try {
                     if (existingVar === undefined) {
-                        const gdbVarName = this.createGdbName("G-" + v.name, threadId, 0);
+                        const gdbVarName = this.createGdbName(container, v.name, 0, 0);
                         // There should be a better way to create a global variable by name but gdb mi doesn't seem to
                         // have a way to do it directly. So we use var-create with @ for scope which works for globals/statics
                         // because it can still collide with a local variable of same name in current frame, but that is rare enough to ignore for now.
                         // There HAS to be a better way to do this, I just couldn't find it in gdb mi docs.
                         const cmd = `-var-create ${gdbVarName} @ ${v.name}`;
-                        await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
-                            const record = varCreateRecord.resultRecord.result;
-                            const [varObj, handle] = container.parseMiGlobalVariable(v.name, record, VariableScope.GlobalVariable, 0, VariableManager.GlobalFileName);
-                            if (varObj !== undefined) {
-                                if (record["numchild"] && parseInt(record["numchild"]) > 0) {
-                                    varObj.variablesReference = handle!;
-                                }
-                                variables.push(varObj.toProtocolVariable());
+                        const varCreateRecord = await this.gdbInstance.sendCommand(cmd);
+                        const record = varCreateRecord.resultRecord.result;
+                        const [varObj, handle] = container.parseMiGlobalVariable(v.name, record, VariableScope.GlobalVariable, 0, VariableManager.GlobalFileName);
+                        if (varObj !== undefined) {
+                            if (record["numchild"] && parseInt(record["numchild"]) > 0) {
+                                varObj.variablesReference = handle!;
                             }
-                        });
+                            variables.push(varObj.toProtocolVariable());
+                        }
                     } else {
-                        await this.gdbInstance.sendCommand(`-var-update --simple-values ${existingVar.gdbVarName}`).then((varUpdateRecord) => {
-                            const record = varUpdateRecord.resultRecord.result;
-                            if (record["in_scope"] && record["in_scope"] !== "true") {
-                                return; // Variable is out of scope, skip it. Not sure why this would happen
-                            }
+                        const varUpdateRecord = await this.gdbInstance.sendCommand(`-var-update --all-values ${existingVar.gdbVarName}`);
+                        const record = varUpdateRecord.resultRecord?.result["changelist"]?.[0];
+                        if (record && (!record["in_scope"] || record["in_scope"] === "true")) {
                             existingVar.applyChanges(record);
-                            variables.push(existingVar.toProtocolVariable());
-                        });
+                        } else if (record && record["in_scope"] && record["in_scope"] !== "true") {
+                            existingVar.value = "not in scope?";
+                        }
+                        variables.push(existingVar.toProtocolVariable());
                     }
                 } catch (e) {
                     if (this.debugSession.args.debugFlags.anyFlags) {
@@ -915,39 +913,40 @@ export class VariableManager {
                 vars = this.debugSession.symbolTable.getStaticVariables(fileName);
                 useName = fileName;
             }
+            const useFileId = container.getFileId(useName);
+            const useRef = container.calcFrameRef(useFileId, 0, VariableScope.StaticVariable);
             for (const v of vars) {
                 if (this.gdbInstance.IsRunning()) {
                     break;
                 }
-                const key = new VariableKeys(0, v.name, encodeReference(fileId, fullFileId, VariableScope.StaticVariable));
+                const key = new VariableKeys(0, v.name, useRef);
                 const existingVar = container.getVariableByKey(key);
                 try {
                     if (existingVar === undefined) {
-                        const gdbVarName = this.createGdbName("S-" + v.name, fileId, fullFileId);
+                        const gdbVarName = this.createGdbName(container, v.name, fileId, fullFileId);
                         // There should be a better way to create a global variable by name but gdb mi doesn't seem to
                         // have a way to do it directly. So we use var-create with @ for scope which works for globals/statics
                         // because it can still collide with a local variable of same name in current frame, but that is rare enough to ignore for now.
                         // There HAS to be a better way to do this, I just couldn't find it in gdb mi docs.
                         const cmd = `-var-create ${gdbVarName} @ ${v.name}`;
-                        await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
-                            const record = varCreateRecord.resultRecord.result;
-                            const [varObj, handle] = container.parseMiGlobalVariable(v.name, record, VariableScope.StaticVariable, 0, useName);
-                            if (varObj !== undefined) {
-                                if (record["numchild"] && parseInt(record["numchild"]) > 0) {
-                                    varObj.variablesReference = handle!;
-                                }
-                                variables.push(varObj.toProtocolVariable());
+                        const varCreateRecord = await this.gdbInstance.sendCommand(cmd);
+                        const record = varCreateRecord.resultRecord.result;
+                        const [varObj, handle] = container.parseMiGlobalVariable(v.name, record, VariableScope.StaticVariable, 0, useName);
+                        if (varObj !== undefined) {
+                            if (record["numchild"] && parseInt(record["numchild"]) > 0) {
+                                varObj.variablesReference = handle!;
                             }
-                        });
+                            variables.push(varObj.toProtocolVariable());
+                        }
                     } else {
-                        await this.gdbInstance.sendCommand(`-var-update --simple-values ${existingVar.gdbVarName}`).then((varUpdateRecord) => {
-                            const record = varUpdateRecord.resultRecord.result;
-                            if (record["in_scope"] && record["in_scope"] !== "true") {
-                                return; // Variable is out of scope, skip it. Not sure why this would happen
-                            }
+                        const varUpdateRecord = await this.gdbInstance.sendCommand(`-var-update --all-values ${existingVar.gdbVarName}`);
+                        const record = varUpdateRecord.resultRecord?.result["changelist"]?.[0];
+                        if (record && (!record["in_scope"] || record["in_scope"] === "true")) {
                             existingVar.applyChanges(record);
-                            variables.push(existingVar.toProtocolVariable());
-                        });
+                        } else if (record && record["in_scope"] && record["in_scope"] !== "true") {
+                            existingVar.value = "not in scope?";
+                        }
+                        variables.push(existingVar.toProtocolVariable());
                     }
                 } catch (e) {
                     if (this.debugSession.args.debugFlags.anyFlags) {
@@ -993,17 +992,16 @@ export class VariableManager {
                     try {
                         if (existingVar === undefined) {
                             // We create a gdb variable in case the user wants to set it. Not really needed for viewing
-                            const gdbVarName = this.createGdbName(regName.replaceAll("$", "reg-"), threadId, frameId);
+                            const gdbVarName = this.createGdbName(container, regName.replaceAll("$", "reg-"), threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
-                            await this.gdbInstance.sendCommand(cmd).then((varCreateRecord) => {
-                                const record = varCreateRecord.resultRecord.result;
-                                const [varObj] = container.parseMiVariable(regName, record, VariableScope.Registers, 0, threadId, frameId);
-                                varObj.value = r["value"]; // Use this because it is better formatted
-                                if (varObj !== undefined) {
-                                    this.setFields(varObj);
-                                    variables.push(varObj.toProtocolVariable());
-                                }
-                            });
+                            const varCreateRecord = await this.gdbInstance.sendCommand(cmd);
+                            const record = varCreateRecord.resultRecord.result;
+                            const [varObj] = container.parseMiVariable(regName, record, VariableScope.Registers, 0, threadId, frameId);
+                            varObj.value = r["value"]; // Use this because it is better formatted
+                            if (varObj !== undefined) {
+                                this.setFields(varObj);
+                                variables.push(varObj.toProtocolVariable());
+                            }
                         } else {
                             existingVar.value = r["value"]; // No need for var-update for registers. AFAIK they are fresh each time
                             this.setFields(existingVar);
@@ -1082,9 +1080,9 @@ export class VariableManager {
         }
 
         const okChars = /[^a-zA-Z0-9_,]/g;
-        const gdbName = "W-" + newExpr.replaceAll(okChars, "-");
+        const gdbName = newExpr.replaceAll(okChars, "-");
 
-        return [this.createGdbName(gdbName, thread, frame), newExpr, suffix];
+        return [this.createGdbName(this.getContainer(VariableScope.Watch), gdbName, thread, frame), newExpr, suffix];
     }
 
     public async evaluateExpression(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): Promise<void> {
@@ -1120,26 +1118,29 @@ export class VariableManager {
                 newVar.applyChanges(record);
                 newVar.gdbVarName = gdbName;
                 if (record["numchild"] && parseInt(record["numchild"]) > 0) {
-                    newVar.variablesReference = handle!;
+                    newVar.variablesReference = handle;
                 }
                 response.body = {
                     result: newVar.value,
                     variablesReference: newVar.variablesReference,
                 };
+                (response.body as any).variableObject = newVar.toProtocolVariable();
                 return;
             } else {
                 // Update existing variable
-                const cmd = `-var-update  --simple-values ${existingVar.gdbVarName}`;
+                const cmd = `-var-update  --all-values ${existingVar.gdbVarName}`;
                 const miOutput = await this.gdbInstance.sendCommand(cmd);
-                const record = miOutput.resultRecord.result;
-                if (record["in_scope"] && record["in_scope"] !== "true") {
-                    return Promise.reject(new Error(`Variable ${args.expression} is out of scope`));
+                const record = miOutput.resultRecord?.result["changelist"]?.[0];
+                if (record && (!record["in_scope"] || record["in_scope"] === "true")) {
+                    existingVar.applyChanges(record);
+                } else if (record && record["in_scope"] && record["in_scope"] !== "true") {
+                    existingVar.value = "not in scope?";
                 }
-                existingVar.applyChanges(record);
                 response.body = {
                     result: existingVar.value,
                     variablesReference: existingVar.variablesReference,
                 };
+                (response.body as any).variableObject = existingVar.toProtocolVariable();
                 return;
             }
         } catch (e) {

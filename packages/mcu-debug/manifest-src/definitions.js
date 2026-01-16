@@ -43,8 +43,13 @@ module.exports = {
         default: [],
         type: "array",
         items: { type: "string" },
-        description: "Deprecated: Restart is now handled by VSCode. Change to preResetCommands if you use the Reset button.",
-        deprecationMessage: "Restart is now handled by VSCode. Change to preResetCommands if you use the Reset button.",
+        description: "Commands to be executed prior to a Reset operation, before the reset is sent to the target.",
+    },
+    postResetCommands: {
+        default: [],
+        type: "array",
+        items: { type: "string" },
+        description: "Commands to be executed after a Reset operation, after the reset is sent to the target.",
     },
     postRestartCommands: {
         default: [],
@@ -363,6 +368,9 @@ module.exports = {
     debugFlags: {
         description: "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",
         type: "object",
+        default: {
+            gdbTraces: false,
+        },
         properties: {
             gdbTraces: { type: "boolean", default: false, description: "Enable GDB MI trace output" },
             vscodeRequests: { type: "boolean", default: false, description: "Enable VSCode Request/Response trace output" },

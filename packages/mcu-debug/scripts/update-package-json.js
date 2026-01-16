@@ -91,8 +91,8 @@ function generateDebuggers() {
     return [
         {
             type: "mcu-debug",
-            label: "Cortex Debug",
-            program: "./dist/debugadapter.js",
+            label: "MCU Debug",
+            program: "./dist/adapter.js",
             runtime: "node",
             languages: ["c", "cpp", "rust"],
             configurationAttributes: {
@@ -109,7 +109,7 @@ function generateDebuggers() {
                 {
                     type: "mcu-debug",
                     request: "launch",
-                    name: "Cortex Debug: J-Link",
+                    name: "MCU Debug: J-Link",
                     servertype: "jlink",
                     device: "STM32F103C8",
                     interface: "swd",
@@ -119,7 +119,7 @@ function generateDebuggers() {
             ],
             configurationSnippets: [
                 {
-                    label: "Cortex Debug: JLink",
+                    label: "MCU Debug: JLink",
                     description: "Debugs an embedded ARM Cortex-M microcontroller using GDB + JLink",
                     body: {
                         cwd: '^"\\${workspaceFolder}"',
@@ -136,7 +136,7 @@ function generateDebuggers() {
                     },
                 },
                 {
-                    label: "Cortex Debug: OpenOCD",
+                    label: "MCU Debug: OpenOCD",
                     description: "Debugs an embedded ARM Cortex-M microcontroller using GDB + OpenOCD",
                     body: {
                         cwd: '^"\\${workspaceRoot}"',
@@ -154,7 +154,7 @@ function generateDebuggers() {
                     },
                 },
                 {
-                    label: "Cortex Debug: ST-LINK",
+                    label: "MCU Debug: ST-LINK",
                     description: "Debugs an embedded ARM Cortex-M microcontroller using GDB + STMicroelectronic's ST-LINK_gdbserver part of STM32CubeIDE",
                     body: {
                         cwd: '^"\\${workspaceFolder}"',
@@ -170,7 +170,7 @@ function generateDebuggers() {
                     },
                 },
                 {
-                    label: "Cortex Debug: PyOCD",
+                    label: "MCU Debug: PyOCD",
                     description: "Debugs an embedded ARM Cortex-M microcontroller using GDB + PyOCD",
                     body: {
                         cwd: '^"\\${workspaceFolder}"',
@@ -186,19 +186,19 @@ function generateDebuggers() {
                     },
                 },
                 {
-                    label: "Cortex Debug: ST-Util",
-                    description: "Debugs an embedded ARM Cortex-M microcontroller using GDB + Texane's st-util GDB Server (https://github.com/texane/stlink)",
+                    label: "MCU Debug: ST-Link",
+                    description: "Debugs an embedded ARM Cortex-M microcontroller using GDB + Texane's stlink GDB Server",
                     body: {
                         cwd: '^"\\${workspaceFolder}"',
                         executable: "${1:./bin/executable.elf}",
-                        name: "${6:Debug with ST-Util}",
+                        name: "${6:Debug with ST-Link}",
                         request: "launch",
                         type: "mcu-debug",
                         runToEntryPoint: "main",
                         debugFlags: {
                             gdbTraces: false,
                         },
-                        servertype: "stutil",
+                        servertype: "stlink",
                     },
                 },
             ],

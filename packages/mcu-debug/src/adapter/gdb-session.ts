@@ -10,7 +10,7 @@ import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
-import { getVariableClass, VariableManager, VariableScope } from "./variables";
+import { VariableManager } from "./variables";
 import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
@@ -20,6 +20,10 @@ import { BreakpointManager } from "./breakpoints";
 import { LiveWatchMonitor } from "./live-watch-monitor";
 import { ServerConsoleLog } from "./server-console-log";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
+import { VariableScope, getVariableClass } from "./var-scopes";
+import { UpdateVariablesLiveResponse } from "./custom-requests";
+
+let SessionCounter = 0;
 
 function COMMAND_MAP(c: string): string {
     if (!c) {
@@ -33,6 +37,7 @@ function COMMAND_MAP(c: string): string {
     }
     return c.startsWith("-") ? c : `-interpreter-exec console "${c.replace(/"/g, '\\"')}"`;
 }
+
 export class GDBDebugSession extends SeqDebugSession {
     public args = {} as ConfigurationArguments;
     public gdbInstance: GdbInstance;
@@ -52,6 +57,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
     constructor() {
         super();
+        SessionCounter++;
         this.gdbInstance = new GdbInstance();
         this.gdbLiveInstance = new GdbInstance();
         this.serverSession = new GDBServerSession(this);
@@ -64,6 +70,9 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     public isRunning(): boolean {
+        if (!this.gdbInstance) {
+            return false;
+        }
         return this.gdbInstance.IsRunning();
     }
     public isBusy(): boolean {
@@ -248,7 +257,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected async setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments, request?: DebugProtocol.Request): Promise<void> {
         try {
             response.body = { breakpoints: [] };
-            this.suppressStoppedEvents = this.gdbInstance.IsRunning();
+            this.suppressStoppedEvents = this.isRunning();
             await this.bkptManager.setBreakPointsRequest(response, args, request);
             this.sendResponse(response);
         } catch (e) {
@@ -265,7 +274,7 @@ export class GDBDebugSession extends SeqDebugSession {
     ): Promise<void> {
         try {
             response.body = { breakpoints: [] };
-            this.suppressStoppedEvents = this.gdbInstance.IsRunning();
+            this.suppressStoppedEvents = this.isRunning();
             await this.bkptManager.setFunctionBreakPointsRequest(response, args, request);
             this.sendResponse(response);
         } catch (e) {
@@ -283,12 +292,12 @@ export class GDBDebugSession extends SeqDebugSession {
         this.emit("configurationDone");
         this.sendResponse(response);
     }
-    protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments, request?: DebugProtocol.Request): void {
+    protected async continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments, request?: DebugProtocol.Request): Promise<void> {
         if (this.isBusy()) {
             this.handleErrResponse(response, "Continue request received while target is running.");
             return;
         }
-        this.clearForContinue();
+        await this.clearForContinue();
         this.continuing = true;
         this.gdbMiCommands!.sendContinue(undefined)
             .then(() => {
@@ -641,7 +650,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     protected async setDataBreakpointsRequest(response: DebugProtocol.SetDataBreakpointsResponse, args: DebugProtocol.SetDataBreakpointsArguments, request?: DebugProtocol.Request): Promise<void> {
         try {
-            this.suppressStoppedEvents = this.gdbInstance.IsRunning();
+            this.suppressStoppedEvents = this.isRunning();
             await this.bkptManager.setDataBreakPointsRequest(response, args, request);
             this.sendResponse(response);
         } catch (e) {
@@ -757,7 +766,7 @@ export class GDBDebugSession extends SeqDebugSession {
         const isBusy = this.isBusy();
         switch (command) {
             case "evaluateLive":
-                if (this.gdbLiveInstance) {
+                if (this.liveWatchMonitor && this.gdbLiveInstance) {
                     const r: DebugProtocol.EvaluateResponse = {
                         ...response,
                         body: {
@@ -765,38 +774,37 @@ export class GDBDebugSession extends SeqDebugSession {
                             variablesReference: undefined,
                         },
                     };
-                    // await this.gdbLiveInstance.evaluateRequest(r, args);
+                    return await this.liveWatchMonitor.evaluateRequest(r, args); // always returns
                 } else {
                     this.sendResponse(response);
                 }
                 break;
             case "updateVariablesLive":
-                if (this.gdbLiveInstance) {
-                    await this.liveWatchMonitor.refreshLiveCache(response, args);
+                if (this.liveWatchMonitor && this.gdbLiveInstance) {
+                    const r: UpdateVariablesLiveResponse = {
+                        ...response,
+                        body: {
+                            updates: [],
+                        },
+                    };
+                    return await this.liveWatchMonitor.updateVariablesLive(r, args);
+                } else {
+                    this.sendResponse(response);
                 }
-                this.sendResponse(response);
                 break;
             case "variablesLive":
-                if (this.gdbLiveInstance) {
+                if (this.liveWatchMonitor && this.gdbLiveInstance) {
                     const r: DebugProtocol.VariablesResponse = {
                         ...response,
                         body: {
                             variables: [],
                         },
                     };
-                    return this.liveWatchMonitor.variablesRequest(r, args);
+                    return await this.liveWatchMonitor.variablesRequest(r, args);
                 } else {
                     this.sendResponse(response);
                 }
                 break;
-            case "is-global-or-static": {
-                const varRef = args.varRef;
-                // const id = this.variableHandles.get(varRef);
-                // const ret = this.isVarRefGlobalOrStatic(varRef, id);
-                // response.body = { success: ret };
-                this.sendResponse(response);
-                break;
-            }
             case "load-function-symbols":
                 response.body = { functionSymbols: this.symbolTable.getFunctionSymbols() };
                 this.sendResponse(response);
@@ -866,8 +874,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.args.pvtSessionMode = mode;
             const commands = [];
             commands.push(...(this.args.preResetCommands?.map(COMMAND_MAP) || []));
-            const resetCommands = this.args.overrideResetCommands ? this.args.overrideResetCommands.map(COMMAND_MAP) : this.serverSession.serverController.resetCommands().map(COMMAND_MAP) || [];
-            commands.push(...resetCommands);
+            commands.push(...(this.args.overrideResetCommands ? this.args.overrideResetCommands.map(COMMAND_MAP) : this.serverSession.serverController.resetCommands().map(COMMAND_MAP) || []));
             commands.push(...(this.args.postResetCommands?.map(COMMAND_MAP) || []));
 
             await this.sendCommandsWithWait(commands);
@@ -878,7 +885,6 @@ export class GDBDebugSession extends SeqDebugSession {
                     this.sendEvent(new GenericCustomEvent(`session-${mode}`, args));
                 }, 250);
             }
-            this.args.pvtSessionMode = mode;
             await this.runSessionModeCommands();
             this.sendResponse(response);
         } catch (e) {
@@ -1086,15 +1092,21 @@ export class GDBDebugSession extends SeqDebugSession {
             // Question? Should we supress all running/stopped events until we are fully started? VSCode can
             // easily get confused if we send stopped/running events too early
             // this.handleRunning(); // Assume we are running at the beginning, so VSCode doesn't send any requests too early
-            await this.startGdb().catch((e) => {
-                return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}`);
-            });
+            try {
+                await this.startGdb();
+            } catch (e) {
+                const msg = "\nMake sure that the GDB executable is installed correctly and can be run from command line.\n";
+                return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}${msg}`);
+            }
             reportTime("GDB Ready");
 
             const gdbInitPromise = this.sendCommandsWithWait(this.gdbInitCommands);
-            await this.startServer().catch((e) => {
-                return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}`);
-            });
+            try {
+                await this.startServer();
+            } catch (e) {
+                const msg = "\nMake sure that the GDB server is configured correctly. See TERMINAL->gdb-server tab for details.\n";
+                return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}${msg}`);
+            }
             reportTime("GDB Server Ready");
             await gdbInitPromise;
             reportTime("GDB Init Commands Sent");
@@ -1272,9 +1284,11 @@ export class GDBDebugSession extends SeqDebugSession {
     protected async runSessionModeCommands(): Promise<void> {
         let commands: string[] = [];
         let needsContinue = false;
+        const isReset = this.args.pvtSessionMode === SessionMode.Reset;
+        const isLaunch = this.args.pvtSessionMode === SessionMode.Launch;
 
         // Unified Logic
-        if (this.args.pvtSessionMode === SessionMode.Launch || this.args.pvtSessionMode === SessionMode.Reset) {
+        if (isLaunch || isReset) {
             if (this.args.noDebug) {
                 // No Debug -> Always Continue
                 needsContinue = true;
@@ -1287,7 +1301,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 // If breakAfterReset is true -> Stay Stopped (needsContinue = false)
                 // If breakAfterReset is false -> Continue
                 needsContinue = !this.args.breakAfterReset;
-                const cmds = this.args.postStartSessionCommands?.map(COMMAND_MAP) ?? [];
+                const cmds = isReset ? (this.args.postResetSessionCommands?.map(COMMAND_MAP) ?? []) : (this.args.postStartSessionCommands?.map(COMMAND_MAP) ?? []);
                 commands.push(...cmds);
             }
         } else if (this.args.pvtSessionMode === SessionMode.Attach) {
@@ -1313,25 +1327,23 @@ export class GDBDebugSession extends SeqDebugSession {
             this.sendContinueWhenPossible().catch((e) => {
                 this.handleMsg(Stderr, `mcu-debug: Failed to continue after session mode commands: ${e instanceof Error ? e.message : String(e)}\n`);
             });
-        } else if (!this.isRunning()) {
+            return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200)); // Small delay to allow GDB to process commands
+        try {
+            await this.gdbMiCommands.sendFlushRegs();
+        } catch (e) {
+            this.handleMsg(Stderr, `mcu-debug: Warning: Failed to flush registers before sending stopped event: ${e instanceof Error ? e.message : String(e)}\n`);
+        }
+        if (!this.isRunning()) {
             // VSCode still thinks we are running although, we should be stopped at entry point
             // The GdbMiInstance has the true status and if it is not running, we send a stopped event
             // Also, users custom commands may have messed with the session state, so we ensure we
             // notify VSCode of the stopped state here.
-            try {
-                await this.gdbMiCommands.sendFlushRegs();
-            } catch (e) {
-                this.handleMsg(Stderr, `mcu-debug: Warning: Failed to flush registers before sending stopped event: ${e instanceof Error ? e.message : String(e)}\n`);
-            }
             this.notifyStopped("entry", !this.args.noDebug, false);
         } else {
             // Send the following to ensure VSCode knows we are running. Now everyone shuld be in sync
             // The gdbInstance has the true status.
-            try {
-                await this.gdbMiCommands.sendFlushRegs();
-            } catch (e) {
-                this.handleMsg(Stderr, `mcu-debug: Warning: Failed to flush registers before sending running event: ${e instanceof Error ? e.message : String(e)}\n`);
-            }
             this.handleRunning();
         }
     }
@@ -1377,7 +1389,8 @@ export class GDBDebugSession extends SeqDebugSession {
     // Unlike in cortex-debug, we get the thread info here before sending the stop event
     // Sometimes we get interrupted by other requests, so we store the latest thread info
     // and use that when needed. This works for All-Stop mode only for now.
-    stopEvent(record: GdbMiRecord, reason?: string) {
+    async stopEvent(record: GdbMiRecord, reason?: string) {
+        await this.varManager.prepareForStopped(); // Yes, do it again here to be sure, may not have completed during a continue
         if (this.suppressStoppedEvents) {
             return;
         }
@@ -1392,7 +1405,6 @@ export class GDBDebugSession extends SeqDebugSession {
                 return;
             default:
         }
-        this.varManager.prepareForStopped(); // Yes, do it again here to be sure, may not have completed during a continue
         this.notifyStopped(reason, doNotify, true);
     }
 
@@ -1446,9 +1458,12 @@ export class GDBDebugSession extends SeqDebugSession {
             },
         };
         this.sendEvent(ev);
+        ev.event = "custom-continued";
+        this.sendEvent(ev);
     }
-    private clearForContinue() {
-        this.varManager.clearForContinue();
+
+    private async clearForContinue() {
+        await this.varManager.clearForContinue();
         // this.lastThreadsInfo = null;
     }
 

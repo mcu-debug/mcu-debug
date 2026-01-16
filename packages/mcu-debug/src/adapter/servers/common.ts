@@ -1076,3 +1076,25 @@ export function canonicalizePath(sourcePath: string): string {
 
     return canonical;
 }
+
+/**
+ * Copies properties from a source object to a new object,
+ * keeping only properties defined by a specified interface.
+ *
+ * @param source The object to copy properties from.
+ * @param template A template object (often an empty object cast to the interface)
+ *                 whose keys define the properties to be copied.
+ * @returns A new object with only the allowed properties.
+ */
+export function copyInterfaceProperties<T extends object, S extends T>(source: S, template: T): T {
+    const result = {} as T;
+    const allowedKeys = Object.keys(template) as Array<keyof T>;
+
+    for (const key of allowedKeys) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+            result[key] = source[key];
+        }
+    }
+
+    return result;
+}

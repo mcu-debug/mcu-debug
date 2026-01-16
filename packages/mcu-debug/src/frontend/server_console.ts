@@ -213,7 +213,7 @@ export class GDBServerConsole {
     // and any usr input in the terminal is sent back (like semi-hosting)
     public startServer(): Promise<void> {
         return new Promise((resolve, reject) => {
-            getAnyFreePort(55878)
+            getAnyFreePort(56878)
                 .then((p) => {
                     this.toBackendPort = p;
                     const newServer = net.createServer(this.onBackendConnect.bind(this));

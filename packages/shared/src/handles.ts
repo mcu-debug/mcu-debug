@@ -59,7 +59,8 @@ export class ValueHandleRegistry<T = any> {
     }
 
     public getObjectByKey(key: T): T | undefined {
-        const handle = this.keyToHandle.get(this.getKey(key));
+        const k = this.getKey(key);
+        const handle = this.keyToHandle.get(k);
         if (handle !== undefined) {
             return this.handleToObj.get(handle);
         }

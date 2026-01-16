@@ -20,6 +20,7 @@ import { RTTTerminal } from "./rtt_terminal";
 import { GDBServerConsole } from "./server_console";
 import { CDebugSession, CDebugChainedSessionItem } from "./cortex_debug_session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
+import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 
 interface SVDInfo {
     expression: RegExp;
@@ -46,9 +47,12 @@ export class MCUDebugExtension {
     private functionSymbols: SymbolInformation[] = [];
     private serverStartedEvent: ServerStartedPromise | null = null;
 
-    constructor(private context: vscode.ExtensionContext) {
+    constructor(private context: vscode.ExtensionContext) {}
+
+    public async initialize() {
+        const context: vscode.ExtensionContext = this.context;
         const config = vscode.workspace.getConfiguration("mcu-debug");
-        this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
+        await this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
 
         this.liveWatchProvider = new LiveWatchTreeProvider(this.context);
         this.liveWatchTreeView = vscode.window.createTreeView("mcu-debug.liveWatch", {
@@ -127,21 +131,14 @@ export class MCUDebugExtension {
     }
 
     private async startServerConsole(context: vscode.ExtensionContext, logFName: string = ""): Promise<void> {
-        const promise = new Promise<void>((resolve, reject) => {
-            const rptMsg = "Please report this problem.";
+        try {
             this.gdbServerConsole = new GDBServerConsole(context, logFName);
-            this.gdbServerConsole
-                .startServer()
-                .then(() => {
-                    resolve(); // All worked out
-                })
-                .catch((e) => {
-                    this.gdbServerConsole?.dispose();
-                    this.gdbServerConsole = null;
-                    vscode.window.showErrorMessage(`Could not create gdb-server-console. Will use old style console. Please report this problem. ${e.toString()}`);
-                });
-        });
-        await promise;
+            await this.gdbServerConsole.startServer();
+        } catch (e) {
+            this.gdbServerConsole?.dispose();
+            this.gdbServerConsole = null;
+            vscode.window.showErrorMessage(`Could not create gdb-server-console. Extension startup failed. Please report this problem. ${e.toString()}`);
+        }
     }
 
     private settingsChanged(e: vscode.ConfigurationChangeEvent) {
@@ -823,21 +820,14 @@ export class MCUDebugExtension {
             return;
         }
         const parent = arg.container;
+        const parentVarRef = parent ? parent.variablesReference : 0;
+        if (!parent || !isVarRefGlobalOrStatic(parentVarRef)) {
+            vscode.window.showErrorMessage(`Cannot add ${arg.variable?.evaluateName} to Live Watch. Must be a global or static variable`);
+            return;
+        }
         const expr = arg.variable?.evaluateName;
-        if (parent && expr) {
-            const varRef = parent.variablesReference;
-            mySession.session.customRequest("is-global-or-static", { varRef: varRef }).then(
-                (result) => {
-                    if (!result.success) {
-                        vscode.window.showErrorMessage(`Cannot add ${expr} to Live Watch. Must be a global or static variable`);
-                    } else if (vscode.debug.activeDebugSession) {
-                        this.liveWatchProvider.addWatchExpr(expr, vscode.debug.activeDebugSession);
-                    }
-                },
-                (e) => {
-                    console.log(e);
-                },
-            );
+        if (expr) {
+            this.liveWatchProvider.addWatchExpr(expr, vscode.debug.activeDebugSession);
         }
     }
 
@@ -858,7 +848,7 @@ export class MCUDebugExtension {
     }
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     try {
         Reporting.activateTelemetry(context);
         MCUDebugChannel.createDebugChannel();
@@ -866,7 +856,9 @@ export function activate(context: vscode.ExtensionContext) {
     } catch (_e) {
         /* empty */
     }
-    return new MCUDebugExtension(context);
+    const ret = new MCUDebugExtension(context);
+    await ret.initialize();
+    return ret;
 }
 
-export function deactivate() {}
+export async function deactivate() {}

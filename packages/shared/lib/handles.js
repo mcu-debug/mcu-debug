@@ -44,7 +44,8 @@ class ValueHandleRegistry {
         return this.handleToObj.get(handle);
     }
     getObjectByKey(key) {
-        const handle = this.keyToHandle.get(this.getKey(key));
+        const k = this.getKey(key);
+        const handle = this.keyToHandle.get(k);
         if (handle !== undefined) {
             return this.handleToObj.get(handle);
         }
