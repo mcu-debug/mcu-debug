@@ -272,7 +272,7 @@ export class LiveVariableNode extends TreeItem {
     private namedVariables: number = 0;
     private indexedVariables: number = 0;
     private refreshChildren(resolve: () => void) {
-        if (!LiveWatchTreeProvider.session || this.session !== LiveWatchTreeProvider.session) {
+        if (!LiveWatchTreeProvider.session || this.session !== LiveWatchTreeProvider.session || !this.mapUpdater.getLiveSessionId()) {
             resolve();
         } else if (this.expanded && (this.variablesReference > 0 || this.gdbVarName)) {
             const recurseChildren = () => {
@@ -364,7 +364,7 @@ export class LiveVariableNode extends TreeItem {
     }
 
     public refresh(session: vscode.DebugSession): Promise<void> {
-        if (this.isDummyNode()) {
+        if (this.isDummyNode() || !this.mapUpdater.getLiveSessionId()) {
             return Promise.resolve();
         }
         return new Promise<void>((resolve) => {
@@ -519,9 +519,7 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
     private rootNode: LiveVariableNode;
     public static session: vscode.DebugSession | undefined;
     public state: vscode.TreeItemCollapsibleState;
-    private timeout: NodeJS.Timeout | undefined;
     private toBeDeleted: Set<string> = new Set<string>();
-    private timeoutMs: number = 250;
     private isStopped = true;
     private readonly clientId = "mcu-debug-live-watch-tree-provider";
     private liveSessionVersion = LatestLiveSessionVersion;
@@ -580,7 +578,7 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
         }
     }
     private static minRefreshRate = 200; // Seems to be the magic number
-    private static maxRefreshRate = 5000;
+    private static maxRefreshRate = 1000;
     private setRefreshRate() {
         const config = vscode.workspace.getConfiguration("mcu-debug", null);
         let rate = config.get("liveWatchRefreshRate", LiveWatchTreeProvider.defaultRefreshRate);
@@ -633,7 +631,7 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
 
     private async deleteGdbVars(session: vscode.DebugSession) {
         const save = this.toBeDeleted;
-        if (save.size === 0) {
+        if ((save.size === 0) || !this.getLiveSessionId()) {
             return;
         }
         try {
@@ -743,22 +741,11 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
         this.isStopped = true;
         this.rootNode.reset(true);
         this.clearGdbVarNameMap();
-        const samplesPerSecond = Math.max(1, Math.min(20, liveWatch.samplesPerSecond ?? 4));
-        this.timeoutMs = 1000 / samplesPerSecond;
-        // this.startTimer();
     }
 
     public debugStopped(session: vscode.DebugSession) {
         if (this.isSameSession(session)) {
             this.isStopped = true;
-            // There are some pauses that are very brief, so lets not refresh when stopped. Lets
-            // wait and see if the a refresh is needed or else it will already be performed if the
-            // program has already continued
-            setTimeout(() => {
-                if (!this.timeout) {
-                    this.refresh(LiveWatchTreeProvider.session);
-                }
-            }, 250);
         }
     }
 
@@ -834,25 +821,14 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
         }
     }
 
-    private pendingFires = 0;
     private inFire = false;
     public fire() {
-        if (this.timeoutMs >= this.currentRefreshRate) {
-            this._onDidChangeTreeData.fire(undefined);
-            return;
-        }
         if (!this.inFire) {
             this.inFire = true;
-            this._onDidChangeTreeData.fire(undefined);
             setTimeout(() => {
                 this.inFire = false;
-                if (this.pendingFires) {
-                    this.pendingFires = 0;
-                    this.fire();
-                }
-            }, this.currentRefreshRate); // TODO: Timeout needs to be a user setting
-        } else {
-            this.pendingFires++;
+                this._onDidChangeTreeData.fire(undefined);
+            }, this.currentRefreshRate); // bit of a debounce
         }
     }
 }
