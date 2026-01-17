@@ -1,0 +1,21 @@
+#!/bin/sh
+# Pre-commit hook to update commit-hash.ts with clean hash
+
+# Navigate to repo root
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# Regenerate the commit hash file (will have clean hash since we're about to commit)
+node packages/mcu-debug/scripts/commit-hash.js
+
+# Check if commit-hash.ts changed
+COMMIT_HASH_FILE="packages/mcu-debug/src/commit-hash.ts"
+if git diff --quiet "$COMMIT_HASH_FILE"; then
+    # No change, we're good
+    exit 0
+else
+    # File changed, add it to the staging area
+    echo "Auto-staging updated commit-hash.ts"
+    git add "$COMMIT_HASH_FILE"
+fi
+
+exit 0

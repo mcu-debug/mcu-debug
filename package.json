@@ -8,7 +8,8 @@
   "scripts": {
     "watch": "npm run watch --workspaces",
     "build": "npm run build --workspaces",
-    "compile": "npm run compile --workspaces",
+    "compile": "./scripts/install-hooks.sh && npm run compile --workspaces",
+    "prepare": "./scripts/install-hooks.sh",
     "build:types": "./scripts/generate-types.sh",
     "build:go": "cd packages/proxy-server && make build",
     "build:extensions": "npm run build --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
