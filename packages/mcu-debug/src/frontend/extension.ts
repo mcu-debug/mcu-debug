@@ -410,6 +410,12 @@ export class MCUDebugExtension {
             case "custom-event-ports-done":
                 this.signalPortsAllocated(e);
                 break;
+            case "custom-live-watch-updates":
+                this.liveWatchProvider?.receivedVariableUpdates(e);
+                break;
+            case "custom-live-watch-connected":
+                this.liveWatchProvider?.liveWatchConnected(e);
+                break;
             default:
                 break;
         }

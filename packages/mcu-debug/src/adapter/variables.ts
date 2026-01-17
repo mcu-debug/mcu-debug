@@ -7,19 +7,6 @@ import { copyInterfaceProperties, toStringDecHexOctBin } from "./servers/common"
 import { GdbProtocolVariable, GdbProtocolVariableTemplate } from "./custom-requests";
 import { VariableScope, VariableTypeMask, decodeReference, encodeReference, ActualScopeMask, ScopeBits, ScopeMask } from "./var-scopes";
 
-const containerPrefix: { [key in VariableScope]: string } = {
-    [VariableScope.Global]: "G-",
-    [VariableScope.Static]: "S-",
-    [VariableScope.Local]: "L-",
-    [VariableScope.Registers]: "R-",
-    [VariableScope.Scope]: "C-",
-    [VariableScope.Watch]: "W-",
-    [VariableScope.LocalVariable]: "L-",
-    [VariableScope.RegistersVariable]: "R-",
-    [VariableScope.GlobalVariable]: "G-",
-    [VariableScope.StaticVariable]: "S-",
-    [VariableScope.WatchVariable]: "W-",
-};
 // These are the fields that uniquely identify a variable
 export class VariableKeys implements IValueIdentifiable {
     constructor(
@@ -108,7 +95,10 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
 export class VariableContainer {
     protected gdbVarNameToObjMap = new Map<string, VariableObject>();
     private variableHandles = new ValueHandleRegistry<VariableKeys>();
-    constructor(public readonly scope: VariableScope) {}
+    constructor(
+        public readonly scope: VariableScope,
+        public readonly prefix: string,
+    ) {}
 
     public calcFrameRef(threadIdOrFileId: number, frameId: number, scope: VariableScope): number {
         return encodeReference(threadIdOrFileId, frameId, scope & ActualScopeMask);
@@ -289,9 +279,9 @@ interface RegisterInfo {
 
 export class VariableManager {
     public static readonly GlobalFileName = ":global:";
-    private globalContainer: VariableContainerForGlobals = new VariableContainerForGlobals(VariableScope.Global);
-    private localContainer: VariableContainer = new VariableContainer(VariableScope.Local);
-    private dynamicContainer: VariableContainer = new VariableContainer(VariableScope.Watch);
+    private globalContainer: VariableContainerForGlobals = new VariableContainerForGlobals(VariableScope.Global, "G-");
+    private localContainer: VariableContainer = new VariableContainer(VariableScope.Local, "L-");
+    private dynamicContainer: VariableContainer = new VariableContainer(VariableScope.Watch, "W-");
     private frameHandles = new ValueHandleRegistryPrimitive<number>();
     private containers = new Map<VariableScope, VariableContainer>();
     private regFormat = "x"; // Default to Natural format
@@ -413,7 +403,7 @@ export class VariableManager {
         }
     }
 
-    public getVariables(args: DebugProtocol.VariablesArguments): Promise<GdbProtocolVariable[]> {
+    public getVariables(args: DebugProtocol.VariablesArguments, container?: VariableContainer): Promise<GdbProtocolVariable[]> {
         const [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference);
         if (scope === VariableScope.Local) {
             return this.getLocalVariables(threadId, frameId);
@@ -425,7 +415,7 @@ export class VariableManager {
             return this.getStaticVariables(threadId, frameId);
         } else if (scope & VariableTypeMask) {
             // If this is a variable, we need to get is thread/frame ids from the variable itself
-            const container = this.getContainer(scope);
+            container = container ? container : this.getContainer(scope);
             const variable = container.getVariableByRef(args.variablesReference);
             if (variable === undefined) {
                 Promise.reject(new Error(`No variable found for reference ${args.variablesReference}`));
@@ -593,11 +583,12 @@ export class VariableManager {
     }
 
     createGdbName(container: VariableContainer, base: string, thread: number, frame: number): string {
-        const prefix = containerPrefix[container.scope];
-        let ret = `${prefix}${base}-${thread}-${frame}`;
+        const prefix = container.prefix;
+        const template = `${prefix}${base}-${thread}-${frame}`;
+        let ret = template;
         let count = 1;
         while (container.hasGdbName(ret)) {
-            ret = `${prefix}${base}-${thread}-${frame}-${count}`;
+            ret = `${template}-${count}`;
             count++;
         }
         return ret;
@@ -1067,7 +1058,7 @@ export class VariableManager {
         }
     }
 
-    private fmtExpr(expr: string, thread: number, frame: number): [string, string, string] {
+    private fmtExpr(container: VariableContainer, expr: string, thread: number, frame: number): [string, string, string] {
         expr = expr.trim();
         let newExpr = "";
         let suffix = expr.match(/,[bdtonxX]$/)?.[0];
@@ -1082,17 +1073,17 @@ export class VariableManager {
         const okChars = /[^a-zA-Z0-9_,]/g;
         const gdbName = newExpr.replaceAll(okChars, "-");
 
-        return [this.createGdbName(this.getContainer(VariableScope.Watch), gdbName, thread, frame), newExpr, suffix];
+        return [this.createGdbName(container, gdbName, thread, frame), newExpr, suffix];
     }
 
-    public async evaluateExpression(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): Promise<void> {
+    public async evaluateExpression(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, container?: VariableContainer): Promise<void> {
         try {
             const [thread, frame, _] = args.frameId ? this.getVarOrFrameInfo(args.frameId!) : [0, 0, VariableScope.Global];
             const scope = VariableScope.WatchVariable;
-            const container = this.getContainer(scope);
+            container = container ? container : this.getContainer(scope);
             const existingVar = container.getVariableByKey(new VariableKeys(0, args.expression.trim(), encodeReference(thread, frame, scope)));
             if (existingVar === undefined) {
-                const [gdbName, expr, suffix] = this.fmtExpr(args.expression, thread, frame);
+                const [gdbName, expr, suffix] = this.fmtExpr(container, args.expression, thread, frame);
                 let cmd = `-var-create --thread ${thread} --frame ${frame} ${gdbName} * "${expr}"`;
                 if (thread === 0 && frame === 0) {
                     cmd = `-var-create ${gdbName} @ "${expr}"`;
@@ -1211,7 +1202,7 @@ export class VariableManager {
             gdbVarName = existingVar.gdbVarName;
         } else {
             // Create a new variable for this expression
-            const [gdbName, expr, _suffix] = this.fmtExpr(args.expression, thread, frame);
+            const [gdbName, expr, _suffix] = this.fmtExpr(container, args.expression, thread, frame);
             let cmd = `-var-create --thread ${thread} --frame ${frame} ${gdbName} * "${expr}"`;
             if (thread === 0 && frame === 0) {
                 cmd = `-var-create ${gdbName} @ "${expr}"`;

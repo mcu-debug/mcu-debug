@@ -1,24 +1,51 @@
 import * as process from "process";
+import * as crypto from "crypto";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
-import { VariableManager } from "./variables";
-import { GdbEventNames, Stderr, MIError, MINode } from "./gdb-mi/mi-types";
+import { VariableContainer, VariableManager } from "./variables";
+import { GdbEventNames, Stderr, MIError, MINode, VarUpdateRecord } from "./gdb-mi/mi-types";
 import { expandValue } from "./gdb-mi/gdb_expansion";
 import { VariableScope } from "./var-scopes";
-import { UpdateVariablesLiveArguments, UpdateVariablesLiveResponse } from "./custom-requests";
-import { Container } from "winston";
+import { LiveConnectedEvent, LiveUpdateEvent, RegisterClientRequest, RegisterClientResponse, DeleteLiveGdbVariables } from "./custom-requests";
+import { DebugFlags } from "./servers/common";
+
+function shortUuid(length = 16) {
+    // Generate a random byte buffer and convert it to a URL-friendly base64 string
+    const randomBytes = crypto.randomBytes(Math.ceil(length * 0.75));
+    let id = randomBytes
+        .toString("base64")
+        .replace(/\+/g, "-") // Replace '+' with '-'
+        .replace(/\//g, "_") // Replace '/' with '_'
+        .replace(/=/g, "") // Remove '='
+        .substring(0, length);
+    return id.toLocaleUpperCase();
+}
+
+export class LiveClientSession {
+    public updates = new Map<string, VarUpdateRecord>();
+    constructor(
+        public clientId: string,
+        public sessionId: string,
+        public container: VariableContainer,
+    ) {}
+}
 export class LiveWatchMonitor {
+    private sessionsByClientId = new Map<string, LiveClientSession>();
+    private sessionsByPrefix = new Map<string, LiveClientSession>();
     public miDebugger: GdbInstance | undefined;
+    protected debugFlags: DebugFlags = {};
     protected varManager: VariableManager;
     protected liveWatchEnabled: boolean = false;
+    protected handlingRequest: boolean = false;
     constructor(private mainSession: GDBDebugSession) {
         this.miDebugger = new GdbInstance();
         this.varManager = new VariableManager(this.miDebugger, this.mainSession);
     }
 
     public start(gdbCommands: string[]): void {
-        this.miDebugger.debugFlags = this.mainSession.args.debugFlags;
+        this.debugFlags = this.mainSession.args.debugFlags;
+        this.miDebugger.debugFlags = this.debugFlags;
         const exe = this.mainSession.gdbInstance.gdbPath;
         const args = this.mainSession.gdbInstance.gdbArgs;
         gdbCommands.push('interpreter-exec console "set stack-cache off"');
@@ -34,7 +61,6 @@ export class LiveWatchMonitor {
                         this.handleMsg(Stderr, `Error with command '${cmd}': ${err.toString()}\n`);
                     });
                 }
-                this.liveWatchEnabled = true;
             })
             .catch((err) => {
                 this.handleMsg(Stderr, `Could not start/initialize Live GDB process: ${err.toString()}\n`);
@@ -42,8 +68,18 @@ export class LiveWatchMonitor {
             });
     }
 
+    public enabled(): boolean {
+        return this.liveWatchEnabled;
+    }
+
     protected handleMsg(type: GdbEventNames, msg: string) {
         this.mainSession.handleMsg(type, "LiveGDB: " + msg);
+    }
+    protected handleErrResponse(response: DebugProtocol.Response, msg: string) {
+        this.mainSession.handleErrResponse(response, "LiveGDB: " + msg);
+    }
+    protected sendResponse(response: DebugProtocol.Response) {
+        this.mainSession.sendResponse(response);
     }
 
     protected setupEvents() {
@@ -52,30 +88,30 @@ export class LiveWatchMonitor {
         this.miDebugger.on("msg", (type: GdbEventNames, msg: string) => {
             this.handleMsg(type, msg);
         });
+        // To be more reliable, we track the target state from the main session's GDB instance
+        // This is because we never get z "running" events from the live GDB instance in non-stop mode
+        this.mainSession.gdbInstance.on(GdbEventNames.Stopped, this.onStopped.bind(this));
+        this.mainSession.gdbInstance.on(GdbEventNames.Running, this.onRunning.bind(this));
+        this.miDebugger.on("connected", () => {
+            this.liveWatchEnabled = true;
+            this.handleMsg(Stderr, `Live GDB connected to target.\n`);
+            this.mainSession.sendEvent(this.newLiveConnectedEvent());
+        });
+    }
 
-        /*
-        Yes, we get all of these events and they seem to be harlmess
-        const otherEvents = [
-            'stopped',
-            'watchpoint',
-            'watchpoint-scope',
-            'step-end',
-            'step-out-end',
-            'signal-stop',
-            'running',
-            'continue-failed',
-            'thread-created',
-            'thread-exited',
-            'thread-selected',
-            'thread-group-exited'
-        ];
-        for (const ev of otherEvents) {
-            this.miDebugger.on(ev, (arg) => {
-                this.mainSession.handleMsg(
-                    'stderr', `Internal Error: Live watch GDB session received an unexpected event '${ev}' with arg ${arg?.toString() ?? '<empty>'}\n`);
+    protected onStopped() {
+        this.stopTimer();
+        if (this.isUpdatingVariables) {
+            this.updatePromise?.finally(() => {
+                this.updateVariables();
             });
+        } else {
+            this.updateVariables();
         }
-        */
+    }
+
+    protected onRunning() {
+        this.startTimer();
     }
 
     protected quitEvent() {
@@ -83,65 +119,214 @@ export class LiveWatchMonitor {
         this.liveWatchEnabled = false;
     }
 
-    public async evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): Promise<void> {
+    public async evaluateRequestLive(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): Promise<void> {
         try {
-            args.frameId = undefined; // We don't have threads or frames here. We always evaluate in global context
-            await this.varManager.evaluateExpression(response, args);
-            if (this.mainSession.args.debugFlags.anyFlags) {
-                this.mainSession.handleMsg(Stderr, `LiveGDB: Evaluated ${args.expression}\n`);
+            if (this.liveWatchEnabled === false) {
+                throw new Error("Live watch is not enabled (GDB not connected to target)");
             }
-            this.mainSession.sendResponse(response);
+            this.handlingRequest = true;
+            await this.updatePromise;
+            const clientSession = this.sessionsByClientId.get((args as any).sessionId || "");
+            if (!clientSession) {
+                throw new Error(`Invalid session ID '${(args as any).sessionId}'`);
+            }
+            args.frameId = undefined; // We don't have threads or frames here. We always evaluate in global context
+            await this.varManager.evaluateExpression(response, args, clientSession.container);
+            if (this.debugFlags.anyFlags) {
+                this.handleMsg(Stderr, `Evaluated ${args.expression}\n`);
+            }
+            this.sendResponse(response);
         } catch (e: any) {
-            this.mainSession.handleErrResponse(response, `LiveGDB: Error evaluating expression: ${e.toString()}\n`);
+            this.handleErrResponse(response, `Error evaluating expression: ${e.toString()}\n`);
+        } finally {
+            this.handlingRequest = false;
         }
         return Promise.resolve();
     }
 
-    public async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): Promise<void> {
+    public async variablesRequestLive(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): Promise<void> {
         try {
-            const vars = await this.varManager.getVariables(args);
+            if (this.liveWatchEnabled === false) {
+                throw new Error("Live watch is not enabled (GDB not connected to target)");
+            }
+            this.handlingRequest = true;
+            await this.updatePromise;
+            const clientSession = this.sessionsByClientId.get((args as any).sessionId || "");
+            if (!clientSession) {
+                throw new Error(`Invalid session ID '${(args as any).sessionId}'`);
+            }
+            const vars = await this.varManager.getVariables(args, clientSession.container);
             response.body = { variables: vars };
-            this.mainSession.sendResponse(response);
-            if (this.mainSession.args.debugFlags.anyFlags) {
-                this.mainSession.handleMsg(Stderr, `LiveGDB: Retrieved ${vars.length} variables for reference ${args.variablesReference}\n`);
+            this.sendResponse(response);
+            if (this.debugFlags.anyFlags) {
+                this.handleMsg(Stderr, `Retrieved ${vars.length} variables for reference ${args.variablesReference}\n`);
             }
         } catch (e: any) {
-            this.mainSession.handleErrResponse(response, `LiveGDB: Error retrieving variables: ${e.toString()}\n`);
+            this.handleErrResponse(response, `Error retrieving variables: ${e.toString()}\n`);
+        } finally {
+            this.handlingRequest = false;
         }
         return Promise.resolve();
     }
 
     // Calling this will also enable caching for the future of the session
-    public async updateVariablesLive(response: UpdateVariablesLiveResponse, args: UpdateVariablesLiveArguments): Promise<void> {
+    public async deleteLiveGdbVariables(response: DebugProtocol.Response, args: DeleteLiveGdbVariables): Promise<void> {
         try {
+            if (this.liveWatchEnabled === false) {
+                throw new Error("Live watch is not enabled (GDB not connected to target)");
+            }
+            this.handlingRequest = true;
+            await this.updatePromise;
+            const clientSession = this.sessionsByClientId.get((args as any).sessionId || "");
+            if (!clientSession) {
+                throw new Error(`Invalid session ID '${(args as any).sessionId}'`);
+            }
             response.body = { updates: [] };
-            const container = this.varManager.getContainer(VariableScope.Watch);
+            const container = clientSession.container;
             if (args.deleteGdbVars && args.deleteGdbVars.length > 0) {
                 for (const gdbVarName of args.deleteGdbVars) {
                     await container.deleteObjectByGdbName(gdbVarName, this.miDebugger!, (name) => {
-                        if (this.mainSession.args.debugFlags.anyFlags) {
-                            this.mainSession.handleMsg(Stderr, `LiveGDB: Warning: Could not delete live watch GDB variable '${name}'\n`);
+                        if (this.debugFlags.anyFlags) {
+                            this.handleMsg(Stderr, `Warning: Could not delete live watch GDB variable '${name}'\n`);
                         }
                     });
                 }
             }
-            if (!args.noVarUpdate && container.numberOfGdbVariables() > 0) {
-                const updates = await this.varManager.updateAllVariables();
-                response.body = { updates: updates };
-            }
-            this.mainSession.sendResponse(response);
+            this.sendResponse(response);
         } catch (e: any) {
-            this.mainSession.handleErrResponse(response, `LiveGDB: Error refreshing live cache: ${e.toString()}\n`);
+            this.handleErrResponse(response, `Error refreshing live cache: ${e.toString()}\n`);
+        } finally {
+            this.handlingRequest = false;
         }
         return Promise.resolve();
     }
 
+    public async registerClientRequest(response: RegisterClientResponse, args: RegisterClientRequest): Promise<void> {
+        try {
+            if (this.liveWatchEnabled === false) {
+                throw new Error("Live watch is not enabled (GDB not connected to target)");
+            }
+            this.handlingRequest = true;
+            await this.updatePromise;
+            const size = this.sessionsByClientId.size.toString();
+            const sessionId = `mcu-debug-live-${size}-` + shortUuid(8);
+            const prefix = `W${size}-`;
+            const container = new VariableContainer(VariableScope.Watch, prefix);
+            const session = new LiveClientSession(args.clientId, sessionId, container);
+            this.sessionsByClientId.set(sessionId, session);
+            this.sessionsByPrefix.set(prefix, session);
+            response.body = {
+                clientId: args.clientId,
+                sessionId: sessionId,
+            };
+            this.sendResponse(response);
+            if (this.debugFlags.anyFlags) {
+                this.handleMsg(Stderr, `Registered client '${args.clientId}' with session ID '${response.body.sessionId}'\n`);
+            }
+        } catch (e: any) {
+            this.handleErrResponse(response, `Error registering client: ${e.toString()}, Not connected to target\n`);
+        } finally {
+            this.handlingRequest = false;
+        }
+    }
+
+    // Calling this will also enable caching for the future of the session
+    private isUpdatingVariables: boolean = false;
+    public updatePromise = Promise.resolve();
+    public async updateVariables(): Promise<void> {
+        this.updatePromise = new Promise<void>(async (resolve) => {
+            try {
+                this.isUpdatingVariables = true;
+                const updates = await this.varManager.updateAllVariables();
+                for (const update of updates) {
+                    const prefix = update.name.substring(0, update.name.indexOf("-") + 1);
+                    const session = this.sessionsByPrefix.get(prefix);
+                    if (session) {
+                        session.updates.set(update.name, update);
+                    }
+                }
+                for (const [clientId, session] of this.sessionsByClientId) {
+                    const sz = session.updates.size;
+                    if (sz > 0) {
+                        const ev: LiveUpdateEvent = this.newLiveUpdateEvant(session);
+                        this.mainSession.sendEvent(ev);
+                        session.updates.clear();
+                        if (this.debugFlags.anyFlags) {
+                            this.handleMsg(Stderr, `Updated ${sz} variables for client '${clientId}, session '${session.sessionId}'\n`);
+                        }
+                    }
+                }
+            } catch (e: any) {
+                if (this.debugFlags.anyFlags) {
+                    this.handleMsg(Stderr, `Error refreshing live cache: ${e.toString()}\n`);
+                }
+            } finally {
+                this.isUpdatingVariables = false;
+                resolve();
+            }
+        });
+        return this.updatePromise;
+    }
+
+    private newLiveUpdateEvant(session: LiveClientSession): LiveUpdateEvent {
+        return {
+            seq: 0,
+            type: "event",
+            event: "custom-live-watch-updates",
+            body: {
+                sessionId: session.sessionId,
+                clientId: session.clientId,
+                updates: Array.from(session.updates.values()),
+            },
+        };
+    }
+    private newLiveConnectedEvent(): LiveConnectedEvent {
+        return {
+            seq: 0,
+            type: "event",
+            event: "custom-live-watch-connected",
+            body: {},
+        };
+    }
+
+    public updateTimer: NodeJS.Timeout | undefined;
+    public startTimer(): void {
+        if (this.liveWatchEnabled && !this.updateTimer) {
+            const setting = Math.max(0.1, this.mainSession.args.liveWatch.samplesPerSecond ?? 4);
+            const intervalMs = Math.max(100, 1000 / setting);
+            this.updateTimer = setInterval(() => {
+                for (const [_clientId, session] of this.sessionsByClientId) {
+                    if (session.container.numberOfGdbVariables() > 0) {
+                        if (!this.isUpdatingVariables && !this.handlingRequest) {
+                            this.updateVariables().catch(() => {});
+                        }
+                        break;
+                    }
+                }
+            }, intervalMs);
+        }
+    }
+
+    public stopTimer(): void {
+        if (this.updateTimer) {
+            clearInterval(this.updateTimer);
+            this.updateTimer = undefined;
+        }
+    }
+
     private quitting = false;
-    public quit() {
+    public async quit() {
         try {
             if (!this.quitting) {
                 this.quitting = true;
-                this.miDebugger!.detach();
+                try {
+                    // Give GDB a chance to detach nicely, but don't wait forever
+                    await this.miDebugger.sendCommand("-target-disconnect", 100);
+                } catch (e) {
+                    // Ignore errors
+                } finally {
+                    await this.miDebugger.sendCommand("-gdb-exit", 100);
+                }
             }
         } catch (e: any) {
             console.error("LiveWatchMonitor.quit", e);

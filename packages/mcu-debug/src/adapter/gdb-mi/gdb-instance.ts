@@ -20,22 +20,6 @@ class PendingCmdPromise {
 
 export class GdbInstance extends EventEmitter {
     private sessionEnding: boolean = false;
-    detach() {
-        throw new Error("Method not implemented.");
-    }
-    evalExpression(arg0: string, arg1: number, arg2: number) {
-        throw new Error("Method not implemented.");
-    }
-    varListChildren(variablesReference: number, name: string): VariableObject[] | PromiseLike<VariableObject[]> {
-        // exit with error code != 0
-        throw new Error("Method not implemented.");
-    }
-    varCreate(arg0: number, exp: string, varObjName: string, ...args: any[]): VariableObject | PromiseLike<VariableObject> {
-        throw new Error("Method not implemented.");
-    }
-    varUpdate(arg0: any, arg1: number, arg2: number, ...args: any): Promise<MINode> {
-        throw new Error("Method not implemented.");
-    }
     // ... other methods and properties ...
     pid: number = 0;
     process: ChildProcess | null = null;
@@ -240,6 +224,9 @@ export class GdbInstance extends EventEmitter {
                         const errorMsg = miOutput.resultRecord.result["msg"] || "Unknown error";
                         pendingCmd.reject(new Error(`GDB MI Error: ${errorMsg}`));
                     } else {
+                        if (miOutput.resultRecord?.class === "connected") {
+                            this.emit("connected");
+                        }
                         const saved = { ...miOutput };
                         if (miOutput.outOfBandRecords.length == 0 && this.currentOutofBandRecords.length > 0) {
                             // We don't have any outOfBandRecords in this output, but we have some saved, these
@@ -259,7 +246,7 @@ export class GdbInstance extends EventEmitter {
                 if (record.recordType === "async") {
                     const className = record.class;
                     if (className === "stopped") {
-                        this.handleSetopped(miOutput);
+                        this.handleStopped(miOutput);
                     } else if (className === "running") {
                         this.status = "running";
                         if (this.debugFlags.gdbTraces) {
@@ -292,7 +279,7 @@ export class GdbInstance extends EventEmitter {
     }
 
     private firstStop = true;
-    handleSetopped(output: GdbMiOutput) {
+    handleStopped(output: GdbMiOutput) {
         this.status = "stopped";
         if (this.debugFlags.gdbTraces) {
             this.log(Stderr, `mi2.status = ${this.status}`);

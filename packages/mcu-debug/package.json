@@ -875,7 +875,7 @@
                     "default": 2,
                     "description": "Maximum number of samples per second.",
                     "type": "number",
-                    "multipleOf": 1,
+                    "multipleOf": 0.25,
                     "minimum": 0,
                     "maximum": 20
                   }
@@ -2166,7 +2166,7 @@
                     "default": 2,
                     "description": "Maximum number of samples per second.",
                     "type": "number",
-                    "multipleOf": 1,
+                    "multipleOf": 0.25,
                     "minimum": 0,
                     "maximum": 20
                   }

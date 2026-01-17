@@ -21,7 +21,7 @@ import { LiveWatchMonitor } from "./live-watch-monitor";
 import { ServerConsoleLog } from "./server-console-log";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { VariableScope, getVariableClass } from "./var-scopes";
-import { UpdateVariablesLiveResponse } from "./custom-requests";
+import { RegisterClientResponse } from "./custom-requests";
 
 let SessionCounter = 0;
 
@@ -41,7 +41,6 @@ function COMMAND_MAP(c: string): string {
 export class GDBDebugSession extends SeqDebugSession {
     public args = {} as ConfigurationArguments;
     public gdbInstance: GdbInstance;
-    public gdbLiveInstance: GdbInstance;
     public serverSession: GDBServerSession;
     public gdbMiCommands: MiCommands;
     public lastThreadsInfo: GdbMiThreadInfoList;
@@ -59,7 +58,6 @@ export class GDBDebugSession extends SeqDebugSession {
         super();
         SessionCounter++;
         this.gdbInstance = new GdbInstance();
-        this.gdbLiveInstance = new GdbInstance();
         this.serverSession = new GDBServerSession(this);
         this.gdbMiCommands = new MiCommands(this.gdbInstance);
         this.varManager = new VariableManager(this.gdbInstance, this);
@@ -765,42 +763,41 @@ export class GDBDebugSession extends SeqDebugSession {
 
         const isBusy = this.isBusy();
         switch (command) {
+            case "registerClient":
+                const rsp: RegisterClientResponse = {
+                    ...response,
+                    body: {
+                        clientId: "",
+                        sessionId: "",
+                    },
+                };
+                this.liveWatchMonitor.registerClientRequest(rsp, args);
+                break;
             case "evaluateLive":
-                if (this.liveWatchMonitor && this.gdbLiveInstance) {
-                    const r: DebugProtocol.EvaluateResponse = {
+                if (this.liveWatchMonitor.enabled()) {
+                    const rsp: DebugProtocol.EvaluateResponse = {
                         ...response,
                         body: {
                             result: undefined,
                             variablesReference: undefined,
                         },
                     };
-                    return await this.liveWatchMonitor.evaluateRequest(r, args); // always returns
+                    return await this.liveWatchMonitor.evaluateRequestLive(rsp, args); // always returns
                 } else {
                     this.sendResponse(response);
                 }
                 break;
-            case "updateVariablesLive":
-                if (this.liveWatchMonitor && this.gdbLiveInstance) {
-                    const r: UpdateVariablesLiveResponse = {
-                        ...response,
-                        body: {
-                            updates: [],
-                        },
-                    };
-                    return await this.liveWatchMonitor.updateVariablesLive(r, args);
-                } else {
-                    this.sendResponse(response);
-                }
-                break;
+            case "deleteLiveGdbVariables":
+                return await this.liveWatchMonitor.deleteLiveGdbVariables(response, args);
             case "variablesLive":
-                if (this.liveWatchMonitor && this.gdbLiveInstance) {
-                    const r: DebugProtocol.VariablesResponse = {
+                if (this.liveWatchMonitor.enabled()) {
+                    const rsp: DebugProtocol.VariablesResponse = {
                         ...response,
                         body: {
                             variables: [],
                         },
                     };
-                    return await this.liveWatchMonitor.variablesRequest(r, args);
+                    return await this.liveWatchMonitor.variablesRequestLive(rsp, args);
                 } else {
                     this.sendResponse(response);
                 }

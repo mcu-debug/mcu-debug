@@ -7,8 +7,12 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import {
     EvaluateLiveResponse,
     EvaluateRequestLiveArguments,
-    UpdateVariablesLiveArguments,
-    UpdateVariablesLiveResponse,
+    LatestLiveSessionVersion,
+    LiveConnectedEvent,
+    LiveUpdateEvent,
+    RegisterClientRequest,
+    RegisterClientResponse,
+    DeleteLiveGdbVariables,
     VariablesLiveResponse,
     VariablesRequestLiveArguments,
 } from "../../adapter/custom-requests";
@@ -28,6 +32,7 @@ interface GdbMapUpdater {
     addToMap: (gdbName: string, node: LiveVariableNode) => void;
     getFromMap: (gdbName: string) => LiveVariableNode | undefined;
     removeFromMap: (gdbName: string) => void;
+    getLiveSessionId: () => string | undefined;
 }
 
 export class LiveVariableNode extends TreeItem {
@@ -297,6 +302,7 @@ export class LiveVariableNode extends TreeItem {
                 // const start = this.children?.length ?? 0;
                 const varg: VariablesRequestLiveArguments = {
                     command: "variablesLive",
+                    sessionId: this.mapUpdater.getLiveSessionId() || "",
                     variablesReference: this.variablesReference,
                     gdbVarName: this.gdbVarName,
                     // start: start,
@@ -370,6 +376,7 @@ export class LiveVariableNode extends TreeItem {
             if (!this.gdbVarName && this.expr) {
                 const arg: EvaluateRequestLiveArguments = {
                     command: "evaluateLive",
+                    sessionId: this.mapUpdater.getLiveSessionId() || "",
                     expression: this.expr,
                     context: "watch",
                 };
@@ -516,6 +523,9 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
     private toBeDeleted: Set<string> = new Set<string>();
     private timeoutMs: number = 250;
     private isStopped = true;
+    private readonly clientId = "mcu-debug-live-watch-tree-provider";
+    private liveSessionVersion = LatestLiveSessionVersion;
+    private liveSessionId: string | undefined;
 
     protected oldState = new Map<string, vscode.TreeItemCollapsibleState>();
     constructor(private context: vscode.ExtensionContext) {
@@ -541,6 +551,9 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
             this.toBeDeleted.add(gdbName);
             this.gdbVarNameToNodeMap.delete(gdbName);
         }
+    }
+    getLiveSessionId(): string | undefined {
+        return this.liveSessionId;
     }
 
     private restoreState() {
@@ -590,71 +603,52 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
         return false;
     }
 
-    public async refresh(session: vscode.DebugSession, restarTimer = false): Promise<void> {
-        if (session && this.isSameSession(session)) {
-            const restart = (elapsed: number) => {
-                if (!this.isStopped && restarTimer && LiveWatchTreeProvider.session) {
-                    this.startTimer(elapsed < 0 || elapsed > this.timeoutMs ? 0 : elapsed);
-                }
-            };
-            if (this.rootNode.getChildren().length === 0) {
-                restart(0);
-            } else {
-                const start = Date.now();
-                let changed = false;
-                try {
-                    let promises = [];
-                    for (const child of this.rootNode.getChildren()) {
-                        if (child.isDummyNode() || child.gdbVarName) {
-                            continue;
-                        }
-                        changed = true;
-                        promises.push(child.refresh(session));
-                    }
-                    await Promise.allSettled(promises);
-                    const save = this.toBeDeleted;
-                    this.toBeDeleted = new Set<string>();
-                    const arg: UpdateVariablesLiveArguments = {
-                        command: "updateVariablesLive",
-                        noVarUpdate: false,
-                        deleteGdbVars: Array.from(save),
-                    };
-                    promises = [];
-                    let result: any;
-                    try {
-                        // The following will update all the variables in the backend cache in bulk
-                        result = await session.customRequest(arg.command, arg);
-                    } catch (e) {
-                        for (const name of save) {
-                            // try these again on next refresh
-                            this.toBeDeleted.add(name);
-                        }
-                        console.error("LiveWatchTreeProvider.refresh", e);
-                    }
-                    const updateRsp = result as UpdateVariablesLiveResponse["body"];
-                    for (const update of updateRsp.updates || []) {
-                        const node = this.gdbVarNameToNodeMap.get(update.name);
-                        if (node) {
-                            changed = true;
-                            promises.push(node.updateFromGdb(update));
-                        }
-                    }
-                    await Promise.allSettled(promises);
-                } catch (e) {
-                    console.error("LiveWatchTreeProvider.refresh", e);
-                }
-                const elapsed = Date.now() - start;
-                // console.log(`Refreshed in ${elapsed} ms`);
-                if (changed) {
-                    this.fire();
-                }
-                if (elapsed > this.timeoutMs) {
-                    console.error("??????? live-watch timer overflow ????");
-                }
-                restart(elapsed);
+    async receivedVariableUpdates(e_: vscode.DebugSessionCustomEvent) {
+        try {
+            const e = e_ as any as LiveUpdateEvent;
+            const session = e_.session;
+            if (!this.isSameSession(session)) {
+                return;
             }
-        } else {
-            this.fire();
+            const promises = [];
+            let changed = false;
+            for (const update of e.body?.updates || []) {
+                const node = this.gdbVarNameToNodeMap.get(update.name);
+                if (node) {
+                    changed = true;
+                    promises.push(node.updateFromGdb(update));
+                }
+            }
+            await Promise.allSettled(promises);
+            if (changed) {
+                this.refresh(session).then(() => {
+                    this.fire();
+                });
+            }
+            await this.deleteGdbVars(session);
+        } catch (error) {
+            console.error("live-watch.receivedVariableUpdates", error);
+        }
+    }
+
+    private async deleteGdbVars(session: vscode.DebugSession) {
+        const save = this.toBeDeleted;
+        if (save.size === 0) {
+            return;
+        }
+        try {
+            this.toBeDeleted = new Set<string>();
+            const arg: DeleteLiveGdbVariables = {
+                command: "deleteLiveGdbVariables",
+                sessionId: this.liveSessionId || "",
+                deleteGdbVars: Array.from(save),
+            };
+            // The following will update all the variables in the backend cache in bulk
+            await session.customRequest(arg.command, arg);
+        } catch (e) {
+            for (const item of save) {
+                this.toBeDeleted.add(item);
+            }
         }
     }
 
@@ -666,33 +660,13 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
         return element ? element.getChildren() : this.rootNode.getChildren();
     }
 
-    private startTimer(subtract: number = 0) {
-        // console.error('Starting Timer');
-        this.killTimer();
-        const delayMs = Math.max(50, this.timeoutMs - subtract);
-        this.timeout = setTimeout(() => {
-            this.timeout = undefined;
-            if (LiveWatchTreeProvider.session) {
-                this.refresh(LiveWatchTreeProvider.session, true);
-            }
-        }, delayMs);
-    }
-
-    private killTimer() {
-        if (this.timeout) {
-            // console.error('Killing Timer');
-            clearTimeout(this.timeout);
-            this.timeout = undefined;
-        }
-    }
-
     public debugSessionTerminated(session: vscode.DebugSession) {
         if (this.isSameSession(session)) {
             this.isStopped = true;
-            this.killTimer();
             LiveWatchTreeProvider.session = undefined;
             this.fire();
             this.saveState();
+            this.getLiveSessionId = undefined;
             setTimeout(() => {
                 // We hold the current values as they are until we start another debug session and
                 // another fire() is called
@@ -707,6 +681,46 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
             value.gdbVarName = "";
         }
         this.gdbVarNameToNodeMap.clear();
+    }
+
+    public async refresh(session: vscode.DebugSession, restartTimer = false): Promise<void> {
+        let promises = [];
+        for (const child of this.rootNode.getChildren()) {
+            if (child.isDummyNode() || child.gdbVarName) {
+                continue;
+            }
+            promises.push(child.refresh(session));
+        }
+        if (promises.length > 0) {
+            await Promise.allSettled(promises);
+            this.fire();
+        }
+    }
+
+    liveWatchConnected(e_: vscode.DebugSessionCustomEvent) {
+        const session = e_.session;
+        if (!this.isSameSession(session)) {
+            return;
+        }
+        const e = e_ as any as LiveConnectedEvent;
+        const req: RegisterClientRequest = {
+            command: "registerClient",
+            clientId: this.clientId,
+            version: this.liveSessionVersion,
+            sessionId: "",
+        };
+        session.customRequest(req.command, req).then(
+            (result_) => {
+                const result = result_ as RegisterClientResponse["body"];
+                this.liveSessionId = result.sessionId;
+                this.refresh(session).then(() => {
+                    this.fire();
+                });
+            },
+            (e) => {
+                vscode.window.showErrorMessage("Unable to register Live Watch client with debug adapter. Live Watch will be disabled. $(e)");
+            },
+        );
     }
 
     public debugSessionStarted(session: vscode.DebugSession) {
@@ -737,7 +751,6 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
     public debugStopped(session: vscode.DebugSession) {
         if (this.isSameSession(session)) {
             this.isStopped = true;
-            this.killTimer();
             // There are some pauses that are very brief, so lets not refresh when stopped. Lets
             // wait and see if the a refresh is needed or else it will already be performed if the
             // program has already continued
@@ -752,7 +765,6 @@ export class LiveWatchTreeProvider implements TreeDataProvider<LiveVariableNode>
     public debugContinued(session: vscode.DebugSession) {
         if (this.isSameSession(session)) {
             this.isStopped = false;
-            this.startTimer();
         }
     }
 

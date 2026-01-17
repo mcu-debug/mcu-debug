@@ -265,7 +265,7 @@ module.exports = {
         description: "An object with parameters for Live Watch",
         properties: {
             enabled: { default: false, description: "Enable/Disable Live Watch. Only applies to OpenOCD", type: "boolean" },
-            samplesPerSecond: { default: 2, description: "Maximum number of samples per second.", type: "number", multipleOf: 1, minimum: 0, maximum: 20 },
+            samplesPerSecond: { default: 2, description: "Maximum number of samples per second.", type: "number", multipleOf: 0.25, minimum: 0, maximum: 20 },
         },
         default: { enabled: true, samplesPerSecond: 4 },
     },
