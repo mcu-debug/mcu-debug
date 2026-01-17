@@ -1,0 +1,39 @@
+body {
+    padding: 0;
+    color: var(--vscode-foreground);
+    font-family: var(--vscode-font-family);
+}
+ul {
+    list-style: none;
+    padding-left: 20px;
+    margin: 0;
+}
+#tree-root {
+    padding-left: 0;
+}
+.tree-item {
+    cursor: pointer;
+}
+.tree-content {
+    display: flex;
+    align-items: center;
+    padding: 2px 0;
+}
+.tree-content:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+.hidden {
+    visibility: hidden;
+}
+input {
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+}
+.label {
+    margin-right: 10px;
+    font-weight: bold;
+}
+.value {
+    color: var(--vscode-debugTokenExpression-value);
+}
