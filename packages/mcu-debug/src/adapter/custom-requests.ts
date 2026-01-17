@@ -98,3 +98,58 @@ export interface LiveConnectedEvent extends DebugProtocol.Event {
     event: "custom-live-watch-connected";
     body: {};
 }
+
+export interface MemoryReadRequestLiveArguments extends DebugProtocol.ReadMemoryArguments {
+    command: "readMemoryLive";
+    memoryReference: string;
+    offset?: number;
+    count: number;
+}
+
+export interface MemoryReadLiveResponse extends DebugProtocol.ReadMemoryResponse {
+    body: {
+        address: string;
+        unreadableBytes?: number;
+        data: string;
+    };
+}
+
+export interface MemoryWriteRequestLiveArguments extends DebugProtocol.WriteMemoryArguments {
+    command: "writeMemoryLive";
+    memoryReference: string;
+    offset?: number;
+    data: string;
+}
+
+export interface MemoryWriteLiveResponse extends DebugProtocol.WriteMemoryResponse {
+    body: {
+        bytesWritten: number;
+    };
+}
+
+export interface SetVariableArgumentsLive extends DebugProtocol.SetVariableArguments, CustomLiveCommand {
+    command: "setVariableLive";
+    variablesReference: number;
+    name: string;
+    value: string;
+}
+
+export interface SetVariableLiveResponse extends DebugProtocol.SetVariableResponse {
+    body: DebugProtocol.SetVariableResponse["body"] & {
+        gdbName?: string;
+        variableObject?: GdbProtocolVariable;
+    };
+}
+
+export interface SetExpressionArgumentsLive extends DebugProtocol.SetExpressionArguments, CustomLiveCommand {
+    command: "setExpressionLive";
+    expression: string;
+    value: string;
+}
+
+export interface SetExpressionLiveResponse extends DebugProtocol.SetExpressionResponse {
+    body: DebugProtocol.SetExpressionResponse["body"] & {
+        gdbName?: string;
+        variableObject?: GdbProtocolVariable;
+    };
+}

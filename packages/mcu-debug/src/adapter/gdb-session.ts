@@ -18,6 +18,7 @@ import { SessionMode } from "./servers/common";
 import { formatAddress, parseAddress } from "../frontend/utils";
 import { BreakpointManager } from "./breakpoints";
 import { LiveWatchMonitor } from "./live-watch-monitor";
+import { MemoryRequests } from "./memory";
 import { ServerConsoleLog } from "./server-console-log";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { VariableScope, getVariableClass } from "./var-scopes";
@@ -45,6 +46,7 @@ export class GDBDebugSession extends SeqDebugSession {
     public gdbMiCommands: MiCommands;
     public lastThreadsInfo: GdbMiThreadInfoList;
     public liveWatchMonitor: LiveWatchMonitor;
+    public memoryRequests: MemoryRequests;
     public suppressStoppedEvents: boolean = true;
     public continuing: boolean = false;
     configurationDone: boolean = false;
@@ -64,6 +66,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.bkptManager = new BreakpointManager(this.gdbInstance!, this);
         this.symbolTable = new SymbolTable(this);
         this.liveWatchMonitor = new LiveWatchMonitor(this);
+        this.memoryRequests = new MemoryRequests(this, this.gdbInstance);
         this.getFileId(VariableManager.GlobalFileName); // Make sure global file ID is always 1
     }
 
@@ -660,98 +663,21 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     protected async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments, request?: DebugProtocol.Request): Promise<void> {
-        try {
-            if (this.isBusy()) {
-                this.busyError(response, args);
-                return;
-            }
-
-            const startAddress = parseAddress(args.memoryReference);
-            const length = args.count;
-            const offset = BigInt(args.offset || 0);
-            const useAddr = startAddress + offset;
-
-            const useAddrHex = formatAddress(useAddr);
-
-            if (length === 0) {
-                response.body = {
-                    address: useAddrHex,
-                    data: "",
-                };
-                this.sendResponse(response);
-                return;
-            }
-
-            const command = `-data-read-memory-bytes "${useAddrHex}" ${length}`;
-            const miOutput = await this.gdbInstance.sendCommand(command);
-            const record = miOutput.resultRecord.result;
-            const memoryArray = record["memory"];
-
-            if (!memoryArray || !Array.isArray(memoryArray) || memoryArray.length === 0) {
-                throw new Error("No memory data returned from GDB");
-            }
-
-            // Error out if GDB returned multiple memory chunks (e.g., spanning regions)
-            if (memoryArray.length > 1) {
-                throw new Error(`Memory request spans multiple regions (${memoryArray.length} chunks). This can happen when memory crosses protection boundaries or unmapped regions.`);
-            }
-
-            const memory = memoryArray[0];
-
-            // GDB always returns hex with "0x" prefix - parse back to BigInt
-            const begin = parseAddress(memory["begin"] || "0x0");
-            const recordOffset = parseAddress(memory["offset"] || "0x0");
-            const actualStart = begin + recordOffset; // BigInt arithmetic stays 64-bit clean
-
-            const contents = memory["contents"] || "";
-            const b64Data = Buffer.from(contents, "hex").toString("base64");
-
-            response.body = {
-                data: b64Data,
-                address: formatAddress(actualStart),
-            };
-            this.sendResponse(response);
-        } catch (error) {
-            this.handleErrResponse(response, `Read memory error: ${error.toString()}`);
+        if (this.isBusy()) {
+            this.busyError(response, args);
+            return;
         }
+        await this.memoryRequests.readMemoryRequest(response, args);
     }
+
     protected async writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments, request?: DebugProtocol.Request): Promise<void> {
-        try {
-            if (this.isBusy()) {
-                this.busyError(response, args);
-                return;
-            }
-
-            const startAddress = parseAddress(args.memoryReference);
-            const offset = BigInt(args.offset || 0);
-            const useAddr = startAddress + offset;
-            const useAddrHex = formatAddress(useAddr);
-
-            // Convert base64 data to hex string (no 0x prefix for GDB command)
-            const hexData = Buffer.from(args.data, "base64").toString("hex");
-
-            if (hexData.length === 0) {
-                response.body = {
-                    bytesWritten: 0,
-                };
-                this.sendResponse(response);
-                return;
-            }
-
-            const command = `-data-write-memory-bytes "${useAddrHex}" "${hexData}"`;
-            await this.gdbInstance.sendCommand(command);
-
-            // Calculate bytes written (each hex pair is one byte)
-            const bytesWritten = hexData.length / 2;
-
-            response.body = {
-                bytesWritten: bytesWritten,
-            };
-            this.sendResponse(response);
-        } catch (error) {
-            this.handleErrResponse(response, `Write memory error: ${error.toString()}`);
+        if (this.isBusy()) {
+            this.busyError(response, args);
+            return;
         }
+        await this.memoryRequests.writeMemoryRequest(response, args);
     }
+
     protected async customRequest(command: string, response: DebugProtocol.Response, args: any) {
         const retFunc = () => {
             this.handleErrResponse(response, `Debugger is busy. Cannot process custom request '${command}' now.`);
@@ -763,7 +689,27 @@ export class GDBDebugSession extends SeqDebugSession {
 
         const isBusy = this.isBusy();
         switch (command) {
-            case "registerClient":
+            case "readMemoryLive": {
+                const rsp: DebugProtocol.ReadMemoryResponse = {
+                    ...response,
+                    body: {
+                        address: args.address,
+                        unreadableBytes: 0,
+                        data: "",
+                    },
+                };
+                return await this.liveWatchMonitor.readMemoryRequest(rsp, args);
+            }
+            case "writeMemoryLive": {
+                const wrsp: DebugProtocol.WriteMemoryResponse = {
+                    ...response,
+                    body: {
+                        bytesWritten: 0,
+                    },
+                };
+                return await this.liveWatchMonitor.writeMemoryRequest(wrsp, args);
+            }
+            case "registerClient": {
                 const rsp: RegisterClientResponse = {
                     ...response,
                     body: {
@@ -773,6 +719,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 };
                 this.liveWatchMonitor.registerClientRequest(rsp, args);
                 break;
+            }
             case "evaluateLive":
                 if (this.liveWatchMonitor.enabled()) {
                     const rsp: DebugProtocol.EvaluateResponse = {
@@ -798,6 +745,20 @@ export class GDBDebugSession extends SeqDebugSession {
                         },
                     };
                     return await this.liveWatchMonitor.variablesRequestLive(rsp, args);
+                } else {
+                    this.sendResponse(response);
+                }
+                break;
+            case "setVariableLive":
+                if (this.liveWatchMonitor.enabled()) {
+                    const rsp: DebugProtocol.SetVariableResponse = {
+                        ...response,
+                        body: {
+                            value: "",
+                            variablesReference: 0,
+                        },
+                    };
+                    return await this.liveWatchMonitor.setVariableRequest(rsp, args);
                 } else {
                     this.sendResponse(response);
                 }

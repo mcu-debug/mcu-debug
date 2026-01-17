@@ -9,6 +9,7 @@ import { expandValue } from "./gdb-mi/gdb_expansion";
 import { VariableScope } from "./var-scopes";
 import { LiveConnectedEvent, LiveUpdateEvent, RegisterClientRequest, RegisterClientResponse, DeleteLiveGdbVariables } from "./custom-requests";
 import { DebugFlags } from "./servers/common";
+import { MemoryRequests } from "./memory";
 
 function shortUuid(length = 16) {
     // Generate a random byte buffer and convert it to a URL-friendly base64 string
@@ -33,31 +34,33 @@ export class LiveClientSession {
 export class LiveWatchMonitor {
     private sessionsByClientId = new Map<string, LiveClientSession>();
     private sessionsByPrefix = new Map<string, LiveClientSession>();
-    public miDebugger: GdbInstance | undefined;
+    public gdbInstance: GdbInstance | undefined;
     protected debugFlags: DebugFlags = {};
     protected varManager: VariableManager;
+    protected memoryRequests: MemoryRequests;
     protected liveWatchEnabled: boolean = false;
     protected handlingRequest: boolean = false;
     constructor(private mainSession: GDBDebugSession) {
-        this.miDebugger = new GdbInstance();
-        this.varManager = new VariableManager(this.miDebugger, this.mainSession);
+        this.gdbInstance = new GdbInstance();
+        this.varManager = new VariableManager(this.gdbInstance, this.mainSession);
+        this.memoryRequests = new MemoryRequests(mainSession, this.gdbInstance);
     }
 
     public start(gdbCommands: string[]): void {
         this.debugFlags = this.mainSession.args.debugFlags;
-        this.miDebugger.debugFlags = this.debugFlags;
+        this.gdbInstance.debugFlags = this.debugFlags;
         const exe = this.mainSession.gdbInstance.gdbPath;
         const args = this.mainSession.gdbInstance.gdbArgs;
         gdbCommands.push('interpreter-exec console "set stack-cache off"');
         gdbCommands.push('interpreter-exec console "set remote interrupt-on-connect off"');
         gdbCommands.push(...this.mainSession.getServerConnectCommands());
-        this.miDebugger
+        this.gdbInstance
             .start(exe, args, process.cwd(), [], 10 * 1000, false)
             .then(() => {
                 this.handleMsg(Stderr, `Started GDB process ${exe} ${args.join(" ")}\n`);
                 this.setupEvents();
                 for (const cmd of gdbCommands) {
-                    this.miDebugger!.sendCommand(cmd).catch((err) => {
+                    this.gdbInstance!.sendCommand(cmd).catch((err) => {
                         this.handleMsg(Stderr, `Error with command '${cmd}': ${err.toString()}\n`);
                     });
                 }
@@ -83,16 +86,16 @@ export class LiveWatchMonitor {
     }
 
     protected setupEvents() {
-        this.miDebugger.on("quit", this.quitEvent.bind(this));
-        this.miDebugger.on("exited-normally", this.quitEvent.bind(this));
-        this.miDebugger.on("msg", (type: GdbEventNames, msg: string) => {
+        this.gdbInstance.on("quit", this.quitEvent.bind(this));
+        this.gdbInstance.on("exited-normally", this.quitEvent.bind(this));
+        this.gdbInstance.on("msg", (type: GdbEventNames, msg: string) => {
             this.handleMsg(type, msg);
         });
         // To be more reliable, we track the target state from the main session's GDB instance
         // This is because we never get z "running" events from the live GDB instance in non-stop mode
         this.mainSession.gdbInstance.on(GdbEventNames.Stopped, this.onStopped.bind(this));
         this.mainSession.gdbInstance.on(GdbEventNames.Running, this.onRunning.bind(this));
-        this.miDebugger.on("connected", () => {
+        this.gdbInstance.on("connected", () => {
             this.liveWatchEnabled = true;
             this.handleMsg(Stderr, `Live GDB connected to target.\n`);
             this.mainSession.sendEvent(this.newLiveConnectedEvent());
@@ -185,7 +188,7 @@ export class LiveWatchMonitor {
             const container = clientSession.container;
             if (args.deleteGdbVars && args.deleteGdbVars.length > 0) {
                 for (const gdbVarName of args.deleteGdbVars) {
-                    await container.deleteObjectByGdbName(gdbVarName, this.miDebugger!, (name) => {
+                    await container.deleteObjectByGdbName(gdbVarName, (name) => {
                         if (this.debugFlags.anyFlags) {
                             this.handleMsg(Stderr, `Warning: Could not delete live watch GDB variable '${name}'\n`);
                         }
@@ -211,7 +214,7 @@ export class LiveWatchMonitor {
             const size = this.sessionsByClientId.size.toString();
             const sessionId = `mcu-debug-live-${size}-` + shortUuid(8);
             const prefix = `W${size}-`;
-            const container = new VariableContainer(VariableScope.Watch, prefix);
+            const container = new VariableContainer(this.gdbInstance, VariableScope.Watch, prefix);
             const session = new LiveClientSession(args.clientId, sessionId, container);
             this.sessionsByClientId.set(sessionId, session);
             this.sessionsByPrefix.set(prefix, session);
@@ -237,7 +240,7 @@ export class LiveWatchMonitor {
         this.updatePromise = new Promise<void>(async (resolve) => {
             try {
                 this.isUpdatingVariables = true;
-                const updates = await this.varManager.updateAllVariables();
+                const updates = await this.updateAllGdbVariables();
                 for (const update of updates) {
                     const prefix = update.name.substring(0, update.name.indexOf("-") + 1);
                     const session = this.sessionsByPrefix.get(prefix);
@@ -248,7 +251,7 @@ export class LiveWatchMonitor {
                 for (const [clientId, session] of this.sessionsByClientId) {
                     const sz = session.updates.size;
                     if (sz > 0) {
-                        const ev: LiveUpdateEvent = this.newLiveUpdateEvant(session);
+                        const ev: LiveUpdateEvent = this.newLiveUpdateEvent(session);
                         this.mainSession.sendEvent(ev);
                         session.updates.clear();
                         if (this.debugFlags.anyFlags) {
@@ -268,7 +271,21 @@ export class LiveWatchMonitor {
         return this.updatePromise;
     }
 
-    private newLiveUpdateEvant(session: LiveClientSession): LiveUpdateEvent {
+    public async updateAllGdbVariables(): Promise<VarUpdateRecord[]> {
+        try {
+            const cmd = `-var-update --all-values *`;
+            const miOutput = await this.gdbInstance.sendCommand(cmd);
+            const records = miOutput.resultRecord.result["changelist"];
+            return records;
+        } catch (e) {
+            if (this.debugFlags.anyFlags) {
+                this.handleMsg(GdbEventNames.Console, `mcu-debug: Error updating all variables: ${e}\n`);
+            }
+            return [];
+        }
+    }
+
+    private newLiveUpdateEvent(session: LiveClientSession): LiveUpdateEvent {
         return {
             seq: 0,
             type: "event",
@@ -307,6 +324,60 @@ export class LiveWatchMonitor {
         }
     }
 
+    public async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): Promise<void> {
+        if (this.liveWatchEnabled === false) {
+            this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
+            return;
+        }
+        try {
+            this.handlingRequest = true;
+            await this.updatePromise;
+            const clientSession = this.sessionsByClientId.get((args as any).sessionId || "");
+            if (!clientSession) {
+                throw new Error(`Invalid session ID '${(args as any).sessionId}'`);
+            }
+            response.body = await this.varManager.setVariable(args, clientSession.container);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `SetVariable request failed: ${e}`);
+        }
+    }
+
+    public async setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments): Promise<void> {
+        if (this.liveWatchEnabled === false) {
+            this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
+            return;
+        }
+        try {
+            this.handlingRequest = true;
+            await this.updatePromise;
+            const clientSession = this.sessionsByClientId.get((args as any).sessionId || "");
+            if (!clientSession) {
+                throw new Error(`Invalid session ID '${(args as any).sessionId}'`);
+            }
+            response.body = await this.varManager.setExpression(args, clientSession.container);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `SetExpression request failed: ${e}`);
+        }
+    }
+
+    public async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments): Promise<void> {
+        if (this.liveWatchEnabled === false) {
+            this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
+            return;
+        }
+        await this.memoryRequests.readMemoryRequest(response, args);
+    }
+
+    public async writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments): Promise<void> {
+        if (this.liveWatchEnabled === false) {
+            this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
+            return;
+        }
+        await this.memoryRequests.writeMemoryRequest(response, args);
+    }
+
     public stopTimer(): void {
         if (this.updateTimer) {
             clearInterval(this.updateTimer);
@@ -321,11 +392,11 @@ export class LiveWatchMonitor {
                 this.quitting = true;
                 try {
                     // Give GDB a chance to detach nicely, but don't wait forever
-                    await this.miDebugger.sendCommand("-target-disconnect", 100);
+                    await this.gdbInstance.sendCommand("-target-disconnect", 100);
                 } catch (e) {
                     // Ignore errors
                 } finally {
-                    await this.miDebugger.sendCommand("-gdb-exit", 100);
+                    await this.gdbInstance.sendCommand("-gdb-exit", 100);
                 }
             }
         } catch (e: any) {

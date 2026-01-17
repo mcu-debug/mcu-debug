@@ -47,7 +47,8 @@ Following are listed in no particular order. They are grouped by functionality.
     - [ ] Support a constant.
     - [ ] A general expression that may not be a variable
   - [ ] Logpoints
-- [ ] LiveWatch. This may be a push design vs a pull design in Cortex-Debug
+- [ ] LiveWatch. This is a push/streaming design vs a pull design in Cortex-Debug
+  - [x] Streaming Live Watch
   - [ ] `New:` SetVar
   - [ ] `New:` SetExpr
 - [ ] Disassembly. Needs total overhaul, even more generic processor/ISA support
