@@ -3258,6 +3258,7 @@
     "views": {
       "debug": [
         {
+          "type": "webview",
           "id": "mcu-debug.liveWatch",
           "name": "MCU Debug Live Watch",
           "icon": "images/live-view.png",

@@ -4,6 +4,7 @@ import * as path from "path";
 
 import { MCUDebugChannel } from "../dbgmsgs";
 import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
+import { EditableTreeViewProvider } from "./webview_tree/editable-tree";
 
 import { RTTCore, SWOCore } from "./swo/core";
 import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ADAPTER_DEBUG_MODE, ChainedConfig } from "../adapter/servers/common";
@@ -41,7 +42,7 @@ export class MCUDebugExtension {
     private gdbServerConsole: GDBServerConsole | null = null;
 
     private liveWatchProvider: LiveWatchTreeProvider;
-    private liveWatchTreeView: vscode.TreeView<LiveVariableNode>;
+    private liveWatchWebview: EditableTreeViewProvider;
 
     private SVDDirectory: SVDInfo[] = [];
     private functionSymbols: SymbolInformation[] = [];
@@ -55,9 +56,9 @@ export class MCUDebugExtension {
         await this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
 
         this.liveWatchProvider = new LiveWatchTreeProvider(this.context);
-        this.liveWatchTreeView = vscode.window.createTreeView("mcu-debug.liveWatch", {
-            treeDataProvider: this.liveWatchProvider,
-        });
+        this.liveWatchWebview = new EditableTreeViewProvider(this.context.extensionUri, this.liveWatchProvider);
+        this.liveWatchProvider.setRefreshCallback(() => this.liveWatchWebview.refresh());
+        context.subscriptions.push(vscode.window.registerWebviewViewProvider("mcu-debug.liveWatch", this.liveWatchWebview));
 
         vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.VARIABLE_DISPLAY_MODE}`, config.get(MCUDebugKeys.VARIABLE_DISPLAY_MODE, true));
 
@@ -85,16 +86,6 @@ export class MCUDebugExtension {
             vscode.window.onDidCloseTerminal(this.terminalClosed.bind(this)),
 
             vscode.debug.registerDebugConfigurationProvider("mcu-debug", new CortexDebugConfigurationProvider(context)),
-
-            this.liveWatchTreeView,
-            this.liveWatchTreeView.onDidExpandElement((e) => {
-                this.liveWatchProvider.expandChildren(e.element);
-                this.liveWatchProvider.saveState();
-            }),
-            this.liveWatchTreeView.onDidCollapseElement((e) => {
-                // e.element.expanded = false;
-                this.liveWatchProvider.saveState();
-            }),
         );
     }
 
@@ -803,17 +794,7 @@ export class MCUDebugExtension {
     }
 
     private addLiveWatchExpr() {
-        vscode.window
-            .showInputBox({
-                placeHolder: "Enter a valid C/gdb expression. Must be a global variable expression",
-                ignoreFocusOut: true,
-                prompt: "Enter Live Watch Expression",
-            })
-            .then((v) => {
-                if (v && vscode.debug.activeDebugSession) {
-                    this.liveWatchProvider.addWatchExpr(v, vscode.debug.activeDebugSession);
-                }
-            });
+        this.liveWatchWebview.add();
     }
 
     private addToLiveWatch(arg: any) {
