@@ -171,3 +171,6 @@ release/
 *.zip
 *.7z
 *.rar
+
+# Copied resources
+packages/mcu-debug/resources/codicons/

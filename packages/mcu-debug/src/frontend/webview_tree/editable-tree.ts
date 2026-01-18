@@ -87,7 +87,7 @@ export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
     private _getHtmlForWebview(webview: vscode.Webview) {
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "resources", "webview-tree.js"));
         const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "resources", "webview-tree.css"));
-        const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "node_modules", "@vscode/codicons", "dist", "codicon.css"));
+        const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "resources", "codicons", "codicon.css"));
 
         return `<!DOCTYPE html>
         <html lang="en">

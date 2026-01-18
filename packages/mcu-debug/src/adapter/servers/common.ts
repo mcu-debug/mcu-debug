@@ -562,30 +562,6 @@ export function getAnyFreePort(preferred: number): Promise<number> {
             .catch((e) => {
                 reject(e);
             });
-        /*
-        function findFreePorts() {
-            TcpPortScanner.findFreePorts(1, { start: 60000, consecutive: false, avoid: undefined })
-                .then((ports) => {
-                    resolve(ports[0]);
-                })
-                .catch((e) => {
-                    reject(e);
-                });
-        }
-
-        if (preferred > 0) {
-            TcpPortScanner.isPortInUse(preferred, TcpPortScanner.AvoidPorts).then((inuse) => {
-                if (!inuse) {
-                    TcpPortScanner.EmitAllocated([preferred]);
-                    resolve(preferred);
-                } else {
-                    findFreePorts();
-                }
-            });
-        } else {
-            findFreePorts();
-        }
-            */
     });
 }
 
@@ -628,6 +604,28 @@ export function toStringDecHexOctBin(val: number /* should be an integer */): st
         str = str.slice(0, -8);
     }
     ret += `\nbin: ${tmp}`;
+    return ret;
+}
+
+export function toStringDecHexOctBin32or64(val: bigint, is64: boolean = false): string {
+    const bitWidth = is64 ? 64n : 32n;
+    let ret = `dec: ${val}`;
+    if (val < 0) {
+        val = (1n << bitWidth) + val;
+    }
+    let str = val.toString(16).padStart(Number(bitWidth / 4n), "0");
+    ret += `\nhex: ${str}`;
+
+    str = val.toString(8).padStart(Number(bitWidth / 3n), "0");
+    ret += `\noct: ${str}`;
+
+    str = val.toString(2).padStart(Number(bitWidth), "0");
+    let tmp = "";
+    while (str.length > 0) {
+        tmp = " " + str.slice(-8) + tmp;
+        str = str.slice(0, -8);
+    }
+    ret += `\nbin:${tmp}`;
     return ret;
 }
 

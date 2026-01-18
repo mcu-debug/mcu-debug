@@ -150,8 +150,14 @@ export class GdbInstance extends EventEmitter {
     }
 
     private handleExit(code: number | null, signal: NodeJS.Signals | null) {
-        this.process = null;
-        this.emit("exit", code, signal);
+        if (this.process) {
+            this.process = null;
+            const codestr = code === null || code === undefined ? "none" : code.toString();
+            const sigstr = signal ? `, signal: ${signal}` : "";
+            const how = this.sessionEnding ? "" : code || signal ? " unexpectedly" : "";
+            const msg = `GDB session ended${how}. exit-code: ${codestr}${sigstr}\n`;
+            this.emit("quit", how ? "stderr" : "stdout", msg);
+        }
     }
 
     private handleError(code: number | null, signal: NodeJS.Signals | null) {
@@ -222,7 +228,7 @@ export class GdbInstance extends EventEmitter {
                 if (pendingCmd) {
                     if (miOutput.resultRecord?.class === "error") {
                         const errorMsg = miOutput.resultRecord.result["msg"] || "Unknown error";
-                        pendingCmd.reject(new Error(`GDB MI Error: ${errorMsg}`));
+                        pendingCmd.reject(new Error(`GDB: ${errorMsg}`));
                     } else {
                         if (miOutput.resultRecord?.class === "connected") {
                             this.emit("connected");

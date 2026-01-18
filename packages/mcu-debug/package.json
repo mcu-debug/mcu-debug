@@ -36,7 +36,7 @@
     "Debuggers"
   ],
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.108.1"
   },
   "type": "commonjs",
   "main": "./dist/extension.js",
@@ -3269,11 +3269,12 @@
     }
   },
   "scripts": {
+    "copy-codicons": "mkdir -p resources/codicons && sh scripts/copy-codicons.sh",
     "generate-manifest": "node scripts/update-package-json.js",
     "update-commit-hash": "node scripts/commit-hash.js",
-    "compile": "npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
+    "compile": "npm run copy-codicons && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
     "check-types": "tsc --noEmit",
-    "watch": "npm-run-all -p watch:*",
+    "watch": "npm run copy-codicons && npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "vscode:prepublish": "npm run package",
@@ -3281,23 +3282,20 @@
   },
   "devDependencies": {
     "@types/hasbin": "^1.2.2",
-    "@types/node": "^25.0.3",
+    "@types/node": "^25.0.9",
     "@types/proper-lockfile": "^4.1.4",
     "@types/tmp": "^0.2.6",
-    "@types/vscode": "^1.107.0",
+    "@types/vscode": "^1.108.1",
     "@vscode/debugadapter": "^1.68.0",
     "@vscode/debugprotocol": "^1.68.0",
     "esbuild": "^0.27.2",
     "esbuild-node-externals": "^1.20.1",
     "npm-run-all": "^4.1.5",
-    "prettier": "^3.7.4"
-  },
-  "dependencies": {
+    "prettier": "^3.8.0",
     "@flatten-js/interval-tree": "^2.0.3",
     "@mcu-debug/shared": "*",
-    "@vscode/codicons": "^0.0.44",
     "@vscode/extension-telemetry": "^1.2.0",
-    "applicationinsights": "^3.12.1",
+    "applicationinsights": "^3.13.0",
     "binary-parser": "^2.3.0",
     "hasbin": "^1.2.3",
     "proper-lockfile": "^4.1.2",
@@ -3307,5 +3305,8 @@
     "usb": "^2.16.0",
     "winston": "^3.19.0",
     "winston-vscode": "^1.0.0"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.44"
   }
 }

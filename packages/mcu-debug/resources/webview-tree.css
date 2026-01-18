@@ -32,7 +32,7 @@ input {
 }
 .label {
     margin-right: 10px;
-    font-weight: bold;
+    color: var(--vscode-debugTokenExpression-name);
 }
 .value {
     color: var(--vscode-debugTokenExpression-value);

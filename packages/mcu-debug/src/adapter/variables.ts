@@ -3,7 +3,7 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import { GdbEventNames, GdbMiOutput, GdbMiRecord, VarUpdateRecord } from "./gdb-mi/mi-types";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
-import { copyInterfaceProperties, toStringDecHexOctBin } from "./servers/common";
+import { copyInterfaceProperties, toStringDecHexOctBin, toStringDecHexOctBin32or64 } from "./servers/common";
 import { GdbProtocolVariable, GdbProtocolVariableTemplate } from "./custom-requests";
 import { VariableScope, VariableTypeMask, decodeReference, encodeReference, ActualScopeMask, ScopeBits, ScopeMask } from "./var-scopes";
 
@@ -37,16 +37,13 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
         public children: VariableObject[] = [],
         public dynamic: boolean = false, // Mi field
         public hasMore: boolean = false, // Mi field
-        public displayHint: string = "", // Mi field
+        public displayhint: string = "", // Mi field
+        public numchild: number = 0, // Mi field
     ) {
         super(parent, name, frameRef);
         this.scope |= VariableTypeMask;
     }
 
-    // Junk methods to be removed later
-    public isCompound(): boolean {
-        throw new Error("Method not implemented.");
-    }
     toProtocolEvaluateResponseBody(): {
         result: string;
         type?: string;
@@ -60,8 +57,31 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
         throw new Error("Method not implemented.");
     }
 
+    public isCompound(): boolean {
+        return this.numchild > 0 || this.value === "{...}" || (this.dynamic && (this.displayhint === "array" || this.displayhint === "map"));
+    }
+
+    public createToolTip(name: string, value: string): string {
+        let ret = this.type;
+        if (this.isCompound()) {
+            return ret;
+        }
+
+        let val = BigInt(0);
+        if (/^0[x][0-9a-f]+/i.test(value) || /^[-]?[0-9]+$/.test(value)) {
+            const is64 = (value.startsWith("0x") && value.length > 18) || this.type.includes("long long") || this.type.includes("int64");
+            val = BigInt(value.toLowerCase());
+
+            ret += " " + name + ";\n";
+            ret += toStringDecHexOctBin32or64(val, is64);
+        }
+        return ret;
+    }
+
     toProtocolVariable(): GdbProtocolVariable {
-        return copyInterfaceProperties<GdbProtocolVariable, VariableObject>(this, GdbProtocolVariableTemplate);
+        const ret = copyInterfaceProperties<GdbProtocolVariable, VariableObject>(this, GdbProtocolVariableTemplate);
+        ret.type = this.createToolTip(this.name, this.value);
+        return ret;
     }
 
     public getThreadFrameInfo(): [number, number, VariableScope] {
@@ -77,8 +97,12 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
         if (typeChanged === "true") {
             this.type = record["new_type"] ?? this.type;
         }
+        const new_num_children = record["new_num_children"];
+        if (new_num_children !== undefined) {
+            this.numchild = parseInt(new_num_children);
+        }
         this.dynamic = !!parseInt(record["dynamic"] ?? "0");
-        this.displayHint = record["displayhint"];
+        this.displayhint = record["displayhint"];
         this.hasMore = !!parseInt(record["has_more"] ?? "0");
     }
 }
@@ -123,6 +147,7 @@ export class VariableContainer {
         varObj.gdbVarName = record["name"];
         this.gdbVarNameToObjMap.set(varObj.gdbVarName, varObj);
         varObj.exp = record["exp"] || name;
+        varObj.numchild = parseInt(record["numchild"] || "0");
         varObj.evaluateName = varObj.exp; // For now, fullExp is same as exp. It may change later. For root variables, they are the same
         varObj.applyChanges(record as any as VarUpdateRecord);
         return [varObj, handle];
@@ -1085,6 +1110,7 @@ export class VariableManager {
     }
 
     public async evaluateExpression(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, container?: VariableContainer): Promise<void> {
+        const isClientVSCode = container === undefined;
         try {
             const [thread, frame, _] = args.frameId ? this.getVarOrFrameInfo(args.frameId!) : [0, 0, VariableScope.Global];
             const scope = VariableScope.WatchVariable;
@@ -1143,11 +1169,13 @@ export class VariableManager {
                 return;
             }
         } catch (e) {
-            if (args.context === "watch") {
+            // On errors, return null so no dialog boxes are shown to user in VS Code. But for other clients, return the error.
+            // For other clients they can use a non-watch context to get a null result.
+            if (!isClientVSCode && args.context === "watch") {
                 return Promise.reject(e);
             }
             response.body = {
-                result: "",
+                result: args.context === "watch" ? `<${e}>` : null,
                 variablesReference: 0,
             };
         }

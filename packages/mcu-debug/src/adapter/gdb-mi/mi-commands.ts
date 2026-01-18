@@ -57,34 +57,6 @@ export class MiCommands {
         });
     }
 
-    /// Execution context commands
-
-    /*
-    /// Thread commands. Note that GDB MI has some redundancy here. It gives an object
-    /// with duplicate keys for thread id and number of threads according to the docs.
-    /// That does not seem to be the case in practice, so we just use one of them.
-    sendThreadListInfo(): Promise<GdbMiThreadsList> {
-        return new Promise<GdbMiThreadsList>((resolve, reject) => {
-            const cmd = "-thread-list-ids";
-            this.gdbInstance
-                .sendCommand(cmd)
-                .then((output) => {
-                    try {
-                        const threadList = new GdbMiThreadsList(output);
-                        if (threadList.numberOfThreads != threadList.threadIds.length) {
-                            reject(new Error(`numberOfThreads=${threadList.numberOfThreads} does not match ${threadList.threadIds.length} thread IDs ${JSON.stringify(output)}`));
-                            return;
-                        }
-                        resolve(threadList);
-                    } catch (e) {
-                        reject(e);
-                    }
-                })
-                .catch(reject);
-        });
-    }
-*/
-
     async sendThreadInfoAll(): Promise<GdbMiThreadInfoList> {
         try {
             const cmd = "-thread-info";

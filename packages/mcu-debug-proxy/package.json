@@ -33,7 +33,7 @@
     "Other"
   ],
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.108.0"
   },
   "type": "commonjs",
   "main": "./dist/extension.js",
@@ -57,9 +57,7 @@
     "esbuild": "^0.27.2",
     "esbuild-node-externals": "^1.20.1",
     "npm-run-all": "^4.1.5",
-    "prettier": "^3.7.4"
-  },
-  "dependencies": {
+    "prettier": "^3.7.4",
     "@mcu-debug/shared": "*",
     "@vscode/extension-telemetry": "^1.2.0",
     "hasbin": "^1.2.3",

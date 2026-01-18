@@ -540,7 +540,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
             }
         } catch (e) {
-            this.handleErrResponse(response, `Evaluate request failed: ${e}`);
+            this.handleErrResponse(response, `Evaluate request failed for '${args.expression}': ${e}`);
         }
     }
     private async evalRepl(expr: string, response: DebugProtocol.EvaluateResponse): Promise<void> {
@@ -1046,6 +1046,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.getSymbolAndLoadCommands();
             // Go ahead and start loading symbols in parallel to gdb and gdb server startup
             const loadSymbolsPromise = this.loadSymbols();
+            const startServerPromise = this.startServer();
 
             // Question? Should we supress all running/stopped events until we are fully started? VSCode can
             // easily get confused if we send stopped/running events too early
@@ -1060,7 +1061,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
             const gdbInitPromise = this.sendCommandsWithWait(this.gdbInitCommands);
             try {
-                await this.startServer();
+                await startServerPromise;
             } catch (e) {
                 const msg = "\nMake sure that the GDB server is configured correctly. See TERMINAL->gdb-server tab for details.\n";
                 return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}${msg}`);
@@ -1244,6 +1245,7 @@ export class GDBDebugSession extends SeqDebugSession {
         let needsContinue = false;
         const isReset = this.args.pvtSessionMode === SessionMode.Reset;
         const isLaunch = this.args.pvtSessionMode === SessionMode.Launch;
+        let needsDelay = false;
 
         // Unified Logic
         if (isLaunch || isReset) {
@@ -1258,9 +1260,10 @@ export class GDBDebugSession extends SeqDebugSession {
                 // Standard Debug
                 // If breakAfterReset is true -> Stay Stopped (needsContinue = false)
                 // If breakAfterReset is false -> Continue
-                needsContinue = !this.args.breakAfterReset;
                 const cmds = isReset ? (this.args.postResetSessionCommands?.map(COMMAND_MAP) ?? []) : (this.args.postStartSessionCommands?.map(COMMAND_MAP) ?? []);
                 commands.push(...cmds);
+                needsContinue = !this.args.breakAfterReset;
+                needsDelay = cmds.length > 0;
             }
         } else if (this.args.pvtSessionMode === SessionMode.Attach) {
             // ATTACH LOGIC
@@ -1287,7 +1290,9 @@ export class GDBDebugSession extends SeqDebugSession {
             });
             return;
         }
-        await new Promise((resolve) => setTimeout(resolve, 200)); // Small delay to allow GDB to process commands
+        if (needsDelay) {
+            await new Promise((resolve) => setTimeout(resolve, 200)); // Small delay to allow GDB to process commands
+        }
         try {
             await this.gdbMiCommands.sendFlushRegs();
         } catch (e) {

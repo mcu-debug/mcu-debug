@@ -110,12 +110,22 @@ export class GDBServerSession extends EventEmitter {
             let timeout: NodeJS.Timeout | null = null;
             let resolved = false;
             if (!matchRegex) {
-                setTimeout(() => {
-                    // No match needed, resolve immediately
+                const timeoutMs = 2000;
+                const serverType = this.session.args.servertype || "openocd";
+                const gdbport = this.ports["gdbPort"];
+                if (gdbport && serverType.toLowerCase() === "qemu") {
+                    // We don't care about the result, just wait and bail early if listening
+                    await isPortListening(gdbport, timeoutMs);
                     this.serverController.serverLaunchCompleted();
-                    resolved = true;
                     resolve();
-                }, 2000);
+                } else {
+                    setTimeout(() => {
+                        // No match needed, resolve immediately
+                        this.serverController.serverLaunchCompleted();
+                        resolved = true;
+                        resolve();
+                    }, timeoutMs);
+                }
             } else {
                 timer = setInterval(() => {
                     this.session.handleMsg(GdbEventNames.Console, "Waiting for gdb-server to start...\n");
@@ -274,4 +284,23 @@ export class GDBServerSession extends EventEmitter {
         }
         return serverCwd;
     }
+}
+
+// Helper function to see if a TCP port is listening
+async function isPortListening(port: number, timeoutMs: number, host: string = "127.0.0.1"): Promise<boolean> {
+    return new Promise((resolve) => {
+        const socket = new net.Socket();
+        socket.setTimeout(timeoutMs);
+        socket.once("connect", () => {
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once("error", () => {
+            resolve(false);
+        });
+        socket.once("timeout", () => {
+            resolve(false);
+        });
+        socket.connect(port, host);
+    });
 }
