@@ -36,6 +36,7 @@ function renderChildren(parent, children) {
             // Top-level and not dummy
             actionsHtml = `
                 <div class="actions">
+                    <span class="codicon codicon-edit" onclick="startEdit(this, '${item.id}', 'label')" title="Edit Expression"></span>
                     <span class="codicon codicon-arrow-up" onclick="moveUp(event, '${item.id}')" title="Move Up"></span>
                     <span class="codicon codicon-arrow-down" onclick="moveDown(event, '${item.id}')" title="Move Down"></span>
                     <span class="codicon codicon-close" onclick="deleteItem(event, '${item.id}')" title="Delete"></span>
