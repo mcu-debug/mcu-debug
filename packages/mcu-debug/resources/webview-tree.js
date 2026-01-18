@@ -30,10 +30,24 @@ function renderChildren(parent, children) {
 
         const content = document.createElement("div");
         content.className = "tree-content";
+
+        let actionsHtml = "";
+        if (!parent && item.id !== "dummy-msg") {
+            // Top-level and not dummy
+            actionsHtml = `
+                <div class="actions">
+                    <span class="codicon codicon-arrow-up" onclick="moveUp(event, '${item.id}')" title="Move Up"></span>
+                    <span class="codicon codicon-arrow-down" onclick="moveDown(event, '${item.id}')" title="Move Down"></span>
+                    <span class="codicon codicon-close" onclick="deleteItem(event, '${item.id}')" title="Delete"></span>
+                </div>
+            `;
+        }
+
         content.innerHTML = `
             <span class="codicon codicon-chevron-right ${item.hasChildren ? "" : "hidden"}"></span>
             <span class="label" ondblclick="startEdit(this, '${item.id}', 'label')">${item.label}</span>
             <span class="value" ondblclick="startEdit(this, '${item.id}', 'value')">${item.value || ""}</span>
+            ${actionsHtml}
         `;
 
         li.appendChild(content);
@@ -109,3 +123,18 @@ function startAdd() {
 
 // Initial load
 requestChildren();
+
+window.moveUp = (e, id) => {
+    e.stopPropagation();
+    vscode.postMessage({ type: "moveUp", item: { id } });
+};
+
+window.moveDown = (e, id) => {
+    e.stopPropagation();
+    vscode.postMessage({ type: "moveDown", item: { id } });
+};
+
+window.deleteItem = (e, id) => {
+    e.stopPropagation();
+    vscode.postMessage({ type: "delete", item: { id } });
+};

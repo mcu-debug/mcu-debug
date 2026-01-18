@@ -14,6 +14,8 @@ export interface TreeViewProviderDelegate {
     onEdit(item: TreeItem, newValue: string): Promise<void>;
     onDelete?(item: TreeItem): Promise<void>;
     onAdd?(value: string): Promise<void>;
+    onMoveUp?(item: TreeItem): Promise<void>;
+    onMoveDown?(item: TreeItem): Promise<void>;
 }
 
 export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
@@ -57,6 +59,18 @@ export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
                 case "delete":
                     if (this._delegate.onDelete) {
                         await this._delegate.onDelete(data.item);
+                        this.refresh();
+                    }
+                    break;
+                case "moveUp":
+                    if (this._delegate.onMoveUp) {
+                        await this._delegate.onMoveUp(data.item);
+                        this.refresh();
+                    }
+                    break;
+                case "moveDown":
+                    if (this._delegate.onMoveDown) {
+                        await this._delegate.onMoveDown(data.item);
                         this.refresh();
                     }
                     break;

@@ -17,7 +17,10 @@
     "test": "npm run test --workspaces"
   },
   "devDependencies": {
-    "typescript": "^5.3.0",
-    "esbuild": "^0.19.0"
+    "esbuild": "^0.19.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.44"
   }
 }

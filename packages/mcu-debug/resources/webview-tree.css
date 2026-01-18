@@ -37,3 +37,24 @@ input {
 .value {
     color: var(--vscode-debugTokenExpression-value);
 }
+
+.actions {
+    display: none;
+    margin-left: auto;
+    padding-right: 5px;
+    align-items: center;
+}
+
+.tree-content:hover .actions {
+    display: flex;
+}
+
+.actions .codicon {
+    margin-left: 4px;
+    cursor: pointer;
+    color: var(--vscode-icon-foreground);
+}
+
+.actions .codicon:hover {
+    color: var(--vscode-list-highlightForeground);
+}

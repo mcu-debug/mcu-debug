@@ -3295,6 +3295,7 @@
   "dependencies": {
     "@flatten-js/interval-tree": "^2.0.3",
     "@mcu-debug/shared": "*",
+    "@vscode/codicons": "^0.0.44",
     "@vscode/extension-telemetry": "^1.2.0",
     "applicationinsights": "^3.12.1",
     "binary-parser": "^2.3.0",

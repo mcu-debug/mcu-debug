@@ -575,6 +575,20 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         }
     }
 
+    async onMoveUp(item: WebviewTreeItem): Promise<void> {
+        const node = this.findNodeById(this.rootNode, item.id);
+        if (node) {
+            this.moveUpNode(node);
+        }
+    }
+
+    async onMoveDown(item: WebviewTreeItem): Promise<void> {
+        const node = this.findNodeById(this.rootNode, item.id);
+        if (node) {
+            this.moveDownNode(node);
+        }
+    }
+
     async onAdd(value: string): Promise<void> {
         if (!value) return;
         // Strip whitespace
