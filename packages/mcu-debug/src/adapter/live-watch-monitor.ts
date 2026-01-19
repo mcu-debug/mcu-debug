@@ -71,6 +71,11 @@ export class LiveWatchMonitor {
             });
     }
 
+    public stop(): void {
+        this.stopTimer();
+        this.quit().catch(() => {});
+    }
+
     public enabled(): boolean {
         return this.liveWatchEnabled;
     }
@@ -388,7 +393,7 @@ export class LiveWatchMonitor {
     private quitting = false;
     public async quit() {
         try {
-            if (!this.quitting) {
+            if (!this.quitting && this.gdbInstance.IsGdbRunning()) {
                 this.quitting = true;
                 try {
                     // Give GDB a chance to detach nicely, but don't wait forever

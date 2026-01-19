@@ -179,20 +179,17 @@ export class VariableContainer {
     }
     public async clear(delErr?: (str: string) => void): Promise<void> {
         this.variableHandles.clear();
-        const promises: Promise<any>[] = [];
         for (const key of this.gdbVarNameToObjMap.keys()) {
             const obj = this.gdbVarNameToObjMap.get(key);
             if (obj.parent === 0) {
                 // only delete roots. that will also delete children
-                const p = this.gdbInstance.sendCommand(`-var-delete ${key}`).catch(() => {
+                try {
+                    await this.gdbInstance.sendCommand(`-var-delete ${key}`);
+                } catch {
                     delErr?.(key);
-                });
-                if (p) {
-                    promises.push(p);
                 }
             }
         }
-        await Promise.all(promises);
         this.gdbVarNameToObjMap.clear();
     }
     public async deleteObjectByGdbName(gdbVarName: string, delErr?: (str: string) => void): Promise<boolean> {
@@ -200,9 +197,11 @@ export class VariableContainer {
         if (obj) {
             this.variableHandles.release(obj.handle >>> ScopeBits);
             if (obj.parent === 0) {
-                this.gdbInstance.sendCommand(`-var-delete ${gdbVarName}`).catch(() => {
+                try {
+                    await this.gdbInstance.sendCommand(`-var-delete ${gdbVarName}`);
+                } catch {
                     delErr?.(gdbVarName);
-                });
+                }
                 this.gdbVarNameToObjMap.delete(gdbVarName);
                 return true;
             } else {

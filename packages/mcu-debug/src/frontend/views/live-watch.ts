@@ -37,6 +37,8 @@ interface GdbMapUpdater {
     getLiveSessionId: () => string | undefined;
 }
 
+type NodeFormat = "natural" | "hex" | "decimal" | "binary" | "octal";
+
 export class LiveVariableNode {
     public parent: LiveVariableNode | undefined;
     public expanded: boolean = false;
@@ -46,6 +48,7 @@ export class LiveVariableNode {
     public session: vscode.DebugSession | undefined;
     public childrenLoaded: boolean = false;
     protected prevValue: string = "";
+    protected format: NodeFormat = "natural";
 
     // Added for webview compat
     public readonly id: string;
@@ -64,6 +67,7 @@ export class LiveVariableNode {
         this.parent = parent;
         this.variablesReference = variablesReference;
         this.gdbVarName = gdbVarName;
+        this.prevValue = value;
         this.mapUpdater?.addToMap(gdbVarName, this);
 
         // Generate a unique ID for the webview tree
@@ -98,6 +102,10 @@ export class LiveVariableNode {
         return ret;
     }
 
+    public isComposite(): boolean {
+        return this.variablesReference > 0;
+    }
+
     public isRootChild(): boolean {
         const node = this.parent;
         return node && node.getParent() === undefined;
@@ -108,6 +116,7 @@ export class LiveVariableNode {
             this.name = nm;
             this.expr = nm;
             this.value = "";
+            this.prevValue = "";
             this.type = "";
             this.variablesReference = 0;
             if (this.gdbVarName) {
@@ -115,6 +124,26 @@ export class LiveVariableNode {
             }
             this.gdbVarName = "";
             this.clearChildren();
+        }
+    }
+
+    public hasFormatSpecifier(): boolean {
+        return /,[xbtodn]$/i.test(this.expr);
+    }
+
+    public setFormat(format: NodeFormat) {
+        if (this.isDummyNode()) {
+            return;
+        }
+        if (this.isRootChild() && !this.isComposite()) {
+            if (this.hasFormatSpecifier()) {
+                vscode.window.showInformationMessage("Live Watch: Cannot change format, as it already has a format specifier");
+                return;
+            }
+        }
+        this.format = format;
+        for (const child of this.children || []) {
+            child.setFormat(format);
         }
     }
 
@@ -163,6 +192,7 @@ export class LiveVariableNode {
             } else if (update.in_scope === "invalid") {
                 this.value = "<invalid>";
             }
+            this.prevValue = this.value;
             this.value = update.value;
             this.type = update.type_changed === "true" && update.new_type ? update.new_type : this.type;
             if (update.new_num_children !== undefined) {
@@ -179,18 +209,50 @@ export class LiveVariableNode {
         });
     }
 
+    public getDisplayValue(): string {
+        let displayValue = this.value;
+        if (this.isComposite() || this.format === "natural" || this.value.startsWith("<") || !this.gdbVarName) {
+            return displayValue;
+        }
+        if (this.format) {
+            switch (this.format) {
+                case "hex":
+                    displayValue = "0x" + BigInt(this.value).toString(16);
+                    break;
+                case "binary":
+                    displayValue = "0b" + BigInt(this.value).toString(2);
+                    break;
+                case "octal":
+                    displayValue = "0o" + BigInt(this.value).toString(8);
+                    break;
+                case "decimal":
+                    displayValue = BigInt(this.value).toString(10);
+                    break;
+                default:
+                    break;
+            }
+        }
+        return displayValue;
+    }
+
     // Convert to Webview Tree Item
     public toWebviewTreeItem(): WebviewTreeItem {
         const parts = this.name.startsWith("'") && this.isRootChild() ? this.name.split("'::") : [this.name];
         const name = parts.pop() || "";
 
-        return {
+        const ret = {
             id: this.id,
             label: name,
-            value: this.value || "not available",
+            actualValue: this.value,
+            value: this.value ? this.getDisplayValue() : "not available",
             hasChildren: this.variablesReference > 0 || (this.children && this.children.length > 0),
             expanded: this.expanded,
+            format: this.format,
+            changed: this.value !== this.prevValue,
         };
+        this.prevValue = this.value;
+        console.log("LiveVariableNode.toWebviewTreeItem:", ret);
+        return ret;
     }
 
     public getCopyValue(): string {
@@ -356,7 +418,8 @@ export class LiveVariableNode {
     }
 
     public refresh(session: vscode.DebugSession): Promise<void> {
-        if (this.isDummyNode() || !this.mapUpdater.getLiveSessionId()) {
+        const liveSessionId = this.mapUpdater?.getLiveSessionId();
+        if (this.isDummyNode() || !liveSessionId) {
             return Promise.resolve();
         }
         return new Promise<void>((resolve) => {
@@ -368,7 +431,7 @@ export class LiveVariableNode {
             if (!this.gdbVarName && this.expr) {
                 const arg: EvaluateRequestLiveArguments = {
                     command: "evaluateLive",
-                    sessionId: this.mapUpdater.getLiveSessionId() || "",
+                    sessionId: liveSessionId || "",
                     expression: this.expr,
                     context: "watch",
                 };
@@ -586,6 +649,14 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         const node = this.findNodeById(this.rootNode, item.id);
         if (node) {
             this.moveDownNode(node);
+        }
+    }
+
+    async onSetFormat(item: WebviewTreeItem, format: string): Promise<void> {
+        const node = this.findNodeById(this.rootNode, item.id);
+        if (node) {
+            node.setFormat(format as NodeFormat);
+            this.refresh(LiveWatchTreeProvider.session);
         }
     }
 
@@ -879,6 +950,11 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         if (parent && parent.moveDownChild(node)) {
             this.fire();
         }
+    }
+
+    public setFormat(node: LiveVariableNode, format: NodeFormat) {
+        node.setFormat(format);
+        this.refresh(LiveWatchTreeProvider.session);
     }
 
     private inFire = false;

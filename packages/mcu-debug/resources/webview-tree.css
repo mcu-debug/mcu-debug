@@ -38,6 +38,12 @@ input {
     color: var(--vscode-debugTokenExpression-value);
 }
 
+.changed {
+    color: var(--vscode-valueChangedHighlight-value) !important;
+    transition: color 1s ease-out;
+    font-weight: bold;
+}
+
 .actions {
     display: none;
     margin-left: auto;
@@ -57,4 +63,27 @@ input {
 
 .actions .codicon:hover {
     color: var(--vscode-list-highlightForeground);
+}
+
+.context-menu {
+    position: fixed;
+    z-index: 1000;
+    background: var(--vscode-menu-background);
+    color: var(--vscode-menu-foreground);
+    border: 1px solid var(--vscode-menu-border);
+    box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+    padding: 4px 0;
+    min-width: 120px;
+    border-radius: 3px;
+}
+
+.context-menu-item {
+    padding: 4px 8px;
+    cursor: pointer;
+    display: block;
+}
+
+.context-menu-item:hover {
+    background: var(--vscode-menu-selectionBackground);
+    color: var(--vscode-menu-selectionForeground);
 }

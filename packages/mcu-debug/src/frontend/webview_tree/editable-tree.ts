@@ -3,10 +3,13 @@ import * as vscode from "vscode";
 export interface TreeItem {
     id: string;
     label: string;
+    actualValue?: string;
     value?: string;
+    format?: string;
     hasChildren?: boolean;
     expanded?: boolean;
     contextValue?: string;
+    changed?: boolean;
 }
 
 export interface TreeViewProviderDelegate {
@@ -16,6 +19,7 @@ export interface TreeViewProviderDelegate {
     onAdd?(value: string): Promise<void>;
     onMoveUp?(item: TreeItem): Promise<void>;
     onMoveDown?(item: TreeItem): Promise<void>;
+    onSetFormat?(item: TreeItem, format: string): Promise<void>;
 }
 
 export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
@@ -71,6 +75,12 @@ export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
                 case "moveDown":
                     if (this._delegate.onMoveDown) {
                         await this._delegate.onMoveDown(data.item);
+                        this.refresh();
+                    }
+                    break;
+                case "setFormat":
+                    if (this._delegate.onSetFormat) {
+                        await this._delegate.onSetFormat(data.item, data.format);
                         this.refresh();
                     }
                     break;

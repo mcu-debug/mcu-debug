@@ -15,7 +15,6 @@ import { createPortName, GDBServerController, GenericCustomEvent, quoteShellCmdL
 import { GdbEventNames, Stderr } from "./gdb-mi/mi-types";
 import { TcpPortScanner } from "@mcu-debug/shared";
 import path from "path";
-import { match } from "assert";
 import { greenFormat } from "../frontend/ansi-helpers";
 
 const SERVER_TYPE_MAP: { [key: string]: any } = {
@@ -109,6 +108,17 @@ export class GDBServerSession extends EventEmitter {
             let timer: NodeJS.Timeout | null = null;
             let timeout: NodeJS.Timeout | null = null;
             let resolved = false;
+            const killTimers = () => {
+                if (timer) {
+                    clearInterval(timer);
+                    timer = null;
+                }
+                if (timeout) {
+                    clearTimeout(timeout);
+                    timeout = null;
+                }
+            };
+
             if (!matchRegex) {
                 const timeoutMs = 2000;
                 const serverType = this.session.args.servertype || "openocd";
@@ -127,17 +137,23 @@ export class GDBServerSession extends EventEmitter {
                     }, timeoutMs);
                 }
             } else {
+                let count = 0;
                 timer = setInterval(() => {
-                    this.session.handleMsg(GdbEventNames.Console, "Waiting for gdb-server to start...\n");
+                    if (resolved) {
+                        killTimers();
+                    }
+                    this.session.handleMsg(GdbEventNames.Console, `Waiting for gdb-server to start ${++count}...\n`);
                 }, 5000);
 
                 timeout = setTimeout(
                     () => {
-                        clearInterval(timer);
                         if (this.process) {
                             this.process.kill();
                         }
-                        reject(new Error("Timeout waiting for gdb-server to start"));
+                        if (!resolved) {
+                            resolved = true;
+                            reject(new Error("Timeout waiting for gdb-server to start"));
+                        }
                     },
                     5 * 60 * 1000,
                 );
@@ -152,8 +168,7 @@ export class GDBServerSession extends EventEmitter {
                     const str = data.toString();
                     if (matchRegex.test(str)) {
                         resolved = true;
-                        clearInterval(timer);
-                        clearTimeout(timeout);
+                        killTimers();
                         this.serverController.serverLaunchCompleted();
                         resolve();
                     }
@@ -164,17 +179,18 @@ export class GDBServerSession extends EventEmitter {
             this.process.stderr?.on("data", handleOutput);
 
             this.process.on("error", (err) => {
+                killTimers();
                 if (!resolved) {
-                    timer && clearInterval(timer);
+                    resolved = true;
                     timeout && clearTimeout(timeout);
                     reject(err);
                 }
             });
 
             this.process.on("exit", (code, signal) => {
+                killTimers();
                 if (!resolved) {
-                    clearInterval(timer);
-                    clearTimeout(timeout);
+                    resolved = true;
                     reject(new Error(`Server exited with code ${code}`));
                 } else if (!this.clientRequestedStop) {
                     this.emit("server-exited", code, signal);

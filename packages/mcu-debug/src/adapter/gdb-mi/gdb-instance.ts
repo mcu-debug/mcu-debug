@@ -47,22 +47,18 @@ export class GdbInstance extends EventEmitter {
         return this.process !== null;
     }
 
-    start(gdbPath: string, gdbArgs: string[], cwd: string | undefined, init: string[], timeout: number = 1000, checkVers = true): Promise<void> {
+    start(gdbPath: string, gdbArgs: string[], cwd: string | undefined, init: string[], timeout: number = 250, checkVers = true): Promise<void> {
         this.gdbPath = gdbPath;
         this.gdbArgs = gdbArgs;
         return new Promise(async (resolve, reject) => {
-            const doInitCmds = () => {
-                const promises = [];
+            const doInitCmds = async () => {
                 for (const cmd of init) {
-                    promises.push(this.sendCommand(cmd, timeout));
+                    try {
+                        await this.sendCommand(cmd, timeout);
+                    } catch (e) {
+                        throw new Error(`Failed to execute init command '${cmd}': ${e}`);
+                    }
                 }
-                Promise.all(promises)
-                    .then(() => {
-                        resolve();
-                    })
-                    .catch((err) => {
-                        reject(err);
-                    });
             };
 
             ServerConsoleLog(`Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}, cwd=${cwd}`);
@@ -88,7 +84,7 @@ export class GdbInstance extends EventEmitter {
                         this.log(GdbEventNames.Stderr, "    This can result in silent failures");
                     }
                     try {
-                        doInitCmds();
+                        await doInitCmds();
                         resolve();
                     } catch (e) {
                         reject(e);
@@ -118,7 +114,7 @@ export class GdbInstance extends EventEmitter {
                     */
             } else {
                 try {
-                    doInitCmds();
+                    await doInitCmds();
                     resolve();
                 } catch (e) {
                     reject(e);
@@ -256,7 +252,7 @@ export class GdbInstance extends EventEmitter {
                     } else if (className === "running") {
                         this.status = "running";
                         if (this.debugFlags.gdbTraces) {
-                            this.log(Stderr, `mi2.status = ${this.status}`);
+                            this.log(Stderr, `gdb-mi.status = ${this.status}`);
                         }
                         this.emit(GdbEventNames.Running);
                     } else if (record.outputType === "notify") {
@@ -288,7 +284,7 @@ export class GdbInstance extends EventEmitter {
     handleStopped(output: GdbMiOutput) {
         this.status = "stopped";
         if (this.debugFlags.gdbTraces) {
-            this.log(Stderr, `mi2.status = ${this.status}`);
+            this.log(Stderr, `gdb-mi.status = ${this.status}`);
         }
         // FIXME: It should always be a single outOfBandRecord here, but just in case...
         const record = output.outOfBandRecords.length > 0 ? output.outOfBandRecords[0] : output.resultRecord!;
