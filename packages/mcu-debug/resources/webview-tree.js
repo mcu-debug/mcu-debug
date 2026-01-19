@@ -65,18 +65,25 @@ function getItemHtml(item) {
 }
 
 function generateItemContentHtml(item, isTopLevel) {
-    let actionsHtml = "";
-    let editValue = `<span class="codicon codicon-edit-sparkle" onclick="startEdit(this, '${item.id}', 'value')" title="Edit Value"></span>`;
-    if (item.hasChildren) {
-        editValue = "";
+    if (item.id === "dummy-msg") {
+        return `<span class="dummy-msg">${item.label}</span>`;
     }
-    let hexFormat = `<span class="codicon codicon-variable-group" onclick="selectFormat(event, '${item.id}')" title="Select Format"></span>`;
+    let actionsHtml = "";
+    let editValueButton = `<span class="codicon codicon-edit-sparkle" onclick="editValue(event, '${item.id}')" title="Edit Value"></span>\n`;
+    let editValueText = `<span class="value ${item.changed ? "changed" : ""}" ondblclick="startEdit(this, '${item.id}', 'value')">${item.value || ""}</span>\n`;
+    let editLabelText = `<span class="label" ondblclick="startEdit(this, '${item.id}', 'label')">${item.label}</span>\n`;
+    if (item.hasChildren) {
+        editValueButton = "";
+        editValueText = `<span class="value ${item.changed ? "changed" : ""}">${item.value || ""}</span>\n`;
+        // editValueText = editValueText.replace(/ondblclick="startEdit\(this, '[^']+', 'value'\)"/, ""); // Remove dblclick for non-leafs
+    }
+    let hexFormat = `<span class="codicon codicon-variable-group" onclick="selectFormat(event, '${item.id}')" title="Select Format"></span>\n`;
 
     if (isTopLevel && item.id !== "dummy-msg") {
         actionsHtml = `
             <div class="actions">
-                <span class="codicon codicon-edit" onclick="startEdit(this, '${item.id}', 'label')" title="Edit Expression"></span>
-                ${editValue}
+                <span class="codicon codicon-edit" onclick="editLabel(event, '${item.id}')" title="Edit Expression"></span>
+                ${editValueButton}
                 ${hexFormat}
                 <span class="codicon codicon-arrow-up" onclick="moveUp(event, '${item.id}')" title="Move Up"></span>
                 <span class="codicon codicon-arrow-down" onclick="moveDown(event, '${item.id}')" title="Move Down"></span>
@@ -84,9 +91,19 @@ function generateItemContentHtml(item, isTopLevel) {
             </div>
         `;
     } else if (item.id !== "dummy-msg" && !item.hasChildren) {
+        editLabelText = `<span class="label">${item.label}</span>\n`;
         actionsHtml = `
             <div class="actions">
-                ${editValue}
+                ${editValueButton}
+                ${hexFormat}
+            </div>
+        `;
+    }
+    if (item.id !== "dummy-msg" && !isTopLevel) {
+        editLabelText = `<span class="label">${item.label}</span>\n`;
+        actionsHtml = `
+            <div class="actions">
+                ${editValueButton}
                 ${hexFormat}
             </div>
         `;
@@ -95,8 +112,8 @@ function generateItemContentHtml(item, isTopLevel) {
     const chevronClass = item.expanded ? "codicon-chevron-down" : "codicon-chevron-right";
     return `
         <span class="codicon ${chevronClass} ${item.hasChildren ? "" : "hidden"}" onclick="toggleExpand(event, '${item.id}')"></span>
-        <span class="label" ondblclick="startEdit(this, '${item.id}', 'label')">${item.label}</span>
-        <span class="value ${item.changed ? "changed" : ""}" ondblclick="startEdit(this, '${item.id}', 'value')">${item.value || ""}</span>
+        ${editLabelText}
+        ${editValueText}
         ${actionsHtml}
     `;
 }
@@ -214,14 +231,22 @@ window.startEdit = (element, id, field) => {
     const input = document.createElement("input");
     input.type = "text";
     input.value = currentVal;
+
+    let cancelled = false;
+
     input.onblur = () => {
-        if (input.value !== currentVal) {
+        if (!cancelled && input.value !== currentVal) {
             vscode.postMessage({ type: "edit", item: { id }, value: input.value });
         }
-        element.innerText = input.value; // Optimistic update
+        element.innerText = cancelled ? currentVal : input.value; // Restore original if cancelled
     };
     input.onkeydown = (e) => {
-        if (e.key === "Enter") input.blur();
+        if (e.key === "Enter") {
+            input.blur();
+        } else if (e.key === "Escape") {
+            cancelled = true;
+            input.blur();
+        }
     };
     element.innerHTML = "";
     element.appendChild(input);
@@ -331,6 +356,25 @@ function startAdd() {
         }
     };
 }
+
+// Helper functions for action buttons to find and edit the correct element
+window.editLabel = (event, id) => {
+    event.stopPropagation();
+    const treeContent = event.target.closest(".tree-content");
+    const labelSpan = treeContent.querySelector(".label");
+    if (labelSpan) {
+        startEdit(labelSpan, id, "label");
+    }
+};
+
+window.editValue = (event, id) => {
+    event.stopPropagation();
+    const treeContent = event.target.closest(".tree-content");
+    const valueSpan = treeContent.querySelector(".value");
+    if (valueSpan) {
+        startEdit(valueSpan, id, "value");
+    }
+};
 
 window.toggleExpand = (e, id) => {
     e.stopPropagation();
