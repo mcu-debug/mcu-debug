@@ -20,6 +20,7 @@ export interface TreeViewProviderDelegate {
     onMoveUp?(item: TreeItem): Promise<void>;
     onMoveDown?(item: TreeItem): Promise<void>;
     onSetFormat?(item: TreeItem, format: string): Promise<void>;
+    onSetExpanded?(item: TreeItem, expanded: boolean): Promise<void>;
 }
 
 export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
@@ -82,6 +83,11 @@ export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
                     if (this._delegate.onSetFormat) {
                         await this._delegate.onSetFormat(data.item, data.format);
                         this.refresh();
+                    }
+                    break;
+                case "setExpanded":
+                    if (this._delegate.onSetExpanded) {
+                        await this._delegate.onSetExpanded(data.item, data.expanded);
                     }
                     break;
             }

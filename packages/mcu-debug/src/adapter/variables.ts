@@ -417,10 +417,10 @@ export class VariableManager {
         await this.clearForContinue();
     }
 
-    public getVarOrFrameInfo(handle: VariableReference): [number, number, VariableScope] {
+    public getVarOrFrameInfo(handle: VariableReference, container?: VariableContainer): [number, number, VariableScope] {
         if (handle & VariableTypeMask) {
             const scope = handle & ScopeMask;
-            const container = this.getContainer(scope);
+            container = container ?? this.getContainer(scope);
             const variable = container.getVariableByRef(handle);
             if (variable === undefined) {
                 throw new Error(`No variable found for reference ${handle}`);
@@ -433,7 +433,7 @@ export class VariableManager {
     }
 
     public getVariables(args: DebugProtocol.VariablesArguments, container?: VariableContainer): Promise<GdbProtocolVariable[]> {
-        const [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference);
+        const [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference, container);
         if (scope === VariableScope.Local) {
             return this.getLocalVariables(threadId, frameId);
         } else if (scope === VariableScope.Registers) {

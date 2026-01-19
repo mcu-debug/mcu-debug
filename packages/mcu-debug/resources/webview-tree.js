@@ -62,8 +62,9 @@ function renderChildren(parent, children) {
             `;
         }
 
+        const chevronClass = item.expanded ? "codicon-chevron-down" : "codicon-chevron-right";
         content.innerHTML = `
-            <span class="codicon codicon-chevron-right ${item.hasChildren ? "" : "hidden"}"></span>
+            <span class="codicon ${chevronClass} ${item.hasChildren ? "" : "hidden"}" onclick="toggleExpand(event, '${item.id}')"></span>
             <span class="label" ondblclick="startEdit(this, '${item.id}', 'label')">${item.label}</span>
             <span class="value ${item.changed ? "changed" : ""}" ondblclick="startEdit(this, '${item.id}', 'value')">${item.value || ""}</span>
             ${actionsHtml}
@@ -74,6 +75,10 @@ function renderChildren(parent, children) {
             const childContainer = document.createElement("div");
             childContainer.id = "children-" + item.id;
             li.appendChild(childContainer);
+
+            if (item.expanded) {
+                requestChildren(item);
+            }
         }
         ul.appendChild(li);
     });
@@ -211,8 +216,25 @@ function startAdd() {
     };
 }
 
-// Initial load
-requestChildren();
+window.toggleExpand = (e, id) => {
+    e.stopPropagation();
+    const item = itemMap.get(id);
+    const chevron = e.target;
+    if (item.expanded) {
+        item.expanded = false;
+        chevron.classList.remove("codicon-chevron-down");
+        chevron.classList.add("codicon-chevron-right");
+        const container = document.getElementById("children-" + id);
+        if (container) container.innerHTML = "";
+        vscode.postMessage({ type: "setExpanded", item: { id }, expanded: false });
+    } else {
+        item.expanded = true;
+        chevron.classList.remove("codicon-chevron-right");
+        chevron.classList.add("codicon-chevron-down");
+        vscode.postMessage({ type: "setExpanded", item: { id }, expanded: true });
+        requestChildren(item);
+    }
+};
 
 window.moveUp = (e, id) => {
     e.stopPropagation();
@@ -228,3 +250,6 @@ window.deleteItem = (e, id) => {
     e.stopPropagation();
     vscode.postMessage({ type: "delete", item: { id } });
 };
+
+// Initial load
+requestChildren();

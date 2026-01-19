@@ -245,13 +245,12 @@ export class LiveVariableNode {
             label: name,
             actualValue: this.value,
             value: this.value ? this.getDisplayValue() : "not available",
-            hasChildren: this.variablesReference > 0 || (this.children && this.children.length > 0),
+            hasChildren: this.isComposite() || (this.children && this.children.length > 0),
             expanded: this.expanded,
             format: this.format,
             changed: this.value !== this.prevValue,
         };
         this.prevValue = this.value;
-        console.log("LiveVariableNode.toWebviewTreeItem:", ret);
         return ret;
     }
 
@@ -657,6 +656,14 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         if (node) {
             node.setFormat(format as NodeFormat);
             this.refresh(LiveWatchTreeProvider.session);
+        }
+    }
+
+    async onSetExpanded(item: WebviewTreeItem, expanded: boolean): Promise<void> {
+        const node = this.findNodeById(this.rootNode, item.id);
+        if (node) {
+            node.expanded = expanded;
+            this.saveState();
         }
     }
 
