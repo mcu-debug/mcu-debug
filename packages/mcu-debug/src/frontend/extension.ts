@@ -58,6 +58,7 @@ export class MCUDebugExtension {
         this.liveWatchProvider = new LiveWatchTreeProvider(this.context);
         this.liveWatchWebview = new EditableTreeViewProvider(this.context.extensionUri, this.liveWatchProvider);
         this.liveWatchProvider.setRefreshCallback(() => this.liveWatchWebview.refresh());
+        this.liveWatchProvider.setUpdateItemsCallback((items) => this.liveWatchWebview.updateComposite(items));
         context.subscriptions.push(vscode.window.registerWebviewViewProvider("mcu-debug.liveWatch", this.liveWatchWebview));
 
         vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.VARIABLE_DISPLAY_MODE}`, config.get(MCUDebugKeys.VARIABLE_DISPLAY_MODE, true));

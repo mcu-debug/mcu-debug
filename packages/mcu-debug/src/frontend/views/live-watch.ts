@@ -333,6 +333,17 @@ export class LiveVariableNode {
         if (valuesToo) {
             this.value = this.type = this.prevValue = "";
         }
+
+        // Clear GDB map registration as IDs are session-specific
+        if (valuesToo && this.gdbVarName) {
+            this.mapUpdater?.removeFromMap(this.gdbVarName);
+            this.gdbVarName = "";
+        }
+
+        if (valuesToo && this.children) {
+            this.childrenLoaded = false;
+        }
+
         for (const child of this.children || []) {
             child.reset(valuesToo);
         }
@@ -581,6 +592,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
     private liveSessionVersion = LatestLiveSessionVersion;
     private liveSessionId: string | undefined;
     private refreshCallback?: () => void;
+    private updateComposite: (items: TreeItem[]) => void;
 
     protected oldState = new Map<string, vscode.TreeItemCollapsibleState>();
     constructor(private context: vscode.ExtensionContext) {
@@ -594,6 +606,9 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
 
     public setRefreshCallback(callback: () => void) {
         this.refreshCallback = callback;
+    }
+    public setUpdateItemsCallback(callback: (items: WebviewTreeItem[]) => void) {
+        this.updateComposite = callback;
     }
 
     async getChildren(element?: WebviewTreeItem): Promise<WebviewTreeItem[]> {
@@ -705,7 +720,9 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
     }
     removeFromMap(gdbName: string): void {
         if (gdbName) {
-            this.toBeDeleted.add(gdbName);
+            if (this.liveSessionId) {
+                this.toBeDeleted.add(gdbName);
+            }
             this.gdbVarNameToNodeMap.delete(gdbName);
         }
     }
@@ -768,15 +785,29 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
                 return;
             }
             const promises = [];
+            const nodes = [];
             let changed = false;
             for (const update of e.body?.updates || []) {
                 const node = this.gdbVarNameToNodeMap.get(update.name);
                 if (node) {
                     changed = true;
+                    nodes.push(node);
                     promises.push(node.updateFromGdb(update));
                 }
             }
             await Promise.allSettled(promises);
+            const trNodes: WebviewTreeItem[] = [];
+            for (const n of nodes) {
+                // Efficiency hack: Only send if needed?
+                // Currently we send everything we updated.
+                // We should also check if the node is visible in the tree (e.g. parent is expanded)
+                // But the webview ignores updates for items it doesn't have in itemMap.
+                // So sending extra is fine, blindly filtering might be complex here.
+                trNodes.push(n.toWebviewTreeItem());
+            }
+            if (this.updateComposite) {
+                this.updateComposite(trNodes);
+            }
             if (changed) {
                 this.refresh(session).then(() => {
                     this.fire();
@@ -815,13 +846,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
             LiveWatchTreeProvider.session = undefined;
             this.fire();
             this.saveState();
-            this.getLiveSessionId = undefined;
-            setTimeout(() => {
-                // We hold the current values as they are until we start another debug session and
-                // another fire() is called
-                this.rootNode.reset(true);
-                this.clearGdbVarNameMap();
-            }, 100);
+            this.liveSessionId = undefined;
         }
     }
 
@@ -889,6 +914,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         this.isStopped = true;
         this.rootNode.reset(true);
         this.clearGdbVarNameMap();
+        this.toBeDeleted.clear();
     }
 
     public debugStopped(session: vscode.DebugSession) {

@@ -10,6 +10,9 @@ window.addEventListener("message", (event) => {
         case "newItem":
             startAdd();
             break;
+        case "updateItems":
+            updateItems(message.items);
+            break;
         case "refresh":
             requestChildren();
             break;
@@ -20,69 +23,182 @@ function requestChildren(element) {
     vscode.postMessage({ type: "getChildren", element });
 }
 
+function getItemHtml(item) {
+    let actionsHtml = "";
+    let editValue = `<span class="codicon codicon-edit-sparkle" onclick="startEdit(this, '${item.id}', 'value')" title="Edit Value"></span>`;
+    if (item.hasChildren) {
+        editValue = "";
+    }
+    let hexFormat = `<span class="codicon codicon-variable-group" onclick="selectFormat(event, '${item.id}')" title="Select Format"></span>`;
+
+    if (item.id !== "dummy-msg") {
+        if (!item.hasChildren) {
+            // Leaf node, maybe inside children or top level
+            actionsHtml = `
+                <div class="actions">
+                    ${editValue}
+                    ${hexFormat}
+                </div>
+            `;
+        }
+
+        // Improve Check: We need to know if it's top level to show full actions.
+        // In renderChildren we know 'parent'. In updateItems we might not know context easily,
+        // but typically 'updateItems' is for values.
+        // Let's rely on checking if it has a parent in the DOM or itemMap if we want perfect fidelity,
+        // but for now let's reuse the logic from renderChildren slightly more generally.
+
+        // Actually, the original logic had specialized actions for "Top-level and not dummy".
+        // "Top-level" meant !parent in renderChildren.
+        // In updateItems, we just update content. We can assume the structure (actions) doesn't change wildly
+        // OR we can try to preserve the actions logic.
+
+        // Simplification: The actions HTML generation logic relies on 'parent'.
+        // If we want to extract this, we need 'parent' info.
+        // ItemMap items don't store parent ref currently.
+        // Let's update itemMap to store parentId?
+    }
+
+    // START RE-INLINE
+    // To cleanly refactor without breaking the parent check logic, I will pass 'isTopLevel' to the helper.
+    return "";
+}
+
+function generateItemContentHtml(item, isTopLevel) {
+    let actionsHtml = "";
+    let editValue = `<span class="codicon codicon-edit-sparkle" onclick="startEdit(this, '${item.id}', 'value')" title="Edit Value"></span>`;
+    if (item.hasChildren) {
+        editValue = "";
+    }
+    let hexFormat = `<span class="codicon codicon-variable-group" onclick="selectFormat(event, '${item.id}')" title="Select Format"></span>`;
+
+    if (isTopLevel && item.id !== "dummy-msg") {
+        actionsHtml = `
+            <div class="actions">
+                <span class="codicon codicon-edit" onclick="startEdit(this, '${item.id}', 'label')" title="Edit Expression"></span>
+                ${editValue}
+                ${hexFormat}
+                <span class="codicon codicon-arrow-up" onclick="moveUp(event, '${item.id}')" title="Move Up"></span>
+                <span class="codicon codicon-arrow-down" onclick="moveDown(event, '${item.id}')" title="Move Down"></span>
+                <span class="codicon codicon-close" onclick="deleteItem(event, '${item.id}')" title="Delete"></span>
+            </div>
+        `;
+    } else if (item.id !== "dummy-msg" && !item.hasChildren) {
+        actionsHtml = `
+            <div class="actions">
+                ${editValue}
+                ${hexFormat}
+            </div>
+        `;
+    }
+
+    const chevronClass = item.expanded ? "codicon-chevron-down" : "codicon-chevron-right";
+    return `
+        <span class="codicon ${chevronClass} ${item.hasChildren ? "" : "hidden"}" onclick="toggleExpand(event, '${item.id}')"></span>
+        <span class="label" ondblclick="startEdit(this, '${item.id}', 'label')">${item.label}</span>
+        <span class="value ${item.changed ? "changed" : ""}" ondblclick="startEdit(this, '${item.id}', 'value')">${item.value || ""}</span>
+        ${actionsHtml}
+    `;
+}
+
+function updateItems(items) {
+    items.forEach((newItem) => {
+        const existingItem = itemMap.get(newItem.id);
+        if (existingItem) {
+            // Update local state
+            Object.assign(existingItem, newItem);
+
+            const li = document.querySelector(`li[data-id="${newItem.id}"]`);
+            if (li) {
+                const contentDiv = li.querySelector(".tree-content");
+                if (contentDiv) {
+                    // Determine if top level.
+                    // renderChildren logic: !parent.
+                    // Here we check if li.parentElement is #tree-root > ul
+                    const isTopLevel = li.parentElement && li.parentElement.parentElement && li.parentElement.parentElement.id === "tree-root";
+                    const newHtml = generateItemContentHtml(existingItem, isTopLevel);
+                    if (contentDiv.innerHTML !== newHtml) {
+                        contentDiv.innerHTML = newHtml;
+                    }
+                }
+            }
+        }
+    });
+}
+
 function renderChildren(parent, children) {
     const container = parent ? document.getElementById("children-" + parent.id) : document.getElementById("tree-root");
     if (!container) return;
 
-    container.innerHTML = "";
-    const ul = document.createElement("ul");
+    // container.innerHTML = ""; // Removing full wipe to prevent shimmering
+    let ul = container.querySelector("ul");
+    if (!ul) {
+        ul = document.createElement("ul");
+        container.appendChild(ul);
+    }
+
+    const existingLiMap = new Map();
+    Array.from(ul.children).forEach((li) => {
+        if (li.dataset.id) existingLiMap.set(li.dataset.id, li);
+    });
+
+    const keepIds = new Set();
+
     children.forEach((item) => {
         itemMap.set(item.id, item);
-        const li = document.createElement("li");
-        li.className = "tree-item";
+        keepIds.add(item.id);
 
-        const content = document.createElement("div");
-        content.className = "tree-content";
+        let li = existingLiMap.get(item.id);
+        let contentDiv;
 
-        let actionsHtml = "";
-        let editValue = `<span class="codicon codicon-edit-sparkle" onclick="startEdit(this, '${item.id}', 'value')" title="Edit Value"></span>`;
-        if (item.hasChildren) {
-            editValue = "";
-        }
-        let hexFormat = `<span class="codicon codicon-variable-group" onclick="selectFormat(event, '${item.id}')" title="Select Format"></span>`;
+        if (!li) {
+            li = document.createElement("li");
+            li.className = "tree-item";
+            li.dataset.id = item.id;
 
-        if (!parent && item.id !== "dummy-msg") {
-            // Top-level and not dummy
-            actionsHtml = `
-                <div class="actions">
-                    <span class="codicon codicon-edit" onclick="startEdit(this, '${item.id}', 'label')" title="Edit Expression"></span>
-                    ${editValue}
-                    ${hexFormat}
-                    <span class="codicon codicon-arrow-up" onclick="moveUp(event, '${item.id}')" title="Move Up"></span>
-                    <span class="codicon codicon-arrow-down" onclick="moveDown(event, '${item.id}')" title="Move Down"></span>
-                    <span class="codicon codicon-close" onclick="deleteItem(event, '${item.id}')" title="Delete"></span>
-                </div>
-            `;
-        } else if (item.id !== "dummy-msg" && !item.hasChildren) {
-            actionsHtml = `
-                <div class="actions">
-                    ${editValue}
-                    ${hexFormat}
-                </div>
-            `;
+            contentDiv = document.createElement("div");
+            contentDiv.className = "tree-content";
+            li.appendChild(contentDiv);
+        } else {
+            contentDiv = li.querySelector(".tree-content");
         }
 
-        const chevronClass = item.expanded ? "codicon-chevron-down" : "codicon-chevron-right";
-        content.innerHTML = `
-            <span class="codicon ${chevronClass} ${item.hasChildren ? "" : "hidden"}" onclick="toggleExpand(event, '${item.id}')"></span>
-            <span class="label" ondblclick="startEdit(this, '${item.id}', 'label')">${item.label}</span>
-            <span class="value ${item.changed ? "changed" : ""}" ondblclick="startEdit(this, '${item.id}', 'value')">${item.value || ""}</span>
-            ${actionsHtml}
-        `;
+        const isTopLevel = !parent;
+        const newHtml = generateItemContentHtml(item, isTopLevel);
 
-        li.appendChild(content);
+        // Only update DOM if content changed
+        if (contentDiv.innerHTML !== newHtml) {
+            contentDiv.innerHTML = newHtml;
+        }
+
+        let childContainer = document.getElementById("children-" + item.id);
         if (item.hasChildren) {
-            const childContainer = document.createElement("div");
-            childContainer.id = "children-" + item.id;
-            li.appendChild(childContainer);
+            if (!childContainer) {
+                childContainer = document.createElement("div");
+                childContainer.id = "children-" + item.id;
+                li.appendChild(childContainer);
 
-            if (item.expanded) {
-                requestChildren(item);
+                if (item.expanded) {
+                    requestChildren(item);
+                }
+            } else {
+                // If it exists and is expanded, we continue the refresh cascade
+                if (item.expanded) {
+                    requestChildren(item);
+                }
             }
+        } else {
+            if (childContainer) childContainer.remove();
         }
+
+        // Ensure order
         ul.appendChild(li);
     });
-    container.appendChild(ul);
+
+    // Remove deleted nodes
+    existingLiMap.forEach((li, id) => {
+        if (!keepIds.has(id)) li.remove();
+    });
 }
 
 // Primitive Edit Logic

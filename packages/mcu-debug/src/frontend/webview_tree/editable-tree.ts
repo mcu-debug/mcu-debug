@@ -100,6 +100,12 @@ export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    public updateComposite(items: TreeItem[]) {
+        if (this._view) {
+            this._view.webview.postMessage({ type: "updateItems", items });
+        }
+    }
+
     private _getHtmlForWebview(webview: vscode.Webview) {
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "resources", "webview-tree.js"));
         const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "resources", "webview-tree.css"));
