@@ -72,7 +72,7 @@ function generateItemContentHtml(item, isTopLevel) {
     let editValueButton = `<span class="codicon codicon-edit-sparkle" onclick="editValue(event, '${item.id}')" title="Edit Value"></span>\n`;
     let editValueText = `<span class="value ${item.changed ? "changed" : ""}" ondblclick="startEdit(this, '${item.id}', 'value')">${item.value || ""}</span>\n`;
     let editLabelText = `<span class="label" ondblclick="startEdit(this, '${item.id}', 'label')">${item.label}</span>\n`;
-    if (item.hasChildren) {
+    if (item.hasChildren || !item.editable) {
         editValueButton = "";
         editValueText = `<span class="value ${item.changed ? "changed" : ""}">${item.value || ""}</span>\n`;
     }
@@ -221,8 +221,14 @@ function renderChildren(parent, children) {
     });
 }
 
-// Primitive Edit Logic
+// Primitive Edit Logic - using floating overlay to survive rapid DOM updates
 window.startEdit = (element, id, field) => {
+    // Remove any existing floating editor
+    const existingEditor = document.querySelector(".floating-editor");
+    const existingBackdrop = document.querySelector(".floating-editor-backdrop");
+    if (existingEditor) existingEditor.remove();
+    if (existingBackdrop) existingBackdrop.remove();
+
     let currentVal = element.innerText;
     if (field === "value") {
         const item = itemMap.get(id);
@@ -231,29 +237,69 @@ window.startEdit = (element, id, field) => {
         }
     }
 
+    // Create backdrop
+    const backdrop = document.createElement("div");
+    backdrop.className = "floating-editor-backdrop";
+    document.body.appendChild(backdrop);
+
+    // Create floating editor
+    const editor = document.createElement("div");
+    editor.className = "floating-editor";
+
+    // Add title
+    const title = document.createElement("div");
+    title.className = "floating-editor-title";
+    title.textContent = field === "label" ? "Edit Expression" : "Edit Value";
+    editor.appendChild(title);
+
     const input = document.createElement("input");
     input.type = "text";
     input.value = currentVal;
 
+    editor.appendChild(input);
+    document.body.appendChild(editor);
+
+    // Position at top center like startAdd
+    editor.style.left = "50%";
+    editor.style.top = "20px";
+    editor.style.transform = "translateX(-50%)";
+    editor.style.minWidth = "300px";
+
     let cancelled = false;
 
-    input.onblur = () => {
+    const cleanup = () => {
+        editor.remove();
+        backdrop.remove();
+    };
+
+    const commit = () => {
         if (!cancelled && input.value !== currentVal) {
             vscode.postMessage({ type: "edit", item: { id }, field: field, value: input.value });
         }
-        element.innerText = cancelled ? currentVal : input.value; // Restore original if cancelled
+        cleanup();
     };
+
+    input.onblur = () => {
+        // Delay to allow click events to process
+        setTimeout(commit, 100);
+    };
+
     input.onkeydown = (e) => {
         if (e.key === "Enter") {
-            input.blur();
+            commit();
         } else if (e.key === "Escape") {
             cancelled = true;
-            input.blur();
+            cleanup();
         }
     };
-    element.innerHTML = "";
-    element.appendChild(input);
+
+    backdrop.onclick = () => {
+        cancelled = true;
+        cleanup();
+    };
+
     input.focus();
+    input.select();
 };
 
 // create a dropdown for format selection
@@ -321,43 +367,71 @@ window.selectFormat = (event, id) => {
 };
 
 function startAdd() {
-    const container = document.getElementById("tree-root");
-    let ul = container.querySelector("ul");
-    if (!ul) {
-        ul = document.createElement("ul");
-        container.appendChild(ul);
-    }
+    // Remove any existing floating editor
+    const existingEditor = document.querySelector(".floating-editor");
+    const existingBackdrop = document.querySelector(".floating-editor-backdrop");
+    if (existingEditor) existingEditor.remove();
+    if (existingBackdrop) existingBackdrop.remove();
 
-    const li = document.createElement("li");
-    li.className = "tree-item";
-    const content = document.createElement("div");
-    content.className = "tree-content";
+    // Create backdrop
+    const backdrop = document.createElement("div");
+    backdrop.className = "floating-editor-backdrop";
+    document.body.appendChild(backdrop);
 
+    // Create floating editor
+    const editor = document.createElement("div");
+    editor.className = "floating-editor";
+    // Add title
+    const title = document.createElement("div");
+    title.className = "floating-editor-title";
+    title.textContent = "Add New Expression";
+    editor.appendChild(title);
     const input = document.createElement("input");
     input.type = "text";
     input.placeholder = "Expression";
 
-    content.appendChild(input);
-    li.appendChild(content);
-    ul.appendChild(li);
+    editor.appendChild(input);
+    document.body.appendChild(editor);
 
-    input.focus();
+    // Position at top center of viewport
+    editor.style.left = "50%";
+    editor.style.top = "20px";
+    editor.style.transform = "translateX(-50%)";
+    editor.style.minWidth = "300px";
+
+    let cancelled = false;
+
+    const cleanup = () => {
+        editor.remove();
+        backdrop.remove();
+    };
 
     const commit = () => {
-        if (input.value) {
+        if (!cancelled && input.value) {
             vscode.postMessage({ type: "add", value: input.value });
         }
-        // The refresh will kill this node anyway
+        cleanup();
     };
 
-    input.onblur = commit;
+    input.onblur = () => {
+        setTimeout(commit, 100);
+    };
+
     input.onkeydown = (e) => {
         if (e.key === "Enter") {
-            input.blur();
+            commit();
         } else if (e.key === "Escape") {
-            li.remove();
+            cancelled = true;
+            cleanup();
         }
     };
+
+    backdrop.onclick = () => {
+        cancelled = true;
+        cleanup();
+    };
+
+    input.focus();
 }
 
 // Helper functions for action buttons to find and edit the correct element

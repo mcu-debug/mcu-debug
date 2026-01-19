@@ -24,6 +24,9 @@ export interface VariablesRequestLiveArguments extends DebugProtocol.VariablesAr
 
 export interface GdbProtocolVariable extends DebugProtocol.Variable {
     gdbVarName?: string;
+    addressOf?: string;
+    sizeof?: number;
+    editable?: boolean;
 }
 
 // TODO: use copyInterfaceProperties utility, or similar, to create a template object,
@@ -41,6 +44,9 @@ export const GdbProtocolVariableTemplate: GdbProtocolVariable = {
     declarationLocationReference: 0,
     valueLocationReference: 0,
     gdbVarName: "",
+    sizeof: 0,
+    editable: true,
+    addressOf: "",
 };
 
 export interface VariablesLiveResponse extends DebugProtocol.VariablesResponse {

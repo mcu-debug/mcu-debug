@@ -629,6 +629,16 @@ export function toStringDecHexOctBin32or64(val: bigint, is64: boolean = false): 
     return ret;
 }
 
+// nBits is 8,16,32,64 (atleast a multiple of 4)
+export function formatHexValue(val: bigint, nBits: number): string {
+    const bitWidth = BigInt(nBits);
+    if (val < 0) {
+        val = (1n << bitWidth) + val;
+    }
+    let str = val.toString(16).padStart(Number(bitWidth / 4n), "0");
+    return `0x${str}`;
+}
+
 export function parseHostPort(hostPort: string) {
     let port: number;
     let host = "127.0.0.1";

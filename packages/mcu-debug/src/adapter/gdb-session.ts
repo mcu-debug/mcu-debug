@@ -564,6 +564,10 @@ export class GDBDebugSession extends SeqDebugSession {
             run: "-exec-run",
             r: "-exec-run",
         };
+        const isLiveCmd = expr.startsWith("+");
+        if (isLiveCmd) {
+            expr = expr.slice(1).trim();
+        }
         const splits = expr.split(/\s+/);
         const cmd = mappings[splits[0]];
         if (cmd) {
@@ -574,7 +578,8 @@ export class GDBDebugSession extends SeqDebugSession {
             expr = `-interpreter-exec console "${expr}"`;
         }
         this.handleMsg(Stdout, `${expr}\n`);
-        await this.gdbInstance
+        const gdbInstance = isLiveCmd ? this.liveWatchMonitor.gdbInstance : this.gdbInstance;
+        await gdbInstance
             .sendCommand(expr)
             .then((out) => {
                 if (isMi) {

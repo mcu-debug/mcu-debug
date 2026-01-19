@@ -49,6 +49,9 @@ export class LiveVariableNode {
     public gdbVarName: string = "";
     public session: vscode.DebugSession | undefined;
     public childrenLoaded: boolean = false;
+    public sizeof: number = 0;
+    public editable: boolean = true;
+    public addressOf: string = "";
     protected prevValue: string = "";
     protected format: NodeFormat = "natural";
 
@@ -221,12 +224,21 @@ export class LiveVariableNode {
             return displayValue;
         }
         if (this.format) {
+            const size = this.sizeof || 4;
             switch (this.format) {
                 case "hex":
-                    displayValue = "0x" + BigInt(this.value).toString(16);
+                    displayValue =
+                        "0x" +
+                        BigInt(this.value)
+                            .toString(16)
+                            .padStart(size * 2, "0");
                     break;
                 case "binary":
-                    displayValue = "0b" + BigInt(this.value).toString(2);
+                    displayValue =
+                        "0b" +
+                        BigInt(this.value)
+                            .toString(2)
+                            .padStart(size * 8, "0");
                     break;
                 case "octal":
                     displayValue = "0o" + BigInt(this.value).toString(8);
@@ -255,6 +267,7 @@ export class LiveVariableNode {
             expanded: this.expanded,
             format: this.format,
             changed: this.value !== this.prevValue,
+            editable: this.editable,
         };
         this.prevValue = this.value;
         return ret;
@@ -467,6 +480,9 @@ export class LiveVariableNode {
                             this.gdbVarName = obj.gdbVarName;
                             this.children = this.variablesReference ? [] : undefined;
                             this.mapUpdater?.addToMap(this.gdbVarName, this);
+                            this.sizeof = obj.sizeof;
+                            this.addressOf = obj.addressOf;
+                            this.editable = obj.editable;
                             this.refreshChildren(resolve);
                         } else {
                             this.value = `<Failed to evaluate ${this.expr}>`;

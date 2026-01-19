@@ -4,7 +4,7 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { VariableContainer, VariableManager, VariableObject } from "./variables";
-import { GdbEventNames, Stderr, MIError, MINode, VarUpdateRecord } from "./gdb-mi/mi-types";
+import { GdbEventNames, Stderr, MIError, MINode, VarUpdateRecord, Stdout } from "./gdb-mi/mi-types";
 import { expandValue } from "./gdb-mi/gdb_expansion";
 import { VariableScope } from "./var-scopes";
 import {
@@ -18,7 +18,7 @@ import {
     SetVariableLiveResponse,
     SetExpressionLiveResponse,
 } from "./custom-requests";
-import { DebugFlags } from "./servers/common";
+import { DebugFlags, formatHexValue } from "./servers/common";
 import { MemoryRequests } from "./memory";
 
 function shortUuid(length = 16) {
@@ -251,11 +251,15 @@ export class LiveWatchMonitor {
     // Calling this will also enable caching for the future of the session
     private isUpdatingVariables: boolean = false;
     public updatePromise = Promise.resolve();
+    private pvrWriteUpdates: VarUpdateRecord[] = [];
     public async updateVariables(): Promise<void> {
         this.updatePromise = new Promise<void>(async (resolve) => {
             try {
                 this.isUpdatingVariables = true;
                 const updates = await this.updateAllGdbVariables();
+                if (this.pvrWriteUpdates.length > 0) {
+                    updates.unshift(...this.pvrWriteUpdates);
+                }
                 for (const update of updates) {
                     const prefix = update.name.substring(0, update.name.indexOf("-") + 1);
                     const session = this.sessionsByPrefix.get(prefix);
@@ -263,14 +267,15 @@ export class LiveWatchMonitor {
                         session.updates.set(update.name, update);
                     }
                 }
+                this.pvrWriteUpdates = [];
                 for (const [clientId, session] of this.sessionsByClientId) {
                     const sz = session.updates.size;
                     if (sz > 0) {
                         const ev: LiveUpdateEvent = this.newLiveUpdateEvent(session);
                         this.mainSession.sendEvent(ev);
                         session.updates.clear();
-                        if (this.debugFlags.anyFlags) {
-                            this.handleMsg(Stderr, `Updated ${sz} variables for client '${clientId}, session '${session.sessionId}'\n`);
+                        if (this.debugFlags.gdbTraces) {
+                            this.handleMsg(Stdout, `Updated ${sz} variables for client '${clientId}, session '${session.sessionId}'\n`);
                         }
                     }
                 }
@@ -339,11 +344,48 @@ export class LiveWatchMonitor {
         }
     }
 
+    private async tryWriteViaMonitorCommand(response: SetVariableLiveResponse, varObj: VariableObject, argValue: string): Promise<boolean> {
+        const serverType = this.mainSession.args.servertype;
+        const size = varObj.sizeof || 0;
+        const isOk = varObj.addressOf && size > 0 && size <= 8 && varObj.editable;
+        if (serverType === "openocd" && isOk) {
+            const val = formatHexValue(BigInt(argValue), size * 8);
+            const ww = size === 1 ? "b" : size === 2 ? "h" : size === 4 ? "w" : "d";
+            const cmd = `-interpreter-exec console "monitor mw${ww}  ${varObj.addressOf} ${val}"`;
+            try {
+                await this.gdbInstance!.sendCommand(cmd);
+                this.handleMsg(Stdout, `Wrote memory at '${varObj.addressOf}' to value '${val}' via OpenOCD monitor command\n`);
+                // Now read back the value to confirm
+                const readCmd = `-var-update --all-values ${varObj.gdbVarName}`;
+                const miOutput = await this.gdbInstance!.sendCommand(readCmd);
+                // At this point, the regular updates are halted, so we need to capture the changelist ourselves
+                // And we can save them so that a future updateVariables() call will send them out
+                this.pvrWriteUpdates = miOutput.resultRecord.result["changelist"];
+                const ourUpdate = this.pvrWriteUpdates[0];
+                if (BigInt(argValue) !== BigInt(ourUpdate.value)) {
+                    throw new Error(`GDB could not confirm an update to '${varObj.evaluateName}' via OpenOCD monitor command`);
+                }
+                varObj.value = ourUpdate.value;
+                response.body = {
+                    value: ourUpdate.value,
+                    gdbVarName: varObj.gdbVarName,
+                    variableObject: varObj.toProtocolVariable(),
+                };
+                this.sendResponse(response);
+                return true;
+            } catch (e) {
+                this.handleMsg(Stderr, `Error writing memory via OpenOCD monitor command: ${e}\n`);
+            }
+        }
+        return false;
+    }
+
     private async setByGdbVarName(response: SetVariableLiveResponse, varObj: VariableObject, argValue: string): Promise<void> {
         const gdbVarName = varObj.gdbVarName!;
         const cmd = `-var-assign ${gdbVarName} ${argValue}`;
         try {
             const miOutput = await this.gdbInstance!.sendCommand(cmd);
+            this.handleMsg(Stderr, `Set variable '${varObj.evaluateName}' (GDB name '${gdbVarName}') to value '${argValue}'\n`);
             const result = miOutput.resultRecord?.result;
             if (result && result["value"]) {
                 const newValue = result["value"];
@@ -362,7 +404,10 @@ export class LiveWatchMonitor {
                 throw new Error(`No value returned from GDB`);
             }
         } catch (e) {
-            throw new Error(`Could not set variable with GDB name '${gdbVarName}': ${e}`);
+            if (!(await this.tryWriteViaMonitorCommand(response, varObj, argValue))) {
+                this.handleMsg(Stderr, `Error setting variable with GDB name '${gdbVarName}': ${e}\n`);
+                throw new Error(`Could not set variable with GDB name '${gdbVarName}': ${e}`);
+            }
         }
     }
 

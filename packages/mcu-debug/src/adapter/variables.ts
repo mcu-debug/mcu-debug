@@ -24,6 +24,9 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
     public handle = 0; // This comes from  VariableManager, can be used as variablesReference if needed
     public gdbVarName?: string; // The GDB variable name associated with this object, if any
     public fileName?: string; // For global/static variables, the file they belong to
+    public sizeof?: number; // Size of the variable in bytes
+    public editable?: boolean; // Is the variable editable
+    public addressOf?: string; // Address of the variable in memory, if known
     constructor(
         public readonly scope: VariableScope,
         parent: number,
@@ -104,6 +107,47 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
         this.dynamic = !!parseInt(record["dynamic"] ?? "0");
         this.displayhint = record["displayhint"];
         this.hasMore = !!parseInt(record["has_more"] ?? "0");
+    }
+
+    public async getGdbVarInfo(gdbInstance: GdbInstance): Promise<void> {
+        try {
+            const gdbVarName = this.gdbVarName;
+            if (gdbVarName) {
+                const cmd = `-var-show-attributes ${gdbVarName}`;
+                const miOutput = await gdbInstance.sendCommand(cmd, 100);
+                const record = miOutput.resultRecord?.result;
+                if (record && record["attr"]) {
+                    const items = record["attr"].split(",");
+                    for (const item of items) {
+                        if (item.trim() === "editable") {
+                            this.editable = true;
+                            break;
+                        } else if (item.trim() === "noneditable") {
+                            this.editable = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+        try {
+            const cmd = `-data-evaluate-expression "sizeof(${this.evaluateName})"`;
+            const miOutput = await gdbInstance.sendCommand(cmd, 100);
+            const record = miOutput.resultRecord?.result;
+            if (record && record["value"]) {
+                this.sizeof = parseInt(record["value"]);
+            }
+        } catch (e) {}
+        try {
+            const cmd = `-data-evaluate-expression "&(${this.evaluateName})"`;
+            const miOutput = await gdbInstance.sendCommand(cmd, 100);
+            const record = miOutput.resultRecord?.result;
+            if (record && record["value"]) {
+                const value = record["value"];
+                const addr = value.match(/0[xX][0-9a-fA-F]+/);
+                this.addressOf = addr ? addr[0] : undefined;
+            }
+        } catch (e) {}
     }
 }
 
@@ -446,13 +490,14 @@ export class VariableManager {
         } else if (scope === VariableScope.Static) {
             return this.getStaticVariables(threadId, frameId);
         } else if (scope & VariableTypeMask) {
+            const isClientVSCode = container === undefined;
             // If this is a variable, we need to get is thread/frame ids from the variable itself
             container = container ?? this.getContainer(scope);
             const variable = container.getVariableByRef(args.variablesReference);
             if (variable === undefined) {
                 Promise.reject(new Error(`No variable found for reference ${args.variablesReference}`));
             }
-            return this.getVariableChildren(container, variable);
+            return this.getVariableChildren(container, variable, isClientVSCode);
         }
     }
 
@@ -506,7 +551,7 @@ export class VariableManager {
         return ret;
     }
 
-    async getVariableChildren(container: VariableContainer | VariableContainerForGlobals, parent: VariableObject): Promise<GdbProtocolVariable[]> {
+    async getVariableChildren(container: VariableContainer | VariableContainerForGlobals, parent: VariableObject, isClientVSCode: boolean): Promise<GdbProtocolVariable[]> {
         try {
             // Check if this is a register group variable
             if (parent.scope === VariableScope.RegistersVariable && !parent.gdbVarName) {
@@ -518,6 +563,9 @@ export class VariableManager {
             parent.children = children;
             const protoVars: GdbProtocolVariable[] = [];
             for (const child of children) {
+                if (isClientVSCode) {
+                    await child.getGdbVarInfo(container.gdbInstance);
+                }
                 protoVars.push(child.toProtocolVariable());
             }
             return protoVars;
@@ -1151,6 +1199,9 @@ export class VariableManager {
                     result: newVar.value,
                     variablesReference: newVar.variablesReference,
                 };
+                if (!isClientVSCode) {
+                    await newVar.getGdbVarInfo(container.gdbInstance);
+                }
                 (response.body as any).variableObject = newVar.toProtocolVariable();
                 return;
             } else {
@@ -1167,6 +1218,9 @@ export class VariableManager {
                     result: existingVar.value,
                     variablesReference: existingVar.variablesReference,
                 };
+                if (!isClientVSCode) {
+                    await existingVar.getGdbVarInfo(container.gdbInstance);
+                }
                 (response.body as any).variableObject = existingVar.toProtocolVariable();
                 return;
             }
@@ -1368,4 +1422,43 @@ function checkIsPointer(type: string): boolean {
     // Pointer to array or function: "int (*)[10]"
     if (/\(\*\)/.test(type)) return true;
     return false;
+}
+
+async function getGdbVarInfo(gdbInstance: GdbInstance, varObj: VariableObject): Promise<{ size: number; editable: boolean; memoryReference?: string }> {
+    const gdbVarName = varObj.gdbVarName;
+    const obj = { size: 0, editable: false, memoryReference: undefined };
+    if (!gdbVarName) {
+        return obj;
+    }
+    try {
+        const cmd = `-var-show-attributes ${gdbVarName}`;
+        const miOutput = await gdbInstance.sendCommand(cmd, 100);
+        const record = miOutput.resultRecord?.result;
+        if (record && record["status"]) {
+            const items = record["status"].split(",");
+            for (const item of items) {
+                if (item === "editable") {
+                    obj.editable = true;
+                    break;
+                }
+            }
+        }
+    } catch (e) {}
+    try {
+        const cmd = `-data-evaluate-expression "sizeof(${varObj.evaluateName})"`;
+        const miOutput = await gdbInstance.sendCommand(cmd, 100);
+        const record = miOutput.resultRecord?.result;
+        if (record && record["value"]) {
+            obj.size = parseInt(record["value"]);
+        }
+    } catch (e) {}
+    try {
+        const cmd = `-data-evaluate-expression "&(${varObj.evaluateName})"`;
+        const miOutput = await gdbInstance.sendCommand(cmd, 100);
+        const record = miOutput.resultRecord?.result;
+        if (record && record["value"]) {
+            obj.memoryReference = record["value"];
+        }
+    } catch (e) {}
+    return obj;
 }

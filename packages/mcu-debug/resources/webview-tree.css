@@ -100,3 +100,36 @@ input {
     background: var(--vscode-menu-selectionBackground);
     color: var(--vscode-menu-selectionForeground);
 }
+
+.floating-editor {
+    position: fixed;
+    z-index: 2000;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-focusBorder);
+    box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+    padding: 8px;
+    min-width: 200px;
+}
+
+.floating-editor-title {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 6px;
+    font-weight: 500;
+}
+
+.floating-editor input {
+    width: 100%;
+    padding: 4px;
+    box-sizing: border-box;
+}
+
+.floating-editor-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1999;
+    background: transparent;
+}
