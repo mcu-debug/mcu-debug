@@ -18,6 +18,7 @@ ul {
     display: flex;
     align-items: center;
     padding: 2px 0;
+    position: relative;
 }
 .tree-content:hover {
     background: var(--vscode-list-hoverBackground);
@@ -33,9 +34,18 @@ input {
 .label {
     margin-right: 10px;
     color: var(--vscode-debugTokenExpression-name);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
 }
 .value {
     color: var(--vscode-debugTokenExpression-value);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 5px;
 }
 
 .changed {
@@ -46,9 +56,12 @@ input {
 
 .actions {
     display: none;
-    margin-left: auto;
-    padding-right: 5px;
+    position: absolute;
+    right: 0;
+    padding: 2px 5px;
     align-items: center;
+    background: var(--vscode-list-hoverBackground);
+    z-index: 10;
 }
 
 .tree-content:hover .actions {

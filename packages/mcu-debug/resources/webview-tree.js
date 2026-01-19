@@ -110,10 +110,14 @@ function generateItemContentHtml(item, isTopLevel) {
     }
 
     const chevronClass = item.expanded ? "codicon-chevron-down" : "codicon-chevron-right";
+    const labelEscaped = (item.label || "").replace(/"/g, "&quot;");
+    const valueEscaped = (item.value || "").replace(/"/g, "&quot;");
+    const editLabelWithTitle = editLabelText.replace(/(<span class="label"[^>]*>)/, `$1<span title="${labelEscaped}">`);
+    const editValueWithTitle = editValueText.replace(/(<span class="value[^"]*"[^>]*>)/, `$1<span title="${valueEscaped}">`);
     return `
         <span class="codicon ${chevronClass} ${item.hasChildren ? "" : "hidden"}" onclick="toggleExpand(event, '${item.id}')"></span>
-        ${editLabelText}
-        ${editValueText}
+        ${editLabelWithTitle}</span>
+        ${editValueWithTitle}</span>
         ${actionsHtml}
     `;
 }
