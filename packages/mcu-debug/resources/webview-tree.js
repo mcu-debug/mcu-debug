@@ -75,11 +75,10 @@ function generateItemContentHtml(item, isTopLevel) {
     if (item.hasChildren) {
         editValueButton = "";
         editValueText = `<span class="value ${item.changed ? "changed" : ""}">${item.value || ""}</span>\n`;
-        // editValueText = editValueText.replace(/ondblclick="startEdit\(this, '[^']+', 'value'\)"/, ""); // Remove dblclick for non-leafs
     }
     let hexFormat = `<span class="codicon codicon-variable-group" onclick="selectFormat(event, '${item.id}')" title="Select Format"></span>\n`;
 
-    if (isTopLevel && item.id !== "dummy-msg") {
+    if (isTopLevel) {
         actionsHtml = `
             <div class="actions">
                 <span class="codicon codicon-edit" onclick="editLabel(event, '${item.id}')" title="Edit Expression"></span>
@@ -90,7 +89,7 @@ function generateItemContentHtml(item, isTopLevel) {
                 <span class="codicon codicon-close" onclick="deleteItem(event, '${item.id}')" title="Delete"></span>
             </div>
         `;
-    } else if (item.id !== "dummy-msg" && !item.hasChildren) {
+    } else if (!item.hasChildren) {
         editLabelText = `<span class="label">${item.label}</span>\n`;
         actionsHtml = `
             <div class="actions">
@@ -99,7 +98,7 @@ function generateItemContentHtml(item, isTopLevel) {
             </div>
         `;
     }
-    if (item.id !== "dummy-msg" && !isTopLevel) {
+    if (!isTopLevel) {
         editLabelText = `<span class="label">${item.label}</span>\n`;
         actionsHtml = `
             <div class="actions">
@@ -240,7 +239,7 @@ window.startEdit = (element, id, field) => {
 
     input.onblur = () => {
         if (!cancelled && input.value !== currentVal) {
-            vscode.postMessage({ type: "edit", item: { id }, value: input.value });
+            vscode.postMessage({ type: "edit", item: { id }, field: field, value: input.value });
         }
         element.innerText = cancelled ? currentVal : input.value; // Restore original if cancelled
     };

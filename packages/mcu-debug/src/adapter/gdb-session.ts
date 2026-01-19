@@ -22,7 +22,7 @@ import { MemoryRequests } from "./memory";
 import { ServerConsoleLog } from "./server-console-log";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { VariableScope, getVariableClass } from "./var-scopes";
-import { RegisterClientResponse } from "./custom-requests";
+import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
 
 let SessionCounter = 0;
 
@@ -754,7 +754,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 break;
             case "setVariableLive":
                 if (this.liveWatchMonitor.enabled()) {
-                    const rsp: DebugProtocol.SetVariableResponse = {
+                    const rsp: SetVariableLiveResponse = {
                         ...response,
                         body: {
                             value: "",
@@ -762,6 +762,20 @@ export class GDBDebugSession extends SeqDebugSession {
                         },
                     };
                     return await this.liveWatchMonitor.setVariableRequest(rsp, args);
+                } else {
+                    this.sendResponse(response);
+                }
+                break;
+            case "setExpressionLive":
+                if (this.liveWatchMonitor.enabled()) {
+                    const rsp: SetExpressionLiveResponse = {
+                        ...response,
+                        body: {
+                            value: "",
+                            variablesReference: 0,
+                        },
+                    };
+                    return await this.liveWatchMonitor.setExpressionRequest(rsp, args);
                 } else {
                     this.sendResponse(response);
                 }

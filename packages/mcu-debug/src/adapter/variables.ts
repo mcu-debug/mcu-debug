@@ -214,6 +214,9 @@ export class VariableContainer {
     public hasGdbName(gdbVarName: string): boolean {
         return this.gdbVarNameToObjMap.has(gdbVarName);
     }
+    public getVariableByGdbName(gdbVarName: string): VariableObject | undefined {
+        return this.gdbVarNameToObjMap.get(gdbVarName);
+    }
     public numberOfGdbVariables(): number {
         return this.gdbVarNameToObjMap.size;
     }

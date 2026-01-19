@@ -127,29 +127,33 @@ export interface MemoryWriteLiveResponse extends DebugProtocol.WriteMemoryRespon
     };
 }
 
+// SetVariableArgumentsLive is used to set a variable that is a leaf-child of another variable
 export interface SetVariableArgumentsLive extends DebugProtocol.SetVariableArguments, CustomLiveCommand {
     command: "setVariableLive";
     variablesReference: number;
-    name: string;
+    gdbVarName?: string; // If supplied, this is the preferred method to identify the variable to set
+    name: string; // Required but not used if gdbVarName works.
     value: string;
 }
 
 export interface SetVariableLiveResponse extends DebugProtocol.SetVariableResponse {
     body: DebugProtocol.SetVariableResponse["body"] & {
-        gdbName?: string;
+        gdbVarName?: string;
         variableObject?: GdbProtocolVariable;
     };
 }
 
+// SetExpressionArgumentsLive is used to set a expression/variable that may be a root variable in a watch window
 export interface SetExpressionArgumentsLive extends DebugProtocol.SetExpressionArguments, CustomLiveCommand {
     command: "setExpressionLive";
     expression: string;
+    gdbVarName?: string; // If supplied, this is the preferred method to identify the variable to set
     value: string;
 }
 
 export interface SetExpressionLiveResponse extends DebugProtocol.SetExpressionResponse {
     body: DebugProtocol.SetExpressionResponse["body"] & {
-        gdbName?: string;
+        gdbVarName?: string;
         variableObject?: GdbProtocolVariable;
     };
 }

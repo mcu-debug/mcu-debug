@@ -11,6 +11,8 @@ import {
     EvaluateLiveResponse,
     VariablesRequestLiveArguments,
     LatestLiveSessionVersion,
+    SetVariableArgumentsLive,
+    SetExpressionArgumentsLive,
 } from "../../adapter/custom-requests";
 import { VarUpdateRecord } from "../../adapter/gdb-mi/mi-types";
 
@@ -149,6 +151,10 @@ export class LiveVariableNode {
 
     public getName() {
         return this.name;
+    }
+
+    public getValue() {
+        return this.value;
     }
 
     public findName(str: string): LiveVariableNode | undefined {
@@ -587,7 +593,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
     public static session: vscode.DebugSession | undefined;
     public state: vscode.TreeItemCollapsibleState;
     private toBeDeleted: Set<string> = new Set<string>();
-    private isStopped = true;
+    private sessionStatus: "stopped" | "running" | "none" = "none";
     private readonly clientId = "mcu-debug-live-watch-tree-provider";
     private liveSessionVersion = LatestLiveSessionVersion;
     private liveSessionId: string | undefined;
@@ -630,17 +636,58 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         return children.map((c) => c.toWebviewTreeItem());
     }
 
-    async onEdit(item: WebviewTreeItem, newValue: string): Promise<void> {
+    async onEditName(item: WebviewTreeItem, newName: string): Promise<void> {
         const node = this.findNodeById(this.rootNode, item.id);
         if (node && node.isRootChild()) {
-            if (node.getName() !== newValue) {
-                if (this.rootNode.findName(newValue)) {
-                    vscode.window.showInformationMessage(`Live Watch: Expression ${newValue} is already being watched`);
+            if (node.getName() !== newName) {
+                if (this.rootNode.findName(newName)) {
+                    vscode.window.showInformationMessage(`Live Watch: Expression ${newName} is already being watched`);
                 } else {
-                    node.rename(newValue);
+                    node.rename(newName);
                     this.saveState();
                     this.refresh(LiveWatchTreeProvider.session);
                 }
+            }
+        }
+    }
+
+    async onEditValue(item: WebviewTreeItem, newValue: string): Promise<void> {
+        const session = LiveWatchTreeProvider.session;
+        if (!session || this.liveSessionId === undefined) {
+            vscode.window.showErrorMessage("Live Watch: No active debug session to set variable value");
+            return;
+        }
+
+        const node = this.findNodeById(this.rootNode, item.id);
+        if (!node || node.isDummyNode()) {
+            return;
+        }
+        if (node.isComposite()) {
+            vscode.window.showErrorMessage("Live Watch: Cannot set value of composite (arrays/structs) variables");
+            return;
+        }
+        if (node.getValue() !== newValue) {
+            const setV: SetVariableArgumentsLive = {
+                name: node.getName(),
+                value: newValue,
+                command: "setVariableLive",
+                variablesReference: node.variablesReference,
+                sessionId: this.liveSessionId,
+            };
+            const setE: SetExpressionArgumentsLive = {
+                expression: node.getName(),
+                value: newValue,
+                command: "setExpressionLive",
+                sessionId: this.liveSessionId,
+            };
+            const arg = node.isRootChild() ? setE : setV;
+            arg.gdbVarName = node.gdbVarName;
+            try {
+                // If it truly succeeds, the next update from the debug session will update the value
+                // Try here will fail if API used incorrectly
+                await session.customRequest(arg.command, arg);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Live Watch: Failed to set variable ${node.getName()}: ${e}`);
             }
         }
     }
@@ -842,7 +889,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
 
     public debugSessionTerminated(session: vscode.DebugSession) {
         if (this.isSameSession(session)) {
-            this.isStopped = true;
+            this.sessionStatus = "none";
             LiveWatchTreeProvider.session = undefined;
             this.fire();
             this.saveState();
@@ -875,6 +922,9 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         const session = e_.session;
         if (!this.isSameSession(session)) {
             return;
+        }
+        if (this.sessionStatus !== "stopped") {
+            this.sessionStatus = "running";
         }
         const e = e_ as any as LiveConnectedEvent;
         const req: RegisterClientRequest = {
@@ -911,7 +961,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
             return;
         }
         LiveWatchTreeProvider.session = session;
-        this.isStopped = true;
+        this.sessionStatus = "none";
         this.rootNode.reset(true);
         this.clearGdbVarNameMap();
         this.toBeDeleted.clear();
@@ -919,13 +969,13 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
 
     public debugStopped(session: vscode.DebugSession) {
         if (this.isSameSession(session)) {
-            this.isStopped = true;
+            this.sessionStatus = "stopped";
         }
     }
 
     public debugContinued(session: vscode.DebugSession) {
         if (this.isSameSession(session)) {
-            this.isStopped = false;
+            this.sessionStatus = "running";
         }
     }
 

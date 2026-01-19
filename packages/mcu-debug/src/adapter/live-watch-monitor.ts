@@ -3,11 +3,21 @@ import * as crypto from "crypto";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
-import { VariableContainer, VariableManager } from "./variables";
+import { VariableContainer, VariableManager, VariableObject } from "./variables";
 import { GdbEventNames, Stderr, MIError, MINode, VarUpdateRecord } from "./gdb-mi/mi-types";
 import { expandValue } from "./gdb-mi/gdb_expansion";
 import { VariableScope } from "./var-scopes";
-import { LiveConnectedEvent, LiveUpdateEvent, RegisterClientRequest, RegisterClientResponse, DeleteLiveGdbVariables } from "./custom-requests";
+import {
+    LiveConnectedEvent,
+    LiveUpdateEvent,
+    RegisterClientRequest,
+    RegisterClientResponse,
+    DeleteLiveGdbVariables,
+    SetVariableArgumentsLive,
+    SetExpressionArgumentsLive,
+    SetVariableLiveResponse,
+    SetExpressionLiveResponse,
+} from "./custom-requests";
 import { DebugFlags } from "./servers/common";
 import { MemoryRequests } from "./memory";
 
@@ -329,7 +339,34 @@ export class LiveWatchMonitor {
         }
     }
 
-    public async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): Promise<void> {
+    private async setByGdbVarName(response: SetVariableLiveResponse, varObj: VariableObject, argValue: string): Promise<void> {
+        const gdbVarName = varObj.gdbVarName!;
+        const cmd = `-var-assign ${gdbVarName} ${argValue}`;
+        try {
+            const miOutput = await this.gdbInstance!.sendCommand(cmd);
+            const result = miOutput.resultRecord?.result;
+            if (result && result["value"]) {
+                const newValue = result["value"];
+                if (newValue !== argValue) {
+                    throw new Error(`GDB could not update value to '${argValue}'`);
+                }
+                varObj.value = newValue;
+                response.body = {
+                    value: newValue,
+                    gdbVarName: gdbVarName,
+                    variableObject: varObj.toProtocolVariable(),
+                };
+                this.sendResponse(response);
+                return;
+            } else {
+                throw new Error(`No value returned from GDB`);
+            }
+        } catch (e) {
+            throw new Error(`Could not set variable with GDB name '${gdbVarName}': ${e}`);
+        }
+    }
+
+    public async setVariableRequest(response: SetVariableLiveResponse, args: SetVariableArgumentsLive): Promise<void> {
         if (this.liveWatchEnabled === false) {
             this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
             return;
@@ -341,14 +378,27 @@ export class LiveWatchMonitor {
             if (!clientSession) {
                 throw new Error(`Invalid session ID '${(args as any).sessionId}'`);
             }
+            const gdbVarName = args.gdbVarName;
+            const varObj = gdbVarName ? clientSession.container.getVariableByGdbName(gdbVarName) : undefined;
+            if (varObj) {
+                try {
+                    await this.setByGdbVarName(response, varObj, args.value);
+                    return;
+                } catch (e) {
+                    throw e;
+                }
+            }
+
             response.body = await this.varManager.setVariable(args, clientSession.container);
             this.sendResponse(response);
         } catch (e) {
             this.handleErrResponse(response, `SetVariable request failed: ${e}`);
+        } finally {
+            this.handlingRequest = false;
         }
     }
 
-    public async setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments): Promise<void> {
+    public async setExpressionRequest(response: SetExpressionLiveResponse, args: SetExpressionArgumentsLive): Promise<void> {
         if (this.liveWatchEnabled === false) {
             this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
             return;
@@ -360,10 +410,23 @@ export class LiveWatchMonitor {
             if (!clientSession) {
                 throw new Error(`Invalid session ID '${(args as any).sessionId}'`);
             }
+            const gdbVarName = args.gdbVarName;
+            const varObj = gdbVarName ? clientSession.container.getVariableByGdbName(gdbVarName) : undefined;
+            if (varObj) {
+                try {
+                    await this.setByGdbVarName(response, varObj, args.value);
+                    return;
+                } catch (e) {
+                    throw e;
+                }
+            }
+
             response.body = await this.varManager.setExpression(args, clientSession.container);
             this.sendResponse(response);
         } catch (e) {
             this.handleErrResponse(response, `SetExpression request failed: ${e}`);
+        } finally {
+            this.handlingRequest = false;
         }
     }
 

@@ -14,7 +14,8 @@ export interface TreeItem {
 
 export interface TreeViewProviderDelegate {
     getChildren(element?: TreeItem): Promise<TreeItem[]>;
-    onEdit(item: TreeItem, newValue: string): Promise<void>;
+    onEditName(item: TreeItem, newValue: string): Promise<void>;
+    onEditValue(item: TreeItem, newValue: string): Promise<void>;
     onDelete?(item: TreeItem): Promise<void>;
     onAdd?(value: string): Promise<void>;
     onMoveUp?(item: TreeItem): Promise<void>;
@@ -52,7 +53,11 @@ export class EditableTreeViewProvider implements vscode.WebviewViewProvider {
                     this._view?.webview.postMessage({ type: "setChildren", element: data.element, children });
                     break;
                 case "edit":
-                    await this._delegate.onEdit(data.item, data.value);
+                    if (data.field && data.field === "label") {
+                        await this._delegate.onEditName(data.item, data.value);
+                    } else {
+                        await this._delegate.onEditValue(data.item, data.value);
+                    }
                     this.refresh();
                     break;
                 case "add":
