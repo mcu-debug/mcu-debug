@@ -31,6 +31,8 @@ export class GdbInstance extends EventEmitter {
     public suppressConsoleOutput: boolean = false;
     public gdbPath: string = "arm-none-eabi-gdb";
     public gdbArgs: string[] = ["--interpreter=mi3", "-q"];
+    public static readonly DefaultCommandTimeout: number = 10000;
+    public currentCommandTimeout: number = GdbInstance.DefaultCommandTimeout; // Setting to 0 ms disables timeouts
     gdbMajorVersion: number = 0;
     gdbMinorVersion: number = 0;
 
@@ -41,6 +43,9 @@ export class GdbInstance extends EventEmitter {
 
     IsRunning() {
         return this.status === "running";
+    }
+    IsStopped() {
+        return this.status === "stopped";
     }
 
     IsGdbRunning() {
@@ -246,6 +251,7 @@ export class GdbInstance extends EventEmitter {
             }
             for (const record of miOutput.outOfBandRecords) {
                 if (record.recordType === "async") {
+                    this.currentOutofBandRecords = [];
                     const className = record.class;
                     if (className === "stopped") {
                         this.handleStopped(miOutput);
@@ -337,6 +343,10 @@ export class GdbInstance extends EventEmitter {
             cmd.reject(new Error("GDB session stopping"));
         }
         this.pendingCmds.clear();
+        while (this.commandQueue.length > 0) {
+            const item = this.commandQueue.shift()!;
+            item.reject(new Error("GDB session stopping"));
+        }
 
         return new Promise<void>((resolve) => {
             let isResolved = false;
@@ -380,7 +390,40 @@ export class GdbInstance extends EventEmitter {
         });
     }
 
-    sendCommand(command: string, timeout: number = 10000): Promise<GdbMiOutput> {
+    private commandQueue: CommandQueueItem[] = [];
+    private isProcessingQueue: boolean = false;
+    public sendCommand(command: string, timeout: number = this.currentCommandTimeout): Promise<GdbMiOutput> {
+        return new Promise<GdbMiOutput>((resolve, reject) => {
+            this.commandQueue.push({
+                command,
+                resolve,
+                reject,
+                timeout,
+            });
+            this.processCommandQueue();
+        });
+    }
+
+    private async processCommandQueue() {
+        if (this.isProcessingQueue) {
+            return;
+        }
+        this.isProcessingQueue = true;
+
+        while (this.commandQueue.length > 0) {
+            const item = this.commandQueue.shift()!;
+            try {
+                const result = await this.sendCommandInternal(item.command, item.timeout);
+                item.resolve(result);
+            } catch (e) {
+                item.reject(e);
+            }
+        }
+
+        this.isProcessingQueue = false;
+    }
+
+    private sendCommandInternal(command: string, timeout: number): Promise<GdbMiOutput> {
         if (!command.startsWith("-")) {
             command = "-" + command;
         }
@@ -404,7 +447,7 @@ export class GdbInstance extends EventEmitter {
             };
 
             let timer: NodeJS.Timeout | undefined;
-            if (timeout > 250 && !this.debugFlags.disableGdbTimeouts) {
+            if (timeout > 0 && !this.debugFlags.disableGdbTimeouts) {
                 timer = setTimeout(() => {
                     timer = undefined;
                     if (this.pendingCmds.has(seq)) {
@@ -447,4 +490,11 @@ export class GdbInstance extends EventEmitter {
             return this.sendCommand(`interpreter-exec console "${command}"`);
         }
     }
+}
+
+interface CommandQueueItem {
+    command: string;
+    resolve: (value: GdbMiOutput) => void;
+    reject: (reason?: any) => void;
+    timeout: number;
 }

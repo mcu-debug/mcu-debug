@@ -569,7 +569,7 @@ export function parseHexOrDecInt(str: string): number {
     return str.startsWith("0x") ? parseInt(str.substring(2), 16) : parseInt(str, 10);
 }
 
-export function toStringDecHexOctBin(val: number /* should be an integer */): string {
+export function toStringDecHexOctBinObsolete(val: number /* should be an integer */): string {
     if (Number.isNaN(val)) {
         return "NaN: Not a number";
     }
@@ -608,7 +608,15 @@ export function toStringDecHexOctBin(val: number /* should be an integer */): st
 }
 
 export function toStringDecHexOctBin32or64(val: bigint, is64: boolean = false): string {
-    const bitWidth = is64 ? 64n : 32n;
+    if (is64) {
+        return toStringDecHexOctBin(val, 64);
+    } else {
+        return toStringDecHexOctBin(val, 32);
+    }
+}
+
+export function toStringDecHexOctBin(val: bigint, bitWidth_: number): string {
+    const bitWidth = BigInt(bitWidth_);
     let ret = `dec: ${val}`;
     if (val < 0) {
         val = (1n << bitWidth) + val;

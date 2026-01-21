@@ -5,7 +5,9 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { copyInterfaceProperties, toStringDecHexOctBin, toStringDecHexOctBin32or64 } from "./servers/common";
 import { GdbProtocolVariable, GdbProtocolVariableTemplate } from "./custom-requests";
-import { VariableScope, VariableTypeMask, decodeReference, encodeReference, ActualScopeMask, ScopeBits, ScopeMask } from "./var-scopes";
+import { VariableScope, VariableTypeMask, decodeReference, ActualScopeMask, ScopeBits, ScopeMask, encodeScopeReference, encodeVarReference } from "./var-scopes";
+import { DataEvaluateExpression, DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";
+import { TargetInfo } from "./target-info";
 
 // These are the fields that uniquely identify a variable
 export class VariableKeys implements IValueIdentifiable {
@@ -13,7 +15,10 @@ export class VariableKeys implements IValueIdentifiable {
         public readonly parent: number,
         public readonly name: string,
         public readonly frameRef: number,
-    ) {}
+    ) {
+        // All variable keys have the VariableTypeMask set, regardless of the container
+        this.frameRef |= VariableTypeMask;
+    }
     toValueKey(): string {
         return `${this.parent}|${this.name}|${this.frameRef}`;
     }
@@ -25,7 +30,7 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
     public gdbVarName?: string; // The GDB variable name associated with this object, if any
     public fileName?: string; // For global/static variables, the file they belong to
     public sizeof?: number; // Size of the variable in bytes
-    public editable?: boolean; // Is the variable editable
+    public editable?: "true" | "false" | undefined; // Is the variable editable
     public addressOf?: string; // Address of the variable in memory, if known
     constructor(
         public readonly scope: VariableScope,
@@ -47,36 +52,25 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
         this.scope |= VariableTypeMask;
     }
 
-    toProtocolEvaluateResponseBody(): {
-        result: string;
-        type?: string;
-        presentationHint?: DebugProtocol.VariablePresentationHint;
-        variablesReference: number;
-        namedVariables?: number;
-        indexedVariables?: number;
-        memoryReference?: string;
-        valueLocationReference?: number;
-    } {
-        throw new Error("Method not implemented.");
-    }
-
     public isCompound(): boolean {
         return this.numchild > 0 || this.value === "{...}" || (this.dynamic && (this.displayhint === "array" || this.displayhint === "map"));
     }
 
     public createToolTip(name: string, value: string): string {
         let ret = this.type;
-        if (this.isCompound()) {
+        if (this.isCompound() || !value) {
             return ret;
         }
 
         let val = BigInt(0);
+        value = value.split(" ")[0];
         if (/^0[x][0-9a-f]+/i.test(value) || /^[-]?[0-9]+$/.test(value)) {
             const is64 = (value.startsWith("0x") && value.length > 18) || this.type.includes("long long") || this.type.includes("int64");
             val = BigInt(value.toLowerCase());
 
             ret += " " + name + ";\n";
-            ret += toStringDecHexOctBin32or64(val, is64);
+            const bitWidth = this.sizeof ? this.sizeof * 8 : is64 ? 64 : 32;
+            ret += toStringDecHexOctBin(val, bitWidth);
         }
         return ret;
     }
@@ -84,6 +78,24 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
     toProtocolVariable(): GdbProtocolVariable {
         const ret = copyInterfaceProperties<GdbProtocolVariable, VariableObject>(this, GdbProtocolVariableTemplate);
         ret.type = this.createToolTip(this.name, this.value);
+        if (this.gdbVarName) {
+            const attrs = [];
+            if (this.editable === "false") {
+                attrs.push("readOnly");
+            }
+            if (this.gdbVarName.startsWith("S-")) {
+                attrs.push("static");
+            }
+            if (this.gdbVarName.startsWith("G-")) {
+                attrs.push("global");
+            }
+            if (attrs.length > 0) {
+                ret.presentationHint = {
+                    attributes: attrs,
+                };
+            }
+        }
+        VariableManager.setMemoryReference(ret as any, this.value);
         return ret;
     }
 
@@ -109,45 +121,71 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
         this.hasMore = !!parseInt(record["has_more"] ?? "0");
     }
 
-    public async getGdbVarInfo(gdbInstance: GdbInstance): Promise<void> {
+    // Expensive: Queries GDB for the sizeof of the variable
+    public async querySizeof(gdbInstance: GdbInstance): Promise<number | null | undefined> {
+        try {
+            if (!this.sizeof) {
+                const size = await DataEvaluateExpressionAsNumber(gdbInstance, `sizeof(${this.evaluateName})`);
+                if (size !== null) {
+                    this.sizeof = size;
+                }
+            }
+        } catch (e) {}
+        return this.sizeof || null;
+    }
+
+    // Expensive: Queries GDB for the sizeof of the variable
+    private async queryEditable(gdbInstance: GdbInstance, force = false): Promise<"true" | "false" | null | undefined> {
         try {
             const gdbVarName = this.gdbVarName;
-            if (gdbVarName) {
-                const cmd = `-var-show-attributes ${gdbVarName}`;
-                const miOutput = await gdbInstance.sendCommand(cmd, 100);
-                const record = miOutput.resultRecord?.result;
-                if (record && record["attr"]) {
-                    const items = record["attr"].split(",");
+            if (gdbVarName && (!this.addressOf || force)) {
+                // If address was known we already know if it is editable
+                const result = await GdbMiOrCliCommandForOob(gdbInstance, `-var-show-attributes ${gdbVarName}`);
+                if (typeof result === "object" && !Array.isArray(result) && result !== null && result["attr"]) {
+                    const items = result["attr"].split(",");
                     for (const item of items) {
-                        if (item.trim() === "editable") {
-                            this.editable = true;
-                            break;
-                        } else if (item.trim() === "noneditable") {
-                            this.editable = false;
+                        // dont trst gdb if it says editable
+                        if (item.trim() === "noneditable") {
+                            this.editable = "false";
                             break;
                         }
                     }
                 }
             }
         } catch (e) {}
+        return this.editable;
+    }
+
+    // Determines the address of an item and if so also determines if it is editable
+    // Expensive: Queries GDB for the sizeof of the variable
+    private async queryAddressOf(gdbInstance: GdbInstance, force = false): Promise<string | null | undefined> {
         try {
-            const cmd = `-data-evaluate-expression "sizeof(${this.evaluateName})"`;
-            const miOutput = await gdbInstance.sendCommand(cmd, 100);
-            const record = miOutput.resultRecord?.result;
-            if (record && record["value"]) {
-                this.sizeof = parseInt(record["value"]);
+            if (this.addressOf && !force) {
+                return this.addressOf;
             }
-        } catch (e) {}
-        try {
-            const cmd = `-data-evaluate-expression "&(${this.evaluateName})"`;
-            const miOutput = await gdbInstance.sendCommand(cmd, 100);
-            const record = miOutput.resultRecord?.result;
-            if (record && record["value"]) {
-                const value = record["value"];
+            const value = await DataEvaluateExpression(gdbInstance, `&(${this.evaluateName})`);
+            if (value) {
                 const addr = value.match(/0[xX][0-9a-fA-F]+/);
                 this.addressOf = addr ? addr[0] : undefined;
+                const addressBigInt = BigInt(this.addressOf ?? "0");
+                if (this.addressOf) {
+                    const addressBigInt = BigInt(this.addressOf);
+                    if (TargetInfo.Instance.getMemoryRegions().isWritableAtAddress(addressBigInt)) {
+                        this.editable = "true";
+                    } else {
+                        this.editable = "false";
+                    }
+                }
             }
         } catch (e) {}
+        return this.addressOf || null;
+    }
+
+    // Expensive: Queries GDB for the sizeof of the variable and other info
+    public async queryGdbVarInfo(gdbInstance: GdbInstance): Promise<void> {
+        await this.queryAddressOf(gdbInstance);
+        await this.queryEditable(gdbInstance);
+        await this.querySizeof(gdbInstance);
     }
 }
 
@@ -169,8 +207,12 @@ export class VariableContainer {
         public readonly prefix: string,
     ) {}
 
+    isGlobal(): boolean {
+        return false;
+    }
+
     public calcFrameRef(threadIdOrFileId: number, frameId: number, scope: VariableScope): number {
-        return encodeReference(threadIdOrFileId, frameId, scope & ActualScopeMask);
+        return encodeScopeReference(threadIdOrFileId, frameId, scope);
     }
     public createVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, threadId: number, frameId: number): [VariableObject, number] {
         const varRef = this.calcFrameRef(threadId, frameId, scope & ActualScopeMask);
@@ -273,6 +315,10 @@ export class VariableContainerForGlobals extends VariableContainer {
     private fileIdToFile = new Map<number, string>();
     private nextFileId = 1; // Start from 1, 0 means all files
 
+    isGlobal(): boolean {
+        return true;
+    }
+
     public createGlobalVariable(scope: VariableScope, parent: number, name: string, value: string, type: string, fileName: string): [VariableObject, number] {
         const fileId = this.getFileId(fileName);
         const [varObj, handle] = super.createVariable(scope, parent, name, value, type, fileId || 0, 0);
@@ -348,12 +394,8 @@ interface RegisterInfo {
     number: number;
     groups: string[];
 }
-
 export class VariableManager {
     public static readonly GlobalFileName = ":global:";
-    private globalContainer: VariableContainerForGlobals;
-    private localContainer: VariableContainer;
-    private dynamicContainer: VariableContainer;
     private frameHandles = new ValueHandleRegistryPrimitive<number>();
     private containers = new Map<VariableScope, VariableContainer>();
     private regFormat = "x"; // Default to Natural format
@@ -365,20 +407,21 @@ export class VariableManager {
         gdbInstance_: GdbInstance, // Should never need thhis directly, kept in respective containers
         private debugSession: GDBDebugSession,
     ) {
-        this.globalContainer = new VariableContainerForGlobals(gdbInstance_, VariableScope.Global, "G-");
-        this.localContainer = new VariableContainer(gdbInstance_, VariableScope.Local, "L-");
-        this.dynamicContainer = new VariableContainer(gdbInstance_, VariableScope.Watch, "W-");
-
-        // These two scopes need a thread/frame associated with them
-        this.containers.set(VariableScope.Global, this.globalContainer);
-        this.containers.set(VariableScope.Static, this.globalContainer);
-
+        const createContainer = (scope: VariableScope, prefix: string, isGlobal: boolean): void => {
+            if (isGlobal) {
+                this.containers.set(scope, new VariableContainerForGlobals(gdbInstance_, scope, prefix));
+            } else {
+                this.containers.set(scope, new VariableContainer(gdbInstance_, scope, prefix));
+            }
+        };
         //These two scopes are for globals and statics only
-        this.containers.set(VariableScope.Local, this.localContainer);
-        this.containers.set(VariableScope.Registers, this.localContainer);
+        createContainer(VariableScope.Global, "G-", true);
+        createContainer(VariableScope.Static, "S-", true);
 
-        // These scopes are dynamic and can be released individually
-        this.containers.set(VariableScope.Watch, this.dynamicContainer);
+        // These two scopes need a thread/frame associated with them. Need to be released on continue
+        createContainer(VariableScope.Local, "L-", false);
+        createContainer(VariableScope.Watch, "W-", false); // These hold all watch/hover variables
+        createContainer(VariableScope.Registers, "R-", false);
     }
 
     // All containers are created in the constructor. Then are make for the
@@ -444,7 +487,7 @@ export class VariableManager {
     }
 
     public addFrameInfo(threadId: number, frameId: number, scope: VariableScope): VariableReference {
-        const h = encodeReference(threadId, frameId, scope);
+        const h = encodeScopeReference(threadId, frameId, scope);
         return this.frameHandles.add(h);
     }
 
@@ -454,8 +497,11 @@ export class VariableManager {
                 this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error deleting GDB variable ${str} on stop/continue\n`);
             }
         };
-        await this.localContainer.clear(err);
-        await this.dynamicContainer.clear(err);
+        for (const container of this.containers.values()) {
+            if (!container.isGlobal()) {
+                await container.clear(err);
+            }
+        }
         this.frameHandles.clear();
         this.registerValuesMap.clear();
     }
@@ -510,16 +556,24 @@ export class VariableManager {
                 return container.parseMiVariable(name, item, parent.scope, parent.handle, threadId, frameId);
             }
         };
-        const miOutput = await container.gdbInstance.sendCommand(`var-list-children --all-values "${gdbName}"`);
+        const miOutput = await container.gdbInstance.sendCommand(`-var-list-children --all-values "${gdbName}"`);
         const keywords = ["private", "protected", "public"];
         const children = miOutput.resultRecord.result["children"] || [];
         const ret: VariableObject[] = [];
+        let sizeof: number | null | undefined = null;
+        let isArray: boolean | null = null;
+        let addr: bigint | null = null;
+        if (parent.addressOf) {
+            addr = BigInt(parent.addressOf.split(" ")[0]);
+        }
         for (const item of children) {
             const gdbVarName = item["name"];
             const exp = item["exp"];
             if (exp && exp.startsWith("<anonymous ")) {
+                isArray = false;
                 ret.push(...(await this.varListChildren(container, parent, gdbVarName, threadId, frameId)));
             } else if (exp && keywords.find((x) => x === exp)) {
+                isArray = false;
                 ret.push(...(await this.varListChildren(container, parent, gdbVarName, threadId, frameId)));
             } else {
                 const [child, handle] = createVariable(exp, item);
@@ -531,6 +585,21 @@ export class VariableManager {
                     child.variablesReference = handle!;
                 }
                 child.applyChanges(item);
+                if (isArray === null) {
+                    isArray = child.exp.match(/^[\d]+$/) !== null;
+                    if (isArray) {
+                        sizeof = await child.querySizeof(container.gdbInstance);
+                    }
+                }
+                if (isArray && sizeof) {
+                    child.sizeof = sizeof;
+                    if (addr) {
+                        child.addressOf = "0x" + (addr + BigInt(sizeof) * BigInt(child.exp)).toString(16);
+                    }
+                }
+                if (parent.editable !== undefined) {
+                    child.editable = parent.editable;
+                }
                 child.evaluateName = constructEvaluateName(parent.evaluateName, parent.type, child.exp);
                 if (/[^\d\w\.]/i.test(parent.evaluateName) && !/^\d+$/.test(child.exp)) {
                     try {
@@ -564,7 +633,7 @@ export class VariableManager {
             const protoVars: GdbProtocolVariable[] = [];
             for (const child of children) {
                 if (isClientVSCode) {
-                    await child.getGdbVarInfo(container.gdbInstance);
+                    await child.queryGdbVarInfo(container.gdbInstance);
                 }
                 protoVars.push(child.toProtocolVariable());
             }
@@ -588,7 +657,7 @@ export class VariableManager {
 
         try {
             // Get all register values
-            const ref = encodeReference(threadId, frameId, VariableScope.Registers);
+            const ref = encodeScopeReference(threadId, frameId, VariableScope.Registers);
             let miOutput: GdbMiOutput = this.registerValuesMap.get(ref);
             if (!miOutput) {
                 const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
@@ -625,7 +694,7 @@ export class VariableManager {
                     }
 
                     const regName = regInfo.name;
-                    const key = new VariableKeys(groupVar.handle, regName, encodeReference(threadId, frameId, VariableScope.Registers));
+                    const key = new VariableKeys(groupVar.handle, regName, encodeVarReference(threadId, frameId, VariableScope.Registers));
                     const existingVar = container.getVariableByKey(key);
 
                     try {
@@ -684,7 +753,7 @@ export class VariableManager {
                     if (container.gdbInstance.IsRunning()) {
                         break;
                     }
-                    const key = new VariableKeys(0, v["name"], encodeReference(threadId, frameId, VariableScope.Local));
+                    const key = new VariableKeys(0, v["name"], encodeVarReference(threadId, frameId, VariableScope.Local));
                     const existingVar = container.getVariableByKey(key);
                     try {
                         if (existingVar === undefined) {
@@ -873,7 +942,7 @@ export class VariableManager {
             const displayName = group.name.charAt(0).toUpperCase() + group.name.slice(1);
 
             // Create a group variable
-            const key = new VariableKeys(0, displayName, encodeReference(threadId, frameId, VariableScope.Registers));
+            const key = new VariableKeys(0, displayName, encodeVarReference(threadId, frameId, VariableScope.Registers));
             let groupVar = container.getVariableByKey(key) as VariableObject | undefined;
 
             if (groupVar === undefined) {
@@ -895,7 +964,7 @@ export class VariableManager {
 
         // Add Misc group if there are registers that don't belong to any user group
         if (hasMiscRegisters) {
-            const key = new VariableKeys(0, "Misc", encodeReference(threadId, frameId, VariableScope.Registers));
+            const key = new VariableKeys(0, "Misc", encodeVarReference(threadId, frameId, VariableScope.Registers));
             let groupVar = container.getVariableByKey(key) as VariableObject | undefined;
 
             if (groupVar === undefined) {
@@ -922,7 +991,7 @@ export class VariableManager {
         try {
             const vars = this.debugSession.symbolTable.getGlobalVariables();
             const variables: GdbProtocolVariable[] = [];
-            const container = this.globalContainer;
+            const container = this.getContainer(VariableScope.Global) as VariableContainerForGlobals;
             const fileId = container.getFileId(VariableManager.GlobalFileName);
             const useRef = container.calcFrameRef(fileId, 0, VariableScope.GlobalVariable);
             for (const v of vars) {
@@ -976,7 +1045,7 @@ export class VariableManager {
     public async getStaticVariables(fileId: number, fullFileId: number): Promise<GdbProtocolVariable[]> {
         try {
             const variables: GdbProtocolVariable[] = [];
-            const container = this.globalContainer;
+            const container = this.getContainer(VariableScope.Static) as VariableContainerForGlobals;
             const fileName = this.debugSession.getFileById(fileId);
             const fullFileName = this.debugSession.getFileById(fullFileId);
             let useName = fullFileName;
@@ -1061,7 +1130,7 @@ export class VariableManager {
                         this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Invalid register number: ${r["number"]}\n`);
                         continue;
                     }
-                    const key = new VariableKeys(0, regName, encodeReference(threadId, frameId, VariableScope.Registers));
+                    const key = new VariableKeys(0, regName, encodeVarReference(threadId, frameId, VariableScope.Registers));
                     const existingVar = container.getVariableByKey(key);
                     try {
                         if (existingVar === undefined) {
@@ -1103,7 +1172,8 @@ export class VariableManager {
             return `\n    ${nm}: ${v.toString()}`;
         };
         const intval = parseInt(reg.value.toLowerCase());
-        let rType = `Register: $${reg} Thread#${threadId}, Frame#${frameId}\n` + toStringDecHexOctBin(intval);
+        const nBits = (TargetInfo.Instance.getPointerSize() || 4) * 8;
+        let rType = `Register: $${reg} Thread#${threadId}, Frame#${frameId}\n` + toStringDecHexOctBin(BigInt(intval), nBits);
         if (name === "$xpsr") {
             rType += field("Negative Flag (N)", 31, 1);
             rType += field("Zero Flag (Z)", 30, 1);
@@ -1159,13 +1229,20 @@ export class VariableManager {
         return [this.createGdbName(container, gdbName, thread, frame), newExpr, suffix];
     }
 
+    public static setMemoryReference(obj: { memoryReference: string }, value: string) {
+        if (value && obj && /^0x[0-9a-f]+/i.test(value)) {
+            obj.memoryReference = value.split(" ")[0]; // In case value has extra info after space
+        }
+    }
+
     public async evaluateExpression(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, container?: VariableContainer): Promise<void> {
         const isClientVSCode = container === undefined;
         try {
             const [thread, frame, _] = args.frameId ? this.getVarOrFrameInfo(args.frameId!) : [0, 0, VariableScope.Global];
             const scope = VariableScope.WatchVariable;
             container = container ?? this.getContainer(scope);
-            const existingVar = container.getVariableByKey(new VariableKeys(0, args.expression.trim(), encodeReference(thread, frame, scope)));
+            const key = new VariableKeys(0, args.expression.trim(), encodeVarReference(thread, frame, scope));
+            const existingVar = container.getVariableByKey(key);
             if (existingVar === undefined) {
                 const [gdbName, expr, suffix] = this.fmtExpr(container, args.expression, thread, frame);
                 let cmd = `-var-create --thread ${thread} --frame ${frame} ${gdbName} * "${expr}"`;
@@ -1199,8 +1276,9 @@ export class VariableManager {
                     result: newVar.value,
                     variablesReference: newVar.variablesReference,
                 };
+                VariableManager.setMemoryReference(response.body as any, value);
                 if (!isClientVSCode) {
-                    await newVar.getGdbVarInfo(container.gdbInstance);
+                    await newVar.queryGdbVarInfo(container.gdbInstance);
                 }
                 (response.body as any).variableObject = newVar.toProtocolVariable();
                 return;
@@ -1219,8 +1297,9 @@ export class VariableManager {
                     variablesReference: existingVar.variablesReference,
                 };
                 if (!isClientVSCode) {
-                    await existingVar.getGdbVarInfo(container.gdbInstance);
+                    await existingVar.queryGdbVarInfo(container.gdbInstance);
                 }
+                VariableManager.setMemoryReference(response.body as any, existingVar.value);
                 (response.body as any).variableObject = existingVar.toProtocolVariable();
                 return;
             }
@@ -1243,14 +1322,13 @@ export class VariableManager {
      */
     public async setVariable(args: DebugProtocol.SetVariableArguments, container?: VariableContainer): Promise<DebugProtocol.SetVariableResponse["body"]> {
         let [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference);
-        const actualScope = scope & ActualScopeMask; // Scope for the container
         let targetKey: VariableKeys;
-        container = container ?? this.getContainer(actualScope);
+        container = container ?? this.getContainer(scope);
         if (args.variablesReference & VariableTypeMask) {
             const parentObject = this.getVariableObject(args.variablesReference, container);
-            targetKey = new VariableKeys(parentObject.handle, args.name, encodeReference(threadId, frameId, actualScope));
+            targetKey = new VariableKeys(parentObject.handle, args.name, encodeVarReference(threadId, frameId, scope));
         } else {
-            targetKey = new VariableKeys(0, args.name, encodeReference(threadId, frameId, actualScope));
+            targetKey = new VariableKeys(0, args.name, encodeVarReference(threadId, frameId, scope));
         }
 
         const targetVar = container.getVariableByKey(targetKey);
@@ -1285,7 +1363,8 @@ export class VariableManager {
         container = container ?? this.getContainer(scope);
 
         // Check if this expression already exists as a watch variable
-        const existingVar = container.getVariableByKey(new VariableKeys(0, args.expression.trim(), encodeReference(thread, frame, scope)));
+        const key = new VariableKeys(0, args.expression.trim(), encodeVarReference(thread, frame, scope));
+        const existingVar = container.getVariableByKey(key);
 
         let gdbVarName: string;
         let isNewVar = false;
@@ -1424,7 +1503,7 @@ function checkIsPointer(type: string): boolean {
     return false;
 }
 
-async function getGdbVarInfo(gdbInstance: GdbInstance, varObj: VariableObject): Promise<{ size: number; editable: boolean; memoryReference?: string }> {
+async function queryGdbVarInfo(gdbInstance: GdbInstance, varObj: VariableObject): Promise<{ size: number; editable: boolean; memoryReference?: string }> {
     const gdbVarName = varObj.gdbVarName;
     const obj = { size: 0, editable: false, memoryReference: undefined };
     if (!gdbVarName) {

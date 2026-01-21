@@ -14,6 +14,7 @@ export class MemoryRequests {
     private handleErrResponse(response: DebugProtocol.Response, message: string) {
         this.mainSession.handleErrResponse(response, message);
     }
+
     public async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments): Promise<void> {
         try {
             const startAddress = parseAddress(args.memoryReference);

@@ -37,7 +37,7 @@ export function decodeReference(varRef: number): [number, number, VariableScope]
     return [varRef >>> (FrameIDBits + ScopeBits), (varRef >>> ScopeBits) & FrameIDMask, varRef & ScopeMask];
 }
 
-export function encodeReference(threadId: number, frameId: number, scope: VariableScope): number {
+function encodeReference(threadId: number, frameId: number, scope: VariableScope): number {
     return ((threadId & ThreadIDMask) << (FrameIDBits + ScopeBits)) | ((frameId & FrameIDMask) << ScopeBits) | (scope & ScopeMask);
 }
 
@@ -47,4 +47,12 @@ export function getScopeFromReference(varRef: number): VariableScope {
 
 export function getVariableClass(scope: VariableScope): VariableScope {
     return scope & ActualScopeMask;
+}
+
+export function encodeVarReference(threadId: number, frameId: number, scope: VariableScope): number {
+    return encodeReference(threadId, frameId, scope | VariableTypeMask);
+}
+
+export function encodeScopeReference(threadId: number, frameId: number, scope: VariableScope): number {
+    return encodeReference(threadId, frameId, scope & ActualScopeMask);
 }

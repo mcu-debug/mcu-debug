@@ -10,7 +10,7 @@ export interface TreeItem {
     expanded?: boolean;
     contextValue?: string;
     changed?: boolean;
-    editable?: boolean;
+    readonly?: boolean;
 }
 
 export interface TreeViewProviderDelegate {

@@ -23,6 +23,7 @@ import { ServerConsoleLog } from "./server-console-log";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { VariableScope, getVariableClass } from "./var-scopes";
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
+import { TargetInfo } from "./target-info";
 
 let SessionCounter = 0;
 
@@ -60,6 +61,7 @@ export class GDBDebugSession extends SeqDebugSession {
         super();
         SessionCounter++;
         this.gdbInstance = new GdbInstance();
+        this.gdbInstance.currentCommandTimeout = 0; // Disable timeouts by default until after launch/attach
         this.serverSession = new GDBServerSession(this);
         this.gdbMiCommands = new MiCommands(this.gdbInstance);
         this.varManager = new VariableManager(this.gdbInstance, this);
@@ -1051,7 +1053,7 @@ export class GDBDebugSession extends SeqDebugSession {
             }
         };
         try {
-            this.on("configurationDone", () => {
+            this.on("configurationDone", async () => {
                 if (this.args.liveWatch?.enabled) {
                     this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
                 }
@@ -1084,7 +1086,6 @@ export class GDBDebugSession extends SeqDebugSession {
                 return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}${msg}`);
             }
             reportTime("GDB Ready");
-
             const gdbPreConnectPromise = this.sendCommandsWithWait(this.gdbPreConnectInitCommands);
             try {
                 await startServerPromise;
@@ -1095,8 +1096,12 @@ export class GDBDebugSession extends SeqDebugSession {
             reportTime("GDB Server Ready");
             await gdbPreConnectPromise;
             await this.sendCommandsWithWait(this.getConnectCommands()); // Can throw
-            reportTime("GDB Init Commands Sent");
 
+            // Post connect, target info should be available
+            const tInfo = new TargetInfo(this.gdbInstance, this);
+            const tInfoPromise = tInfo.initialize();
+
+            reportTime("GDB Init Commands Sent");
             // Let client know we are done with the launch/attach request and ready.
             if (!sentResponse) {
                 sentResponse = true;
@@ -1121,6 +1126,8 @@ export class GDBDebugSession extends SeqDebugSession {
 
             // Following can be deferred to configurationDone
             await loadSymbolsPromise;
+            await tInfoPromise;
+            this.gdbInstance.currentCommandTimeout = GdbInstance.DefaultCommandTimeout;
             reportTime("Ready for full debugging");
         } catch (e) {
             return finishWithError(`Launch/Attach request failed: ${e instanceof Error ? e.message : String(e)}`);

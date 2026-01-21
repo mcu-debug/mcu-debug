@@ -346,6 +346,10 @@ export class LiveWatchMonitor {
 
     private async tryWriteViaMonitorCommand(response: SetVariableLiveResponse, varObj: VariableObject, argValue: string): Promise<boolean> {
         const serverType = this.mainSession.args.servertype;
+        if (!varObj.addressOf) {
+            // Children may not have addressOf info yet, try to get it
+            await varObj.queryGdbVarInfo(this.gdbInstance).catch(() => {});
+        }
         const size = varObj.sizeof || 0;
         const isOk = varObj.addressOf && size > 0 && size <= 8 && varObj.editable;
         if (serverType === "openocd" && isOk) {
@@ -412,6 +416,7 @@ export class LiveWatchMonitor {
     }
 
     public async setVariableRequest(response: SetVariableLiveResponse, args: SetVariableArgumentsLive): Promise<void> {
+        let updateDone = false;
         if (this.liveWatchEnabled === false) {
             this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
             return;
@@ -428,6 +433,7 @@ export class LiveWatchMonitor {
             if (varObj) {
                 try {
                     await this.setByGdbVarName(response, varObj, args.value);
+                    updateDone = true;
                     return;
                 } catch (e) {
                     throw e;
@@ -435,15 +441,20 @@ export class LiveWatchMonitor {
             }
 
             response.body = await this.varManager.setVariable(args, clientSession.container);
+            updateDone = true;
             this.sendResponse(response);
         } catch (e) {
             this.handleErrResponse(response, `SetVariable request failed: ${e}`);
         } finally {
             this.handlingRequest = false;
+            if (updateDone && this.gdbInstance.IsStopped()) {
+                await this.updateVariables();
+            }
         }
     }
 
     public async setExpressionRequest(response: SetExpressionLiveResponse, args: SetExpressionArgumentsLive): Promise<void> {
+        let updateDone = false;
         if (this.liveWatchEnabled === false) {
             this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
             return;
@@ -460,6 +471,7 @@ export class LiveWatchMonitor {
             if (varObj) {
                 try {
                     await this.setByGdbVarName(response, varObj, args.value);
+                    updateDone = true;
                     return;
                 } catch (e) {
                     throw e;
@@ -472,6 +484,9 @@ export class LiveWatchMonitor {
             this.handleErrResponse(response, `SetExpression request failed: ${e}`);
         } finally {
             this.handlingRequest = false;
+            if (updateDone && this.gdbInstance.IsStopped()) {
+                await this.updateVariables();
+            }
         }
     }
 

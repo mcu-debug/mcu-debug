@@ -1,3 +1,4 @@
+import { start } from "node:repl";
 import { GDBDebugSession } from "../gdb-session";
 import { GdbInstance } from "./gdb-instance";
 import { GdbMiFrameIF, GdbMiOutput, GdbMiThreadIF } from "./mi-types";
@@ -220,4 +221,65 @@ export class GdbMiThreadInfoList {
         threadsAry.sort((a, b) => a.id - b.id);
         return threadsAry;
     }
+}
+
+// will not throw exceptions
+export async function DataEvaluateExpression(gdbInstance: GdbInstance, expr: string): Promise<string | null> {
+    try {
+        const cmd = `-data-evaluate-expression "${expr}"`;
+        const miOutput = await gdbInstance.sendCommand(cmd, 100);
+        const record = miOutput.resultRecord?.result;
+        if (record && record["value"]) {
+            return record["value"];
+        }
+    } catch (e) {}
+    return null;
+}
+
+// will not throw exceptions
+export async function DataEvaluateExpressionAsNumber(gdbInstance: GdbInstance, expr: string): Promise<number | null> {
+    const strVal = await DataEvaluateExpression(gdbInstance, expr);
+    if (strVal !== null) {
+        const numVal = Number(strVal);
+        if (!isNaN(numVal)) {
+            return numVal;
+        }
+    }
+    return null;
+}
+
+// will trow exceptions
+// Use the following function to execute either a GDB/MI command or a CLI command
+// depending on whether the command starts with a '-' character or not. If is starts with a '-',
+// then it is assumed to be a full GDB/MI command. Otherwise it is treated as a CLI command and
+// wrapped in an appropriate GDB/MI command to execute it.
+export async function GdbMiOrCliCommandForOob(gdbInstance: GdbInstance, cmd: string): Promise<string[] | Object | Array<any>> {
+    if (!cmd.startsWith("-")) {
+        cmd = `-interpreter-exec console "${cmd}"`;
+    }
+    const miOutput = await gdbInstance.sendCommand(cmd, 100);
+    const outputLines: string[] = [];
+    if (miOutput.outOfBandRecords) {
+        for (const oob of miOutput.outOfBandRecords) {
+            if (oob.outputType === "console") {
+                const line = oob.result.trim();
+                outputLines.push(line);
+            }
+        }
+    }
+    if (miOutput.resultRecord) {
+        const record = miOutput.resultRecord;
+        // Is the result an object with any properties?
+        if (typeof record.result === "object" && record.result !== null && Object.keys(record.result).length > 0) {
+            const resObj = record.result as any;
+            return resObj;
+        }
+        if (Array.isArray(record.result)) {
+            return record.result;
+        }
+        if (typeof record.result === "string") {
+            outputLines.push(record.result);
+        }
+    }
+    return outputLines;
 }

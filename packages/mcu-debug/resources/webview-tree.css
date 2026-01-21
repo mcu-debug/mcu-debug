@@ -40,12 +40,17 @@ input {
     max-width: 200px;
 }
 .value {
-    color: var(--vscode-debugTokenExpression-value);
+    color: var(--vscode-debugTokenExpression-number);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
     margin-right: 5px;
+}
+
+.readonly {
+    color: var(--vscode-debugTokenExpression-constant);
+    font-style: italic;
 }
 
 .changed {

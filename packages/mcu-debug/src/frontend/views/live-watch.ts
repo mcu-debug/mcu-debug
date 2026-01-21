@@ -267,8 +267,10 @@ export class LiveVariableNode {
             expanded: this.expanded,
             format: this.format,
             changed: this.value !== this.prevValue,
-            editable: this.editable,
+            contextValue: this.type,
+            readonly: !this.editable,
         };
+        console.log(`toWebviewTreeItem: ${this.name} value=${this.value} editable=${this.editable} display=${ret.value} prev=${this.prevValue} changed=${ret.changed}`);
         this.prevValue = this.value;
         return ret;
     }
@@ -413,10 +415,15 @@ export class LiveVariableNode {
                             this.children = [];
                             for (const v of vars) {
                                 const child = new LiveVariableNode(this.mapUpdater, this, v.name, v.evaluateName, v.value, v.type, v.variablesReference, v.gdbVarName);
+                                child.sizeof = v.sizeof;
+                                child.addressOf = v.addressOf;
+                                child.editable = v.editable !== "false";
                                 const old = oldStateMap[v.name];
                                 if (old) {
                                     child.expanded = old.expanded;
                                 }
+                                console.log(v);
+                                console.log(child);
                                 this.children.push(child);
                             }
                             this.childrenLoaded = true;
@@ -482,7 +489,8 @@ export class LiveVariableNode {
                             this.mapUpdater?.addToMap(this.gdbVarName, this);
                             this.sizeof = obj.sizeof;
                             this.addressOf = obj.addressOf;
-                            this.editable = obj.editable;
+                            this.editable = obj.editable !== "false";
+                            console.log(obj);
                             this.refreshChildren(resolve);
                         } else {
                             this.value = `<Failed to evaluate ${this.expr}>`;

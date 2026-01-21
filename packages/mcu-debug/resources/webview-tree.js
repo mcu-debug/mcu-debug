@@ -72,9 +72,13 @@ function generateItemContentHtml(item, isTopLevel) {
     let editValueButton = `<span class="codicon codicon-edit-sparkle" onclick="editValue(event, '${item.id}')" title="Edit Value"></span>\n`;
     let editValueText = `<span class="value ${item.changed ? "changed" : ""}" ondblclick="startEdit(this, '${item.id}', 'value')">${item.value || ""}</span>\n`;
     let editLabelText = `<span class="label" ondblclick="startEdit(this, '${item.id}', 'label')">${item.label}</span>\n`;
-    if (item.hasChildren || !item.editable) {
+    if (item.hasChildren || item.readonly) {
         editValueButton = "";
-        editValueText = `<span class="value ${item.changed ? "changed" : ""}">${item.value || ""}</span>\n`;
+        if (item.readonly) {
+            editValueText = `<span class="value readonly ${item.changed ? "changed" : ""}">${item.value || ""}</span>\n`;
+        } else {
+            editValueText = `<span class="value ${item.changed ? "changed" : ""}">${item.value || ""}</span>\n`;
+        }
     }
     let hexFormat = `<span class="codicon codicon-variable-group" onclick="selectFormat(event, '${item.id}')" title="Select Format"></span>\n`;
 
@@ -109,7 +113,7 @@ function generateItemContentHtml(item, isTopLevel) {
     }
 
     const chevronClass = item.expanded ? "codicon-chevron-down" : "codicon-chevron-right";
-    const labelEscaped = (item.label || "").replace(/"/g, "&quot;");
+    const labelEscaped = (item.contextValue || "").replace(/"/g, "&quot;");
     const valueEscaped = (item.value || "").replace(/"/g, "&quot;");
     const editLabelWithTitle = editLabelText.replace(/(<span class="label"[^>]*>)/, `$1<span title="${labelEscaped}">`);
     const editValueWithTitle = editValueText.replace(/(<span class="value[^"]*"[^>]*>)/, `$1<span title="${valueEscaped}">`);
@@ -280,8 +284,9 @@ window.startEdit = (element, id, field) => {
     };
 
     input.onblur = () => {
-        // Delay to allow click events to process
-        setTimeout(commit, 100);
+        // Blur means focus lost - treat as cancel
+        cancelled = true;
+        cleanup();
     };
 
     input.onkeydown = (e) => {
@@ -414,7 +419,9 @@ function startAdd() {
     };
 
     input.onblur = () => {
-        setTimeout(commit, 100);
+        // Blur means focus lost - treat as cancel
+        cancelled = true;
+        cleanup();
     };
 
     input.onkeydown = (e) => {
