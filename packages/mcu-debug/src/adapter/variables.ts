@@ -704,15 +704,13 @@ export class VariableManager {
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
                             const varCreateRecord = await container.gdbInstance.sendCommand(cmd);
                             const record = varCreateRecord.resultRecord.result;
-                            const [varObj] = container.parseMiVariable(regName, record, VariableScope.RegistersVariable, groupVar.handle, threadId, frameId);
+                            // While we are children of a group, the registers parent is still 0. Or elsem they won't be cleaned up on a continue
+                            // 0 also happens to the true parent of registers, as Groups are fake.
+                            const [varObj] = container.parseMiVariable(regName, record, VariableScope.RegistersVariable, /*groupVar.handle*/ 0, threadId, frameId);
                             varObj.value = r["value"]; // Use this because it is better formatted
-                            if (varObj !== undefined) {
-                                this.setFields(varObj);
-                                variables.push(varObj.toProtocolVariable());
-                            }
+                            variables.push(varObj.toProtocolVariable());
                         } else {
                             existingVar.value = r["value"];
-                            this.setFields(existingVar);
                             variables.push(existingVar.toProtocolVariable());
                         }
                     } catch (e) {
