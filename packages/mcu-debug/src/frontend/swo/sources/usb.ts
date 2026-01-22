@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import { EventEmitter } from "stream";
 import { SWORTTSource } from "./common";
 import { promisify } from "util";
@@ -109,7 +108,7 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
             console.debug(buffer.length, "bytes received");
             this.emit("data", buffer);
         });
-        this.ep.on("error", (error) => {
+        this.ep.on("error", (error: any) => {
             console.error("Unexpected polling error", error);
         });
         this.ep.startPoll();

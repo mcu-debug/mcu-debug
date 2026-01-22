@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import { parseAddress } from "../frontend/utils";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";
@@ -218,7 +217,7 @@ export class TargetInfo {
                 }
                 this.targetMemoryRegions = new TargetMemoryRegions(regions);
                 resolve();
-            } catch (error) {
+            } catch (error: any) {
                 reject(new Error(`Error getting memory regions: ${error.toString()}`));
             }
         });

@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
@@ -31,7 +30,7 @@ export interface SymbolInformation {
     address: bigint;
     length: number;
     name: string;
-    file: /* number |*/ string; // The actual file name parsed (more reliable with nm)
+    file: /* number |*/ string | null; // The actual file name parsed (more reliable with nm)
     section?: string; // Not available with nm
     type: SymbolType;
     scope: SymbolScope;
@@ -102,12 +101,12 @@ interface IMemoryRegion {
 export class MemoryRegion implements IMemoryRegion {
     public vmaEnd: bigint; // Inclusive
     public lmaEnd: bigint; // Exclusive
-    public name: string;
-    public size: bigint;
-    public vmaStart: bigint;
-    public lmaStart: bigint;
-    public vmaStartOrig: bigint;
-    public attrs: string[];
+    public name!: string;
+    public size!: bigint;
+    public vmaStart!: bigint;
+    public lmaStart!: bigint;
+    public vmaStartOrig!: bigint;
+    public attrs!: string[];
     constructor(obj: IMemoryRegion) {
         Object.assign(this, obj);
         this.vmaEnd = this.vmaStart + this.size + 1n;
@@ -137,7 +136,7 @@ interface ISymbolTableSerData {
 
 // Replace last part of the path containing a program to another. If search string not found
 // or replacement the same as search string, then null is returned
-function replaceProgInPath(filepath: string, search: string | RegExp, replace: string): string {
+function replaceProgInPath(filepath: string, search: string | RegExp, replace: string): string | null {
     if (os.platform() === "win32") {
         filepath = filepath.toLowerCase().replace(/\\/g, "/");
     }
@@ -184,10 +183,10 @@ export class SymbolTable {
     public symbolsByAddress: AddressToSym = new AddressToSym();
     public symbolsByAddressOrig: AddressToSym = new AddressToSym();
     // private varsByFile: { [path: string]: VariablesInFile } = null;
-    private nmPromises: ExecPromise[] = [];
+    private  nmPromises: ExecPromise[] = [];
     private executables: SymbolFile[] = [];
 
-    private objdumpPath: string;
+    private objdumpPath: string = "";
 
     constructor(private gdbSession: GDBDebugSession) {}
 
@@ -242,14 +241,14 @@ export class SymbolTable {
             await this.loadFromObjdumpAndNm();
             this.categorizeSymbols();
             this.sortGlobalVars();
-        } catch (e) {
+        } catch (e: any) {
             // We treat this is non-fatal, but why did it fail?
             this.gdbSession.handleMsg(Stderr, `Error: objdump failed! statics/globals/functions may not be properly classified: ${e.toString()}\n`);
             this.gdbSession.handleMsg(Stderr, "    ENOENT means program not found. If that is not the issue, please report this problem.\n");
         }
     }
 
-    private rttSymbol: SymbolInformation;
+    private rttSymbol: SymbolInformation | undefined;
     public readonly rttSymbolName = "_SEGGER_RTT";
     private addSymbol(sym: SymbolInformation) {
         if (sym.length === 0 && /^\$[atdbfpm]$/.test(sym.name)) {
@@ -402,7 +401,7 @@ export class SymbolTable {
                 section: secName,
                 length: size,
                 isStatic: scope === SymbolScope.Local && cxt.curObjFile ? true : false,
-                instructions: null,
+                instructions: [],
                 hidden: hidden,
             };
             this.addSymbol(sym);
@@ -460,6 +459,10 @@ export class SymbolTable {
                 if (true) {
                     const nmStart = Date.now();
                     const nmProg = replaceProgInPath(this.objdumpPath, /objdump/i, "nm");
+                    if (!nmProg) {
+                        this.gdbSession.handleMsg(Stderr, `Error: Could not find 'nm' executable based on objdump path: ${this.objdumpPath}\n`);
+                        continue;
+                    }
                     const nmArgs = [
                         "--defined-only",
                         "-S", // Want size as well
@@ -496,8 +499,8 @@ export class SymbolTable {
                         promise: cxt.reader.startWithProgram(nmProg, nmArgs, spawnOpts, cxt.getCallback()),
                     });
                 }
-            } catch (e) {
-                this.gdbSession.handleMsg(Stderr, `Error launching objdump/nm for ${executable}: ${e.toString()}\n`);
+            } catch (e: any) {
+                this.gdbSession.handleMsg(Stderr, `Error launching objdump/nm for ${executable || "unknown"}: ${e.toString()}\n`);
             }
         }
         // Yes, we launch both programs and wait for both to finish. Running them back to back
@@ -548,7 +551,7 @@ export class SymbolTable {
                     console.error("Unknown symbol address. Need to investigate", formatAddress(item[0]), item);
                 }
             }
-        } catch (e) {
+        } catch (e: any) {
             this.gdbSession.handleMsg(Stderr, `Error in nm symbol processing: ${e.toString()}\n`);
         } finally {
             this.addressToFileOrig.clear();
@@ -584,7 +587,7 @@ export class SymbolTable {
         const doubleUScores: SymbolInformation[] = [];
         while (this.globalVars.length > 0) {
             if (this.globalVars[0].name.startsWith("__")) {
-                doubleUScores.push(this.globalVars.shift());
+                doubleUScores.push(this.globalVars.shift()!);
             } else {
                 break;
             }
@@ -712,13 +715,13 @@ export class SymbolTable {
         return { curSimpleName: basename, curName: canonical };
     }
 
-    public getFunctionAtAddress(address: bigint): SymbolInformation {
+    public getFunctionAtAddress(address: bigint): SymbolInformation | null {
         const symNodes = this.symbolsAsIntervalTree.search(new Interval(address, address));
         for (const symNode of symNodes) {
-            if (symNode && symNode.symbol.type === SymbolType.Function) {
-                return symNode.symbol;
-            }
-        }
+             if (symNode && symNode.symbol.type === SymbolType.Function) {
+                 return symNode.symbol;
+             }
+         }
         return null;
         // return this.allSymbols.find((s) => s.type === SymbolType.Function && s.address <= address && (s.address + s.length) > address);
     }
@@ -834,7 +837,7 @@ export class SymbolTable {
         return ret;
     }
 
-    public getGlobalOrStaticVarByName(name: string, file?: string): SymbolInformation {
+    public getGlobalOrStaticVarByName(name: string, file?: string): SymbolInformation | null {
         if (!file && this.rttSymbol && name === this.rttSymbolName) {
             return this.rttSymbol;
         }

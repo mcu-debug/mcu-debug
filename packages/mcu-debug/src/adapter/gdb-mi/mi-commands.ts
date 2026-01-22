@@ -1,6 +1,3 @@
-// @ts-strict-ignore
-import { start } from "node:repl";
-import { GDBDebugSession } from "../gdb-session";
 import { GdbInstance } from "./gdb-instance";
 import { GdbMiFrameIF, GdbMiOutput, GdbMiThreadIF } from "./mi-types";
 
@@ -63,7 +60,7 @@ export class MiCommands {
         try {
             const cmd = "-thread-info";
             const output = await this.gdbInstance.sendCommand(cmd);
-            const record = output.resultRecord.result;
+            const record = output.resultRecord?.result;
             if (!record) {
                 throw new Error("No result record in thread-info output");
             }
@@ -79,7 +76,7 @@ export class MiCommands {
             const threadId = thread.id;
             const cmd = `-stack-list-frames --thread ${threadId} ${startFrame} ${endFrame}`;
             const output = await this.gdbInstance.sendCommand(cmd);
-            const record = output.resultRecord.result;
+            const record = output.resultRecord?.result;
             if (!record) {
                 throw new Error("No result record in stack-list-frames output");
             }
@@ -207,12 +204,12 @@ export class GdbMiThreadInfoList {
                     this.threadMap.set(thread.id, thread);
                 }
             }
-        }
-        const currentThreadIdStr = (record.result as any)["current-thread-id"];
-        if (currentThreadIdStr) {
-            const tid = parseInt(currentThreadIdStr);
-            if (!isNaN(tid)) {
-                this.currentThreadId = tid;
+            const currentThreadIdStr = (record.result as any)["current-thread-id"];
+            if (currentThreadIdStr) {
+                const tid = parseInt(currentThreadIdStr);
+                if (!isNaN(tid)) {
+                    this.currentThreadId = tid;
+                }
             }
         }
     }
@@ -229,7 +226,7 @@ export async function DataEvaluateExpression(gdbInstance: GdbInstance, expr: str
     try {
         const cmd = `-data-evaluate-expression "${expr}"`;
         const miOutput = await gdbInstance.sendCommand(cmd, 100);
-        const record = miOutput.resultRecord?.result;
+        const record = miOutput.resultRecord?.result as any;
         if (record && record["value"]) {
             return record["value"];
         }

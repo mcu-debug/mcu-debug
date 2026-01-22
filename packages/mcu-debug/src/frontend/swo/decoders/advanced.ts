@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import * as vscode from "vscode";
 import { SWORTTDecoder } from "./common";
 import { GrapherDataMessage } from "../common";
@@ -12,10 +11,10 @@ import { HrTimer } from "../../../adapter/servers/common";
 const dynamicRequire = eval("require");
 
 export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecoder {
-    private output: vscode.OutputChannel;
+    private output: vscode.OutputChannel | undefined;
     public readonly format: string = "advanced";
     private ports: number[];
-    private decoder: AdvancedDecoder;
+    private decoder: AdvancedDecoder | undefined;
     private timer = new HrTimer();
     private static outputPanels = new Map<string, vscode.OutputChannel>();
 
@@ -37,12 +36,12 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
 
             try {
                 this.decoder = new decoderClass();
-            } catch (e) {
+            } catch (e: any) {
                 throw new Error(`Error instantiating decoder class: ${e.toString()}`);
             }
             try {
-                this.decoder.init(config, this.displayOutput.bind(this), this.graphData.bind(this));
-                const name = `SWO/RTT: ${this.decoder.outputLabel() || ""} [type: ${this.decoder.typeName()}]`;
+                this.decoder!.init(config, this.displayOutput.bind(this), this.graphData.bind(this));
+                const name = `SWO/RTT: ${this.decoder!.outputLabel() || ""} [type: ${this.decoder!.typeName()}]`;
                 let panel = SWORTTAdvancedProcessor.outputPanels.get(name);
                 if (!panel) {
                     panel = vscode.window.createOutputChannel(name);
@@ -51,7 +50,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
                     panel.clear();
                 }
                 this.output = panel;
-            } catch (e) {
+            } catch (e: any) {
                 throw new Error(`Error initializing decoder class. Potential issues with outputLabel(), typeName() or init(): ${e.toString()}`);
             }
         } else {
@@ -64,7 +63,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
             if (this.decoder) {
                 try {
                     this.decoder.softwareEvent(packet.port, packet.data);
-                } catch (e) {
+                } catch (e: any) {
                     MCUDebugChannel.debugMessage("Error: in softwareEvent() for decoder " + e.toString());
                 }
             }
@@ -76,7 +75,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
     public synchronized() {
         try {
             this.decoder?.synchronized();
-        } catch (e) {
+        } catch (e: any) {
             MCUDebugChannel.debugMessage("Error: in synchronized() for decoder " + e.toString());
         }
     }
@@ -84,7 +83,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
     public lostSynchronization() {
         try {
             this.decoder?.lostSynchronization();
-        } catch (e) {
+        } catch (e: any) {
             MCUDebugChannel.debugMessage("Error: in lostSynchronization() for decoder " + e.toString());
         }
     }
@@ -119,7 +118,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
         if (this.decoder?.dispose) {
             try {
                 this.decoder.dispose();
-            } catch (e) {
+            } catch (e: any) {
                 MCUDebugChannel.debugMessage("Error: in dispose() for decoder " + e.toString());
             }
         }

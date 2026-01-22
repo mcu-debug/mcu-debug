@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import * as process from "process";
 import * as crypto from "crypto";
 import { DebugProtocol } from "@vscode/debugprotocol";
@@ -45,7 +44,7 @@ export class LiveClientSession {
 export class LiveWatchMonitor {
     private sessionsByClientId = new Map<string, LiveClientSession>();
     private sessionsByPrefix = new Map<string, LiveClientSession>();
-    public gdbInstance: GdbInstance | undefined;
+    public gdbInstance: GdbInstance;
     protected debugFlags: DebugFlags = {};
     protected varManager: VariableManager;
     protected memoryRequests: MemoryRequests;
@@ -296,9 +295,9 @@ export class LiveWatchMonitor {
         try {
             const cmd = `-var-update --all-values *`;
             const miOutput = await this.gdbInstance.sendCommand(cmd);
-            const records = miOutput.resultRecord.result["changelist"];
+            const records = miOutput.resultRecord?.result as any["changelist"];
             return records;
-        } catch (e) {
+        } catch (e: any) {
             if (this.debugFlags.anyFlags) {
                 this.handleMsg(GdbEventNames.Console, `mcu-debug: Error updating all variables: ${e}\n`);
             }
@@ -365,7 +364,7 @@ export class LiveWatchMonitor {
                 const miOutput = await this.gdbInstance!.sendCommand(readCmd);
                 // At this point, the regular updates are halted, so we need to capture the changelist ourselves
                 // And we can save them so that a future updateVariables() call will send them out
-                this.pvrWriteUpdates = miOutput.resultRecord.result["changelist"];
+                this.pvrWriteUpdates = miOutput.resultRecord?.result as any["changelist"];
                 const ourUpdate = this.pvrWriteUpdates[0];
                 if (BigInt(argValue) !== BigInt(ourUpdate.value)) {
                     throw new Error(`GDB could not confirm an update to '${varObj.evaluateName}' via OpenOCD monitor command`);
@@ -391,7 +390,7 @@ export class LiveWatchMonitor {
         try {
             const miOutput = await this.gdbInstance!.sendCommand(cmd);
             this.handleMsg(Stderr, `Set variable '${varObj.evaluateName}' (GDB name '${gdbVarName}') to value '${argValue}'\n`);
-            const result = miOutput.resultRecord?.result;
+            const result = miOutput.resultRecord?.result as any;
             if (result && result["value"]) {
                 const newValue = result["value"];
                 if (newValue !== argValue) {

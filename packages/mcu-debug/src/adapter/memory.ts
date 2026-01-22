@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { GDBDebugSession } from "./gdb-session";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
@@ -36,7 +35,7 @@ export class MemoryRequests {
 
             const command = `-data-read-memory-bytes "${useAddrHex}" ${length}`;
             const miOutput = await this.gdbInstance.sendCommand(command);
-            const record = miOutput.resultRecord?.result;
+            const record = miOutput.resultRecord?.result as any;
             const memoryArray = record ? record["memory"] : undefined;
 
             if (!memoryArray || !Array.isArray(memoryArray) || memoryArray.length === 0) {
@@ -63,7 +62,7 @@ export class MemoryRequests {
                 address: formatAddress(actualStart),
             };
             this.sendResponse(response);
-        } catch (error) {
+        } catch (error: any) {
             this.handleErrResponse(response, `Read memory error: ${error.toString()}`);
         }
     }
@@ -96,7 +95,7 @@ export class MemoryRequests {
                 bytesWritten: bytesWritten,
             };
             this.sendResponse(response);
-        } catch (error) {
+        } catch (error: any) {
             this.handleErrResponse(response, `Write memory error: ${error.toString()}`);
         }
     }

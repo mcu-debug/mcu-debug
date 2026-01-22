@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import * as vscode from "vscode";
 import { TreeItem, TreeItemCollapsibleState, DebugSession, ProviderResult, Event, EventEmitter, Disposable } from "vscode";
 import { TreeViewProviderDelegate, TreeItem as WebviewTreeItem } from "../webview_tree/editable-tree";
@@ -45,7 +44,7 @@ type NodeFormat = "natural" | "hex" | "decimal" | "binary" | "octal";
 export class LiveVariableNode {
     public parent: LiveVariableNode | undefined;
     public expanded: boolean = false;
-    public children: LiveVariableNode[] = [];
+    public children: LiveVariableNode[] | undefined = [];
     public variablesReference: number = 0;
     public gdbVarName: string = "";
     public session: vscode.DebugSession | undefined;
@@ -114,7 +113,7 @@ export class LiveVariableNode {
 
     public isRootChild(): boolean {
         const node = this.parent;
-        return node && node.getParent() === undefined;
+        return node !== undefined && node.getParent() === undefined;
     }
 
     public rename(nm: string) {
@@ -170,13 +169,13 @@ export class LiveVariableNode {
         return undefined;
     }
 
-    public getDgbVarNames(): string[] {
+    public getGdbVarNames(): string[] {
         const names: string[] = [];
         if (this.gdbVarName) {
             names.push(this.gdbVarName);
         }
         for (const child of this.children || []) {
-            names.push(...child.getDgbVarNames());
+            names.push(...child.getGdbVarNames());
         }
         return names;
     }
@@ -478,15 +477,15 @@ export class LiveVariableNode {
                                 obj.gdbVarName = result.gdbName; // Should already be in the variableObject
                             }
                             this.value = obj.value;
-                            this.type = obj.type;
+                            this.type = obj.type || "";
                             this.variablesReference = obj.variablesReference ?? 0;
                             this.namedVariables = obj.namedVariables ?? 0;
                             this.indexedVariables = obj.indexedVariables ?? 0;
-                            this.gdbVarName = obj.gdbVarName;
+                            this.gdbVarName = obj.gdbVarName || "";
                             this.children = this.variablesReference ? [] : undefined;
                             this.mapUpdater?.addToMap(this.gdbVarName, this);
-                            this.sizeof = obj.sizeof;
-                            this.addressOf = obj.addressOf;
+                            this.sizeof = obj.sizeof || 0;
+                            this.addressOf = obj.addressOf || "";
                             this.editable = obj.editable !== "false";
                             this.refreshChildren(resolve);
                         } else {
@@ -570,7 +569,15 @@ class LiveVariableNodeMsg extends LiveVariableNode {
         parent: LiveVariableNode,
         private empty = true,
     ) {
-        super(undefined, parent, "dummy", "dummy");
+        const dummy: GdbMapUpdater = {
+            addToMap: (gdbName: string, node: LiveVariableNode) => {},
+            getFromMap: (gdbName: string): LiveVariableNode | undefined => {
+                return undefined;
+            },
+            removeFromMap: (gdbName: string) => {},
+            getLiveSessionId: () => undefined,
+        };
+        super(dummy, parent, "dummy", "dummy");
     }
 
     public isDummyNode(): boolean {
@@ -612,14 +619,14 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
     public gdbVarNameToNodeMap: Map<string, LiveVariableNode> = new Map<string, LiveVariableNode>();
     private rootNode: LiveVariableNode;
     public static session: vscode.DebugSession | undefined;
-    public state: vscode.TreeItemCollapsibleState;
+    public state: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
     private toBeDeleted: Set<string> = new Set<string>();
     private sessionStatus: "stopped" | "running" | "none" = "none";
     private readonly clientId = "mcu-debug-live-watch-tree-provider";
     private liveSessionVersion = LatestLiveSessionVersion;
     private liveSessionId: string | undefined;
     private refreshCallback?: () => void;
-    private updateComposite: (items: TreeItem[]) => void;
+    private updateComposite: (items: WebviewTreeItem[]) => void = () => {};
 
     protected oldState = new Map<string, vscode.TreeItemCollapsibleState>();
     constructor(private context: vscode.ExtensionContext) {
@@ -666,7 +673,9 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
                 } else {
                     node.rename(newName);
                     this.saveState();
-                    this.refresh(LiveWatchTreeProvider.session);
+                    if (LiveWatchTreeProvider.session) {
+                        await node.refresh(LiveWatchTreeProvider.session);
+                    }
                 }
             }
         }
@@ -738,7 +747,9 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         const node = this.findNodeById(this.rootNode, item.id);
         if (node) {
             node.setFormat(format as NodeFormat);
-            this.refresh(LiveWatchTreeProvider.session);
+            if (LiveWatchTreeProvider.session) {
+                await node.refresh(LiveWatchTreeProvider.session);
+            }
         }
     }
 
@@ -760,7 +771,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
             vscode.window.showInformationMessage(`Live Watch: Expression ${value} is already being watched`);
         } else {
             // We can use the existing helper
-            this.addWatchExpr(value, LiveWatchTreeProvider.session);
+            this.addWatchExpr(value);
         }
     }
 
@@ -925,17 +936,19 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         this.gdbVarNameToNodeMap.clear();
     }
 
-    public async refresh(session: vscode.DebugSession, restartTimer = false): Promise<void> {
-        let promises = [];
-        for (const child of this.rootNode.getChildren()) {
-            if (child.isDummyNode() || child.gdbVarName) {
-                continue;
+    public async refresh(session: vscode.DebugSession | undefined, restartTimer = false): Promise<void> {
+        if (!session) {
+            let promises = [];
+            for (const child of this.rootNode.getChildren()) {
+                if (child.isDummyNode() || child.gdbVarName) {
+                    continue;
+                }
+                promises.push(child.refresh(session!));
             }
-            promises.push(child.refresh(session));
-        }
-        if (promises.length > 0) {
-            await Promise.allSettled(promises);
-            this.fire();
+            if (promises.length > 0) {
+                await Promise.allSettled(promises);
+                this.fire();
+            }
         }
     }
 
@@ -1000,11 +1013,13 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         }
     }
 
-    public addWatchExpr(expr: string, session: vscode.DebugSession) {
+    public addWatchExpr(expr: string) {
         expr = expr.trim();
         if (expr && this.rootNode.addNewExpr(expr)) {
             this.saveState();
-            this.refresh(LiveWatchTreeProvider.session);
+            if (LiveWatchTreeProvider.session) {
+                this.refresh(LiveWatchTreeProvider.session);
+            }
         }
     }
 
@@ -1035,7 +1050,9 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
                 } else {
                     node.rename(val);
                     this.saveState();
-                    this.refresh(LiveWatchTreeProvider.session);
+                    if (LiveWatchTreeProvider.session) {
+                        this.refresh(LiveWatchTreeProvider.session);
+                    }
                 }
             }
         }

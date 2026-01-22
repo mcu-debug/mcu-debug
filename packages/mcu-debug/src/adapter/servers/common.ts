@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import { Event } from "@vscode/debugadapter";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { EventEmitter } from "events";
@@ -52,7 +51,8 @@ export class CustomStoppedEvent extends Event implements DebugProtocol.Event {
         threadID: number;
     };
     constructor(reason: string, threadID: number) {
-        super("custom-stop", { reason: reason, threadID: threadID ?? 1 });
+        super("custom-stop");
+        this.body = { reason: reason, threadID: threadID ?? 1 };
     }
 }
 

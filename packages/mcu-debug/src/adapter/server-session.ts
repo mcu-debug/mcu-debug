@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import { EventEmitter } from "events";
 import * as child_process from "child_process";
 import * as net from "net";
@@ -70,32 +69,32 @@ export class GDBServerSession extends EventEmitter {
             this.usingParentServer = this.session.args.pvtMyConfigFromParent && !this.session.args.pvtMyConfigFromParent.detached;
             await this.getTCPPorts(this.usingParentServer);
             await this.serverController.allocateRTTPorts(); // Must be done before serverArguments()
-        } catch (e) {
+        } catch (e: any) {
             throw new Error(`Error allocating TCP ports for gdb-server: ${e.message}`);
         }
 
         const executable = this.usingParentServer ? null : this.serverController.serverExecutable();
         const args = this.usingParentServer ? [] : this.serverController.serverArguments();
         this.session.sendEvent(new GenericCustomEvent("ports-done", undefined)); // Should be no more TCP ports allocation
-        const serverCwd = this.getServerCwd(executable);
 
         if (!executable) {
             return;
         }
 
+        const serverCwd = this.getServerCwd(executable);
         return new Promise<void>(async (resolve, reject) => {
             // Connect to the frontend console
             if (this.session.args.gdbServerConsolePort) {
                 try {
                     await this.connectConsole(this.session.args.gdbServerConsolePort);
-                } catch (e) {
+                } catch (e: any) {
                     this.session.handleMsg(GdbEventNames.Stderr, `Could not connect to debug console: ${e.message}\n`);
                     reject(e);
                     return;
                 }
             }
             this.session.handleMsg(GdbEventNames.Console, `Starting GDB-Server: ${executable} ${args.join(" ")}\n`);
-            this.consoleSocket.write(greenFormat(quoteShellCmdLine([executable, ...args]) + "\n"));
+            this.consoleSocket?.write(greenFormat(quoteShellCmdLine([executable, ...args]) + "\n"));
 
             this.process = child_process.spawn(executable, args, {
                 cwd: serverCwd,

@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 export function hexFormat(value: number, padding: number = 8, includePrefix: boolean = true): string {
     let base = (value >>> 0).toString(16);
     base = base.padStart(padding, "0");
@@ -40,7 +39,7 @@ export function binaryFormat(value: number, padding: number = 0, includePrefix: 
             base = "0" + base;
         }
         const groups = base.match(/[01]{4}/g);
-        base = groups.join(" ");
+        base = groups!.join(" ");
 
         base = base.substring(nibRem);
     }
@@ -77,7 +76,7 @@ export function parseInteger(value: string): number {
     if (/^#[0-1]+/i.test(value)) {
         return parseInt(value.substring(1), 2);
     }
-    return undefined;
+    return 0;
 }
 
 export function parseDimIndex(spec: string, count: number): string[] {

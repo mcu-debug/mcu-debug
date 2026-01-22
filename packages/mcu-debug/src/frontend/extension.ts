@@ -1,6 +1,4 @@
-// @ts-strict-ignore
 import * as vscode from "vscode";
-import * as fs from "fs";
 import * as path from "path";
 
 import { MCUDebugChannel } from "../dbgmsgs";
@@ -42,8 +40,8 @@ export class MCUDebugExtension {
 
     private gdbServerConsole: GDBServerConsole | null = null;
 
-    private liveWatchProvider: LiveWatchTreeProvider;
-    private liveWatchWebview: EditableTreeViewProvider;
+    private liveWatchProvider!: LiveWatchTreeProvider;
+    private liveWatchWebview!: EditableTreeViewProvider;
 
     private SVDDirectory: SVDInfo[] = [];
     private functionSymbols: SymbolInformation[] = [];
@@ -127,7 +125,7 @@ export class MCUDebugExtension {
         try {
             this.gdbServerConsole = new GDBServerConsole(context, logFName);
             await this.gdbServerConsole.startServer();
-        } catch (e) {
+        } catch (e: any) {
             this.gdbServerConsole?.dispose();
             this.gdbServerConsole = null;
             vscode.window.showErrorMessage(`Could not create gdb-server-console. Extension startup failed. Please report this problem. ${e.toString()}`);
@@ -815,9 +813,7 @@ export class MCUDebugExtension {
             return;
         }
         const expr = arg.variable?.evaluateName;
-        if (expr) {
-            this.liveWatchProvider.addWatchExpr(expr, vscode.debug.activeDebugSession);
-        }
+        this.liveWatchProvider.addWatchExpr(expr);
     }
 
     private removeLiveWatchExpr(node: any) {

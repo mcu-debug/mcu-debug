@@ -218,7 +218,7 @@ export class RTTTerminal {
                 if ((typeof str === "string" || str instanceof String) && this.options.inputmode === TerminalInputMode.COOKED) {
                     str = Buffer.from(str as string, this.options.iencoding);
                 }
-                this.source.write(str);
+                this.source.write(str.toString());
             } catch (e) {
                 console.error(`RTTTerminal:sendData failed ${e}`);
             }

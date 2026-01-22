@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import * as vscode from "vscode";
 import * as fs from "fs";
 import { SWORTTDecoder } from "./common";
@@ -13,16 +12,16 @@ function parseEncoded(buffer: Buffer, encoding: string) {
 }
 
 export class SWOBinaryProcessor implements SWORTTDecoder {
-    private output: vscode.OutputChannel;
+    private output: vscode.OutputChannel | null = null;
     public readonly format: string = "binary";
     private port: number;
     private scale: number;
     private encoding: string;
     private useTerminal = true;
-    private ptyTerm: PtyTerminal = null;
+    private ptyTerm: PtyTerminal | null = null;
     private hrTimer: HrTimer = new HrTimer();
     private logFd: number = -1;
-    private logfile: string;
+    private logfile: string = "";
 
     constructor(config: SWOBinaryDecoderConfig) {
         this.port = config.port;
@@ -39,7 +38,7 @@ export class SWOBinaryProcessor implements SWORTTDecoder {
             this.logfile = config.logfile;
             try {
                 this.logFd = fs.openSync(config.logfile, "w");
-            } catch (e) {
+            } catch (e: any) {
                 const msg = `Could not open file ${config.logfile} for writing. ${e.toString()}`;
                 vscode.window.showErrorMessage(msg);
             }
@@ -57,7 +56,7 @@ export class SWOBinaryProcessor implements SWORTTDecoder {
             this.ptyTerm.clearTerminalBuffer();
         } else {
             this.ptyTerm = new PtyTerminal(options);
-            this.ptyTerm.terminal.show();
+            this.ptyTerm.terminal?.show();
         }
     }
 
@@ -84,15 +83,15 @@ export class SWOBinaryProcessor implements SWORTTDecoder {
 
         const str = `${timestamp} ${hexvalue} - ${decodedValue} - ${scaledValue}`;
         if (this.useTerminal) {
-            this.ptyTerm.write(str + "\n");
+            this.ptyTerm?.write(str + "\n");
         } else {
-            this.output.appendLine(str);
+            this.output?.appendLine(str);
         }
 
         if (this.logFd >= 0) {
             try {
                 fs.writeSync(this.logFd, packet.data);
-            } catch (e) {
+            } catch (e: any) {
                 const msg = `Could not write to file ${this.logfile} for writing. ${e.toString()}`;
                 vscode.window.showErrorMessage(msg);
                 try {

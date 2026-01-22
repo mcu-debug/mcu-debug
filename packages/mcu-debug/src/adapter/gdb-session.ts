@@ -1055,6 +1055,9 @@ export class GDBDebugSession extends SeqDebugSession {
     private launchAttachInit(args: ConfigurationArguments) {
         this.args = this.normalizeArguments(args);
         this.setupLogging();
+        // We need go create the server session here now that args are normalized. In the ctor,
+        // args are not available just had to keep the ts-compiler happy
+        this.serverSession = new GDBServerSession(this);
         this.serverSession.serverController.on("event", this.serverControllerEvent.bind(this));
     }
 

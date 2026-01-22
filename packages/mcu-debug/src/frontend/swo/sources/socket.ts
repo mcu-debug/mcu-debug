@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import { SWORTTSource } from "./common";
 import { EventEmitter } from "events";
 import * as net from "net";
@@ -10,10 +9,10 @@ import { MCUDebugChannel } from "../../../dbgmsgs";
 
 const TimerInterval = 250;
 export class SocketSWOSource extends EventEmitter implements SWORTTSource {
-    protected client: net.Socket = null;
+    protected client: net.Socket | null = null;
     public connected: boolean = false;
     public connError: any = null;
-    private timer: NodeJS.Timeout;
+    private timer: NodeJS.Timeout | undefined;
     public nTries = 1;
 
     constructor(public tcpPort: string) {
@@ -129,8 +128,8 @@ export class SocketRTTSource extends SocketSWOSource {
         super(tcpPort);
     }
 
-    public write(data) {
-        this.client.write(data);
+    public write(data: string) {
+        this.client!.write(data);
     }
 }
 
@@ -172,9 +171,9 @@ class PeMicroHeader {
     // Byte[6] - Unknown Seems to always be 0. Possibly reserved?
     // Byte[7] - Unknown Seems to always be 0. Possibly reserved?
 
-    public type: PeHeaderType;
-    public dataLength: number;
-    public sequence: number;
+    public type: PeHeaderType = PeHeaderType.TX_COMMAND;
+    public dataLength: number = 0;
+    public sequence: number = 0;
 
     public static get headerLength() {
         return 32;
@@ -347,7 +346,7 @@ export class PeMicroSocketSource extends SocketSWOSource {
                     }
                 }
                 offset = offset + header.dataLength;
-            } catch (err) {
+            } catch (err: any) {
                 MCUDebugChannel.debugMessage("SWO/RTT socket: " + err.message);
                 // If we couldn't decode the header, just discard the data.
                 // Its probably garbage or out of sync, so upstream would be confused anyway
@@ -355,9 +354,9 @@ export class PeMicroSocketSource extends SocketSWOSource {
         }
     }
 
-    public write(data) {
+    public write(data: string) {
         const header = PeMicroHeader.fromValues(PeHeaderType.TX_COMMAND, this.sequence, data.length);
-        this.client.write(header.getTxString() + data);
+        this.client!.write(header.getTxString() + data);
         this.sequence = this.sequence + 1;
     }
 }

@@ -1,7 +1,6 @@
-// @ts-strict-ignore
-import { EventEmitter } from 'events';
+import { EventEmitter } from "events";
 
 export interface SWORTTSource extends EventEmitter {
     connected: boolean;
-    dispose();
+    dispose: () => void;
 }

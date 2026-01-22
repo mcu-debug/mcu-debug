@@ -1,4 +1,3 @@
-// @ts-strict-ignore
 import * as vscode from "vscode";
 import * as fs from "fs";
 
@@ -9,20 +8,20 @@ import { IPtyTerminalOptions, PtyTerminal } from "../../pty";
 import { HrTimer, TerminalInputMode, TextEncoding } from "../../../adapter/servers/common";
 
 export class SWOConsoleProcessor implements SWORTTDecoder {
-    private positionCount: number;
-    private output: vscode.OutputChannel;
+    private positionCount: number = 0;
+    private output: vscode.OutputChannel | null = null;
     private position: number = 0;
     private timeout: any = null;
     public readonly format: string = "console";
     private port: number;
     private encoding: TextEncoding;
-    private showOutputTimer: NodeJS.Timeout = null;
+    private showOutputTimer: NodeJS.Timeout | null = null;
     private useTerminal = true;
-    private ptyTerm: PtyTerminal = null;
+    private ptyTerm: PtyTerminal | null = null;
     private timestamp: boolean = false;
     private hrTimer: HrTimer = new HrTimer();
     private logFd: number = -1;
-    private logfile: string;
+    private logfile: string = "";
 
     constructor(config: SWOConsoleDecoderConfig) {
         this.port = config.port;
@@ -38,7 +37,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
             this.logfile = config.logfile;
             try {
                 this.logFd = fs.openSync(config.logfile, "w");
-            } catch (e) {
+            } catch (e: any) {
                 const msg = `Could not open file ${config.logfile} for writing. ${e.toString()}`;
                 vscode.window.showErrorMessage(msg);
             }
@@ -71,7 +70,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
                 this.ptyTerm = null;
             });
             if (config.showOnStartup) {
-                this.ptyTerm.terminal.show();
+                this.ptyTerm.terminal?.show();
             }
         }
     }
@@ -82,7 +81,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
         // A work-around. A blank display will appear if the output is shown immediately
         if (config.showOnStartup) {
             this.showOutputTimer = setTimeout(() => {
-                this.output.show(true);
+                this.output?.show(true);
                 this.showOutputTimer = null;
             }, 1);
         }
@@ -95,7 +94,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
                     this.ptyTerm.write(str);
                 }
             } else {
-                this.output.append(str);
+                this.output?.append(str);
             }
         }
     }
@@ -114,7 +113,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
         }
         try {
             fs.writeSync(this.logFd, text);
-        } catch (e) {
+        } catch (e: any) {
             const msg = `Could not write to file ${this.logfile}. ${e.toString()}`;
             vscode.window.showErrorMessage(msg);
             try {
