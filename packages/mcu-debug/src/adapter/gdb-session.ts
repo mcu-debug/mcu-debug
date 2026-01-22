@@ -2,7 +2,7 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
 import { Config } from "winston/lib/winston/config";
 import { InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEvent } from "@vscode/debugadapter";
-import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath } from "./servers/common";
+import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent } from "./servers/common";
 import os from "os";
 import fs from "fs";
 import path from "path";
@@ -21,7 +21,7 @@ import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
 import { ServerConsoleLog } from "./server-console-log";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
-import { VariableScope, getVariableClass } from "./var-scopes";
+import { VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 
@@ -52,6 +52,8 @@ export class GDBDebugSession extends SeqDebugSession {
     public continuing: boolean = false;
     configurationDone: boolean = false;
     public fileMap: Map<string, number> = new Map();
+    private swoLaunchPromise = Promise.resolve();
+    private swoLaunched = false;
 
     protected varManager: VariableManager;
     protected bkptManager: BreakpointManager;
@@ -69,6 +71,10 @@ export class GDBDebugSession extends SeqDebugSession {
         this.symbolTable = new SymbolTable(this);
         this.liveWatchMonitor = new LiveWatchMonitor(this);
         this.memoryRequests = new MemoryRequests(this, this.gdbInstance);
+        this.lastThreadsInfo = new GdbMiThreadInfoList({
+            hasTerminator: true,
+            outOfBandRecords: [],
+        });
         this.getFileId(VariableManager.GlobalFileName); // Make sure global file ID is always 1
     }
 
@@ -181,7 +187,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 if (this.args.overridePreEndSessionCommands) {
                     for (const cmd of this.args.overridePreEndSessionCommands) {
                         try {
-                            await this.gdbInstance.sendCommand(COMMAND_MAP[cmd]);
+                            await this.gdbInstance.sendCommand(COMMAND_MAP(cmd));
                         } catch (e) {
                             this.handleMsg(Stderr, "GDB commands overridePreEndSessionCommands failed " + (e ? e.toString() : "Unknown error") + "\n");
                         }
@@ -211,11 +217,13 @@ export class GDBDebugSession extends SeqDebugSession {
 
                 // This stops the GDB process aggressively if needed
                 await this.gdbInstance.stop();
+                // @ts-ignore
                 this.gdbInstance = null;
             }
 
             if (this.serverSession) {
                 await this.serverSession.stopServer();
+                // @ts-ignore
                 this.serverSession = null;
             }
         } catch (e) {
@@ -581,7 +589,7 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         this.handleMsg(Stdout, `${expr}\n`);
         const gdbInstance = isLiveCmd ? this.liveWatchMonitor.gdbInstance : this.gdbInstance;
-        await gdbInstance
+        await gdbInstance!
             .sendCommand(expr)
             .then((out) => {
                 if (isMi) {
@@ -632,7 +640,12 @@ export class GDBDebugSession extends SeqDebugSession {
             };
 
             const ref = args.variablesReference;
-            const scope = getVariableClass(ref);
+            if (ref === undefined || ref <= 0) {
+                response.body.description = "No reference for data breakpoint.";
+                this.sendResponse(response);
+                return;
+            }
+            const scope = getScopeFromReference(ref);
             if (scope === VariableScope.Registers) {
                 response.body.description = "Data breakpoints are not supported on registers.";
                 this.sendResponse(response);
@@ -662,7 +675,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected async setDataBreakpointsRequest(response: DebugProtocol.SetDataBreakpointsResponse, args: DebugProtocol.SetDataBreakpointsArguments, request?: DebugProtocol.Request): Promise<void> {
         try {
             this.suppressStoppedEvents = this.isRunning();
-            await this.bkptManager.setDataBreakPointsRequest(response, args, request);
+            await this.bkptManager.setDataBreakPointsRequest(response, args);
             this.sendResponse(response);
         } catch (e) {
             this.handleErrResponse(response, `SetDataBreakpoints request failed: ${e}`);
@@ -735,8 +748,8 @@ export class GDBDebugSession extends SeqDebugSession {
                     const rsp: DebugProtocol.EvaluateResponse = {
                         ...response,
                         body: {
-                            result: undefined,
-                            variablesReference: undefined,
+                            result: "",
+                            variablesReference: 0,
                         },
                     };
                     return await this.liveWatchMonitor.evaluateRequestLive(rsp, args); // always returns
@@ -835,11 +848,12 @@ export class GDBDebugSession extends SeqDebugSession {
                 if (this.serverSession.serverController.rttPoll) {
                     this.serverSession.serverController.rttPoll();
                 }
+                this.sendResponse(response);
                 break;
             }
             case "swo-connected": {
-                // this.swoLaunched?.();
-                // this.swoLaunched = undefined;
+                this.swoLaunched = true;
+                this.sendResponse(response);
                 break;
             }
             default:
@@ -1041,7 +1055,7 @@ export class GDBDebugSession extends SeqDebugSession {
     private launchAttachInit(args: ConfigurationArguments) {
         this.args = this.normalizeArguments(args);
         this.setupLogging();
-        this.serverSession = new GDBServerSession(this);
+        this.serverSession.serverController.on("event", this.serverControllerEvent.bind(this));
     }
 
     private async launchAttachRequest(response: DebugProtocol.LaunchResponse, noDebug: boolean): Promise<void> {
@@ -1095,6 +1109,14 @@ export class GDBDebugSession extends SeqDebugSession {
             }
             reportTime("GDB Server Ready");
             await gdbPreConnectPromise;
+
+            // if SWO launch was requested by the server controller, we wait for it to connect before starting actual debug
+            await this.swoLaunchPromise;
+
+            // This is the last of the place where ports are allocated
+            this.sendEvent(new GenericCustomEvent("post-start-server", this.args)); // if SWO launch was requested by the server controller, we wait for it to connect before starting actual debug
+
+            // Let gdb connect to the server
             await this.sendCommandsWithWait(this.getConnectCommands()); // Can throw
 
             // Post connect, target info should be available
@@ -1410,10 +1432,10 @@ export class GDBDebugSession extends SeqDebugSession {
                 return;
             default:
         }
-        this.notifyStopped(reason, doNotify, true);
+        this.notifyStopped(reason ?? "breakpoint", doNotify, true);
     }
 
-    private notifyStopped(reason, doVSCode, doCustom) {
+    private notifyStopped(reason: string, doVSCode: boolean, doCustom: boolean) {
         const threadId = this.lastThreadsInfo?.currentThreadId || 1;
         if (doVSCode) {
             const ev: DebugProtocol.StoppedEvent = {
@@ -1432,7 +1454,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.sendEvent(ev);
         }
         if (doCustom) {
-            this.sendEvent(new CustomStoppedEvent(reason, threadId));
+            this.sendEvent(new CustomStoppedEvent(reason ?? "breakpoint", threadId));
         }
     }
 
@@ -1442,7 +1464,7 @@ export class GDBDebugSession extends SeqDebugSession {
     handleBreakpoint() {
         // throw new Error("Not yet implemented");
     }
-    handleWatchpoint() {
+    handleWatchpoint(type: string) {
         // throw new Error("Not yet implemented");
     }
     handleBreak() {
@@ -1499,24 +1521,50 @@ export class GDBDebugSession extends SeqDebugSession {
         return ev;
     }
     handleThreadCreated(record: GdbMiRecord) {
-        const id = record.result["id"];
-        if (id) {
-            this.sendEvent(this.createThreadEvent(id, "started"));
+        if (record && record.result && (record.result as any).id !== undefined) {
+            const id = (record.result as any).id;
+            if (id) {
+                this.sendEvent(this.createThreadEvent(id, "started"));
+            }
         }
     }
     handleThreadExited(record: GdbMiRecord) {
-        const id = record.result["id"];
-        if (id) {
-            this.sendEvent(this.createThreadEvent(id, "exited"));
+        if (record && record.result && (record.result as any).id !== undefined) {
+            const id = (record.result as any).id;
+            if (id) {
+                this.sendEvent(this.createThreadEvent(id, "exited"));
+            }
         }
     }
     handleThreadSelected(record: GdbMiRecord) {
-        const id = record.result["id"];
-        if (id) {
-            this.sendEvent(this.createThreadEvent(id, "selected"));
+        if (record && record.result && (record.result as any).id !== undefined) {
+            const id = (record.result as any).id;
+            if (id) {
+                this.sendEvent(this.createThreadEvent(id, "selected"));
+            }
         }
     }
     handleThreadGroupExited() {
         // throw new Error("Not yet implemented");
+    }
+
+    private serverControllerEvent(event: DebugProtocol.Event) {
+        if (event instanceof SWOConfigureEvent) {
+            const { type, port } = (event as any).body;
+            if (type === "socket") {
+                this.swoLaunchPromise = new Promise<void>((resolve, reject) => {
+                    const tm = 1000;
+                    const timeout = setTimeout(() => {
+                        if (!this.swoLaunched) {
+                            const msg = `Timeout waiting for SWV TCP port ${port}: ${tm} ms. It may connect later, continue debugging...\n`;
+                            this.handleMsg(Stderr, msg);
+                        }
+                        resolve();
+                    }, tm);
+                });
+            }
+        }
+
+        this.sendEvent(event);
     }
 }

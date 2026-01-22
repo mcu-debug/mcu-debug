@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import { Event } from "@vscode/debugadapter";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { EventEmitter } from "events";

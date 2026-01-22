@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import { EventEmitter } from "events";
 import * as child_process from "child_process";
 import * as net from "net";

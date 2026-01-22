@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 export function hexFormat(value: number, padding: number = 8, includePrefix: boolean = true): string {
     let base = (value >>> 0).toString(16);
     base = base.padStart(padding, "0");

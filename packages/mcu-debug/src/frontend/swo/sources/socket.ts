@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import { SWORTTSource } from "./common";
 import { EventEmitter } from "events";
 import * as net from "net";

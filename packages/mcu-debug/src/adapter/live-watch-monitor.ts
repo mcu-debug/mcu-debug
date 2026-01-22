@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import * as process from "process";
 import * as crypto from "crypto";
 import { DebugProtocol } from "@vscode/debugprotocol";

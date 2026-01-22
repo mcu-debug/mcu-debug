@@ -46,12 +46,13 @@ export type GdbMiRecordType = "result" | "async" | "stream";
 export type GdbMiOutputType = "result" | "console" | "log" | "target" | "exec" | "status" | "notify";
 export type GdbMiStreamType = "console" | "target" | "log";
 
+export type GdbRecordResult = { [key: string]: any } | GdbMiRecord[] | string;
 export interface GdbMiRecord {
     token: string;
     recordType: GdbMiRecordType;
     outputType: GdbMiOutputType;
     class: string;
-    result: any;
+    result: GdbRecordResult;
     prefix: string; // Actual character used as prefix ~, @, &, ^, *, =, etc
 }
 

@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { EventEmitter } from 'events';

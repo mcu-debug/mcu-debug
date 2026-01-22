@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import * as fs from 'fs';
 import { EventEmitter } from 'events';
 import { SWORTTSource } from './common';

@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { GDBDebugSession } from "./gdb-session";
 import { GdbInstance } from "./gdb-mi/gdb-instance";

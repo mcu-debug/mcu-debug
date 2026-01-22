@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import * as vscode from "vscode";
 import { TreeItem, TreeItemCollapsibleState, DebugSession, ProviderResult, Event, EventEmitter, Disposable } from "vscode";
 import { TreeViewProviderDelegate, TreeItem as WebviewTreeItem } from "../webview_tree/editable-tree";

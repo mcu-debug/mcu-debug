@@ -108,17 +108,18 @@ export class BreakpointManager {
         const numRegex = /\d+/;
         hitCondition = hitCondition.trim();
         if (hitCondition) {
+            // const match: RegExpExecArray | null = numRegex.exec(hitCondition.slice(1));
             if (hitCondition[0] === ">") {
-                bkptArgs = "-i " + numRegex.exec(hitCondition.slice(1))[0];
+                bkptArgs = "-i " + numRegex.exec(hitCondition.slice(1))?.[0];
             } else {
-                const match = numRegex.exec(hitCondition)[0];
-                if (match.length !== hitCondition.length) {
+                const match: RegExpExecArray | null = numRegex.exec(hitCondition);
+                if (match && match.length !== hitCondition.length) {
                     this.gdbSession.handleMsg(
                         Stderr,
                         "Unsupported break count expression: '" + hitCondition + "'. " + "Only supports 'X' for breaking once after X times or '>X' for ignoring the first X breaks",
                     );
-                } else if (parseInt(match) !== 0) {
-                    bkptArgs = "-t -i " + parseInt(match);
+                } else if (match && parseInt(match[0]) !== 0) {
+                    bkptArgs = "-t -i " + parseInt(match[0]);
                 }
             }
         }
@@ -173,7 +174,7 @@ export class BreakpointManager {
             for (const p of promises) {
                 try {
                     const miOutput = await p;
-                    const bp = args.breakpoints[counter];
+                    const bp = args.breakpoints![counter];
                     const bpInfo = miOutput.resultRecord.result["bkpt"];
                     const actualLine = parseInt(bpInfo["line"]);
                     const bpId = parseInt(bpInfo["number"]);
@@ -187,12 +188,12 @@ export class BreakpointManager {
                     bps.push(dbgBp);
                     bp.line = actualLine;
                     fileBps!.breakpoints.set(bpId, bp);
-                } catch (err) {
+                } catch (err: Error | any) {
                     const line = args.breakpoints ? args.breakpoints[counter].line : 0;
                     this.gdbSession.handleMsg(Stderr, `Error setting breakpoint ${sourceFile}:${line} ${err}`);
                     bps.push({
                         verified: false,
-                        message: err.message,
+                        message: err.toString(),
                     } as DebugProtocol.Breakpoint);
                 }
                 counter++;
@@ -256,12 +257,12 @@ export class BreakpointManager {
                     if (bp) {
                         this.functionBreakpoints.breakpoints.set(bpId, bp);
                     }
-                } catch (err) {
+                } catch (err: Error | any) {
                     const name = args.breakpoints ? args.breakpoints[counter].name : "<unknown>";
                     this.gdbSession.handleMsg(Stderr, `Error setting function breakpoint ${name}: ${err}`);
                     bps.push({
                         verified: false,
-                        message: err.message,
+                        message: err.toString(),
                     } as DebugProtocol.Breakpoint);
                 }
                 counter++;
@@ -270,7 +271,7 @@ export class BreakpointManager {
         });
     }
 
-    async setDataBreakPointsRequest(response: DebugProtocol.SetDataBreakpointsResponse, args: DebugProtocol.SetDataBreakpointsArguments, request: DebugProtocol.Request): Promise<void> {
+    async setDataBreakPointsRequest(response: DebugProtocol.SetDataBreakpointsResponse, args: DebugProtocol.SetDataBreakpointsArguments): Promise<void> {
         await this.executeWhileStopped(async () => {
             const toDelete: number[] = [];
             for (const [id, bp] of this.dataBreakpoints.breakpoints) {
@@ -318,12 +319,12 @@ export class BreakpointManager {
                     if (bp) {
                         this.dataBreakpoints.breakpoints.set(bpId, bp);
                     }
-                } catch (err) {
+                } catch (err: Error | any) {
                     const dataId = args.breakpoints ? args.breakpoints[counter].dataId : "<unknown>";
                     this.gdbSession.handleMsg(Stderr, `Error setting data breakpoint for ${dataId}: ${err}`);
                     bps.push({
                         verified: false,
-                        message: err.message,
+                        message: err.toString(),
                     } as DebugProtocol.Breakpoint);
                 }
                 counter++;
@@ -340,14 +341,14 @@ export class BreakpointManager {
                 return;
             }
             await this.gdbInstance.sendCommand(`-break-delete ${list.join(" ")}`);
-        } catch (err) {
+        } catch (err: Error | any) {
             throw new Error(`Error deleting old breakpoints, so new ones can be set: ${err}`);
         }
     }
     public async deleteAllBreakpoints(): Promise<void> {
         try {
             await this.gdbInstance.sendCommand("-break-delete");
-        } catch (err) {
+        } catch (err: Error | any) {
             throw new Error(`Error deleting old breakpoints, so new ones can be set: ${err}`);
         }
     }

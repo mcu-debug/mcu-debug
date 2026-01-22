@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import { SWORTTSource } from './common';
 import { EventEmitter } from 'events';
 import type { SerialPort } from 'serialport';

@@ -228,7 +228,8 @@ export class GdbInstance extends EventEmitter {
                 const pendingCmd = this.pendingCmds.get(token);
                 if (pendingCmd) {
                     if (miOutput.resultRecord?.class === "error") {
-                        const errorMsg = miOutput.resultRecord.result["msg"] || "Unknown error";
+                        const result = miOutput.resultRecord.result as { [key: string]: any };
+                        const errorMsg = result["msg"] || "Unknown error";
                         pendingCmd.reject(new Error(`GDB: ${errorMsg}`));
                     } else {
                         if (miOutput.resultRecord?.class === "connected") {
@@ -274,12 +275,12 @@ export class GdbInstance extends EventEmitter {
                     if (record.outputType === Console) {
                         this.currentOutofBandRecords.push(record);
                         if (!this.suppressConsoleOutput) {
-                            this.log(Console, record.result);
+                            this.log(Console, record.result as string);
                         }
                     } else if (record.outputType === "target") {
-                        this.log(Stdout, record.result);
+                        this.log(Stdout, record.result as string);
                     } else if (record.outputType === "log") {
-                        this.log(Stderr, record.result);
+                        this.log(Stderr, record.result as string);
                     }
                 }
             }
@@ -312,7 +313,8 @@ export class GdbInstance extends EventEmitter {
             this.emit("exited-normally", record);
         } else if (reason === "exited") {
             // exit with error code != 0
-            this.log(Stderr, "Program exited with code " + record.result["exit-code"]);
+            const result = record.result as { [key: string]: any };
+            this.log(Stderr, "Program exited with code " + result["exit-code"]);
             this.emit("exited-normally", record);
         } else if (reason === undefined && this.firstStop) {
             reason = "entry";

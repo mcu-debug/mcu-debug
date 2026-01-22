@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import { start } from "node:repl";
 import { GDBDebugSession } from "../gdb-session";
 import { GdbInstance } from "./gdb-instance";
@@ -262,7 +263,7 @@ export async function GdbMiOrCliCommandForOob(gdbInstance: GdbInstance, cmd: str
     if (miOutput.outOfBandRecords) {
         for (const oob of miOutput.outOfBandRecords) {
             if (oob.outputType === "console") {
-                const line = oob.result.trim();
+                const line = (oob.result as string).trim();
                 outputLines.push(line);
             }
         }

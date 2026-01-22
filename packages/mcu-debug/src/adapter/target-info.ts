@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import { parseAddress } from "../frontend/utils";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";

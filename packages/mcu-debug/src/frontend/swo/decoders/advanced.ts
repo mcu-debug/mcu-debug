@@ -1,3 +1,4 @@
+// @ts-strict-ignore
 import * as vscode from "vscode";
 import { SWORTTDecoder } from "./common";
 import { GrapherDataMessage } from "../common";
