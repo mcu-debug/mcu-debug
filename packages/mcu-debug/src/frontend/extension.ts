@@ -646,7 +646,7 @@ export class MCUDebugExtension {
 
     private receivedEvent(e: vscode.DebugSessionCustomEvent) {
         const str = JSON.stringify(e.body);
-        console.log(`Event: ${e.body.category}, ${e.body.action}, ${e.body.label}, ${str}`);
+        // console.log(`Event: ${e.body.category}, ${e.body.action}, ${e.body.label}, ${str}`);
         Reporting.sendEvent(e.event, { body: str });
     }
 

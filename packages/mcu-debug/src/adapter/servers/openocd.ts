@@ -29,7 +29,6 @@ function OpenOCDLog(str: string) {
     try {
         const date = new Date();
         str = `[${date.toISOString()}] ` + str;
-        console.log(str);
         if (logFsPath) {
             if (!str.endsWith("\n")) {
                 str += "\n";
@@ -42,7 +41,7 @@ function OpenOCDLog(str: string) {
             }
         }
     } catch (e) {
-        console.log(e ? e.toString() : "unknown exception?");
+        // console.log(e ? e.toString() : "unknown exception?");
     }
 }
 

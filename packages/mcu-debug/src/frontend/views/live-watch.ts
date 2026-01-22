@@ -270,7 +270,6 @@ export class LiveVariableNode {
             contextValue: this.type,
             readonly: !this.editable,
         };
-        console.log(`toWebviewTreeItem: ${this.name} value=${this.value} editable=${this.editable} display=${ret.value} prev=${this.prevValue} changed=${ret.changed}`);
         this.prevValue = this.value;
         return ret;
     }
@@ -422,8 +421,6 @@ export class LiveVariableNode {
                                 if (old) {
                                     child.expanded = old.expanded;
                                 }
-                                console.log(v);
-                                console.log(child);
                                 this.children.push(child);
                             }
                             this.childrenLoaded = true;
@@ -490,7 +487,6 @@ export class LiveVariableNode {
                             this.sizeof = obj.sizeof;
                             this.addressOf = obj.addressOf;
                             this.editable = obj.editable !== "false";
-                            console.log(obj);
                             this.refreshChildren(resolve);
                         } else {
                             this.value = `<Failed to evaluate ${this.expr}>`;

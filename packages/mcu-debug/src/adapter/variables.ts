@@ -8,6 +8,7 @@ import { GdbProtocolVariable, GdbProtocolVariableTemplate } from "./custom-reque
 import { VariableScope, VariableTypeMask, decodeReference, ActualScopeMask, ScopeBits, ScopeMask, encodeScopeReference, encodeVarReference } from "./var-scopes";
 import { DataEvaluateExpression, DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";
 import { TargetInfo } from "./target-info";
+import { group } from "node:console";
 
 // These are the fields that uniquely identify a variable
 export class VariableKeys implements IValueIdentifiable {
@@ -135,7 +136,7 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
     }
 
     // Expensive: Queries GDB for the sizeof of the variable
-    private async queryEditable(gdbInstance: GdbInstance, force = false): Promise<"true" | "false" | null | undefined> {
+    public async queryEditable(gdbInstance: GdbInstance, force = false): Promise<"true" | "false" | null | undefined> {
         try {
             const gdbVarName = this.gdbVarName;
             if (gdbVarName && (!this.addressOf || force)) {
@@ -158,7 +159,7 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
 
     // Determines the address of an item and if so also determines if it is editable
     // Expensive: Queries GDB for the sizeof of the variable
-    private async queryAddressOf(gdbInstance: GdbInstance, force = false): Promise<string | null | undefined> {
+    public async queryAddressOf(gdbInstance: GdbInstance, force = false): Promise<string | null | undefined> {
         try {
             if (this.addressOf && !force) {
                 return this.addressOf;
@@ -402,6 +403,7 @@ export class VariableManager {
     private registerGroups: RegisterGroupInfo[] = [];
     private registerInfoMap = new Map<number, RegisterInfo>();
     private registerValuesMap: Map<number, GdbMiOutput> = new Map<number, GdbMiOutput>();
+    private registerNames = new Map<number, string>();
 
     constructor(
         gdbInstance_: GdbInstance, // Should never need thhis directly, kept in respective containers
@@ -548,7 +550,7 @@ export class VariableManager {
     }
 
     public async varListChildren(container: VariableContainer | VariableContainerForGlobals, parent: VariableObject, gdbName: string, threadId: number, frameId: number): Promise<VariableObject[]> {
-        const createVariable = (name: string, item: any) => {
+        const createVariable = (name: string, item: any): [VariableObject | undefined, number | undefined] => {
             const scope = parent.scope & ActualScopeMask;
             if (scope === VariableScope.Global || scope === VariableScope.Static) {
                 return container.parseMiGlobalVariable(name, item, parent.scope, parent.handle, parent.fileName);
@@ -576,7 +578,7 @@ export class VariableManager {
                 isArray = false;
                 ret.push(...(await this.varListChildren(container, parent, gdbVarName, threadId, frameId)));
             } else {
-                const [child, handle] = createVariable(exp, item);
+                const [child, handle] = await createVariable(exp, item);
                 if (!child) {
                     this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Warning: Could not parse child variable ${item["exp"]} of parent ${gdbName}\n`);
                     continue;
@@ -585,6 +587,7 @@ export class VariableManager {
                     child.variablesReference = handle!;
                 }
                 child.applyChanges(item);
+                // For children, we dont get all props, just what is cheap to get. The rest are queried on demand
                 if (isArray === null) {
                     isArray = child.exp.match(/^[\d]+$/) !== null;
                     if (isArray) {
@@ -620,6 +623,14 @@ export class VariableManager {
         return ret;
     }
 
+    private async setVarProps(gdbInstance: GdbInstance, variable: VariableObject, isClientVSCode: boolean): Promise<void> {
+        if (!isClientVSCode) {
+            await variable.queryGdbVarInfo(gdbInstance);
+        } else {
+            await variable.queryAddressOf(gdbInstance, true);
+        }
+    }
+
     async getVariableChildren(container: VariableContainer | VariableContainerForGlobals, parent: VariableObject, isClientVSCode: boolean): Promise<GdbProtocolVariable[]> {
         try {
             // Check if this is a register group variable
@@ -632,9 +643,7 @@ export class VariableManager {
             parent.children = children;
             const protoVars: GdbProtocolVariable[] = [];
             for (const child of children) {
-                if (isClientVSCode) {
-                    await child.queryGdbVarInfo(container.gdbInstance);
-                }
+                await this.setVarProps(container.gdbInstance, child, isClientVSCode);
                 protoVars.push(child.toProtocolVariable());
             }
             return protoVars;
@@ -656,7 +665,7 @@ export class VariableManager {
         const container = this.getContainer(VariableScope.Registers);
 
         try {
-            // Get all register values
+            // Get all register values for this thread/frame
             const ref = encodeScopeReference(threadId, frameId, VariableScope.Registers);
             let miOutput: GdbMiOutput = this.registerValuesMap.get(ref);
             if (!miOutput) {
@@ -680,7 +689,9 @@ export class VariableManager {
                     }
 
                     // Filter based on group
-                    if (groupName === "misc") {
+                    if (groupName === "*") {
+                        // This the flat list since no register groups were found
+                    } else if (groupName === "misc") {
                         // Misc group contains registers that only belong to internal groups
                         const userGroups = regInfo.groups.filter((g) => !internalGroups.includes(g));
                         if (userGroups.length > 0) {
@@ -694,23 +705,28 @@ export class VariableManager {
                     }
 
                     const regName = regInfo.name;
-                    const key = new VariableKeys(groupVar.handle, regName, encodeVarReference(threadId, frameId, VariableScope.Registers));
+                    // While we are children of a group, the registers parent is still 0. Or elsem they won't be cleaned up on a continue
+                    // 0 also happens to the true parent of registers, as Groups are fake.
+                    const key = new VariableKeys(/*groupVar.handle*/ 0, regName, encodeVarReference(threadId, frameId, VariableScope.Registers));
                     const existingVar = container.getVariableByKey(key);
 
                     try {
                         if (existingVar === undefined) {
                             // Create a gdb variable for this register
-                            const gdbVarName = this.createGdbName(container, regName.replaceAll("$", "reg-"), threadId, frameId);
+                            const gdbVarName = this.createGdbName(container, regName.replaceAll("$", "_"), threadId, frameId);
                             const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
                             const varCreateRecord = await container.gdbInstance.sendCommand(cmd);
                             const record = varCreateRecord.resultRecord.result;
-                            // While we are children of a group, the registers parent is still 0. Or elsem they won't be cleaned up on a continue
-                            // 0 also happens to the true parent of registers, as Groups are fake.
                             const [varObj] = container.parseMiVariable(regName, record, VariableScope.RegistersVariable, /*groupVar.handle*/ 0, threadId, frameId);
                             varObj.value = r["value"]; // Use this because it is better formatted
+                            varObj.gdbVarName = gdbVarName;
                             variables.push(varObj.toProtocolVariable());
                         } else {
-                            existingVar.value = r["value"];
+                            const varUpdateRecord = await container.gdbInstance.sendCommand(`-var-update ${existingVar.gdbVarName}`);
+                            const record = varUpdateRecord.resultRecord?.result["changelist"]?.[0];
+                            if (record) {
+                                existingVar.value = r["value"];
+                            }
                             variables.push(existingVar.toProtocolVariable());
                         }
                     } catch (e) {
@@ -765,6 +781,7 @@ export class VariableManager {
                                 if (record["numchild"] && parseInt(record["numchild"]) > 0) {
                                     varObj.variablesReference = handle!;
                                 }
+                                await this.setVarProps(container.gdbInstance, varObj, true);
                                 variables.push(varObj.toProtocolVariable());
                             }
                         } else {
@@ -775,6 +792,7 @@ export class VariableManager {
                             } else if (record && record["in_scope"] && record["in_scope"] !== "true") {
                                 existingVar.value = "not in scope?";
                             }
+                            // await this.setVarProps(container.gdbInstance, existingVar, true);
                             variables.push(existingVar.toProtocolVariable());
                         }
                     } catch (e) {
@@ -788,7 +806,6 @@ export class VariableManager {
         });
     }
 
-    private registerNames = new Map<number, string>();
     private async getRegisterNames(): Promise<void> {
         if (this.registerNames.size > 0) {
             return;
@@ -845,6 +862,9 @@ export class VariableManager {
                 this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register groups: ${e}\n`);
             }
         } finally {
+            if (this.registerGroups.length === 0) {
+                this.registerGroups.push({ name: "*", type: "*", registers: [] });
+            }
             container.gdbInstance.suppressConsoleOutput = false;
         }
     }
@@ -856,6 +876,17 @@ export class VariableManager {
         const container = this.getContainer(VariableScope.Registers);
         try {
             container.gdbInstance.suppressConsoleOutput = true;
+            if (this.registerGroups.length === 1 && this.registerGroups[0].name === "*") {
+                await this.getRegisterNames();
+                const group = this.registerGroups[0];
+                for (const [num, name] of this.registerNames) {
+                    this.registerInfoMap.set(num, { name: `$${name}`, number: num, groups: [group.name] });
+                    group.registers.push(name);
+                }
+                container.gdbInstance.suppressConsoleOutput = false;
+                return;
+            }
+
             const miOutput = await container.gdbInstance.sendCommand(`-interpreter-exec console "maint print register-groups"`);
             // Extract console output from out-of-band records
             const consoleLines = miOutput.outOfBandRecords.filter((record) => record.outputType === "console").map((record) => record.result);
@@ -909,9 +940,12 @@ export class VariableManager {
         await this.getRegisterGroups();
         await this.getRegisterGroupMappings();
 
-        if (this.registerGroups.length === 0) {
-            // Fallback to old behavior if groups are not available
-            return this.getRegisterVariablesFlat(threadId, frameId);
+        if (this.registerGroups.length === 1 && this.registerGroups[0].name === "*") {
+            const ref = encodeScopeReference(threadId, frameId, VariableScope.Registers);
+            // Create a fake group variable to hold all registers, doesn't show up in UI or added to container
+            const varObj = new VariableObject(VariableScope.Registers, 0, "*", ref, "*", "*");
+            const vars = await this.getRegistersForGroup(varObj);
+            return vars;
         }
 
         const variables: GdbProtocolVariable[] = [];
@@ -1013,6 +1047,7 @@ export class VariableManager {
                             if (record["numchild"] && parseInt(record["numchild"]) > 0) {
                                 varObj.variablesReference = handle!;
                             }
+                            await this.setVarProps(container.gdbInstance, varObj, true);
                             variables.push(varObj.toProtocolVariable());
                         }
                     } else {
@@ -1023,6 +1058,7 @@ export class VariableManager {
                         } else if (record && record["in_scope"] && record["in_scope"] !== "true") {
                             existingVar.value = "not in scope?";
                         }
+                        // await this.setVarProps(container.gdbInstance, existingVar, true);
                         variables.push(existingVar.toProtocolVariable());
                     }
                 } catch (e) {
@@ -1076,6 +1112,7 @@ export class VariableManager {
                             if (record["numchild"] && parseInt(record["numchild"]) > 0) {
                                 varObj.variablesReference = handle!;
                             }
+                            await this.setVarProps(container.gdbInstance, varObj, true);
                             variables.push(varObj.toProtocolVariable());
                         }
                     } else {
@@ -1086,6 +1123,7 @@ export class VariableManager {
                         } else if (record && record["in_scope"] && record["in_scope"] !== "true") {
                             existingVar.value = "not in scope?";
                         }
+                        // await this.setVarProps(container.gdbInstance, existingVar, true);
                         variables.push(existingVar.toProtocolVariable());
                     }
                 } catch (e) {
@@ -1101,62 +1139,6 @@ export class VariableManager {
             }
         }
         return [];
-    }
-
-    /**
-     * Fallback method that returns a flat list of all registers.
-     * Used when register grouping information is not available.
-     */
-    private async getRegisterVariablesFlat(threadId: number, frameId: number): Promise<GdbProtocolVariable[]> {
-        const cmd = `-data-list-register-values --thread ${threadId} --frame ${frameId} ${this.regFormat}`;
-        await this.getRegisterNames();
-        if (this.registerNames.size === 0) {
-            return [];
-        }
-        const container = this.getContainer(VariableScope.Registers);
-        return await container.gdbInstance.sendCommand(cmd).then(async (miOutput) => {
-            const variables: GdbProtocolVariable[] = [];
-            const regs = miOutput.resultRecord.result["register-values"];
-            if (Array.isArray(regs)) {
-                const container = this.getContainer(VariableScope.Registers);
-                for (const r of regs) {
-                    if (container.gdbInstance.IsRunning()) {
-                        break;
-                    }
-                    const regName = this.registerNames.get(parseInt(r["number"]));
-                    if (regName === undefined) {
-                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Invalid register number: ${r["number"]}\n`);
-                        continue;
-                    }
-                    const key = new VariableKeys(0, regName, encodeVarReference(threadId, frameId, VariableScope.Registers));
-                    const existingVar = container.getVariableByKey(key);
-                    try {
-                        if (existingVar === undefined) {
-                            // We create a gdb variable in case the user wants to set it. Not really needed for viewing
-                            const gdbVarName = this.createGdbName(container, regName.replaceAll("$", "reg-"), threadId, frameId);
-                            const cmd = `-var-create --thread ${threadId} --frame ${frameId} ${gdbVarName} * ${regName}`;
-                            const varCreateRecord = await container.gdbInstance.sendCommand(cmd);
-                            const record = varCreateRecord.resultRecord.result;
-                            const [varObj] = container.parseMiVariable(regName, record, VariableScope.Registers, 0, threadId, frameId);
-                            varObj.value = r["value"]; // Use this because it is better formatted
-                            if (varObj !== undefined) {
-                                this.setFields(varObj);
-                                variables.push(varObj.toProtocolVariable());
-                            }
-                        } else {
-                            existingVar.value = r["value"]; // No need for var-update for registers. AFAIK they are fresh each time
-                            this.setFields(existingVar);
-                            variables.push(existingVar.toProtocolVariable());
-                        }
-                    } catch (e) {
-                        if (this.debugSession.args.debugFlags.anyFlags) {
-                            this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting register variable ${regName}: ${e}\n`);
-                        }
-                    }
-                }
-            }
-            return variables;
-        });
     }
 
     private setFields(reg: VariableObject): void {
@@ -1275,9 +1257,7 @@ export class VariableManager {
                     variablesReference: newVar.variablesReference,
                 };
                 VariableManager.setMemoryReference(response.body as any, value);
-                if (!isClientVSCode) {
-                    await newVar.queryGdbVarInfo(container.gdbInstance);
-                }
+                await this.setVarProps(container.gdbInstance, newVar, isClientVSCode);
                 (response.body as any).variableObject = newVar.toProtocolVariable();
                 return;
             } else {
@@ -1294,9 +1274,6 @@ export class VariableManager {
                     result: existingVar.value,
                     variablesReference: existingVar.variablesReference,
                 };
-                if (!isClientVSCode) {
-                    await existingVar.queryGdbVarInfo(container.gdbInstance);
-                }
                 VariableManager.setMemoryReference(response.body as any, existingVar.value);
                 (response.body as any).variableObject = existingVar.toProtocolVariable();
                 return;
@@ -1322,7 +1299,7 @@ export class VariableManager {
         let [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference);
         let targetKey: VariableKeys;
         container = container ?? this.getContainer(scope);
-        if (args.variablesReference & VariableTypeMask) {
+        if (args.variablesReference & VariableTypeMask && container.scope !== VariableScope.Registers) {
             const parentObject = this.getVariableObject(args.variablesReference, container);
             targetKey = new VariableKeys(parentObject.handle, args.name, encodeVarReference(threadId, frameId, scope));
         } else {

@@ -103,6 +103,10 @@ export class TargetMemoryRegions {
     }
 
     public testAccessAtAddress(address: bigint, accessFunc: (region: TargetMemoryRegion) => boolean): boolean {
+        if (this.regions.length === 0) {
+            // No region info available, assume accessible
+            return true;
+        }
         for (const region of this.regions) {
             if (region.containsAddress(address) && accessFunc(region)) {
                 return true;
@@ -207,6 +211,9 @@ export class TargetInfo {
                             regions.push(new TargetMemoryRegion(parseAddress(lowAddr), parseAddress(highAddr), attrs));
                         }
                     }
+                }
+                if (regions.length === 0) {
+                    this.session.handleMsg(Stdout, "No memory region information available from target. All variables are considered accessible(read/write).\n");
                 }
                 this.targetMemoryRegions = new TargetMemoryRegions(regions);
                 resolve();
