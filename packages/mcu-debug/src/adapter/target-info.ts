@@ -151,8 +151,8 @@ export class TargetInfo {
     public async initialize(): Promise<void> {
         try {
             await this._getMemoryRegions();
-        } catch {
-            this.session.handleMsg(Stderr, "Warning: Unable to determine target memory regions.\n");
+        } catch (e) {
+            this.session.handleMsg(Stderr, `Warning: Unable to determine target memory regions. ${e}\n`);
         }
         try {
             const tmp = await DataEvaluateExpressionAsNumber(this.gdbInstance, `sizeof(void*)`);
@@ -187,39 +187,36 @@ export class TargetInfo {
         }
     }
 
-    private _getMemoryRegions(): Promise<void> {
-        return new Promise<void>(async (resolve, reject) => {
-            try {
-                const outputLines = (await GdbMiOrCliCommandForOob(this.gdbInstance, "info mem")) as string[];
-                // Parse the lines to extract region info
-                const regions: TargetMemoryRegion[] = [];
-                let inTable = false;
-                for (const line of outputLines) {
-                    if (line.startsWith("Num Enb Low Addr")) {
-                        inTable = true;
-                        continue;
+    private async _getMemoryRegions(): Promise<void> {
+        try {
+            const outputLines = (await GdbMiOrCliCommandForOob(this.gdbInstance, "info mem")) as string[];
+            // Parse the lines to extract region info
+            const regions: TargetMemoryRegion[] = [];
+            let inTable = false;
+            for (const line of outputLines) {
+                if (line.startsWith("Num Enb Low Addr")) {
+                    inTable = true;
+                    continue;
+                }
+                if (inTable) {
+                    if (line.length === 0) {
+                        break; // end of table
                     }
-                    if (inTable) {
-                        if (line.length === 0) {
-                            break; // end of table
-                        }
-                        const parts = line.split(/\s+/);
-                        if (parts.length >= 5) {
-                            const lowAddr = parts[2];
-                            const highAddr = parts[3];
-                            const attrs = parts.slice(4).join(" ");
-                            regions.push(new TargetMemoryRegion(parseAddress(lowAddr), parseAddress(highAddr), attrs));
-                        }
+                    const parts = line.split(/\s+/);
+                    if (parts.length >= 5) {
+                        const lowAddr = parts[2];
+                        const highAddr = parts[3];
+                        const attrs = parts.slice(4).join(" ");
+                        regions.push(new TargetMemoryRegion(parseAddress(lowAddr), parseAddress(highAddr), attrs));
                     }
                 }
-                if (regions.length === 0) {
-                    this.session.handleMsg(Stdout, "No memory region information available from target. All variables are considered accessible(read/write).\n");
-                }
-                this.targetMemoryRegions = new TargetMemoryRegions(regions);
-                resolve();
-            } catch (error: any) {
-                reject(new Error(`Error getting memory regions: ${error.toString()}`));
             }
-        });
+            if (regions.length === 0) {
+                this.session.handleMsg(Stdout, "No memory region information available from target. All variables are considered accessible(read/write).\n");
+            }
+            this.targetMemoryRegions = new TargetMemoryRegions(regions);
+        } catch (error: any) {
+            throw new Error(`Error getting memory regions: ${error.toString()}`);
+        }
     }
 }

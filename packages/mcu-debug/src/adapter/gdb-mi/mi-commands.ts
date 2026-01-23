@@ -225,7 +225,7 @@ export class GdbMiThreadInfoList {
 export async function DataEvaluateExpression(gdbInstance: GdbInstance, expr: string): Promise<string | null> {
     try {
         const cmd = `-data-evaluate-expression "${expr}"`;
-        const miOutput = await gdbInstance.sendCommand(cmd, 100);
+        const miOutput = await gdbInstance.sendCommand(cmd);
         const record = miOutput.resultRecord?.result as any;
         if (record && record["value"]) {
             return record["value"];
@@ -255,7 +255,7 @@ export async function GdbMiOrCliCommandForOob(gdbInstance: GdbInstance, cmd: str
     if (!cmd.startsWith("-")) {
         cmd = `-interpreter-exec console "${cmd}"`;
     }
-    const miOutput = await gdbInstance.sendCommand(cmd, 100);
+    const miOutput = await gdbInstance.sendCommand(cmd);
     const outputLines: string[] = [];
     if (miOutput.outOfBandRecords) {
         for (const oob of miOutput.outOfBandRecords) {

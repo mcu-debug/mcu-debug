@@ -68,18 +68,11 @@ export interface SWOConfigureBody {
 
 export class SWOConfigureEvent extends Event implements DebugProtocol.Event {
     public body: SWOConfigureBody = {} as SWOConfigureBody;
-    /*
-    public bodyx: {
-        type: string;
-        port: string; // [hostname:]port
-        path: string; // path to serial port, fifo, etc.
-    };
-*/
     public event: string = "swo-configure";
 
     constructor(params: SWOConfigureBody) {
-        const body = params;
-        super("swo-configure", body);
+        super("swo-configure");
+        this.body = params;
     }
 }
 

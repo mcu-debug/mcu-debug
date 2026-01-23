@@ -309,8 +309,18 @@ export class SWOCore extends SWORTTCoreBase {
         super();
         this.itmDecoder = new ITMDecoder();
         session.customRequest("load-function-symbols").then(
-            (result) => {
-                this.functionSymbols = result.functionSymbols;
+            async (result) => {
+                try {
+                    const filePath = result.file as string;
+                    const fileContent = await fs.promises.readFile(filePath, "utf8");
+                    const parsed = JSON.parse(fileContent, (key, value) => {
+                        return key === "address" || key === "addressOrig" ? BigInt(value) : value;
+                    });
+                    this.functionSymbols = parsed.functionSymbols;
+                    await fs.promises.unlink(filePath);
+                } catch (e) {
+                    this.functionSymbols = [];
+                }
             },
             (error) => {
                 this.functionSymbols = [];

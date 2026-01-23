@@ -5,10 +5,8 @@ import { InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEven
 import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent } from "./servers/common";
 import os from "os";
 import fs from "fs";
-import path from "path";
-import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { GdbEventNames, GdbMiOutput, GdbMiRecord, Stderr, Stdout } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiRecord, GdbMiThreadIF, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { VariableManager } from "./variables";
 import { SymbolTable } from "./symbols";
@@ -71,11 +69,15 @@ export class GDBDebugSession extends SeqDebugSession {
         this.symbolTable = new SymbolTable(this);
         this.liveWatchMonitor = new LiveWatchMonitor(this);
         this.memoryRequests = new MemoryRequests(this, this.gdbInstance);
-        this.lastThreadsInfo = new GdbMiThreadInfoList({
+        this.lastThreadsInfo = this.createEmptyThreadInfo();
+        this.getFileId(VariableManager.GlobalFileName); // Make sure global file ID is always 1
+    }
+
+    private createEmptyThreadInfo(): GdbMiThreadInfoList {
+        return new GdbMiThreadInfoList({
             hasTerminator: true,
             outOfBandRecords: [],
         });
-        this.getFileId(VariableManager.GlobalFileName); // Make sure global file ID is always 1
     }
 
     public isRunning(): boolean {
@@ -388,10 +390,10 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.handleResponseMsg(response, "mcu-debug: Threads request received while target is running. Returning empty thread list.\n");
                 return;
             }
-            this.lastThreadsInfo = await this.gdbMiCommands.sendThreadInfoAll();
+            // We get the thread info when we are stopped already. No need to do it again here.
             const threads = this.lastThreadsInfo?.getSortedThreadList() || [];
             for (const t of threads) {
-                response.body.threads.push({ id: t.id, name: t.target_id || `Thread ${t.id}` });
+                response.body.threads.push({ id: t.id, name: t.name || t.target_id || `Thread ${t.id}` });
             }
             this.sendResponse(response);
         } catch (e) {
@@ -801,7 +803,13 @@ export class GDBDebugSession extends SeqDebugSession {
                 }
                 break;
             case "load-function-symbols":
-                response.body = { functionSymbols: this.symbolTable.getFunctionSymbols() };
+                const ret = this.symbolTable.getFunctionSymbols();
+                const tmpFile = path.join(os.tmpdir(), `mcu-debug-syms-${Date.now()}.json`);
+                const jsonContent = JSON.stringify({ functionSymbols: ret }, (key, value) => {
+                    return typeof value === "bigint" ? value.toString() : value;
+                });
+                fs.writeFileSync(tmpFile, jsonContent);
+                response.body = { file: tmpFile };
                 this.sendResponse(response);
                 break;
             case "get-arguments":
@@ -1370,7 +1378,7 @@ export class GDBDebugSession extends SeqDebugSession {
             // The GdbMiInstance has the true status and if it is not running, we send a stopped event
             // Also, users custom commands may have messed with the session state, so we ensure we
             // notify VSCode of the stopped state here.
-            this.notifyStopped("entry", !this.args.noDebug, false);
+            this.stopEvent(undefined, "Reset");
         } else {
             // Send the following to ensure VSCode knows we are running. Now everyone shuld be in sync
             // The gdbInstance has the true status.
@@ -1419,11 +1427,57 @@ export class GDBDebugSession extends SeqDebugSession {
     // Unlike in cortex-debug, we get the thread info here before sending the stop event
     // Sometimes we get interrupted by other requests, so we store the latest thread info
     // and use that when needed. This works for All-Stop mode only for now.
-    async stopEvent(record: GdbMiRecord, reason?: string) {
-        await this.varManager.prepareForStopped(); // Yes, do it again here to be sure, may not have completed during a continue
+    private lastStoppedThreadId: number = 1;
+    async stopEvent(record: GdbMiRecord | undefined, reason?: string) {
+        this.lastStoppedThreadId = record ? parseInt((record.result as any)["thread-id"] ?? "1") : 1;
         if (this.suppressStoppedEvents) {
             return;
         }
+
+        try {
+            const cleaupPromise = this.varManager.prepareForStopped();
+            // We have several issues to deal with here:
+            // 1. GDB sometimes reports a different current thread id than the one in the stop record
+            //    We will trust the stop record more, since that is what caused the stop
+            // 2. GDB sometimes reports a current thread id that is not in the thread list
+            //    This seems to happen with some RTOSes where threads are created/destroyed rapidly
+            //    In this case, we will just pick the first thread in the list
+            // 3. VSCode will ask for a stackTrace even before it queries for threads. In this case,
+            //    we need to have the current thread info available for stackTrace requests.
+            // 4. Just after a reset, things are messed up (stale RAM, junk RTOS threads, etc.) and made worse after
+            //    a program operation like "load". So we need to be resilient to all kinds of weird states. Threads
+            //    were reported by GDB may not exist after a reset+load. So, query GDB once again for its world view of threads.
+            let found = false;
+            this.lastThreadsInfo = await this.gdbMiCommands.sendThreadInfoAll();
+            if (this.lastThreadsInfo.currentThreadId !== undefined && this.lastStoppedThreadId != this.lastThreadsInfo.currentThreadId) {
+                this.handleMsg(Stderr, `mcu-debug: Warning: Stopped thread id ${this.lastStoppedThreadId} does not match current thread id ${this.lastThreadsInfo.currentThreadId}\n`);
+                this.lastStoppedThreadId = this.lastThreadsInfo.currentThreadId;
+            } else if (this.lastThreadsInfo.currentThreadId === undefined) {
+                this.lastThreadsInfo.currentThreadId = this.lastStoppedThreadId;
+            }
+            let firstThread: GdbMiThreadIF | null = null;
+            for (const [thNum, thInfo] of this.lastThreadsInfo.threadMap) {
+                firstThread = firstThread || thInfo;
+                if (thInfo.id === this.lastThreadsInfo.currentThreadId) {
+                    found = true;
+                }
+            }
+            if (!found) {
+                this.handleMsg(Stderr, `mcu-debug: Warning: Current thread id ${this.lastThreadsInfo.currentThreadId} not found in thread list\n`);
+                this.lastStoppedThreadId = firstThread ? firstThread.id : 1;
+                try {
+                    // If we don't have a proper thread selected, things like next/step/continue fail
+                    await this.gdbInstance.sendCommand(`-thread-select ${this.lastStoppedThreadId}`); // Try to select a valid thread
+                } catch (e) {
+                    this.handleMsg(Stderr, `mcu-debug: Warning: Failed to select thread id ${this.lastStoppedThreadId}: ${e instanceof Error ? e.message : String(e)}\n`);
+                }
+            }
+            await cleaupPromise;
+        } catch (e) {
+            this.handleMsg(Stderr, `mcu-debug: Failed to get thread info on stop event: ${e instanceof Error ? e.message : String(e)}\n`);
+            this.lastThreadsInfo = this.createEmptyThreadInfo();
+        }
+
         let doNotify = !this.args.noDebug;
         switch (reason) {
             case "entry":
@@ -1439,7 +1493,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private notifyStopped(reason: string, doVSCode: boolean, doCustom: boolean) {
-        const threadId = this.lastThreadsInfo?.currentThreadId || 1;
+        const threadId = this.lastStoppedThreadId;
         if (doVSCode) {
             const ev: DebugProtocol.StoppedEvent = {
                 type: "event",
