@@ -870,7 +870,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.args.pvtSessionMode = mode;
             const commands = [];
             commands.push(...(this.args.preResetCommands?.map(COMMAND_MAP) || []));
-            commands.push(...(this.args.overrideResetCommands ? this.args.overrideResetCommands.map(COMMAND_MAP) : this.serverSession.serverController.resetCommands().map(COMMAND_MAP) || []));
+            commands.push(...(this.args.overrideResetCommands ? this.args.overrideResetCommands.map(COMMAND_MAP) : this.serverSession.serverController.resetCommands() || []));
             commands.push(...(this.args.postResetCommands?.map(COMMAND_MAP) || []));
 
             await this.sendCommandsWithWait(commands);
@@ -1269,12 +1269,12 @@ export class GDBDebugSession extends SeqDebugSession {
 
         if (this.args.pvtSessionMode === SessionMode.Attach) {
             commands.push(...(this.args.preAttachCommands?.map(COMMAND_MAP) ?? []));
-            const attachCommands = this.args.overrideAttachCommands != null ? this.args.overrideAttachCommands.map(COMMAND_MAP) : this.serverSession.serverController.attachCommands().map(COMMAND_MAP);
+            const attachCommands = this.args.overrideAttachCommands != null ? this.args.overrideAttachCommands.map(COMMAND_MAP) : this.serverSession.serverController.attachCommands();
             commands.push(...attachCommands);
             commands.push(...(this.args.postAttachCommands?.map(COMMAND_MAP) ?? []));
         } else {
             commands.push(...(this.args.preLaunchCommands?.map(COMMAND_MAP) ?? []));
-            const launchCommands = this.args.overrideLaunchCommands != null ? this.args.overrideLaunchCommands.map(COMMAND_MAP) : this.serverSession.serverController.launchCommands().map(COMMAND_MAP);
+            const launchCommands = this.args.overrideLaunchCommands != null ? this.args.overrideLaunchCommands.map(COMMAND_MAP) : this.serverSession.serverController.launchCommands();
             commands.push(...launchCommands);
             commands.push(...(this.args.postLaunchCommands?.map(COMMAND_MAP) ?? []));
         }

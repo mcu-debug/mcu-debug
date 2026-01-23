@@ -295,7 +295,7 @@ export class LiveWatchMonitor {
         try {
             const cmd = `-var-update --all-values *`;
             const miOutput = await this.gdbInstance.sendCommand(cmd);
-            const records = miOutput.resultRecord?.result as any["changelist"];
+            const records = (miOutput.resultRecord?.result as any)["changelist"];
             return records;
         } catch (e: any) {
             if (this.debugFlags.anyFlags) {
@@ -364,7 +364,7 @@ export class LiveWatchMonitor {
                 const miOutput = await this.gdbInstance!.sendCommand(readCmd);
                 // At this point, the regular updates are halted, so we need to capture the changelist ourselves
                 // And we can save them so that a future updateVariables() call will send them out
-                this.pvrWriteUpdates = miOutput.resultRecord?.result as any["changelist"];
+                this.pvrWriteUpdates = (miOutput.resultRecord?.result as any)["changelist"];
                 const ourUpdate = this.pvrWriteUpdates[0];
                 if (BigInt(argValue) !== BigInt(ourUpdate.value)) {
                     throw new Error(`GDB could not confirm an update to '${varObj.evaluateName}' via OpenOCD monitor command`);

@@ -565,7 +565,7 @@ export class VariableManager {
         };
         const miOutput = await container.gdbInstance.sendCommand(`-var-list-children --all-values "${gdbName}"`);
         const keywords = ["private", "protected", "public"];
-        const children = (miOutput.resultRecord!.result as { [key: string]: any }["children"]) || [];
+        const children = (miOutput.resultRecord!.result as { [key: string]: any })["children"] || [];
         const ret: VariableObject[] = [];
         let sizeof: number | null | undefined = null;
         let isArray: boolean | null = null;
@@ -1261,7 +1261,7 @@ export class VariableManager {
                     }
                     const formatCmd = `-var-set-format ${gdbName} ${fmt}`;
                     const fmtOutput = await container.gdbInstance.sendCommand(formatCmd);
-                    value = fmtOutput.resultRecord?.result as any["value"];
+                    value = (fmtOutput.resultRecord?.result as any)["value"];
                     record.value = value;
                 }
                 // const [newVar, handle] = container.createVariable(scope, 0, args.expression.trim(), value, record["type"], thread, frame);
