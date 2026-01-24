@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 import { TextDecoder } from "util";
 import { setFlagsFromString } from "v8";
 import { MCUDebugChannel } from "../../../dbgmsgs";
-
+import { WaitForPort, WaitForPortArgs, ReturnObject } from "@mcu-debug/shared";
 const TimerInterval = 250;
 export class SocketSWOSource extends EventEmitter implements SWORTTSource {
     protected client: net.Socket | null = null;
@@ -23,8 +23,76 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
         this.emit("data", buffer);
     }
 
-    // Default wait time is about 5 minutes
     public start(timeout = SocketTimout): Promise<void> {
+        return new Promise<void>(async (resolve, reject) => {
+            const obj = parseHostPort(this.tcpPort);
+            const start = Date.now();
+            const waitForArgs: WaitForPortArgs = {
+                protocol: "tcp" as const,
+                host: obj.host,
+                port: obj.port,
+                interval: TimerInterval,
+                timeout: timeout,
+                callbacks: {
+                    starting: () => {
+                        MCUDebugChannel.debugMessage(`Starting connection to SWO/RTT port ${this.tcpPort}\n`);
+                    },
+                    setup: (socket: net.Socket) => {
+                        // This will be called once per try when a socket is created. Set everything up so we
+                        // can process data and handle errors, and NOT miss any data
+                        socket.on("data", (buffer) => {
+                            this.processData(buffer as Buffer);
+                        });
+                        socket.on("end", () => {
+                            this.dispose();
+                        });
+                        socket.on("close", () => {
+                            this.disposeClient();
+                        });
+                        socket.on("error", (e) => {
+                            this.dispose();
+                            this.emit("error", e);
+                        });
+                    },
+                    connected: (socket: net.Socket) => {
+                        const delta = Date.now() - start;
+                        this.client = socket;
+                        this.connected = true;
+                        this.emit("connected");
+                        MCUDebugChannel.debugMessage(`Connected SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}, elapsed=${delta}ms`);
+                        this.nTries++;
+                    },
+                    tryConnect: () => {
+                        const delta = Date.now() - start;
+                        MCUDebugChannel.debugMessage(`Trying SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}, elapsed=${delta}ms`);
+                        this.nTries++;
+                    },
+                    timeout: () => {
+                        const e = new Error(`Error: Failed to connect to port ${this.tcpPort} (timeout)`);
+                        this.connError = e;
+                        this.emit("error", e);
+                        reject(e);
+                    },
+                },
+            };
+            const waiter = new WaitForPort(waitForArgs);
+            waiter
+                .waitPort()
+                .then((status: ReturnObject) => {
+                    if (status.open) {
+                        resolve();
+                    }
+                })
+                .catch((e: any) => {
+                    this.connError = e;
+                    this.emit("error", e);
+                    reject(e);
+                });
+        });
+    }
+
+    // Default wait time is about 5 minutes
+    public startx(timeout = SocketTimout): Promise<void> {
         let retry = true;
         const start = Date.now();
         const obj = parseHostPort(this.tcpPort);

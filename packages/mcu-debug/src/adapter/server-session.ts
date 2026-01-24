@@ -307,18 +307,23 @@ export class GDBServerSession extends EventEmitter {
 // Helper function to see if a TCP port is listening
 async function isPortListening(port: number, timeoutMs: number, host: string = "127.0.0.1"): Promise<boolean> {
     return new Promise((resolve) => {
-        const socket = new net.Socket();
-        socket.setTimeout(timeoutMs);
-        socket.once("connect", () => {
-            socket.destroy();
-            resolve(true);
-        });
-        socket.once("error", () => {
+        const timer = setInterval(() => {
+            const socket = new net.Socket();
+            socket.once("connect", () => {
+                socket.destroy();
+                clearInterval(timer);
+                resolve(true);
+            });
+            socket.once("error", () => {
+                clearInterval(timer);
+                resolve(false);
+            });
+            socket.connect(port, host);
+        }, 100);
+
+        setTimeout(() => {
+            clearInterval(timer);
             resolve(false);
-        });
-        socket.once("timeout", () => {
-            resolve(false);
-        });
-        socket.connect(port, host);
+        }, timeoutMs);
     });
 }

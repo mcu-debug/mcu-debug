@@ -142,8 +142,8 @@ export class MCUDebugExtension {
                     // Session may not have actually started according to VSCode but we know of it
                     if (this.isDebugging(s.session)) {
                         s.session.customRequest("set-var-format", { hex: isHex }).then(() => {
-                            if (s.status === "stopped") {
-                                this.liveWatchProvider?.refresh(s.session);
+                            if (s.status === "stopped" && this.liveWatchProvider?.isSameSession(s.session)) {
+                                this.liveWatchProvider?.refresh();
                             }
                         });
                         if (s.status === "stopped") {
@@ -837,7 +837,7 @@ export async function activate(context: vscode.ExtensionContext) {
     try {
         Reporting.activateTelemetry(context);
         MCUDebugChannel.createDebugChannel();
-        MCUDebugChannel.debugMessage("Starting mcu-Debug extension.");
+        MCUDebugChannel.debugMessage("Starting mcu-debug extension.");
     } catch (_e) {
         /* empty */
     }

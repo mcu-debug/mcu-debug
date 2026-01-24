@@ -849,7 +849,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         state.update(WATCH_LIST_STATE, data);
     }
 
-    private isSameSession(session: vscode.DebugSession): boolean {
+    public isSameSession(session: vscode.DebugSession): boolean {
         if (session && LiveWatchTreeProvider.session && session.id === LiveWatchTreeProvider.session.id) {
             return true;
         }
@@ -888,7 +888,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
                 this.updateComposite(trNodes);
             }
             if (changed) {
-                this.refresh(session).then(() => {
+                this.refresh().then(() => {
                     this.fire();
                 });
             }
@@ -936,14 +936,14 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         this.gdbVarNameToNodeMap.clear();
     }
 
-    public async refresh(session: vscode.DebugSession | undefined, restartTimer = false): Promise<void> {
-        if (!session) {
+    public async refresh(restartTimer = false): Promise<void> {
+        if (LiveWatchTreeProvider.session && this.liveSessionId) {
             let promises = [];
             for (const child of this.rootNode.getChildren()) {
                 if (child.isDummyNode() || child.gdbVarName) {
                     continue;
                 }
-                promises.push(child.refresh(session!));
+                promises.push(child.refresh(LiveWatchTreeProvider.session));
             }
             if (promises.length > 0) {
                 await Promise.allSettled(promises);
@@ -971,7 +971,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
             (result_) => {
                 const result = result_ as RegisterClientResponse["body"];
                 this.liveSessionId = result.sessionId;
-                this.refresh(session).then(() => {
+                this.refresh().then(() => {
                     this.fire();
                 });
             },
@@ -1017,9 +1017,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         expr = expr.trim();
         if (expr && this.rootNode.addNewExpr(expr)) {
             this.saveState();
-            if (LiveWatchTreeProvider.session) {
-                this.refresh(LiveWatchTreeProvider.session);
-            }
+            this.refresh();
         }
     }
 
@@ -1050,9 +1048,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
                 } else {
                     node.rename(val);
                     this.saveState();
-                    if (LiveWatchTreeProvider.session) {
-                        this.refresh(LiveWatchTreeProvider.session);
-                    }
+                    this.refresh();
                 }
             }
         }
@@ -1075,7 +1071,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
 
     public setFormat(node: LiveVariableNode, format: NodeFormat) {
         node.setFormat(format);
-        this.refresh(LiveWatchTreeProvider.session);
+        this.refresh();
     }
 
     private inFire = false;
