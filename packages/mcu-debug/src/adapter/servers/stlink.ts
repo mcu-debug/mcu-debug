@@ -262,6 +262,8 @@ export class STLinkServerController extends EventEmitter implements GDBServerCon
         serverargs.push("--halt"); // Need this for reset to work as expected (perform a halt)
         if (this.targetProcessor > 0) {
             serverargs.push("-m", `${this.targetProcessor}`);
+        } else {
+            serverargs.push("-m", "0");
         }
 
         if (this.args.serverArgs) {

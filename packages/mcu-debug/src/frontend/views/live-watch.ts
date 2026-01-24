@@ -136,7 +136,7 @@ export class LiveVariableNode {
         return /,[xbtodn]$/i.test(this.expr);
     }
 
-    public setFormat(format: NodeFormat) {
+    public async setFormat(format: NodeFormat) {
         if (this.isDummyNode()) {
             return;
         }
@@ -726,6 +726,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         const node = this.findNodeById(this.rootNode, item.id);
         if (node) {
             this.removeWatchExpr(node);
+            this.refresh();
         }
     }
 
@@ -733,6 +734,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         const node = this.findNodeById(this.rootNode, item.id);
         if (node) {
             this.moveUpNode(node);
+            this.refresh();
         }
     }
 
@@ -740,6 +742,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         const node = this.findNodeById(this.rootNode, item.id);
         if (node) {
             this.moveDownNode(node);
+            this.refresh();
         }
     }
 
@@ -758,6 +761,9 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         if (node) {
             node.expanded = expanded;
             this.saveState();
+            if (LiveWatchTreeProvider.session) {
+                await node.refresh(LiveWatchTreeProvider.session);
+            }
         }
     }
 
@@ -888,9 +894,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
                 this.updateComposite(trNodes);
             }
             if (changed) {
-                this.refresh().then(() => {
-                    this.fire();
-                });
+                await this.refresh();
             }
             await this.deleteGdbVars(session);
         } catch (error) {
@@ -936,7 +940,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         this.gdbVarNameToNodeMap.clear();
     }
 
-    public async refresh(restartTimer = false): Promise<void> {
+    public async refresh(): Promise<void> {
         if (LiveWatchTreeProvider.session && this.liveSessionId) {
             let promises = [];
             for (const child of this.rootNode.getChildren()) {
@@ -945,10 +949,8 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
                 }
                 promises.push(child.refresh(LiveWatchTreeProvider.session));
             }
-            if (promises.length > 0) {
-                await Promise.allSettled(promises);
-                this.fire();
-            }
+            await Promise.allSettled(promises);
+            this.fire();
         }
     }
 
@@ -968,12 +970,11 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
             sessionId: "",
         };
         session.customRequest(req.command, req).then(
-            (result_) => {
+            async (result_) => {
                 const result = result_ as RegisterClientResponse["body"];
                 this.liveSessionId = result.sessionId;
-                this.refresh().then(() => {
-                    this.fire();
-                });
+                await this.refresh();
+                this.fire();
             },
             (e) => {
                 vscode.window.showErrorMessage("Unable to register Live Watch client with debug adapter. Live Watch will be disabled. $(e)");
@@ -1067,11 +1068,6 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         if (parent && parent.moveDownChild(node)) {
             this.fire();
         }
-    }
-
-    public setFormat(node: LiveVariableNode, format: NodeFormat) {
-        node.setFormat(format);
-        this.refresh();
     }
 
     private inFire = false;

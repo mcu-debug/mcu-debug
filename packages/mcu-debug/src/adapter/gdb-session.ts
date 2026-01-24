@@ -1081,16 +1081,6 @@ export class GDBDebugSession extends SeqDebugSession {
         };
         try {
             this.on("configurationDone", async () => {
-                try {
-                    const swoRttCommands = this.serverSession.serverController.swoAndRTTCommands();
-                    for (const cmd of swoRttCommands) {
-                        await this.gdbInstance.sendCommand(cmd);
-                    }
-                } catch (e) {
-                    const msg = `SWO/RTT Initialization failed: ${e}`;
-                    this.handleMsg(Stderr, msg);
-                    this.sendEvent(new GenericCustomEvent("popup", { type: "error", message: msg }));
-                }
                 if (this.args.liveWatch?.enabled) {
                     this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
                 }
@@ -1333,6 +1323,15 @@ export class GDBDebugSession extends SeqDebugSession {
         const isReset = this.args.pvtSessionMode === SessionMode.Reset;
         const isLaunch = this.args.pvtSessionMode === SessionMode.Launch;
         let needsDelay = false;
+
+        try {
+            const swoRttCommands = this.serverSession.serverController.swoAndRTTCommands();
+            await this.sendCommandsWithWait(swoRttCommands);
+        } catch (e) {
+            const msg = `SWO/RTT Initialization failed: ${e}`;
+            this.handleMsg(Stderr, msg);
+            this.sendEvent(new GenericCustomEvent("popup", { type: "error", message: msg }));
+        }
 
         // Unified Logic
         if (isLaunch || isReset) {

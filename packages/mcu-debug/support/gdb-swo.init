@@ -49,7 +49,7 @@ define SWO_Init
     set language c
 
 # Enable trace
-#	set *($DCB_BASE + 0x0000C) = (1 << 24)
+	set *($DCB_BASE + 0x0000C) = (1 << 24)
 
 # TPI->SPPR Pin protocolo register to NRZ/Manchester
 	set *($TPI_BASE + 0x000F0) = $swoFormat

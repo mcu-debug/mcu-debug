@@ -76,6 +76,19 @@ export class SWOConfigureEvent extends Event implements DebugProtocol.Event {
     }
 }
 
+export interface RTTConfigureBody {
+    type: string; // Currently, only 'socket' is supported
+    decoder: RTTCommonDecoderOpts;
+}
+export class RTTConfigureEvent extends Event implements DebugProtocol.Event {
+    public body: RTTConfigureBody = {} as RTTConfigureBody;
+
+    constructor(params: RTTConfigureBody) {
+        super("rtt-configure");
+        this.body = params;
+    }
+}
+
 export enum TerminalInputMode {
     COOKED = "cooked",
     RAW = "raw",
@@ -134,20 +147,6 @@ export interface RTTConsoleDecoderOpts extends RTTCommonDecoderOpts {
     scale: number;
     encoding: BinaryEncoding;
 }
-
-export class RTTConfigureEvent extends Event implements DebugProtocol.Event {
-    public body: {
-        type: string; // Currently, only 'socket' is supported
-        decoder: RTTCommonDecoderOpts;
-    };
-
-    constructor(params: any) {
-        const body = params;
-        super("rtt-configure", body);
-        this.body = body;
-    }
-}
-
 export class TelemetryEvent extends Event implements DebugProtocol.Event {
     public body: {
         category: string;
