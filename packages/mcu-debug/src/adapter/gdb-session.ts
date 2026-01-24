@@ -5,8 +5,10 @@ import { InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEven
 import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent } from "./servers/common";
 import os from "os";
 import fs from "fs";
+import path from "path";
+import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { GdbEventNames, GdbMiRecord, GdbMiThreadIF, Stderr, Stdout } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiOutput, GdbMiRecord, GdbMiThreadIF, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { VariableManager } from "./variables";
 import { SymbolTable } from "./symbols";
@@ -1079,6 +1081,16 @@ export class GDBDebugSession extends SeqDebugSession {
         };
         try {
             this.on("configurationDone", async () => {
+                try {
+                    const swoRttCommands = this.serverSession.serverController.swoAndRTTCommands();
+                    for (const cmd of swoRttCommands) {
+                        await this.gdbInstance.sendCommand(cmd);
+                    }
+                } catch (e) {
+                    const msg = `SWO/RTT Initialization failed: ${e}`;
+                    this.handleMsg(Stderr, msg);
+                    this.sendEvent(new GenericCustomEvent("popup", { type: "error", message: msg }));
+                }
                 if (this.args.liveWatch?.enabled) {
                     this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
                 }

@@ -93,8 +93,10 @@ export class GDBServerSession extends EventEmitter {
                     return;
                 }
             }
-            this.session.handleMsg(GdbEventNames.Console, `Starting GDB-Server: ${executable} ${args.join(" ")}\n`);
-            this.consoleSocket?.write(greenFormat(quoteShellCmdLine([executable, ...args]) + "\n"));
+
+            const argsStr = quoteShellCmdLine([executable]) + " " + args.map((a) => quoteShellCmdLine([a])).join(" ") + "\n ";
+            this.session.handleMsg(GdbEventNames.Console, `Starting GDB-Server: ${argsStr}`);
+            this.consoleSocket?.write(greenFormat(argsStr));
 
             this.process = child_process.spawn(executable, args, {
                 cwd: serverCwd,
