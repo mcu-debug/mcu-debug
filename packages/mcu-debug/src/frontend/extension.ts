@@ -156,7 +156,7 @@ export class MCUDebugExtension {
             }
             if (!foundStopped) {
                 const fmt = isHex ? "hex" : "dec";
-                const msg = `mcu-Debug: Variables window format "${fmt}" will take effect next time the session pauses`;
+                const msg = `mcu-debug: Variables window format "${fmt}" will take effect next time the session pauses`;
                 vscode.window.showInformationMessage(msg);
             }
         }
@@ -541,7 +541,7 @@ export class MCUDebugExtension {
                 s.session.customRequest("custom-stop-debugging", e.body.info).then(
                     () => {},
                     (reason) => {
-                        vscode.window.showErrorMessage(`mcu-Debug: Bug? session.customRequest('set-stop-debugging-type', ... failed ${reason}\n`);
+                        vscode.window.showErrorMessage(`mcu-debug: Bug? session.customRequest('set-stop-debugging-type', ... failed ${reason}\n`);
                     },
                 );
             }

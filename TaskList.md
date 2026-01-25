@@ -27,8 +27,8 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] SetVariable
   - [x] SetExpr
 - [ ] Debug/Trace
-  - [ ] SWO
-  - [ ] RTT
+  - [x] SWO
+  - [x] RTT
   - [ ] `New:` Rust RTT support
 - [ ] Rust Language support (debug works, but some things in Variable window could be better)
 - [ ] General

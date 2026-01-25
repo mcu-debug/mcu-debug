@@ -1131,6 +1131,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
             // Let gdb connect to the server
             await this.sendCommandsWithWait(this.getConnectCommands()); // Can throw
+            this.serverSession.serverController.debuggerLaunchStarted(this);
 
             // Post connect, target info should be available
             const tInfo = new TargetInfo(this.gdbInstance, this);
@@ -1327,6 +1328,7 @@ export class GDBDebugSession extends SeqDebugSession {
         try {
             const swoRttCommands = this.serverSession.serverController.swoAndRTTCommands();
             await this.sendCommandsWithWait(swoRttCommands);
+            this.serverSession.serverController.debuggerLaunchCompleted();
         } catch (e) {
             const msg = `SWO/RTT Initialization failed: ${e}`;
             this.handleMsg(Stderr, msg);

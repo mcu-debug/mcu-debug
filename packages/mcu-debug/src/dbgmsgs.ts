@@ -11,7 +11,7 @@ export class MCUDebugChannel {
                 log: true,
             };
             // (options as any).loglevel = vscode.LogLevel.Trace;
-            MCUDebugChannel.vscodeDebugChannel = vscode.window.createOutputChannel("mcu-Debug");
+            MCUDebugChannel.vscodeDebugChannel = vscode.window.createOutputChannel("Mcu-debug");
             MCUDebugChannel.vscodeDebugChannel.hide();
         }
     }

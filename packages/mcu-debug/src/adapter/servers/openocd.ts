@@ -338,7 +338,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
                     }
                     break;
                 } else if (/rtt:.*will retry/.test(line)) {
-                    OpenOCDLog("This version of OpenOCD already know how to poll. Done");
+                    OpenOCDLog("This version of OpenOCD already knows how to poll. Done");
                     this.rttAutoStartDetected = true;
                 }
             }
