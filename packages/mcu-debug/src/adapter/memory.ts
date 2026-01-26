@@ -2,6 +2,7 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import { GDBDebugSession } from "./gdb-session";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { formatAddress, parseAddress } from "../frontend/utils";
+import { GdbMiRecord } from "./gdb-mi/mi-types";
 
 export class MemoryRequests {
     constructor(
@@ -13,6 +14,62 @@ export class MemoryRequests {
     }
     private handleErrResponse(response: DebugProtocol.Response, message: string) {
         this.mainSession.handleErrResponse(response, message);
+    }
+
+    public async readMemoryBytes(address: bigint, length: number): Promise<[Buffer, any]> {
+        try {
+            const addressHex = formatAddress(address);
+            const command = `-data-read-memory-bytes "${addressHex}" ${length}`;
+            const miOutput = await this.gdbInstance.sendCommand(command);
+            const record = miOutput.resultRecord?.result as any;
+            const memoryArray = record ? record["memory"] : undefined;
+
+            if (!memoryArray || !Array.isArray(memoryArray) || memoryArray.length === 0) {
+                throw new Error("No memory data returned from GDB");
+            }
+
+            // Error out if GDB returned multiple memory chunks (e.g., spanning regions)
+            if (memoryArray.length > 1) {
+                throw new Error(`Memory request spans multiple regions (${memoryArray.length} chunks). This can happen when memory crosses protection boundaries or unmapped regions.`);
+            }
+
+            const memory = memoryArray[0];
+
+            // GDB always returns hex with "0x" prefix - parse back to BigInt
+            const contents = memory["contents"] || "";
+            return [Buffer.from(contents, "hex"), memory];
+        } catch (error: any) {
+            throw new Error(`Read memory error: ${error.toString()}`);
+        }
+    }
+
+    public async writeMemoryBytes(address: bigint, data: Buffer): Promise<void> {
+        try {
+            const addressHex = formatAddress(address);
+
+            // Convert buffer to hex string (no 0x prefix for GDB command)
+            const hexData = data.toString("hex");
+
+            if (hexData.length === 0) {
+                return;
+            }
+
+            const command = `-data-write-memory-bytes "${addressHex}" "${hexData}"`;
+            await this.gdbInstance.sendCommand(command);
+        } catch (error: any) {
+            throw new Error(`Write memory error: ${error.toString()}`);
+        }
+    }
+
+    public async readWord(addr: bigint): Promise<number> {
+        const [data] = await this.readMemoryBytes(addr, 4);
+        return data.readUInt32LE(0);
+    }
+
+    public async writeWord(addr: bigint, value: number): Promise<void> {
+        const buffer = Buffer.alloc(4);
+        buffer.writeUInt32LE(value, 0);
+        await this.writeMemoryBytes(addr, buffer);
     }
 
     public async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments): Promise<void> {
@@ -33,29 +90,13 @@ export class MemoryRequests {
                 return;
             }
 
-            const command = `-data-read-memory-bytes "${useAddrHex}" ${length}`;
-            const miOutput = await this.gdbInstance.sendCommand(command);
-            const record = miOutput.resultRecord?.result as any;
-            const memoryArray = record ? record["memory"] : undefined;
-
-            if (!memoryArray || !Array.isArray(memoryArray) || memoryArray.length === 0) {
-                throw new Error("No memory data returned from GDB");
-            }
-
-            // Error out if GDB returned multiple memory chunks (e.g., spanning regions)
-            if (memoryArray.length > 1) {
-                throw new Error(`Memory request spans multiple regions (${memoryArray.length} chunks). This can happen when memory crosses protection boundaries or unmapped regions.`);
-            }
-
-            const memory = memoryArray[0];
-
+            const [contents, gdbObj] = await this.readMemoryBytes(useAddr, length);
             // GDB always returns hex with "0x" prefix - parse back to BigInt
-            const begin = parseAddress(memory["begin"] || "0x0");
-            const recordOffset = parseAddress(memory["offset"] || "0x0");
+            const begin = parseAddress(gdbObj["begin"] || "0x0");
+            const recordOffset = parseAddress(gdbObj["offset"] || "0x0");
             const actualStart = begin + recordOffset; // BigInt arithmetic stays 64-bit clean
 
-            const contents = memory["contents"] || "";
-            const b64Data = Buffer.from(contents, "hex").toString("base64");
+            const b64Data = contents.toString("base64");
 
             response.body = {
                 data: b64Data,

@@ -1207,6 +1207,9 @@
                 "default": {
                   "enabled": true,
                   "address": "auto",
+                  "useBuiltinRTT": {
+                    "enabled": true
+                  },
                   "decoders": [
                     {
                       "label": "",
@@ -1237,6 +1240,36 @@
                     "type": "string",
                     "description": "A string to search for to find the RTT control block.",
                     "default": "SEGGER RTT"
+                  },
+                  "useBuiltinRTT": {
+                    "type": "object",
+                    "description": "Use the built-in RTT support (recommended) especially with servers no native RTT support. If false, use gdb-server's RTT support, which may have better performance, but harder to setup.",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Enable/Disable built-in RTT support",
+                        "default": true
+                      },
+                      "hostName": {
+                        "type": "string",
+                        "description": "Host name to use for built-in RTT server.",
+                        "default": "127.0.0.1"
+                      },
+                      "port": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Fixed port number to use for built-in RTT server. If not set, a random guaranteed free port is chosen.",
+                        "default": null,
+                        "minimum": 1024,
+                        "maximum": 65535,
+                        "multipleOf": 1
+                      }
+                    },
+                    "default": {
+                      "enabled": true
+                    }
                   },
                   "polling_interval": {
                     "type": "number",
@@ -2498,6 +2531,9 @@
                 "default": {
                   "enabled": true,
                   "address": "auto",
+                  "useBuiltinRTT": {
+                    "enabled": true
+                  },
                   "decoders": [
                     {
                       "label": "",
@@ -2528,6 +2564,36 @@
                     "type": "string",
                     "description": "A string to search for to find the RTT control block.",
                     "default": "SEGGER RTT"
+                  },
+                  "useBuiltinRTT": {
+                    "type": "object",
+                    "description": "Use the built-in RTT support (recommended) especially with servers no native RTT support. If false, use gdb-server's RTT support, which may have better performance, but harder to setup.",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Enable/Disable built-in RTT support",
+                        "default": true
+                      },
+                      "hostName": {
+                        "type": "string",
+                        "description": "Host name to use for built-in RTT server.",
+                        "default": "127.0.0.1"
+                      },
+                      "port": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Fixed port number to use for built-in RTT server. If not set, a random guaranteed free port is chosen.",
+                        "default": null,
+                        "minimum": 1024,
+                        "maximum": 65535,
+                        "multipleOf": 1
+                      }
+                    },
+                    "default": {
+                      "enabled": true
+                    }
                   },
                   "polling_interval": {
                     "type": "number",

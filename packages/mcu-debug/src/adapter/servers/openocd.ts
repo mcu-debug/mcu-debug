@@ -121,7 +121,8 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
 
     public rttCommands(): string[] {
         const commands: string[] = [];
-        if (this.args.rttConfig.enabled && this.args.pvtSessionMode !== SessionMode.Reset) {
+        const usingRtt = this.args.rttConfig.enabled && !this.args.rttConfig.useBuiltinRTT?.enabled;
+        if (usingRtt && this.args.pvtSessionMode !== SessionMode.Reset) {
             const cfg = this.args.rttConfig;
             if (this.args.request === "launch" && cfg.clearSearch) {
                 // The RTT control block may contain a valid search string from a previous run
@@ -296,9 +297,11 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
     }
 
     public debuggerLaunchCompleted(): void {
-        const hasRtt = this.rttHelper.emitConfigures(this.args.rttConfig, this);
-        if (hasRtt) {
-            this.startRttMonitor();
+        if (!this.args.rttConfig.enabled || this.args.rttConfig.useBuiltinRTT?.enabled) {
+            const hasRtt = this.rttHelper.emitConfigures(this.args.rttConfig, this);
+            if (hasRtt) {
+                this.startRttMonitor();
+            }
         }
     }
 
@@ -306,6 +309,9 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
     // established an RTT TCP port already
     private readonly rttSearchStr = "Control block found at";
     public rttPoll(): void {
+        if (!this.args.rttConfig.enabled || this.args.rttConfig.useBuiltinRTT?.enabled) {
+            return;
+        }
         OpenOCDLog("RTT Poll requested");
         if (!this.rttStarted && this.tclSocket === undefined && (this.args.rttConfig.rtt_start_retry ?? 0) > 0 && !this.rttAutoStartDetected) {
             OpenOCDLog(`RTT Poll starting. Searching for string '${this.rttSearchStr}' in output`);

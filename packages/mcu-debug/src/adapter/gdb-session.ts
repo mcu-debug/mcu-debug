@@ -24,6 +24,7 @@ import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
+import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
 
 let SessionCounter = 0;
 
@@ -47,6 +48,8 @@ export class GDBDebugSession extends SeqDebugSession {
     public gdbMiCommands: MiCommands;
     public lastThreadsInfo: GdbMiThreadInfoList;
     public liveWatchMonitor: LiveWatchMonitor;
+    public rttManager: RttBufferManager;
+    public rttTcpServer: RttTcpServer;
     public memoryRequests: MemoryRequests;
     public suppressStoppedEvents: boolean = true;
     public continuing: boolean = false;
@@ -73,6 +76,8 @@ export class GDBDebugSession extends SeqDebugSession {
         this.memoryRequests = new MemoryRequests(this, this.gdbInstance);
         this.lastThreadsInfo = this.createEmptyThreadInfo();
         this.getFileId(VariableManager.GlobalFileName); // Make sure global file ID is always 1
+        this.rttTcpServer = new RttTcpServer(this);
+        this.rttManager = new RttBufferManager(this.liveWatchMonitor);
     }
 
     private createEmptyThreadInfo(): GdbMiThreadInfoList {
@@ -1069,6 +1074,7 @@ export class GDBDebugSession extends SeqDebugSession {
         // args are not available just had to keep the ts-compiler happy
         this.serverSession = new GDBServerSession(this);
         this.serverSession.serverController.on("event", this.serverControllerEvent.bind(this));
+        this.rttTcpServer.on("event", this.serverControllerEvent.bind(this));
     }
 
     private async launchAttachRequest(response: DebugProtocol.LaunchResponse, noDebug: boolean): Promise<void> {
@@ -1081,8 +1087,17 @@ export class GDBDebugSession extends SeqDebugSession {
         };
         try {
             this.on("configurationDone", async () => {
-                if (this.args.liveWatch?.enabled) {
+                const doBuiltinRtt = this.args.rttConfig?.enabled && this.args?.rttConfig?.useBuiltinRTT?.enabled;
+                const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
+                if (doStart) {
                     this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
+                    if (doBuiltinRtt) {
+                        try {
+                            await this.rttManager.start(this.rttTcpServer);
+                        } catch (e) {
+                            this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${e instanceof Error ? e.message : String(e)}\n`);
+                        }
+                    }
                 }
             });
             this.handleMsg(Stdout, `MCU-Debug: Embedded MCU debug adapter version ${pkgJsonVersion} (${gitCommitHash}). ` + "Usage info: https://github.com/mcu-debug/mcu-debug#usage");

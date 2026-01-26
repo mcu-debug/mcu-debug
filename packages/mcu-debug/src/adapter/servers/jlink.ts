@@ -122,7 +122,7 @@ export class JLinkServerController extends EventEmitter implements GDBServerCont
         if (this.args.rttConfig && this.args.rttConfig.enabled && (!this.args.rttConfig.decoders || this.args.rttConfig.decoders.length === 0)) {
             return Promise.resolve();
         } else {
-            return this.rttHelper.allocateRTTPorts(this.args.rttConfig, this.defaultRttPort);
+            return this.rttHelper.allocateRTTPorts(this.args.rttConfig, false, this.defaultRttPort);
         }
     }
 

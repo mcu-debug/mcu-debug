@@ -50,7 +50,7 @@ export class LiveWatchMonitor {
     protected memoryRequests: MemoryRequests;
     protected liveWatchEnabled: boolean = false;
     protected handlingRequest: boolean = false;
-    constructor(private mainSession: GDBDebugSession) {
+    constructor(public mainSession: GDBDebugSession) {
         this.gdbInstance = new GdbInstance();
         this.varManager = new VariableManager(this.gdbInstance, this.mainSession);
         this.memoryRequests = new MemoryRequests(mainSession, this.gdbInstance);

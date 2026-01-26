@@ -9,6 +9,8 @@ import * as stream from "stream";
 import * as path from "path";
 import { GDBDebugSession } from "../gdb-session";
 import * as readline from "readline";
+import { isBuiltin } from "module";
+import { start } from "repl";
 
 export enum ADAPTER_DEBUG_MODE {
     NONE = "none",
@@ -202,11 +204,17 @@ export interface SWOConfiguration {
     swoPath?: string;
 }
 
+export interface RttBuiltinConfig {
+    enabled: boolean;
+    hostName?: string;
+    port?: number;
+}
 export interface RTTConfiguration {
     enabled: boolean;
     address?: string;
     searchSize?: number;
     searchId?: string;
+    useBuiltinRTT?: RttBuiltinConfig;
     clearSearch?: boolean;
     polling_interval?: number;
     rtt_start_retry?: number;
@@ -442,9 +450,14 @@ export class RTTServerHelper {
     // For openocd, you cannot have have duplicate ports and neither can
     // a multiple clients connect to the same channel. Perhaps in the future
     // it wil
-    public allocateRTTPorts(cfg: RTTConfiguration, startPort: number = 60000): Promise<any> {
+    public allocateRTTPorts(cfg: RTTConfiguration, isBuiltin = false, startPort: number = 60000): Promise<any> {
         this.allocDone = true;
         if (!cfg || !cfg.enabled || !cfg.decoders || cfg.decoders.length === 0) {
+            return Promise.resolve();
+        }
+
+        if (!isBuiltin && cfg.useBuiltinRTT?.enabled) {
+            // This is for external rtt server usage but the config says to use built-in RTT
             return Promise.resolve();
         }
 
@@ -462,30 +475,50 @@ export class RTTServerHelper {
                 this.rttLocalPortMap[dec.port] = dummy;
             }
         }
-
         const count = Object.keys(this.rttLocalPortMap).length;
-        return TcpPortScanner.findFreePorts(count, { start: startPort + 2000, consecutive: false, avoid: undefined }).then((ports) => {
-            for (const dec of cfg.decoders) {
-                if (dec.ports && dec.ports.length > 0) {
-                    dec.tcpPorts = [];
-                    for (const p of dec.ports) {
-                        let str = this.rttLocalPortMap[p];
-                        if (str === dummy) {
-                            str = p.toString();
-                            this.rttLocalPortMap[p] = str;
-                        }
-                        dec.tcpPorts.push(str);
-                    }
-                } else {
-                    let str = this.rttLocalPortMap[dec.port];
-                    if (str === dummy) {
-                        str = ports[0].toString();
-                        this.rttLocalPortMap[dec.port] = str;
-                    }
-                    dec.tcpPort = str;
-                }
+        startPort = startPort + 2000; // Avoid clashes with GDB server ports
+
+        if (isBuiltin && typeof cfg.useBuiltinRTT?.port === "number") {
+            const specifiedPort = cfg.useBuiltinRTT.port;
+            if (count <= 1) {
+                // Use specified port
+                const specifiedPort = cfg.useBuiltinRTT.port;
+                const ports: number[] = [specifiedPort];
+                this.assignPorts(cfg, dummy, ports);
+                // Need more ports
+                return Promise.resolve();
+            } else {
+                // Check if we can use the specified port as a starting point since we need more than one port
+                startPort = specifiedPort;
             }
+        }
+
+        return TcpPortScanner.findFreePorts(count, { start: startPort, consecutive: false, avoid: undefined }).then((ports) => {
+            this.assignPorts(cfg, dummy, ports);
         });
+    }
+
+    private assignPorts(cfg: RTTConfiguration, dummy: string, ports: number[]) {
+        for (const dec of cfg.decoders) {
+            if (dec.ports && dec.ports.length > 0) {
+                dec.tcpPorts = [];
+                for (const p of dec.ports) {
+                    let str = this.rttLocalPortMap[p];
+                    if (str === dummy) {
+                        str = p.toString();
+                        this.rttLocalPortMap[p] = str;
+                    }
+                    dec.tcpPorts.push(str);
+                }
+            } else {
+                let str = this.rttLocalPortMap[dec.port];
+                if (str === dummy) {
+                    str = ports[0].toString();
+                    this.rttLocalPortMap[dec.port] = str;
+                }
+                dec.tcpPort = str;
+            }
+        }
     }
 
     public emitConfigures(cfg: RTTConfiguration, obj: EventEmitter): boolean {

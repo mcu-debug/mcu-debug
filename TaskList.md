@@ -29,6 +29,7 @@ Following are listed in no particular order. They are grouped by functionality.
 - [ ] Debug/Trace
   - [x] SWO
   - [x] RTT
+  - [x] `New:` Native RTT support
   - [ ] `New:` Rust RTT support
 - [ ] Rust Language support (debug works, but some things in Variable window could be better)
 - [ ] General

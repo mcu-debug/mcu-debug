@@ -131,6 +131,7 @@ export class TargetMemoryRegions {
 export class TargetInfo {
     public static Instance: TargetInfo | undefined;
     public architecture: string | undefined;
+    public endianness: "little" | "big" = "little";
     private targetMemoryRegions: TargetMemoryRegions | undefined;
     private PointerSize: number = 4; // default to 32-bit pointers
 
@@ -149,6 +150,22 @@ export class TargetInfo {
     }
 
     public async initialize(): Promise<void> {
+        try {
+            const obj = (await GdbMiOrCliCommandForOob(this.gdbInstance, "show endian")) as Object;
+            const output = (obj as any)["value"] as string;
+            if (typeof output !== "string") {
+                throw new Error("Invalid endian output");
+            } else if (output.toLowerCase().includes("little")) {
+                this.endianness = "little";
+            } else if (output.toLowerCase().includes("big")) {
+                this.endianness = "big";
+            } else {
+                throw new Error("Unknown endianness");
+            }
+            this.session.handleMsg(Stdout, `Target endianness: ${this.endianness}\n`);
+        } catch {
+            this.session.handleMsg(Stderr, "Warning: Unable to determine target endianness. Defaulting to little endian.\n");
+        }
         try {
             await this._getMemoryRegions();
         } catch (e) {

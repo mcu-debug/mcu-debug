@@ -396,6 +396,7 @@ module.exports = {
         default: {
             enabled: true,
             address: "auto",
+            useBuiltinRTT: { enabled: true },
             decoders: [{ label: "", port: 0, type: "console" }],
         },
         properties: {
@@ -403,6 +404,24 @@ module.exports = {
             address: { type: "string", description: "Address to start searching for the RTT control block.", default: "auto" },
             searchSize: { type: "number", description: "Number of bytes to search for the RTT control block.", multipleOf: 1, minimum: 16, default: 16 },
             searchId: { type: "string", description: "A string to search for to find the RTT control block.", default: "SEGGER RTT" },
+            useBuiltinRTT: {
+                type: "object",
+                description:
+                    "Use the built-in RTT support (recommended) especially with servers no native RTT support. If false, use gdb-server's RTT support, which may have better performance, but harder to setup.",
+                properties: {
+                    enabled: { type: "boolean", description: "Enable/Disable built-in RTT support", default: true },
+                    hostName: { type: "string", description: "Host name to use for built-in RTT server.", default: "127.0.0.1" },
+                    port: {
+                        type: ["number", "null"],
+                        description: "Fixed port number to use for built-in RTT server. If not set, a random guaranteed free port is chosen.",
+                        default: null,
+                        minimum: 1024,
+                        maximum: 65535,
+                        multipleOf: 1,
+                    },
+                },
+                default: { enabled: true },
+            },
             polling_interval: { type: "number", description: "number of milliseconds (> 0) to wait for check for data on out channels.", default: 0, minimum: 1 },
             rtt_start_retry: { type: "number", description: "Keep trying to start RTT for OpenOCD until it succeeds.", default: 1000, minimum: 0 },
             clearSearch: { type: "boolean", description: "When true, clears the search-string.", default: true },
