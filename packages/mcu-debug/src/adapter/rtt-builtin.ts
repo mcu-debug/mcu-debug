@@ -33,9 +33,28 @@ export interface RttBufferDescriptor {
     // flags: number;
 }
 
+class RttChannelConfig {
+    name?: string;
+    rttChannel: number;
+    inUse: boolean;
+    pendingWrites: Buffer[];
+    wrBuffer: Buffer;
+    rdStartAddr: bigint;
+    wrStartAddr: bigint;
+
+    constructor(rttChannel: number) {
+        this.rttChannel = rttChannel;
+        this.inUse = false;
+        this.pendingWrites = [];
+        this.wrBuffer = Buffer.alloc(0);
+        this.rdStartAddr = 0n;
+        this.wrStartAddr = 0n;
+    }
+}
+
 export interface RttTransport extends EventEmitter {
-    onRttDataRead(data: Buffer): void;
-    setPort(channel: number): Promise<void>;
+    onRttDataRead(channel: number, data: Buffer): void;
+    setPort(channels: number[]): Promise<void>;
 }
 
 export class RttBufferManager extends EventEmitter {
@@ -49,15 +68,14 @@ export class RttBufferManager extends EventEmitter {
     private transport: RttTransport | null = null;
     private cbAddr: bigint = 0n; // Address of _SEGGER_RTT (RTT Control Block)
     private searchStr: string = "SEGGER RTT";
+    private ready = false;
+    private intervalMs = 100; // ms
 
     // In the future, we may support multiple channels
-    private rdChannel: number = 0;
-    private wrChannel: number = 0;
     private numRdChannels: number = 0;
     private numWrChannels: number = 0;
-    private wrBuffer: Buffer = Buffer.alloc(0);
+    private channels: RttChannelConfig[] = [];
     private isBusyWriting: boolean = false;
-    private pendingWrites: Buffer[] = [];
 
     /**
      * @param cbAddr The absolute address of _SEGGER_RTT
@@ -76,9 +94,9 @@ export class RttBufferManager extends EventEmitter {
 
     private setTransport(transport: RttTransport) {
         this.transport = transport;
-        this.transport.on("dataToWrite", async (data: Buffer, channel?: number) => {
+        this.transport.on("dataToWrite", async (channel: number, data: Buffer) => {
             try {
-                await this.writeToChannel(data);
+                await this.writeToChannel(channel, data);
             } catch (e) {
                 this.mainSession.handleMsg(Stderr, `ERROR: Failed to write RTT data: ${e instanceof Error ? e.message : String(e)}\n`);
             }
@@ -99,25 +117,34 @@ export class RttBufferManager extends EventEmitter {
                 this.searchStr = this.searchStr.substring(0, 16);
             }
 
-            let foundChannel = false;
+            const channels: number[] = [];
+            let maxChannel = -1;
             for (const decoder of this.mainSession.args.rttConfig?.decoders || []) {
                 if (typeof decoder.port === "number") {
-                    if (foundChannel && decoder.port !== this.rdChannel) {
-                        this.mainSession.handleMsg(Stderr, `Warning: Multiple RTT decoders with port numbers found. Using the first one: ${this.rdChannel}\n`);
-                        continue;
-                    }
-                    this.rdChannel = decoder.port;
-                    this.wrChannel = decoder.port;
-                    foundChannel = true;
+                    channels.push(decoder.port);
+                    maxChannel = Math.max(maxChannel, decoder.port);
+                }
+            }
+            for (let ch = 0; ch <= maxChannel; ch++) {
+                this.channels.push(new RttChannelConfig(ch));
+                if (channels.indexOf(ch) >= 0) {
+                    this.channels[ch].inUse = true;
                 }
             }
 
-            await transport.setPort(this.rdChannel);
+            await transport.setPort(channels);
             if (!this.pollingTimer) {
-                this.startPoll(100);
+                const interval = this.mainSession.args.rttConfig?.useBuiltinRTT?.pollingIntervalMs ?? 100;
+                if (interval < 50) {
+                    // Something less than 50, allow it, but warn
+                    this.mainSession.handleMsg(Stderr, "Warning: RTT polling interval too low. Setting to minimum of 50 ms.\n");
+                }
+                this.intervalMs = interval;
+                this.startPoll(interval);
             }
+            this.ready = true;
         } catch (e) {
-            this.mainSession.handleMsg(Stderr, `ERROR: Failed to set RTT consumer port: ${e instanceof Error ? e.message : String(e)}\n`);
+            this.mainSession.handleMsg(Stderr, `ERROR: Failed to set RTT port(s): ${e instanceof Error ? e.message : String(e)}\n`);
         }
     }
 
@@ -132,12 +159,11 @@ export class RttBufferManager extends EventEmitter {
     /**
      * Logic to drain the buffer and move the pointers.
      */
-    public async tryDrainFromDevice(): Promise<Buffer | null> {
+    public async tryDrainFromDevice(channel: number): Promise<Buffer | null> {
         // 1. Calculate the start of this channel's descriptor
         // Control Block = ID (16) + MaxUp (4) + MaxDown (4) = 24 bytes header
         // Each descriptor is 24 bytes
-        const descAddr = this.cbAddr + 24n + BigInt(this.rdChannel) * 24n;
-
+        const descAddr = this.cbAddr + 24n + BigInt(channel) * 24n;
         const rttDesc: RttBufferDescriptor = await this.readBufferDesc(descAddr);
         if (rttDesc.wrOff === rttDesc.rdOff) return null; // Buffer empty
 
@@ -162,29 +188,30 @@ export class RttBufferManager extends EventEmitter {
 
         // 4. Move the pointer to unblock FW
         // We write back to the descriptor's RdOff location
-        await this.memoryManager.writeWord(descAddr + BigInt(OFF_RDOFF), rttDesc.wrOff);
+        await this.memoryManager.writeWord(descAddr + 4n + BigInt(OFF_RDOFF), rttDesc.wrOff);
 
         return data;
     }
 
-    public async writeToChannel(data: Buffer): Promise<void> {
+    public async writeToChannel(channel: number, data: Buffer): Promise<void> {
         if (!this.rttBlockFound) {
             throw new Error("RTT Control Block not found. Cannot write data.");
         }
-        if (data.length === 0 && this.wrBuffer.length === 0) {
+        const chInfo = this.channels[channel];
+        if (data.length === 0 && chInfo.wrBuffer.length === 0) {
             return;
         }
 
-        this.pendingWrites.push(data);
+        chInfo.pendingWrites.push(data);
         if (this.isBusyWriting) {
             // Queue the data for later writing
             return;
         }
         this.isBusyWriting = true;
-        this.wrBuffer = Buffer.concat([...this.pendingWrites, this.wrBuffer]);
-        this.pendingWrites = [];
+        chInfo.wrBuffer = Buffer.concat([...chInfo.pendingWrites, chInfo.wrBuffer]);
+        chInfo.pendingWrites = [];
         try {
-            await this.drainWriteBuffer();
+            await this.drainWriteBuffer(chInfo.rttChannel);
         } catch (e) {
             throw e;
         } finally {
@@ -192,16 +219,16 @@ export class RttBufferManager extends EventEmitter {
         }
     }
 
-    private async drainWriteBuffer(): Promise<void> {
+    private async drainWriteBuffer(channel: number): Promise<void> {
+        const chInfo = this.channels[channel];
         // 1. Calculate the start of this channel's descriptor
         // Control Block = ID (16) + MaxUp (4) + MaxDown (4) = 24 bytes header
         // Each descriptor is 24 bytes
-        const descAddr = this.cbAddr + 24n + BigInt(this.numRdChannels) * 24n + BigInt(this.wrChannel) * 24n;
-
+        const descAddr = this.cbAddr + 24n + BigInt(this.numRdChannels) * 24n + BigInt(channel) * 24n;
         const rttDesc: RttBufferDescriptor = await this.readBufferDesc(descAddr);
 
         // Try to write as much as possible
-        while (this.wrBuffer.length > 0) {
+        while (chInfo.wrBuffer.length > 0) {
             let spaceAvailable: number;
             if (rttDesc.rdOff <= rttDesc.wrOff) {
                 // Free space is from wrOff to end, plus from start to rdOff - 1
@@ -216,21 +243,21 @@ export class RttBufferManager extends EventEmitter {
                 break;
             }
 
-            const bytesToWrite = Math.min(spaceAvailable, this.wrBuffer.length);
+            const bytesToWrite = Math.min(spaceAvailable, chInfo.wrBuffer.length);
 
             // Write in a single chunk if possible
             if (rttDesc.wrOff + bytesToWrite <= rttDesc.size) {
                 // Single chunk write
-                const chunk = this.wrBuffer.subarray(0, bytesToWrite);
+                const chunk = chInfo.wrBuffer.subarray(0, bytesToWrite);
                 await this.memoryManager.writeMemoryBytes(BigInt(rttDesc.bufAddr + rttDesc.wrOff), chunk);
             } else {
                 // Wrapped write
                 const firstPartSize = rttDesc.size - rttDesc.wrOff;
-                const firstPart = this.wrBuffer.subarray(0, firstPartSize);
+                const firstPart = chInfo.wrBuffer.subarray(0, firstPartSize);
                 await this.memoryManager.writeMemoryBytes(BigInt(rttDesc.bufAddr + rttDesc.wrOff), firstPart);
 
                 const secondPartSize = bytesToWrite - firstPartSize;
-                const secondPart = this.wrBuffer.subarray(firstPartSize, firstPartSize + secondPartSize);
+                const secondPart = chInfo.wrBuffer.subarray(firstPartSize, firstPartSize + secondPartSize);
                 await this.memoryManager.writeMemoryBytes(BigInt(rttDesc.bufAddr), secondPart);
             }
 
@@ -239,14 +266,14 @@ export class RttBufferManager extends EventEmitter {
             if (newWrOff >= rttDesc.size) {
                 newWrOff -= rttDesc.size;
             }
-            await this.memoryManager.writeWord(descAddr + BigInt(OFF_WROFF), newWrOff);
+            await this.memoryManager.writeWord(descAddr + 4n + BigInt(OFF_WROFF), newWrOff);
 
             // Remove written data from buffer
-            this.wrBuffer = this.wrBuffer.subarray(bytesToWrite);
+            chInfo.wrBuffer = chInfo.wrBuffer.subarray(bytesToWrite);
         }
     }
 
-    private async readBufferDesc(descAddr: bigint) {
+    private async readBufferDesc(descAddr: bigint): Promise<RttBufferDescriptor> {
         const [descBuffer, _] = await this.memoryManager.readMemoryBytes(descAddr + 4n, SIZEOF_RTT_BUFFER_DESC);
         const rttDesc: RttBufferDescriptor = {
             bufAddr: this.readUInt32(descBuffer, OFF_BUF),
@@ -268,21 +295,31 @@ export class RttBufferManager extends EventEmitter {
                 let data: Buffer | null;
                 const save = this.gdbInstance.debugFlags.gdbTraces;
                 this.gdbInstance.debugFlags.gdbTraces = false; // Suppress gdb traces during polling
-                if (this.rttBlockFound) {
-                    data = await this.tryDrainFromDevice();
-                    await this.drainWriteBuffer();
-                } else {
+                if (!this.rttBlockFound) {
                     await this.doSearch();
-                    data = null;
-                }
-                if (data && data.length > 0) {
-                    this.transport?.onRttDataRead(data);
-                }
-                if (this.sessionStatus === "stopped" && data === null) {
-                    // If this session is no longer running, and there's no more data, stop polling
-                    // Everything has been drained
-                    clearInterval(this.pollingTimer!);
-                    this.pollingTimer = null;
+                } else {
+                    for (let ch = 0; ch < this.channels.length; ch++) {
+                        const chInfo = this.channels[ch];
+                        if (chInfo.inUse !== true) {
+                            continue;
+                        }
+                        if (ch < this.numWrChannels) {
+                            // Also try to write pending data
+                            await this.drainWriteBuffer(ch);
+                        }
+                        if (ch < this.numRdChannels) {
+                            const data = await this.tryDrainFromDevice(ch);
+                            if (data && data.length > 0) {
+                                this.transport?.onRttDataRead(ch, data);
+                            }
+                            if (this.sessionStatus === "stopped" && data === null) {
+                                // If this session is no longer running, and there's no more data, stop polling
+                                // Everything has been drained
+                                clearInterval(this.pollingTimer!);
+                                this.pollingTimer = null;
+                            }
+                        }
+                    }
                 }
             } catch (e) {
                 this.gdbInstance.debugFlags.gdbTraces = true;
@@ -294,7 +331,7 @@ export class RttBufferManager extends EventEmitter {
     onRunning() {
         this.sessionStatus = "running";
         if (!this.pollingTimer) {
-            this.startPoll(50);
+            this.startPoll(this.intervalMs);
         }
     }
 
@@ -313,14 +350,19 @@ export class RttBufferManager extends EventEmitter {
                 this.rttBlockFound = true;
                 this.mainSession.handleMsg(Stdout, `RTT Control Block found at 0x${this.cbAddr.toString(16)}. Search string: ${this.searchStr}\n`);
             }
-            [buffer] = await this.memoryManager.readMemoryBytes(this.cbAddr, 8);
+            [buffer] = await this.memoryManager.readMemoryBytes(this.cbAddr + 16n, 8);
             this.numRdChannels = this.readUInt32(buffer, 0);
             this.numWrChannels = this.readUInt32(buffer, 4);
-            if (this.rdChannel >= this.numRdChannels) {
-                this.mainSession.handleMsg(Stderr, `ERROR: Configured RTT read channel ${this.rdChannel} exceeds number of available up-channels ${this.numRdChannels}.\n`);
-            }
-            if (this.wrChannel >= this.numWrChannels) {
-                this.mainSession.handleMsg(Stderr, `ERROR: Configured RTT write channel ${this.wrChannel} exceeds number of available down-channels ${this.numWrChannels}.\n`);
+            for (let ch = 0; ch < this.numRdChannels; ch++) {
+                if (this.channels[ch].inUse !== true) {
+                    continue;
+                }
+                if (ch >= this.numRdChannels) {
+                    this.mainSession.handleMsg(Stderr, `Warning: Configured RTT read channel ${ch} exceeds number of available up-channels ${this.numRdChannels}.\n`);
+                }
+                if (ch >= this.numWrChannels) {
+                    this.mainSession.handleMsg(Stderr, `Warning: Configured RTT write channel ${ch} exceeds number of available down-channels ${this.numWrChannels}.\n`);
+                }
             }
         } catch (e) {
             // console.error("RTT Search error:", e);
@@ -330,63 +372,69 @@ export class RttBufferManager extends EventEmitter {
 
 export class RttTcpServer extends EventEmitter implements RttTransport {
     private server: net.Server | null = null;
-    private clients: Set<net.Socket> = new Set();
-    private port: number = 19021; // Default RTT port
+    private rttChannelToSocket: Map<number, Set<net.Socket>> = new Map(); // RTT Channel => Set of Sockets(clients)
+    private ports: Map<number, number> = new Map(); // RTT Channel => TCP Port
 
     constructor(private mainSession: GDBDebugSession) {
         super();
     }
 
     // Im the future, we may support multiple channels
-    async setPort(channel: number): Promise<void> {
+    async setPort(channels: number[]): Promise<void> {
         const helper = new RTTServerHelper();
         await helper.allocateRTTPorts(this.mainSession.args.rttConfig, true);
-        const portStr = helper.rttLocalPortMap[channel];
-        if (!portStr) {
-            throw new Error(`No local port allocated for RTT channel ${channel}`);
+        for (const channel of channels) {
+            const portStr = helper.rttLocalPortMap[channel];
+            if (!portStr) {
+                throw new Error(`No local port allocated for RTT channel ${channel}`);
+            }
+            const portNum = parseInt(portStr, 10);
+            if (isNaN(portNum) || portNum <= 0 || portNum > 65535) {
+                throw new Error(`Invalid port number allocated for RTT channel ${channel}: ${portStr}`);
+            }
+            this.ports.set(channel, portNum);
         }
-        const portNum = parseInt(portStr, 10);
-        if (isNaN(portNum) || portNum <= 0 || portNum > 65535) {
-            throw new Error(`Invalid port number allocated for RTT channel ${channel}: ${portStr}`);
-        }
-        this.port = portNum;
         helper.emitConfigures(this.mainSession.args.rttConfig, this);
-        await this.start();
+        const host = this.mainSession.args.rttConfig?.useBuiltinRTT?.hostName || "127.0.0.1";
+        await this.start(host);
     }
 
-    async start() {
-        this.server = net.createServer((socket) => {
-            // 1. Add new client
-            this.clients.add(socket);
-            this.mainSession.handleMsg(Stdout, `Client connected. Total clients: ${this.clients.size}`);
-            this.emit("clientConnected", socket);
+    async start(host: string) {
+        for (const [channel, port] of this.ports) {
+            this.server = net.createServer((socket) => {
+                // 1. Add new client
+                this.rttChannelToSocket.get(channel)?.add(socket);
+                this.mainSession.handleMsg(Stdout, `Client connected. Total clients: ${this.rttChannelToSocket.get(channel)?.size}`);
+                this.emit("clientConnected", socket);
 
-            // 2. Handle disconnection
-            socket.on("close", () => {
-                this.clients.delete(socket);
-                this.mainSession.handleMsg(Stdout, `Client disconnected. Total clients: ${this.clients.size}`);
+                // 2. Handle disconnection
+                socket.on("close", () => {
+                    this.rttChannelToSocket.get(channel)?.delete(socket);
+                    this.mainSession.handleMsg(Stdout, `Client disconnected. Total clients: ${this.rttChannelToSocket.get(channel)?.size}`);
+                });
+
+                socket.on("data", (data: Buffer) => {
+                    this.emit("dataToWrite", channel, data);
+                });
+
+                socket.on("error", (err) => {
+                    this.mainSession.handleMsg(Stderr, `Socket error: ${err.message}`);
+                    // 'close' will follow 'error', so deletion happens there
+                });
             });
+            this.rttChannelToSocket.set(channel, new Set<net.Socket>());
 
-            socket.on("data", (data: Buffer) => {
-                this.emit("dataToWrite", data);
+            this.server.listen(port, host, () => {
+                this.mainSession.handleMsg(Stdout, `RTT TCP Server listening on port ${host}:${port}`);
             });
-
-            socket.on("error", (err) => {
-                this.mainSession.handleMsg(Stderr, `Socket error: ${err.message}`);
-                // 'close' will follow 'error', so deletion happens there
-            });
-        });
-
-        this.server.listen(this.port, "127.0.0.1", () => {
-            this.mainSession.handleMsg(Stdout, `RTT TCP Server listening on port ${this.port}`);
-        });
+        }
     }
 
     /**
      * Broadcast to all currently connected clients
      */
-    public broadcast(data: Buffer) {
-        for (const socket of this.clients) {
+    public broadcast(rttCh: number, data: Buffer) {
+        for (const socket of this.rttChannelToSocket.get(rttCh) ?? []) {
             // Check if the socket is actually writable before sending
             if (socket.writable) {
                 socket.write(data);
@@ -394,11 +442,11 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
         }
     }
 
-    public onRttDataRead(data: Buffer | null): void {
+    public onRttDataRead(rttCh: number, data: Buffer | null): void {
         if (!data || data.length === 0) {
             return;
         }
-        this.broadcast(data);
+        this.broadcast(rttCh, data);
     }
 
     public dispose() {

@@ -208,6 +208,7 @@ export interface RttBuiltinConfig {
     enabled: boolean;
     hostName?: string;
     port?: number;
+    pollingIntervalMs?: number;
 }
 export interface RTTConfiguration {
     enabled: boolean;

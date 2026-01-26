@@ -411,6 +411,7 @@ module.exports = {
                 properties: {
                     enabled: { type: "boolean", description: "Enable/Disable built-in RTT support", default: true },
                     hostName: { type: "string", description: "Host name to use for built-in RTT server.", default: "127.0.0.1" },
+                    pollingIntervalMs: { type: "number", description: "number of milliseconds (> 0) to wait for check for data on out channels.", default: 100, minimum: 50 },
                     port: {
                         type: ["number", "null"],
                         description: "Fixed port number to use for built-in RTT server. If not set, a random guaranteed free port is chosen.",
