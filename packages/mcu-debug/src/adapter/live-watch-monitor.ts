@@ -234,7 +234,7 @@ export class LiveWatchMonitor {
             const size = this.sessionsByClientId.size.toString();
             const sessionId = `mcu-debug-live-${size}-` + shortUuid(8);
             const prefix = `W${size}-`;
-            const container = new VariableContainer(this.gdbInstance, VariableScope.Watch, prefix);
+            const container = new VariableContainer(this.gdbInstance, this.mainSession, VariableScope.Watch, prefix);
             const session = new LiveClientSession(args.clientId, sessionId, container);
             this.sessionsByClientId.set(sessionId, session);
             this.sessionsByPrefix.set(prefix, session);
@@ -349,7 +349,7 @@ export class LiveWatchMonitor {
         }
     }
 
-    private async tryWriteViaMonitorCommand(response: SetVariableLiveResponse, varObj: VariableObject, argValue: string): Promise<boolean> {
+    private async tryWriteViaMonitorCommand(container: VariableContainer, response: SetVariableLiveResponse, varObj: VariableObject, argValue: string): Promise<boolean> {
         const serverType = this.mainSession.args.servertype;
         if (!varObj.addressOf) {
             // Children may not have addressOf info yet, try to get it
@@ -378,7 +378,7 @@ export class LiveWatchMonitor {
                 response.body = {
                     value: ourUpdate.value,
                     gdbVarName: varObj.gdbVarName,
-                    variableObject: varObj.toProtocolVariable(),
+                    variableObject: await container.toProtocolVariable(varObj),
                 };
                 this.sendResponse(response);
                 return true;
@@ -389,7 +389,7 @@ export class LiveWatchMonitor {
         return false;
     }
 
-    private async setByGdbVarName(response: SetVariableLiveResponse, varObj: VariableObject, argValue: string): Promise<void> {
+    private async setByGdbVarName(container: VariableContainer, response: SetVariableLiveResponse, varObj: VariableObject, argValue: string): Promise<void> {
         const gdbVarName = varObj.gdbVarName!;
         const cmd = `-var-assign ${gdbVarName} ${argValue}`;
         try {
@@ -405,7 +405,7 @@ export class LiveWatchMonitor {
                 response.body = {
                     value: newValue,
                     gdbVarName: gdbVarName,
-                    variableObject: varObj.toProtocolVariable(),
+                    variableObject: await container.toProtocolVariable(varObj),
                 };
                 this.sendResponse(response);
                 return;
@@ -413,7 +413,7 @@ export class LiveWatchMonitor {
                 throw new Error(`No value returned from GDB`);
             }
         } catch (e) {
-            if (!(await this.tryWriteViaMonitorCommand(response, varObj, argValue))) {
+            if (!(await this.tryWriteViaMonitorCommand(container, response, varObj, argValue))) {
                 this.handleMsg(Stderr, `Error setting variable with GDB name '${gdbVarName}': ${e}\n`);
                 throw new Error(`Could not set variable with GDB name '${gdbVarName}': ${e}`);
             }
@@ -437,7 +437,7 @@ export class LiveWatchMonitor {
             const varObj = gdbVarName ? clientSession.container.getVariableByGdbName(gdbVarName) : undefined;
             if (varObj) {
                 try {
-                    await this.setByGdbVarName(response, varObj, args.value);
+                    await this.setByGdbVarName(clientSession.container, response, varObj, args.value);
                     updateDone = true;
                     return;
                 } catch (e) {
@@ -475,7 +475,7 @@ export class LiveWatchMonitor {
             const varObj = gdbVarName ? clientSession.container.getVariableByGdbName(gdbVarName) : undefined;
             if (varObj) {
                 try {
-                    await this.setByGdbVarName(response, varObj, args.value);
+                    await this.setByGdbVarName(clientSession.container, response, varObj, args.value);
                     updateDone = true;
                     return;
                 } catch (e) {

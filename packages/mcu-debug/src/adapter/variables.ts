@@ -9,6 +9,8 @@ import { VariableScope, VariableTypeMask, decodeReference, ActualScopeMask, Scop
 import { DataEvaluateExpression, DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";
 import { TargetInfo } from "./target-info";
 import { group } from "node:console";
+import { MemoryRequests } from "./memory";
+import { formatAddress } from "../frontend/utils";
 
 // These are the fields that uniquely identify a variable
 export class VariableKeys implements IValueIdentifiable {
@@ -76,7 +78,9 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
         return ret;
     }
 
-    toProtocolVariable(): GdbProtocolVariable {
+    // Do not call this directly. Instead use container.toProtocolVariable() as it
+    // can do additional processing like reading memory for string values
+    toGdbProtocolVariable(): GdbProtocolVariable {
         const ret = copyInterfaceProperties<GdbProtocolVariable, VariableObject>(this, GdbProtocolVariableTemplate);
         ret.type = this.createToolTip(this.name, this.value);
         if (this.gdbVarName) {
@@ -204,11 +208,15 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
 export class VariableContainer {
     protected gdbVarNameToObjMap = new Map<string, VariableObject>();
     private variableHandles = new ValueHandleRegistry<VariableKeys>();
+    private memoryManager: MemoryRequests;
     constructor(
         public readonly gdbInstance: GdbInstance,
+        public readonly session: GDBDebugSession,
         public readonly scope: VariableScope,
         public readonly prefix: string,
-    ) {}
+    ) {
+        this.memoryManager = new MemoryRequests(this.session, this.gdbInstance);
+    }
 
     isGlobal(): boolean {
         return false;
@@ -309,6 +317,46 @@ export class VariableContainer {
     }
     public numberOfGdbVariables(): number {
         return this.gdbVarNameToObjMap.size;
+    }
+
+    // Will not throw or reject. Always returns a value even not transformation is possible
+    public async updateStringValue(variable: VariableObject, ret: GdbProtocolVariable): Promise<void> {
+        if (ret.value.startsWith('"') && ret.value.endsWith('"')) {
+            return;
+        }
+        const type = variable.type.toLowerCase();
+        // const charArrayRegex = /^(char|wchar_t|unsigned char|int8_t|uint8_t)( \*|\[\])?$/;
+        // const charArrayRegex = /^(char|unsigned char|int8_t|uint8_t)( \*|\[\])?$/;
+        const charArrayRegex = /^(volatile )?(char|unsigned char|int8_t|uint8_t) (\[\d*\])$/;
+        const match = charArrayRegex.exec(type);
+        if (match && match.length >= 4) {
+            try {
+                if (!variable.addressOf) {
+                    await variable.queryAddressOf(this.gdbInstance!, true);
+                }
+                const sz = match[3].substring(1, match[3].length - 1);
+                const size = Math.min(sz ? parseInt(sz) : 64, 64); // Read up to 64 bytes
+                if (variable.addressOf && size > 0) {
+                    const bytes = await this.memoryManager.readMemoryBytes(BigInt(variable.addressOf), size);
+                    const strEnd = bytes.indexOf(0);
+                    let vStr = "";
+                    if (strEnd >= 0) {
+                        vStr = bytes.subarray(0, strEnd).toString("utf-8");
+                    } else {
+                        vStr = bytes.toString("utf-8") + "...";
+                    }
+                    ret.value = `${variable.addressOf} ${match[3]} "${vStr}"`;
+                    ret.memoryReference = variable.addressOf;
+                }
+            } catch (e) {}
+        }
+    }
+
+    // Will not throw or reject. Always returns a value even not transformation is possible
+    public async toProtocolVariable(variable: VariableObject): Promise<GdbProtocolVariable> {
+        const ret = variable.toGdbProtocolVariable();
+        await this.updateStringValue(variable, ret);
+        return ret;
     }
 }
 
@@ -415,9 +463,9 @@ export class VariableManager {
     ) {
         const createContainer = (scope: VariableScope, prefix: string, isGlobal: boolean): void => {
             if (isGlobal) {
-                this.containers.set(scope, new VariableContainerForGlobals(gdbInstance_, scope, prefix));
+                this.containers.set(scope, new VariableContainerForGlobals(gdbInstance_, this.debugSession, scope, prefix));
             } else {
-                this.containers.set(scope, new VariableContainer(gdbInstance_, scope, prefix));
+                this.containers.set(scope, new VariableContainer(gdbInstance_, this.debugSession, scope, prefix));
             }
         };
         //These two scopes are for globals and statics only
@@ -649,7 +697,7 @@ export class VariableManager {
             const protoVars: GdbProtocolVariable[] = [];
             for (const child of children) {
                 await this.setVarProps(container.gdbInstance, child, isClientVSCode);
-                protoVars.push(child.toProtocolVariable());
+                protoVars.push(await container.toProtocolVariable(child));
             }
             return protoVars;
         } catch (e) {
@@ -725,7 +773,7 @@ export class VariableManager {
                             const [varObj] = container.parseMiVariable(regName, record, VariableScope.RegistersVariable, /*groupVar.handle*/ 0, threadId, frameId);
                             varObj.value = r["value"]; // Use this because it is better formatted
                             varObj.gdbVarName = gdbVarName;
-                            variables.push(varObj.toProtocolVariable());
+                            variables.push(await container.toProtocolVariable(varObj));
                         } else {
                             const varUpdateRecord = await container.gdbInstance.sendCommand(`-var-update ${existingVar.gdbVarName}`);
                             const resultObj = varUpdateRecord.resultRecord?.result as any;
@@ -733,7 +781,7 @@ export class VariableManager {
                             if (record) {
                                 existingVar.value = r["value"];
                             }
-                            variables.push(existingVar.toProtocolVariable());
+                            variables.push(await container.toProtocolVariable(existingVar));
                         }
                     } catch (e) {
                         if (this.debugSession.args.debugFlags.anyFlags) {
@@ -790,7 +838,7 @@ export class VariableManager {
                                         varObj.variablesReference = handle!;
                                     }
                                     await this.setVarProps(container.gdbInstance, varObj, true);
-                                    variables.push(varObj.toProtocolVariable());
+                                    variables.push(await container.toProtocolVariable(varObj));
                                 }
                             }
                         } else {
@@ -803,7 +851,7 @@ export class VariableManager {
                                 existingVar.value = "not in scope?";
                             }
                             // await this.setVarProps(container.gdbInstance, existingVar, true);
-                            variables.push(existingVar.toProtocolVariable());
+                            variables.push(await container.toProtocolVariable(existingVar));
                         }
                     } catch (e) {
                         if (this.debugSession.args.debugFlags.anyFlags) {
@@ -1002,7 +1050,7 @@ export class VariableManager {
                 groupVar.variablesReference = handle;
             }
 
-            variables.push(groupVar.toProtocolVariable());
+            variables.push(await container.toProtocolVariable(groupVar));
         }
 
         // Add Misc group if there are registers that don't belong to any user group
@@ -1024,7 +1072,7 @@ export class VariableManager {
                 groupVar.variablesReference = handle;
             }
 
-            variables.push(groupVar.toProtocolVariable());
+            variables.push(await container.toProtocolVariable(groupVar));
         }
 
         return variables;
@@ -1062,7 +1110,7 @@ export class VariableManager {
                                 varObj.variablesReference = handle!;
                             }
                             await this.setVarProps(container.gdbInstance, varObj, true);
-                            variables.push(varObj.toProtocolVariable());
+                            variables.push(await container.toProtocolVariable(varObj));
                         }
                     } else {
                         const varUpdateRecord = await container.gdbInstance.sendCommand(`-var-update --all-values ${existingVar.gdbVarName}`);
@@ -1074,7 +1122,7 @@ export class VariableManager {
                             existingVar.value = "not in scope?";
                         }
                         // await this.setVarProps(container.gdbInstance, existingVar, true);
-                        variables.push(existingVar.toProtocolVariable());
+                        variables.push(await container.toProtocolVariable(existingVar));
                     }
                 } catch (e) {
                     if (this.debugSession.args.debugFlags.anyFlags) {
@@ -1131,7 +1179,7 @@ export class VariableManager {
                                 varObj.variablesReference = handle!;
                             }
                             await this.setVarProps(container.gdbInstance, varObj, true);
-                            variables.push(varObj.toProtocolVariable());
+                            variables.push(await container.toProtocolVariable(varObj));
                         }
                     } else {
                         const varUpdateRecord = await container.gdbInstance.sendCommand(`-var-update --all-values ${existingVar.gdbVarName}`);
@@ -1143,7 +1191,7 @@ export class VariableManager {
                             existingVar.value = "not in scope?";
                         }
                         // await this.setVarProps(container.gdbInstance, existingVar, true);
-                        variables.push(existingVar.toProtocolVariable());
+                        variables.push(await container.toProtocolVariable(existingVar));
                     }
                 } catch (e) {
                     if (this.debugSession.args.debugFlags.anyFlags) {
@@ -1271,13 +1319,14 @@ export class VariableManager {
                 if (record["numchild"] && parseInt(record["numchild"]) > 0) {
                     newVar.variablesReference = handle;
                 }
-                response.body = {
-                    result: newVar.value,
-                    variablesReference: newVar.variablesReference,
-                };
                 VariableManager.setMemoryReference(response.body as any, value);
                 await this.setVarProps(container.gdbInstance, newVar, isClientVSCode);
-                (response.body as any).variableObject = newVar.toProtocolVariable();
+                const protocolVar = await container.toProtocolVariable(newVar);
+                (response.body as any).variableObject = protocolVar;
+                response.body = {
+                    result: protocolVar.value,
+                    variablesReference: newVar.variablesReference,
+                };
                 return;
             } else {
                 // Update existing variable
@@ -1290,12 +1339,13 @@ export class VariableManager {
                 } else if (record && record["in_scope"] && record["in_scope"] !== "true") {
                     existingVar.value = "not in scope?";
                 }
+                VariableManager.setMemoryReference(response.body as any, existingVar.value);
+                const protocolVar = await container.toProtocolVariable(existingVar);
+                (response.body as any).variableObject = protocolVar;
                 response.body = {
-                    result: existingVar.value,
+                    result: protocolVar.value,
                     variablesReference: existingVar.variablesReference,
                 };
-                VariableManager.setMemoryReference(response.body as any, existingVar.value);
-                (response.body as any).variableObject = existingVar.toProtocolVariable();
                 return;
             }
         } catch (e) {
@@ -1539,3 +1589,153 @@ async function queryGdbVarInfo(gdbInstance: GdbInstance, varObj: VariableObject)
     } catch (e) {}
     return obj;
 }
+
+/**
+ * A Middleware interface to transform raw GDB structures
+ * into human-friendly "Synthetic" views.
+ */
+interface ITypeMapper {
+    /** * Regex or string to match the type name from GDB.
+     * e.g. /^std::vector<.*>$/
+     */
+    typeNameMatch: RegExp | string;
+
+    /** * Determines if this mapper should take over the children expansion.
+     */
+    handleChildren(varObjName: string, typeName: string): Promise<SyntheticChild[]>;
+
+    /**
+     * Transforms the VariableObject into a new VariableObject with synthetic view.
+     * This is called during variablesRequest.
+     */
+    format(varObj: VariableObject): Promise<VariableObject>;
+}
+interface SyntheticChild {
+    name: string; // e.g., "[0]", "[1]"
+    value: string; // The evaluated value
+    type: string; // The underlying type
+    evaluateName?: string; // How GDB should evaluate it (e.g., "my_vec.data[0]")
+    variablesReference: number; // 0 if it's a leaf, or a new ID for recursive expansion
+}
+
+/**
+ * Registry for synthetic type handlers
+ */
+export class TypeMapperRegistry {
+    private mappers: Map<string, ITypeMapper> = new Map();
+
+    findMapper(typeName: string): ITypeMapper | undefined {
+        for (const mapper of this.mappers.values()) {
+            if (typeof mapper.typeNameMatch === "string") {
+                if (mapper.typeNameMatch === typeName) {
+                    return mapper;
+                }
+            } else {
+                if (mapper.typeNameMatch.test(typeName)) {
+                    return mapper;
+                }
+            }
+        }
+        return undefined;
+    }
+
+    registerMapper(mapper: ITypeMapper): void {
+        this.mappers.set(mapper.typeNameMatch.toString(), mapper);
+    }
+
+    /**
+     * Called during variablesRequest
+     */
+    public async transform(varObj: VariableObject): Promise<GdbProtocolVariable> {
+        // 1. Check if we have a handler for this type string
+        const mapper = this.findMapper(varObj.type);
+
+        if (mapper) {
+            return await mapper.format(varObj);
+        }
+
+        // 2. Default GDB behavior if no mapper found
+        return varObj.toGdbProtocolVariable();
+    }
+}
+
+export class CStringMapper implements ITypeMapper {
+    typeNameMatch: string | RegExp = /^char \*$/;
+    handleChildren(varObjName: string, typeName: string): Promise<SyntheticChild[]> {
+        throw new Error("Method not implemented.");
+    }
+    public async format(varObj: VariableObject): Promise<VariableObject> {
+        /*
+        // Read the first 32/64 bytes of memory at the pointer address
+        const bytes = await this.memoryManager.readBytes(varObj.value, 64);
+        const strValue = this.bytesToUtf8(bytes);
+
+        return {
+            name: varObj.name,
+            value: `${varObj.value} "${strValue}"`,
+            type: varObj.type,
+            variablesReference: 0, // No children for a string preview
+        };
+        */
+        return varObj;
+    }
+}
+
+/**
+ * Converts a memory buffer into a C-style escaped string preview.
+ *
+ * @param buffer Raw data from memory read
+ * @param limit Optional hard limit on characters to process (default 64)
+ * @returns Escaped string like: "Hello\n\x01\xff"
+ */
+export function bufferToEscapedString(buffer: Buffer, limit: number = 64): string {
+    if (!buffer || buffer.length === 0) return '""';
+
+    // Use the minimum of actual buffer length or our display limit
+    const len = Math.min(buffer.length, limit);
+    let result = "";
+
+    for (let i = 0; i < len; i++) {
+        const byte = buffer[i];
+
+        // 1. Check for Null Terminator (Common for C-strings)
+        if (byte === 0) break;
+
+        // 2. Handle Common ASCII Escapes
+        const escapes: Record<number, string> = {
+            7: "\\a", // Bell
+            8: "\\b", // Backspace
+            9: "\\t", // Tab
+            10: "\\n", // Newline
+            11: "\\v", // Vertical Tab
+            12: "\\f", // Form Feed
+            13: "\\r", // Carriage Return
+            34: '\\"', // Double Quote
+            92: "\\\\", // Backslash
+        };
+
+        if (escapes[byte]) {
+            result += escapes[byte];
+        }
+        // 3. Handle Printable ASCII (32-126)
+        else if (byte >= 32 && byte <= 126) {
+            result += String.fromCharCode(byte);
+        }
+        // 4. Handle Everything Else as 2-digit Hex (\xHH)
+        else {
+            result += `\\x${byte.toString(16).padStart(2, "0")}`;
+        }
+    }
+
+    return `"${result}"`;
+}
+
+/**
+ * 
+Container,"The ""Dream"" Layer (Internal Member)","The ""Reality"" (What to show)"
+std::vector,_M_impl,The indexed elements
+std::array,_M_elems,The indexed elements
+std::unique_ptr,_M_t,The pointed-to object
+Rust Vec,buf -> ptr,The indexed elements
+Rust String,vec,The UTF-8 string preview
+ */

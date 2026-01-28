@@ -1260,12 +1260,12 @@
                         "description": "Host name to use for built-in RTT server.",
                         "default": "127.0.0.1"
                       },
-                      "port": {
+                      "tcpPort": {
                         "type": [
                           "number",
                           "null"
                         ],
-                        "description": "Fixed port number to use for built-in RTT server. If not set, a random guaranteed free port is chosen.",
+                        "description": "Fixed port number to use for built-in RTT server. If not set, a free port is chosen automatically.",
                         "default": null,
                         "minimum": 1024,
                         "maximum": 65535,
@@ -2648,12 +2648,12 @@
                         "description": "Host name to use for built-in RTT server.",
                         "default": "127.0.0.1"
                       },
-                      "port": {
+                      "tcpPort": {
                         "type": [
                           "number",
                           "null"
                         ],
-                        "description": "Fixed port number to use for built-in RTT server. If not set, a random guaranteed free port is chosen.",
+                        "description": "Fixed port number to use for built-in RTT server. If not set, a free port is chosen automatically.",
                         "default": null,
                         "minimum": 1024,
                         "maximum": 65535,
