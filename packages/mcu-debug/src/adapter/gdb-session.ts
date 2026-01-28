@@ -171,6 +171,7 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         try {
             this.endSession = true;
+            this.rttManager.dispose();
             this.liveWatchMonitor.stop();
             const doTerminate = !!args.terminateDebuggee;
             this.handleMsg(Stdout, `Ending debug session...${JSON.stringify(args)}\n`);
@@ -1049,6 +1050,13 @@ export class GDBDebugSession extends SeqDebugSession {
                 return dec as RTTCommonDecoderOpts;
             });
         }
+        if (args.rttConfig?.enabled && args.rttConfig.useBuiltinRTT?.enabled) {
+            args.pvtRttConfig = args.rttConfig;
+            args.rttConfig = {
+                enabled: false,
+                decoders: [],
+            };
+        }
 
         if (args.chainedConfigurations && args.chainedConfigurations.enabled && args.chainedConfigurations.launches) {
             for (const config of args.chainedConfigurations.launches) {
@@ -1087,7 +1095,7 @@ export class GDBDebugSession extends SeqDebugSession {
         };
         try {
             this.on("configurationDone", async () => {
-                const doBuiltinRtt = this.args.rttConfig?.enabled && this.args?.rttConfig?.useBuiltinRTT?.enabled;
+                const doBuiltinRtt = !!this.args.pvtRttConfig;
                 const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
                 if (doStart) {
                     this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
@@ -1190,23 +1198,24 @@ export class GDBDebugSession extends SeqDebugSession {
             const execs: SymbolFile[] = this.args.symbolFiles || [defSymbolFile(this.args.executable)];
             this.symbolTable.initialize(execs);
             await this.symbolTable.loadSymbols();
-            if (this.args.rttConfig.enabled) {
+            const rttConfig = this.args.pvtRttConfig || this.args.rttConfig;
+            if (rttConfig?.enabled) {
                 const symName = this.symbolTable.rttSymbolName;
-                if (!this.args.rttConfig.address) {
+                if (!rttConfig.address) {
                     this.handleMsg(Stderr, 'INFO: "rttConfig.address" not specified. Defaulting to "auto"\n');
-                    this.args.rttConfig.address = "auto";
+                    rttConfig.address = "auto";
                 }
-                if (this.args.rttConfig.address === "auto") {
+                if (rttConfig.address === "auto") {
                     const rttSym = this.symbolTable.getGlobalOrStaticVarByName(symName);
                     if (!rttSym) {
-                        this.args.rttConfig.enabled = false;
+                        rttConfig.enabled = false;
                         this.handleMsg(Stderr, `Could not find symbol '${symName}' in executable. ` + "Make sure you compile/link with debug ON or you can specify your own RTT address\n");
                     } else {
-                        const searchStr = this.args.rttConfig.searchId || "SEGGER RTT";
-                        this.args.rttConfig.address = formatAddress(rttSym.address);
-                        this.args.rttConfig.searchSize = Math.max(this.args.rttConfig.searchSize || 0, searchStr.length);
-                        this.args.rttConfig.searchId = searchStr;
-                        this.args.rttConfig.clearSearch = this.args.rttConfig.clearSearch === undefined ? true : this.args.rttConfig.clearSearch;
+                        const searchStr = rttConfig.searchId || "SEGGER RTT";
+                        rttConfig.address = formatAddress(rttSym.address);
+                        rttConfig.searchSize = Math.max(rttConfig.searchSize || 0, searchStr.length);
+                        rttConfig.searchId = searchStr;
+                        rttConfig.clearSearch = rttConfig.clearSearch === undefined ? true : rttConfig.clearSearch;
                     }
                 }
             }

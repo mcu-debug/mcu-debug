@@ -57,7 +57,9 @@ export class LiveWatchMonitor {
     }
 
     public start(gdbCommands: string[]): void {
-        this.debugFlags = this.mainSession.args.debugFlags;
+        this.debugFlags = { ...this.mainSession.args.debugFlags };
+        this.debugFlags.gdbTraces = this.debugFlags.liveGdbTraces;
+        this.debugFlags.gdbTracesParsed = this.debugFlags.liveGdbTracesParsed;
         this.gdbInstance.debugFlags = this.debugFlags;
         const exe = this.mainSession.gdbInstance.gdbPath;
         const args = this.mainSession.gdbInstance.gdbArgs;
@@ -68,6 +70,9 @@ export class LiveWatchMonitor {
             .start(exe, args, process.cwd(), [], 10 * 1000, false)
             .then(() => {
                 this.handleMsg(Stderr, `Started GDB process ${exe} ${args.join(" ")}\n`);
+                // We disable queue processing to send commands immediately. Because we are well behaved with only a couple of clients
+                // making requests at a time, this improves latency. More importatly for RTT reads,
+                this.gdbInstance.disableQueueProcessing();
                 this.setupEvents();
                 for (const cmd of gdbCommands) {
                     this.gdbInstance!.sendCommand(cmd).catch((err) => {

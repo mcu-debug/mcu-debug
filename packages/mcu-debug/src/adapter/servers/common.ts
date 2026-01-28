@@ -8,9 +8,8 @@ import * as os from "os";
 import * as stream from "stream";
 import * as path from "path";
 import { GDBDebugSession } from "../gdb-session";
+import { DecoderSpec } from "@mcu-debug/shared";
 import * as readline from "readline";
-import { isBuiltin } from "module";
-import { start } from "repl";
 
 export enum ADAPTER_DEBUG_MODE {
     NONE = "none",
@@ -197,6 +196,7 @@ export interface SWOConfiguration {
     cpuFrequency: number;
     swoFrequency: number;
     swoEncoding?: "manchester" | "uart";
+    pre_decoder?: PreDecoder;
     decoders: SWOCommonDecoderOpts[];
     profile?: boolean;
     source?: string;
@@ -205,10 +205,13 @@ export interface SWOConfiguration {
 }
 
 export interface RttBuiltinConfig {
-    enabled: boolean;
+    enabled?: boolean;
     hostName?: string;
-    port?: number;
-    pollingIntervalMs?: number;
+    tcpPort?: number;
+}
+
+export interface PreDecoder extends DecoderSpec {
+    channels?: number[] | null;
 }
 export interface RTTConfiguration {
     enabled: boolean;
@@ -219,6 +222,7 @@ export interface RTTConfiguration {
     clearSearch?: boolean;
     polling_interval?: number;
     rtt_start_retry?: number;
+    pre_decoder?: PreDecoder;
     decoders: RTTCommonDecoderOpts[];
 }
 
@@ -264,6 +268,8 @@ export interface DebugFlags {
     gdbTraces?: boolean;
     vscodeRequests?: boolean;
     gdbTracesParsed?: boolean;
+    liveGdbTraces?: boolean;
+    liveGdbTracesParsed?: boolean;
     timestamps?: boolean;
     disableGdbTimeouts?: boolean;
     pathResolution?: boolean;
@@ -311,6 +317,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     svdAddrGapThreshold: number;
     ctiOpenOCDConfig: CTIOpenOCDConfig;
     rttConfig: RTTConfiguration;
+    pvtRttConfig: RTTConfiguration;
     swoConfig: SWOConfiguration;
     liveWatch: LiveWatchConfig;
     graphConfig: any[];
@@ -479,11 +486,11 @@ export class RTTServerHelper {
         const count = Object.keys(this.rttLocalPortMap).length;
         startPort = startPort + 2000; // Avoid clashes with GDB server ports
 
-        if (isBuiltin && typeof cfg.useBuiltinRTT?.port === "number") {
-            const specifiedPort = cfg.useBuiltinRTT.port;
+        if (isBuiltin && typeof cfg.useBuiltinRTT?.tcpPort === "number") {
+            const specifiedPort = cfg.useBuiltinRTT.tcpPort;
             if (count <= 1) {
                 // Use specified port
-                const specifiedPort = cfg.useBuiltinRTT.port;
+                const specifiedPort = cfg.useBuiltinRTT.tcpPort;
                 const ports: number[] = [specifiedPort];
                 this.assignPorts(cfg, dummy, ports);
                 // Need more ports

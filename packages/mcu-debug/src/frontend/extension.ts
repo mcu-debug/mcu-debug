@@ -289,6 +289,10 @@ export class MCUDebugExtension {
         this.functionSymbols = [];
         session.customRequest("get-arguments").then(
             (args) => {
+                if (args.pvtRttConfig) {
+                    args.rttConfig = args.pvtRttConfig;
+                    delete args.pvtRttConfig;
+                }
                 newSession.config = args;
                 let svdfile = args.svdFile;
                 if (!svdfile) {
@@ -653,10 +657,11 @@ export class MCUDebugExtension {
         const mySession = CDebugSession.GetSession(e.session);
         if (e.body.type === "socket") {
             let src: SocketSWOSource | PeMicroSocketSource;
+            const decoderSpec = mySession.config.swoConfig.pre_decoder;
             if (mySession.config.servertype === "pe") {
-                src = new PeMicroSocketSource(e.body.port);
+                src = new PeMicroSocketSource(e.body.port, decoderSpec);
             } else {
-                src = new SocketSWOSource(e.body.port);
+                src = new SocketSWOSource(e.body.port, decoderSpec);
             }
             mySession.swoSource = src;
             this.initializeSWO(e.session, e.body.args);
@@ -720,16 +725,22 @@ export class MCUDebugExtension {
                 resolve(src);
                 return;
             }
+            let decoderSpec = mySession.config.rttConfig?.enabled && mySession.config.rttConfig?.pre_decoder;
+            if (decoderSpec && mySession.config.rttConfig?.useBuiltinRTT?.enabled) {
+                decoderSpec = undefined;
+            }
             if (mySession.config.servertype === "jlink") {
-                src = new JLinkSocketRTTSource(tcpPort, channel);
+                src = new JLinkSocketRTTSource(tcpPort, channel, decoderSpec);
             } else {
-                src = new SocketRTTSource(tcpPort, channel);
+                src = new SocketRTTSource(tcpPort, channel, decoderSpec);
             }
             mySession.rttPortMap[channel] = src; // Yes, we put this in the list even if start() can fail
             resolve(src); // Yes, it is okay to resolve it even though the connection isn't made yet
             src.start()
                 .then(() => {
-                    mySession.session.customRequest("rtt-poll");
+                    if (!mySession.config.rttConfig?.useBuiltinRTT?.enabled) {
+                        mySession.session.customRequest("rtt-poll");
+                    }
                 })
                 .catch((e) => {
                     vscode.window.showErrorMessage(`Could not connect to RTT TCP port ${tcpPort} ${e}`);

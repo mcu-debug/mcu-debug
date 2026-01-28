@@ -373,6 +373,7 @@ module.exports = {
         },
         properties: {
             gdbTraces: { type: "boolean", default: false, description: "Enable GDB MI trace output" },
+            liveGdbTraces: { type: "boolean", default: false, description: "Enable live GDB MI trace output during polling (only applies to built-in liveWatch/RTT)" },
             vscodeRequests: { type: "boolean", default: false, description: "Enable VSCode Request/Response trace output" },
             gdbTracesParsed: { type: "boolean", default: false, description: "Enable parsed GDB MI output" },
             timestamps: { type: "boolean", default: false, description: "Show timestamps in debug output" },
@@ -411,10 +412,9 @@ module.exports = {
                 properties: {
                     enabled: { type: "boolean", description: "Enable/Disable built-in RTT support", default: true },
                     hostName: { type: "string", description: "Host name to use for built-in RTT server.", default: "127.0.0.1" },
-                    pollingIntervalMs: { type: "number", description: "number of milliseconds (> 0) to wait for check for data on out channels.", default: 100, minimum: 50 },
-                    port: {
+                    tcpPort: {
                         type: ["number", "null"],
-                        description: "Fixed port number to use for built-in RTT server. If not set, a random guaranteed free port is chosen.",
+                        description: "Fixed port number to use for built-in RTT server. If not set, a free port is chosen automatically.",
                         default: null,
                         minimum: 1024,
                         maximum: 65535,
@@ -423,7 +423,34 @@ module.exports = {
                 },
                 default: { enabled: true },
             },
-            polling_interval: { type: "number", description: "number of milliseconds (> 0) to wait for check for data on out channels.", default: 0, minimum: 1 },
+            pre_decoder: {
+                type: "object",
+                description: "Configuration for an external pre-decoder program to decode RTT channel data before being processed by other decoders.",
+                properties: {
+                    channels: {
+                        type: ["array", "null"],
+                        description: "RTT Channels to apply pre-decoder to. If not specified, all channels are used.",
+                        items: { type: "number", maximum: 15, minimum: 0 },
+                        default: null,
+                    },
+                    program: { type: "string", description: "Path to pre-decoder program.", default: "defmt-print" },
+                    args: { type: "array", description: "Arguments to pass to pre-decoder program.", items: { type: "string" }, default: ["-e", "${executable}"] },
+                    cwd: { type: "string", description: "Current working directory for pre-decoder program.", default: "${workspaceFolder}" },
+                    env: { type: "object", description: "Additional environment variables for pre-decoder program.", additionalProperties: { type: "string" }, default: {} },
+                },
+                default: {
+                    program: "defmt-print",
+                    args: ["-e", "${executable}"],
+                    cwd: "${workspaceFolder}",
+                },
+            },
+            polling_interval: {
+                type: ["number", "null"],
+                description:
+                    "Only for openocd & builtin RTT handlers. Number of milliseconds (> 0) to wait for check for data on out channels. Setting it lower than 50 may cause issues depending on your probe.",
+                default: null,
+                minimum: 1,
+            },
             rtt_start_retry: { type: "number", description: "Keep trying to start RTT for OpenOCD until it succeeds.", default: 1000, minimum: 0 },
             clearSearch: { type: "boolean", description: "When true, clears the search-string.", default: true },
             decoders: {

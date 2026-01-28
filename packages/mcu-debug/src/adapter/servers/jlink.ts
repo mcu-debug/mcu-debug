@@ -53,6 +53,9 @@ export class JLinkServerController extends EventEmitter implements GDBServerCont
 
     public rttCommands(): string[] {
         const commands: string[] = [];
+        if (!this.args.rttConfig.enabled || this.args.rttConfig.useBuiltinRTT?.enabled) {
+            return commands;
+        }
         if (this.args.rttConfig.enabled && this.args.pvtSessionMode !== SessionMode.Reset) {
             const cfg = this.args.rttConfig;
             if (this.args.request === "launch" && cfg.clearSearch) {

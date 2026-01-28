@@ -45,7 +45,7 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
     public provideDebugConfigurations(): vscode.ProviderResult<vscode.DebugConfiguration[]> {
         return [
             {
-                name: "Cortex Debug",
+                name: "MCU Debug: Launch",
                 cwd: "${workspaceFolder}",
                 executable: "./bin/executable.elf",
                 request: "launch",

@@ -46,6 +46,11 @@ export class Reporting {
         if (opts.rttConfig.enabled) {
             props.RTT = "Used";
         }
+        if (opts.pvtRttConfig || opts.rttConfig?.useBuiltinRTT?.enabled) {
+            props.BuiltinRTT = "Used";
+        } else if (opts.rttConfig?.enabled) {
+            props.RTT = "Used";
+        }
         if (opts.graphConfig.length > 0) {
             props.Graphing = "Used";
         }

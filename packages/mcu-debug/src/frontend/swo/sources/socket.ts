@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 import { TextDecoder } from "util";
 import { setFlagsFromString } from "v8";
 import { MCUDebugChannel } from "../../../dbgmsgs";
-import { WaitForPort, WaitForPortArgs, ReturnObject } from "@mcu-debug/shared";
+import { WaitForPort, WaitForPortArgs, ReturnObject, Decoder, DecoderSpec } from "@mcu-debug/shared";
 const TimerInterval = 250;
 export class SocketSWOSource extends EventEmitter implements SWORTTSource {
     protected client: net.Socket | null = null;
@@ -14,8 +14,12 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
     public connError: any = null;
     private timer: NodeJS.Timeout | undefined;
     public nTries = 1;
+    private decoder: Decoder | null = null;
 
-    constructor(public tcpPort: string) {
+    constructor(
+        public tcpPort: string,
+        private decoderSpec: DecoderSpec,
+    ) {
         super();
     }
 
@@ -25,6 +29,20 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
 
     public start(timeout = SocketTimout): Promise<void> {
         return new Promise<void>(async (resolve, reject) => {
+            if (this.decoderSpec) {
+                this.decoder = new Decoder(this.decoderSpec);
+                try {
+                    await this.decoder.runProgram();
+                    this.decoder.on("stdout", (data: Buffer) => {
+                        this.processData(data);
+                    });
+                } catch (e) {
+                    vscode.window.showErrorMessage(`Could not launch SWO/RTT pre-decoder ${this.decoderSpec?.program}: ${e}`);
+                    reject(e);
+                    return;
+                }
+            }
+
             const obj = parseHostPort(this.tcpPort);
             const start = Date.now();
             const waitForArgs: WaitForPortArgs = {
@@ -41,6 +59,10 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
                         // This will be called once per try when a socket is created. Set everything up so we
                         // can process data and handle errors, and NOT miss any data
                         socket.on("data", (buffer) => {
+                            if (this.decoder) {
+                                this.decoder.emit("stdin", buffer);
+                                return;
+                            }
                             this.processData(buffer as Buffer);
                         });
                         socket.on("end", () => {
@@ -192,8 +214,9 @@ export class SocketRTTSource extends SocketSWOSource {
     constructor(
         tcpPort: string,
         public readonly channel: number,
+        decoderSpec: DecoderSpec,
     ) {
-        super(tcpPort);
+        super(tcpPort, decoderSpec);
     }
 
     public write(data: string) {
@@ -205,8 +228,9 @@ export class JLinkSocketRTTSource extends SocketRTTSource {
     constructor(
         tcpPort: string,
         public readonly channel: number,
+        decoderSpec: DecoderSpec,
     ) {
-        super(tcpPort, channel);
+        super(tcpPort, channel, decoderSpec);
 
         // When the TCP connection to the RTT port is established, send config commands
         // within 100ms to configure the RTT channel.  See
@@ -356,8 +380,8 @@ export class PeMicroSocketSource extends SocketSWOSource {
         this.write(JSON.stringify(resumePipe));
     }
 
-    constructor(tcpPort: string) {
-        super(tcpPort);
+    constructor(tcpPort: string, decoderSpec: DecoderSpec) {
+        super(tcpPort, decoderSpec);
         this.on("connected", () => {
             // When we connect we need to start a sequence of commands to configure the SWO stream.
             // It starts with create pipe and is continued in the data callback

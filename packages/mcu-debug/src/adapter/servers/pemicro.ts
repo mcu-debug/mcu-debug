@@ -120,7 +120,7 @@ export class PEServerController extends EventEmitter implements GDBServerControl
     public serverLaunchCompleted(): void {}
     public debuggerLaunchStarted(): void {}
     public debuggerLaunchCompleted(): void {
-        if (this.args.swoConfig.enabled) {
+        if (this.args.swoConfig?.enabled) {
             const source = this.args.swoConfig.source;
             if (source === "socket") {
                 const swoPortNm = createPortName(this.args.targetProcessor, "swoPort");

@@ -32,6 +32,7 @@ export class GdbInstance extends EventEmitter {
     public gdbPath: string = "arm-none-eabi-gdb";
     public gdbArgs: string[] = ["--interpreter=mi3", "-q"];
     public static readonly DefaultCommandTimeout: number = 10000;
+    private queueRequests: boolean = true;
     public currentCommandTimeout: number = GdbInstance.DefaultCommandTimeout; // Setting to 0 ms disables timeouts
     gdbMajorVersion: number = 0;
     gdbMinorVersion: number = 0;
@@ -50,6 +51,15 @@ export class GdbInstance extends EventEmitter {
 
     IsGdbRunning() {
         return this.process !== null;
+    }
+
+    disableQueueProcessing() {
+        this.queueRequests = false;
+    }
+
+    enableQueueProcessing() {
+        this.queueRequests = true;
+        this.processCommandQueue();
     }
 
     start(gdbPath: string, gdbArgs: string[], cwd: string | undefined, init: string[], timeout: number = 250, checkVers = true): Promise<void> {
@@ -395,6 +405,9 @@ export class GdbInstance extends EventEmitter {
     private commandQueue: CommandQueueItem[] = [];
     private isProcessingQueue: boolean = false;
     public sendCommand(command: string, timeout: number = this.currentCommandTimeout): Promise<GdbMiOutput> {
+        if (!this.queueRequests) {
+            return this.sendCommandInternal(command, timeout);
+        }
         return new Promise<GdbMiOutput>((resolve, reject) => {
             this.commandQueue.push({
                 command,
