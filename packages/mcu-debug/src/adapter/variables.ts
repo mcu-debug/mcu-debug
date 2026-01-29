@@ -8,9 +8,7 @@ import { GdbProtocolVariable, GdbProtocolVariableTemplate } from "./custom-reque
 import { VariableScope, VariableTypeMask, decodeReference, ActualScopeMask, ScopeBits, ScopeMask, encodeScopeReference, encodeVarReference } from "./var-scopes";
 import { DataEvaluateExpression, DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";
 import { TargetInfo } from "./target-info";
-import { group } from "node:console";
 import { MemoryRequests } from "./memory";
-import { formatAddress } from "../frontend/utils";
 
 // These are the fields that uniquely identify a variable
 export class VariableKeys implements IValueIdentifiable {
@@ -602,6 +600,148 @@ export class VariableManager {
         return Promise.reject(new Error(`Invalid variablesReference ${args.variablesReference}`));
     }
 
+    private async gdbVarListChildren(gdbInstance: GdbInstance, gdbName: string): Promise<any[]> {
+        const miOutput = await gdbInstance.sendCommand(`-var-list-children --all-values "${gdbName}"`);
+        const children = (miOutput.resultRecord!.result as { [key: string]: any })["children"] || [];
+        return children;
+    }
+
+    private async findCppRealityLayer(gdbInstance: GdbInstance, gdbName: string, parentType: string, record: any[]): Promise<any[]> {
+        // If there's only one child, let's see if it's a wrapper
+        if (record.length === 1) {
+            const onlyChild = record[0];
+            const numGrandChildren = parseInt(onlyChild["numchild"] || "0");
+            const childName = onlyChild["exp"] || "";
+            if (numGrandChildren === 0) {
+                return record;
+            }
+            const cppAccess = ["public", "private", "protected"];
+            let grandChildren: any[] | null = null;
+            let isCandidate = false;
+            if (childName === "_M_impl" && numGrandChildren >= 3) {
+                // This is a catch-all for slightly different STL implementations
+                // We look for the 3 core pointers in a vector-like structure
+                const grandChildren = await this.gdbVarListChildren(gdbInstance, onlyChild["name"]);
+
+                // We look for the "Vector Signature"
+                const required = ["_M_start", "_M_finish", "_M_end_of_storage"];
+                const foundNames = grandChildren.map((gc) => gc["exp"]);
+
+                // Ensure all 3 core pointers exist
+                const hasVectorSignature = required.every((name) => foundNames.includes(name));
+
+                if (hasVectorSignature) {
+                    // It's a vector-like structure! Promote the actual data elements.
+                    isCandidate = true;
+                }
+            }
+
+            if (!isCandidate) {
+                if (parentType === "") {
+                    isCandidate = true;
+                } else if (cppAccess.includes(childName)) {
+                    isCandidate = true;
+                } else {
+                    // Check for specific internal wrappers
+                    const isWrapperName = ["_M_elems", "_M_impl", "_M_t", "_M_head_impl"].includes(childName);
+
+                    // Check if GDB is showing a Base Class as a child (usually starts with the type name)
+                    const isBaseClass = childName.startsWith("std::_Vector_base") || childName.startsWith("std::__array_alias");
+
+                    if (isWrapperName || isBaseClass) {
+                        isCandidate = true;
+                    } else if (onlyChild["type"].startsWith("std::vector") || onlyChild["type"].startsWith("std::array")) {
+                        // This catches cases where the child name is the type name (base class promotion)
+                        isCandidate = true;
+                    }
+                }
+            }
+
+            // This was identified as a candidate for a C++ "Inception" layer
+            if (isCandidate) {
+                grandChildren = grandChildren || (await this.gdbVarListChildren(gdbInstance, onlyChild["name"]));
+                return this.findCppRealityLayer(gdbInstance, onlyChild["name"], onlyChild["type"] || "", grandChildren); // Drill deeper!
+            }
+        }
+        return record;
+    }
+
+    private async findRustRealityLayer(gdbInstance: GdbInstance, gdbName: string, type: string, record: any[]): Promise<any[]> {
+        if (isRustVariableType(type) && record.length === 1) {
+            let child = record[0];
+
+            // Ghost layers that provide no info
+            const RUST_INCEPTION_NAMES = /^(buf|ptr|pointer|__0|inner|value)$/;
+            const RUST_INCEPTION_TYPES = /^(core::ptr::unique::Unique<.*>|core::ptr::non_null::NonNull<.*>|alloc::raw_vec::RawVec<.*>|core::alloc::.*|core::mem::maybe_uninit::MaybeUninit<.*>)$/;
+
+            while (RUST_INCEPTION_NAMES.test(child.exp) || RUST_INCEPTION_TYPES.test(child.type)) {
+                const grandchildren = await this.gdbVarListChildren(gdbInstance, child["name"]);
+
+                if (grandchildren.length === 1) {
+                    child = grandchildren[0]; // Drill deeper
+                } else if (grandchildren.length > 1) {
+                    // If we hit a struct with multiple fields (like data + len),
+                    // we've reached the "Reality" layer.
+                    return grandchildren;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // For heapless::Vec, 'record' contains [buffer, len].
+        // We return it as-is so the user sees both at the top level.
+        return record;
+    }
+
+    private async handleHeaplessFiltering(gdbInstance: GdbInstance, parentGdbName: string, children: any[]): Promise<any[]> {
+        // 1. Check if this is a heapless::Vec structure
+        // It usually has a 'buffer' and a 'len' child
+        const bufferChild = children.find((c) => c.exp === "buffer");
+        const lenChild = children.find((c) => c.exp === "len");
+
+        if (bufferChild && lenChild) {
+            // 2. Get the actual length from GDB's value string
+            // GDB might return "5" or "5 'u8'" - we just want the number
+            const actualLen = parseInt(lenChild.value, 10);
+
+            if (!isNaN(actualLen)) {
+                // 3. Get the children of the buffer (the raw array elements)
+                const allElements = await this.gdbVarListChildren(gdbInstance, bufferChild.name);
+
+                // Just take the first N elements that are actually initialized
+                const activeElements = allElements.slice(0, actualLen);
+
+                // 5. UX Decision: Do we want to show 'len' as a sibling,
+                // or just the elements?
+                // Recommendation: Return the elements PLUS the 'len' field
+                // so the user knows why it's truncated.
+                return [...activeElements, lenChild];
+            }
+        }
+
+        return children;
+    }
+
+    private async unwrapInceptionLayers(gdbInstance: GdbInstance, variable: any): Promise<any> {
+        const wrappers = /^(value|__0|inner|ptr|pointer)$/;
+
+        // We only drill if this specific node is a 'ghost' wrapper
+        // AND it has exactly one child to move toward.
+        if (variable.numChild === "1" && wrappers.test(variable.exp)) {
+            const children = await this.gdbVarListChildren(gdbInstance, variable.name);
+            if (children && children.length === 1) {
+                // Drill down: The current wrapper is discarded,
+                // and we evaluate its only child.
+                return this.unwrapInceptionLayers(gdbInstance, children[0]);
+            }
+        }
+
+        // If it has 0 children (primitive) or >1 (struct), or it's not a
+        // recognized wrapper, this is our "Reality" layer.
+        return variable;
+    }
+
     public async varListChildren(container: VariableContainer | VariableContainerForGlobals, parent: VariableObject, gdbName: string, threadId: number, frameId: number): Promise<VariableObject[]> {
         const createVariable = (name: string, item: any): [VariableObject | undefined, number | undefined] => {
             const scope = parent.scope & ActualScopeMask;
@@ -611,16 +751,43 @@ export class VariableManager {
                 return container.parseMiVariable(name, item, parent.scope, parent.handle, threadId, frameId);
             }
         };
-        const miOutput = await container.gdbInstance.sendCommand(`-var-list-children --all-values "${gdbName}"`);
+        let children = await this.gdbVarListChildren(container.gdbInstance, gdbName);
         const keywords = ["private", "protected", "public"];
-        const children = (miOutput.resultRecord!.result as { [key: string]: any })["children"] || [];
-        const ret: VariableObject[] = [];
         let sizeof: number | null | undefined = null;
         let isArray: boolean | null = null;
         let addr: bigint | null = null;
         if (parent.addressOf) {
             addr = BigInt(parent.addressOf.split(" ")[0]);
         }
+        // Step 1: Handle C++ (usually 1-child wrappers like _M_impl)
+        if (children.length === 1) {
+            children = await this.findCppRealityLayer(container.gdbInstance, gdbName, parent.type, children);
+        }
+
+        // Step 2: Handle Rust
+        if (isRustVariableType(parent.type)) {
+            // A: Check for heapless (2 children: buffer + len) or Box/Vec (1 child: buf/ptr)
+            // We run filtering first because it might turn a multi-child Vec into a 1-child display
+            let realChildren = await this.handleHeaplessFiltering(container.gdbInstance, gdbName, children);
+
+            // B: If we still have a single "wrapper" child, drill down
+            if (realChildren.length === 1) {
+                realChildren = await this.findRustRealityLayer(container.gdbInstance, gdbName, parent.type, realChildren);
+            }
+
+            // C: Final pass: clean up the noise (MaybeUninit, value, __0) for EVERY child
+            const newChildren = [];
+            for (const rc of realChildren) {
+                const unwrapped = await this.unwrapInceptionLayers(container.gdbInstance, rc);
+                newChildren.push(unwrapped);
+            }
+            children = newChildren;
+        }
+
+        const ret: VariableObject[] = [];
+        let parentEvalName = parent.evaluateName;
+        // Check some trivial cases where we don't need to query for real eval name
+        let recalcEvalName = isSimpleExpr(parentEvalName);
         for (const item of children) {
             const gdbVarName = item["name"];
             const exp = item["exp"];
@@ -656,24 +823,38 @@ export class VariableManager {
                 if (parent.editable !== undefined) {
                     child.editable = parent.editable;
                 }
-                child.evaluateName = constructEvaluateName(parent.evaluateName, parent.type, child.exp);
-                if (/[^\d\w\.]/i.test(parent.evaluateName) && !/^\d+$/.test(child.exp)) {
+                if (recalcEvalName) {
+                    // We find a new parent name because gdb may have wrapped the expression in parens to avoid preecedence issues
+                    // Also if we flattened, the evaluateName may be different
                     try {
-                        const cmd = "-var-info-path-expression " + child.gdbVarName;
-                        const pathOutput = await container.gdbInstance.sendCommand(cmd);
-                        const pathRecord = pathOutput.resultRecord?.result as { [key: string]: any };
-                        if (pathRecord && pathRecord["path_expr"]) {
-                            child.evaluateName = pathRecord["path_expr"];
+                        await this.updateEvalName(container.gdbInstance, child);
+                        if (isArray) {
+                            parentEvalName = child.evaluateName.replace(/\[\d+\]$/, "");
+                        } else {
+                            parentEvalName = child.evaluateName.substring(0, child.evaluateName.lastIndexOf("."));
                         }
                     } catch (e) {
-                        // Ignore errors here
+                        // Ignore errors here. Technically we should always be able to get the path expression.
+                        // TODO: Remove this message after testing
+                        console.error(`mcu-debug: Warning: Could not update evaluateName for child ${child.name} of parent ${parentEvalName}: ${e}`);
                     }
+                    recalcEvalName = false;
                 }
+                child.evaluateName = isArray ? `${parentEvalName}[${child.exp}]` : `${parentEvalName}.${child.exp}`;
                 // this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Created child ${handle} ${child.evaluateName}: ${JSON.stringify(child)}\n`);
                 ret.push(child);
             }
         }
         return ret;
+    }
+
+    async updateEvalName(gdbInstance: GdbInstance, child: VariableObject) {
+        const cmd = "-var-info-path-expression " + child.gdbVarName;
+        const pathOutput = await gdbInstance.sendCommand(cmd);
+        const pathRecord = pathOutput.resultRecord?.result as { [key: string]: any };
+        if (pathRecord && pathRecord["path_expr"]) {
+            child.evaluateName = pathRecord["path_expr"];
+        }
     }
 
     private async setVarProps(gdbInstance: GdbInstance, variable: VariableObject, isClientVSCode: boolean): Promise<void> {
@@ -1461,6 +1642,25 @@ export class VariableManager {
     }
 }
 
+function isSimpleExpr(parentEvalName: string): boolean {
+    let recalcEvalName = true;
+
+    if (parentEvalName.endsWith("]")) {
+        recalcEvalName = false;
+    } else if (parentEvalName.startsWith("(") && parentEvalName.endsWith(")")) {
+        recalcEvalName = false;
+    } else if (/^\w+.$/.test(parentEvalName)) {
+        recalcEvalName = false;
+    } else {
+        const testNames = parentEvalName.split("->");
+        const testName = testNames[testNames.length - 1];
+        if (/\w$/.test(testName)) {
+            recalcEvalName = false;
+        }
+    }
+    return recalcEvalName;
+}
+
 export function createMask(offset: number, width: number) {
     let r = 0;
     const a = offset;
@@ -1730,12 +1930,13 @@ export function bufferToEscapedString(buffer: Buffer, limit: number = 64): strin
     return `"${result}"`;
 }
 
-/**
- * 
-Container,"The ""Dream"" Layer (Internal Member)","The ""Reality"" (What to show)"
-std::vector,_M_impl,The indexed elements
-std::array,_M_elems,The indexed elements
-std::unique_ptr,_M_t,The pointed-to object
-Rust Vec,buf -> ptr,The indexed elements
-Rust String,vec,The UTF-8 string preview
- */
+function isRustVariableType(type: string): boolean {
+    if (!type) return false;
+    // Look for Rust-specific crate prefixes or the characteristic
+    // '&' and '[]' of Rust references and slices.
+    const rustFootprint = /^(core|alloc|std|heapless)::/;
+    const rustPointers = /^(&|\[)/;
+    const rustPrimitives = /^(u8|u16|u32|u64|i8|i16|i32|i64|f32|f64|str|bool|char)$/;
+
+    return rustFootprint.test(type) || rustPointers.test(type) || rustPrimitives.test(type);
+}
