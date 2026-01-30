@@ -8,12 +8,12 @@ import fs from "fs";
 import path from "path";
 import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { GdbEventNames, GdbMiOutput, GdbMiRecord, GdbMiThreadIF, Stderr, Stdout } from "./gdb-mi/mi-types";
+import { GdbEventNames, GdbMiFrameIF, GdbMiRecord, GdbMiThreadIF, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
 import { VariableManager } from "./variables";
 import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
-import { GdbMiThreadInfoList, MiCommands } from "./gdb-mi/mi-commands";
+import { GdbMiThreadInfoList, MiCommands, parseStoppedThreadInfo } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
 import { formatAddress, parseAddress } from "../frontend/utils";
 import { BreakpointManager } from "./breakpoints";
@@ -398,7 +398,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.handleResponseMsg(response, "mcu-debug: Threads request received while target is running. Returning empty thread list.\n");
                 return;
             }
-            // We get the thread info when we are stopped already. No need to do it again here.
+            this.lastThreadsInfo = await this.gdbMiCommands.sendThreadInfoAll();
             const threads = this.lastThreadsInfo?.getSortedThreadList() || [];
             for (const t of threads) {
                 response.body.threads.push({ id: t.id, name: t.name || t.target_id || `Thread ${t.id}` });
@@ -419,6 +419,40 @@ export class GDBDebugSession extends SeqDebugSession {
             this.sendResponse(response);
             return;
         }
+        const addFrame = (frame: GdbMiFrameIF, threadId: number): void => {
+            const handle = this.varManager.addFrameInfo(threadId, frame.level, VariableScope.Local);
+            const stackFrame = newFrame(frame, handle);
+            response.body.stackFrames.push(stackFrame);
+            this.sendResponse(response);
+            return;
+        };
+
+        function newFrame(frame: GdbMiFrameIF, handle: number): DebugProtocol.StackFrame {
+            const stackFrame: DebugProtocol.StackFrame = {
+                id: handle,
+                name: frame.func || "<unknown>",
+                line: frame.line || 0,
+                column: 0,
+                instructionPointerReference: frame.addr || undefined,
+                source: {
+                    name: frame.file || "<unknown>",
+                    path: frame.fullname || undefined,
+                },
+            };
+            return stackFrame;
+        }
+
+        if (!this.lastThreadsInfo || this.lastThreadsInfo?.fake) {
+            for (const thread of this.lastThreadsInfo?.threadMap?.values() || []) {
+                for (const frame of thread.frames) {
+                    addFrame(frame, thread.id);
+                }
+                response.body.totalFrames = thread.frames.length;
+                break;
+            }
+            this.sendResponse(response);
+            return;
+        }
         try {
             const threadId = args.threadId;
             const startFrame = args.startFrame || 0;
@@ -430,19 +464,7 @@ export class GDBDebugSession extends SeqDebugSession {
             }
             await this.gdbMiCommands.sendStackListFrames(thread, startFrame, startFrame + levels);
             for (const frame of thread.frames || []) {
-                const handle = this.varManager.addFrameInfo(threadId, frame.level, VariableScope.Local);
-                const stackFrame: DebugProtocol.StackFrame = {
-                    id: handle,
-                    name: frame.func || "<unknown>",
-                    line: frame.line || 0,
-                    column: 0,
-                    instructionPointerReference: frame.addr || undefined,
-                    source: {
-                        name: frame.file || "<unknown>",
-                        path: frame.fullname || undefined,
-                    },
-                };
-                response.body.stackFrames.push(stackFrame);
+                addFrame(frame, threadId);
             }
             response.body.totalFrames = thread.frames ? thread.frames.length : 0;
             this.sendResponse(response);
@@ -470,6 +492,10 @@ export class GDBDebugSession extends SeqDebugSession {
 
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments, request?: DebugProtocol.Request): void {
         const scopes: DebugProtocol.Scope[] = [];
+        if (this.isBusy() || this.lastThreadsInfo?.fake) {
+            this.sendResponse(response);
+            return;
+        }
         try {
             const add = (t: number, f: number, s: VariableScope): number => {
                 return this.varManager.addFrameInfo(t, f, s);
@@ -1465,56 +1491,13 @@ export class GDBDebugSession extends SeqDebugSession {
     // Sometimes we get interrupted by other requests, so we store the latest thread info
     // and use that when needed. This works for All-Stop mode only for now.
     private lastStoppedThreadId: number = 1;
+
     async stopEvent(record: GdbMiRecord | undefined, reason?: string) {
         this.lastStoppedThreadId = record ? parseInt((record.result as any)["thread-id"] ?? "1") : 1;
+        this.lastThreadsInfo = parseStoppedThreadInfo(record);
         if (this.suppressStoppedEvents) {
             return;
         }
-
-        try {
-            const cleaupPromise = this.varManager.prepareForStopped();
-            // We have several issues to deal with here:
-            // 1. GDB sometimes reports a different current thread id than the one in the stop record
-            //    We will trust the stop record more, since that is what caused the stop
-            // 2. GDB sometimes reports a current thread id that is not in the thread list
-            //    This seems to happen with some RTOSes where threads are created/destroyed rapidly
-            //    In this case, we will just pick the first thread in the list
-            // 3. VSCode will ask for a stackTrace even before it queries for threads. In this case,
-            //    we need to have the current thread info available for stackTrace requests.
-            // 4. Just after a reset, things are messed up (stale RAM, junk RTOS threads, etc.) and made worse after
-            //    a program operation like "load". So we need to be resilient to all kinds of weird states. Threads
-            //    were reported by GDB may not exist after a reset+load. So, query GDB once again for its world view of threads.
-            let found = false;
-            this.lastThreadsInfo = await this.gdbMiCommands.sendThreadInfoAll();
-            if (this.lastThreadsInfo.currentThreadId !== undefined && this.lastStoppedThreadId != this.lastThreadsInfo.currentThreadId) {
-                this.handleMsg(Stderr, `mcu-debug: Warning: Stopped thread id ${this.lastStoppedThreadId} does not match current thread id ${this.lastThreadsInfo.currentThreadId}\n`);
-                this.lastStoppedThreadId = this.lastThreadsInfo.currentThreadId;
-            } else if (this.lastThreadsInfo.currentThreadId === undefined) {
-                this.lastThreadsInfo.currentThreadId = this.lastStoppedThreadId;
-            }
-            let firstThread: GdbMiThreadIF | null = null;
-            for (const [thNum, thInfo] of this.lastThreadsInfo.threadMap) {
-                firstThread = firstThread || thInfo;
-                if (thInfo.id === this.lastThreadsInfo.currentThreadId) {
-                    found = true;
-                }
-            }
-            if (!found) {
-                this.handleMsg(Stderr, `mcu-debug: Warning: Current thread id ${this.lastThreadsInfo.currentThreadId} not found in thread list\n`);
-                this.lastStoppedThreadId = firstThread ? firstThread.id : 1;
-                try {
-                    // If we don't have a proper thread selected, things like next/step/continue fail
-                    await this.gdbInstance.sendCommand(`-thread-select ${this.lastStoppedThreadId}`); // Try to select a valid thread
-                } catch (e) {
-                    this.handleMsg(Stderr, `mcu-debug: Warning: Failed to select thread id ${this.lastStoppedThreadId}: ${e instanceof Error ? e.message : String(e)}\n`);
-                }
-            }
-            await cleaupPromise;
-        } catch (e) {
-            this.handleMsg(Stderr, `mcu-debug: Failed to get thread info on stop event: ${e instanceof Error ? e.message : String(e)}\n`);
-            this.lastThreadsInfo = this.createEmptyThreadInfo();
-        }
-
         let doNotify = !this.args.noDebug;
         switch (reason) {
             case "entry":

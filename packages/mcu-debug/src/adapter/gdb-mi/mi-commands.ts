@@ -1,5 +1,5 @@
 import { GdbInstance } from "./gdb-instance";
-import { GdbMiFrameIF, GdbMiOutput, GdbMiThreadIF } from "./mi-types";
+import { GdbMiFrameIF, GdbMiOutput, GdbMiRecord, GdbMiThreadIF } from "./mi-types";
 
 export class MiCommands {
     constructor(public readonly gdbInstance: GdbInstance) {}
@@ -121,6 +121,7 @@ export class GdbMiFrame implements GdbMiFrameIF {
     from?: string;
     arch?: string;
     addr_flags?: string;
+    fake?: boolean;
     args?: Array<{ name: string; value: any }>;
 
     constructor(miFrame: any) {
@@ -141,6 +142,11 @@ export class GdbMiFrame implements GdbMiFrameIF {
                 this.args.push({ name: arg["name"], value: arg["value"] });
             }
         }
+        this.fake = false;
+    }
+
+    setFake() {
+        this.fake = true;
     }
 }
 
@@ -152,6 +158,7 @@ export class GdbMiThread implements GdbMiThreadIF {
     details?: string;
     state?: string;
     core?: number;
+    fake = false;
 
     constructor(miThreadInfo: any) {
         this.id = parseInt(miThreadInfo["id"]);
@@ -187,11 +194,18 @@ export class GdbMiThread implements GdbMiThreadIF {
             this.frames[ix] = frame;
         }
     }
+    setFake() {
+        this.fake = true;
+        for (const frame of this.frames) {
+            frame.setFake();
+        }
+    }
 }
 
 export class GdbMiThreadInfoList {
     threadMap: Map<number, GdbMiThreadIF>;
     currentThreadId: number | undefined;
+    fake: boolean = false;
 
     constructor(miOutput: GdbMiOutput) {
         this.threadMap = new Map<number, GdbMiThreadIF>();
@@ -219,6 +233,61 @@ export class GdbMiThreadInfoList {
         threadsAry.sort((a, b) => a.id - b.id);
         return threadsAry;
     }
+
+    setFakeThreads(): void {
+        for (const thread of this.threadMap.values()) {
+            thread.setFake();
+        }
+        this.fake = true;
+    }
+}
+
+// *stopped,reason="breakpoint-hit",disp="keep",bkptno="2",locno="3",frame={
+// func="foo",args=[],file="hello.c",fullname="/home/foo/bar/hello.c",
+// line="13",arch="i386:x86_64"}
+export function parseStoppedThreadInfo(miRecord: any): GdbMiThreadInfoList {
+    const frame = miRecord.result?.frame;
+    if (frame) {
+        frame.level = frame.level || "1"; // GDB MI does not return level in stopped info, so fake it
+        frame.state = frame.state || "stopped";
+    }
+    /*
+        -thread-info
+        ^done,threads=[
+        {id="2",target-id="Thread 0xb7e14b90 (LWP 21257)",
+           frame={level="0",addr="0xffffe410",func="__kernel_vsyscall",
+                   args=[]},state="running"},
+        {id="1",target-id="Thread 0xb7e156b0 (LWP 21254)",
+           frame={level="0",addr="0x0804891f",func="foo",
+                   args=[{name="i",value="10"}],
+                   file="/tmp/a.c",fullname="/tmp/a.c",line="158",arch="i386:x86_64"},
+                   state="running"}],
+        current-thread-id="1"
+        (gdb)
+]   */
+    const threadsObj = {} as any;
+    threadsObj["threads"] = [];
+    threadsObj["current-thread-id"] = miRecord.result?.["thread-id"] || "1";
+    threadsObj["threads"].push({
+        id: threadsObj["current-thread-id"],
+        "target-id": `Thread ${threadsObj["current-thread-id"]}`,
+        frame: frame,
+    });
+    const ret = new GdbMiThreadInfoList({
+        hasTerminator: false,
+        outOfBandRecords: [],
+        resultRecord: {
+            result: threadsObj,
+            // Most fields are irrelevant here
+            token: "??",
+            class: "stopped",
+            recordType: "async",
+            outputType: "result",
+            prefix: "*",
+        } as GdbMiRecord,
+    });
+    ret.setFakeThreads();
+    return ret;
 }
 
 // will not throw exceptions

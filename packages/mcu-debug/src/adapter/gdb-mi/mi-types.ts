@@ -16,6 +16,7 @@ export interface GdbMiFrameIF {
 }
 
 export interface GdbMiThreadIF {
+    setFake(): unknown;
     id: number;
     name: string;
     target_id?: string;
