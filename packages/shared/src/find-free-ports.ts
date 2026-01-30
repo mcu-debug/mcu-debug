@@ -42,6 +42,20 @@ export class TcpPortScanner {
         }
     }
 
+    public static async unlockPortsIfFree(ports: number[]): Promise<void> {
+        for (const lock of allLockFiles) {
+            const intersection = lock.ports.filter((p) => ports.includes(p));
+            if (intersection.length === lock.ports.length) {
+                // All ports in this lock are in the requested list, release it
+                try {
+                    await lock.release();
+                } catch {
+                    // Ignore
+                }
+            }
+        }
+    }
+
     /**
      * Checks to see if the port is in use by creating a server on that port. You should use the function
      * `isPortInUseEx()` if you want to do a more exhaustive check or a general purpose use for any host
@@ -114,6 +128,7 @@ export class TcpPortScanner {
             findAvailablePortRange(numPorts, options.start ?? 30000, options.consecutive ?? false, options.avoid)
                 .then((lock) => {
                     allLockFiles.push(lock);
+                    TcpPortScanner.EmitAllocated(lock.ports);
                     resolve(lock.ports);
                 })
                 .catch((err) => {

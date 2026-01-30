@@ -25,6 +25,7 @@ import { VariableScope, getScopeFromReference, getVariableClass } from "./var-sc
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
+import { TcpPortScanner } from "@mcu-debug/shared";
 
 let SessionCounter = 0;
 
@@ -61,6 +62,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected varManager: VariableManager;
     protected bkptManager: BreakpointManager;
     public symbolTable: SymbolTable;
+    public allPorts: Set<number> = new Set();
 
     constructor() {
         super();
@@ -85,6 +87,14 @@ export class GDBDebugSession extends SeqDebugSession {
             hasTerminator: true,
             outOfBandRecords: [],
         });
+    }
+
+    protected tcpPortAllocatedListener = this.tcpPortsAllocated.bind(this);
+    private tcpPortsAllocated(ports: number[]) {
+        for (const p of ports) {
+            this.allPorts.add(p);
+        }
+        this.sendEvent(new GenericCustomEvent("ports-allocated", ports));
     }
 
     public isRunning(): boolean {
@@ -170,6 +180,11 @@ export class GDBDebugSession extends SeqDebugSession {
             return;
         }
         try {
+            TcpPortScanner.PortAllocated.removeListener("allocated", this.tcpPortAllocatedListener);
+            setTimeout(() => {
+                TcpPortScanner.unlockPortsIfFree(Array.from(this.allPorts));
+            }, 100);
+
             this.endSession = true;
             this.rttManager.dispose();
             this.liveWatchMonitor.stop();

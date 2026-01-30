@@ -30,8 +30,8 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] SWO
   - [x] RTT
   - [x] `New:` Native RTT support
-  - [ ] `New:` Rust RTT support
-- [ ] Rust Language support (debug works, but some things in Variable window could be better)
+  - [x] `New:` Rust RTT support. Defmt-print support added. Add as a pre-decoder to rttConfig
+- [ ] `New`: Rust Language support (debug works, but some things in Variable window could be better)
 - [ ] General
    - [ ] `New:` Source Maps
    - [ ] `New:` Telemetry
@@ -56,7 +56,7 @@ Following are listed in no particular order. They are grouped by functionality.
   - [ ] Basic
   - [ ] `New:` 64-bit support
   - [ ] Instruction breakpoints
-- [ ] **Multi-core orchestration**
+- [x] **Multi-core orchestration**
 - [ ] **Remote Gdb-server support. New design, new feature. Better support for containers, wsl, remote labs**
 
  Testing:

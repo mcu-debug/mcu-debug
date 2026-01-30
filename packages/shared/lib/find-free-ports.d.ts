@@ -16,6 +16,7 @@ export declare class TcpPortScanner {
     static PortAllocated: EventEmitter;
     static AvoidPorts: Set<number>;
     static EmitAllocated(ports: number[]): void;
+    static unlockPortsIfFree(ports: number[]): Promise<void>;
     /**
      * Checks to see if the port is in use by creating a server on that port. You should use the function
      * `isPortInUseEx()` if you want to do a more exhaustive check or a general purpose use for any host

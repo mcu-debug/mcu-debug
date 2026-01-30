@@ -378,9 +378,6 @@ export class MCUDebugExtension {
                 ServerConsoleLog(`Got event for sessions terminating PID=${process.pid}`);
                 this.endChainedConfigs(e);
                 break;
-            case "custom-event-session-restart":
-                this.resetOrResartChained(e, "restart");
-                break;
             case "custom-event-session-reset":
                 this.resetOrResartChained(e, "reset");
                 break;
