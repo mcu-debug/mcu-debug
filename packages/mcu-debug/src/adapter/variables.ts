@@ -1940,3 +1940,8 @@ function isRustVariableType(type: string): boolean {
 
     return rustFootprint.test(type) || rustPointers.test(type) || rustPrimitives.test(type);
 }
+
+// References:
+// See: https://github.com/rust-lang/rust/blob/main/src/etc/gdb_providers.py src/etc/gdb_lookup.py
+//
+// rustc --print target-spec-json
