@@ -6,6 +6,7 @@ export enum VariableScope {
     Registers = 3,
     Scope = 4, // Dummy scope for top level variable categories
     Watch = 5,
+    ConsoleMsg = 6,
     LocalVariable = VariableTypeMask | VariableScope.Local, // Local variable
     RegistersVariable = VariableTypeMask | VariableScope.Registers, // Register variable
     GlobalVariable = VariableTypeMask | VariableScope.Global, // Global variable

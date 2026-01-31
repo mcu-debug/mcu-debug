@@ -4,6 +4,20 @@ import { DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-m
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
 import { GDBDebugSession } from "./gdb-session";
 
+export enum TargetArchitecture {
+    X64,
+    X86,
+    ARM64,
+    ARM,
+    RISCV,
+    RISCV64,
+    MIPS,
+    POWERPC,
+    V850,
+    XTENSA,
+    UNKNOWN,
+}
+
 /*
 -interpreter-exec console "info mem"
 Using memory regions provided by the target.
@@ -28,19 +42,19 @@ GDB cache modes: nocache, cache -- nothing to do with actual HW caches
 
 // Source: https://gitlab-beta.engr.illinois.edu/fanglu2/saenaios-binutils/-/blob/ae0c2d3f7265941b8d4b7a04052cea65250954ea/gdb/configure.tgt
 // A map of GDB shell patterns to TypeScript RegExp
-const gdbArchPatterns: RegExp[] = [
-    /^i[3-7]86$/, // i[34567]86
-    /^x86_64$/,
-    /^arm.*/, // arm*
-    /^aarch64.*/, // aarch64*
-    /^riscv(32|64)?.*/, // riscv*
-    /^mips.*/, // mips*
-    /^powerpc.*/, // powerpc*
-    /^sh.*/, // sh*
-    /^xtensa.*/, // xtensa*
-    /^v850.*/, // v850*
+const gdbArchPatterns: Map<RegExp, TargetArchitecture> = new Map([
+    [/^i[3-7]86$/, TargetArchitecture.X86], // i[34567]86
+    [/^x86_64$/, TargetArchitecture.X64],
+    [/^arm.*/, TargetArchitecture.ARM],
+    [/^aarch64.*/, TargetArchitecture.ARM64],
+    [/^riscv(32|64)?.*/, TargetArchitecture.RISCV],
+    [/^mips.*/, TargetArchitecture.MIPS],
+    [/^powerpc.*/, TargetArchitecture.POWERPC],
+    //  [/^sh.*/, TargetArchitecture.SH],
+    [/^xtensa.*/, TargetArchitecture.XTENSA],
+    [/^v850.*/, TargetArchitecture.V850],
     // Add others from the list as needed
-];
+]);
 
 const ARM_VERSIONS =
     "arm, armv2, armv2a, armv3, armv3m, armv4, armv4t, armv5, armv5t, armv5te, xscale, iwmmxt, iwmmxt2, armv5tej, armv6, armv6kz, armv6t2, armv6k, armv7, armv6-m, armv6s-m, armv7e-m, armv8-a, armv8-r, armv8-m.base, armv8-m.main, armv8.1-m.main, armv9-a, arm_any";
@@ -53,7 +67,16 @@ const ARCH_REGISTRY: Record<string, { gdbName: string; isEmbedded: boolean }> = 
 };
 
 function isSupportedArch(arch: string): boolean {
-    return gdbArchPatterns.some((pattern) => pattern.test(arch));
+    return Array.from(gdbArchPatterns.keys()).some((pattern) => pattern.test(arch));
+}
+
+function getTargetArchitecture(arch: string): TargetArchitecture {
+    for (const [pattern, targetArch] of gdbArchPatterns) {
+        if (pattern.test(arch)) {
+            return targetArch;
+        }
+    }
+    return TargetArchitecture.UNKNOWN;
 }
 
 export class TargetMemoryRegion {

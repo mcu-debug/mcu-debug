@@ -372,10 +372,10 @@ module.exports = {
             gdbTraces: false,
         },
         properties: {
-            gdbTraces: { type: "boolean", default: false, description: "Enable GDB MI trace output" },
-            liveGdbTraces: { type: "boolean", default: false, description: "Enable live GDB MI trace output during polling (only applies to built-in liveWatch/RTT)" },
+            gdbTraces: { type: "boolean", default: false, description: "Enable GDB MI trace output. Copy/Paste friendly." },
+            liveGdbTraces: { type: "boolean", default: false, description: "Enable live GDB MI trace output during polling (only applies to built-in liveWatch/RTT). Can be super verbose." },
             vscodeRequests: { type: "boolean", default: false, description: "Enable VSCode Request/Response trace output" },
-            gdbTracesParsed: { type: "boolean", default: false, description: "Enable parsed GDB MI output" },
+            gdbTracesParsed: { type: "boolean", default: false, description: "Enable parsed GDB MI output. NOT Copy/Paste friendly." },
             timestamps: { type: "boolean", default: false, description: "Show timestamps in debug output" },
             pathResolution: { type: "boolean", default: false, description: "Show path resolution when reading symbols" },
             disableGdbTimeouts: { type: "boolean", default: false, description: "Disable GDB command timeouts. Helpful for debugging extension" },

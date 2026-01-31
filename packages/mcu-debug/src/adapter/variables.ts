@@ -9,6 +9,7 @@ import { VariableScope, VariableTypeMask, decodeReference, ActualScopeMask, Scop
 import { DataEvaluateExpression, DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";
 import { TargetInfo } from "./target-info";
 import { MemoryRequests } from "./memory";
+import { off } from "node:cluster";
 
 // These are the fields that uniquely identify a variable
 export class VariableKeys implements IValueIdentifiable {
@@ -1941,6 +1942,95 @@ function isRustVariableType(type: string): boolean {
     return rustFootprint.test(type) || rustPointers.test(type) || rustPrimitives.test(type);
 }
 
+export interface GdbOutputStoreage {
+    oob?: GdbMiRecord[];
+    result?: GdbRecordResult;
+}
+export class GdbOutputMsgContainer {
+    private refToObjMap: Map<number, GdbOutputStoreage | any> = new Map();
+    private readonly offset = 1000;
+    private readonly splitBits = 20;
+    private readonly splitMask = (1 << this.splitBits) - 1;
+
+    constructor() {}
+
+    encodeRef(ix: number): number {
+        const lower = ix & this.splitMask;
+        const upper = (ix >>> this.splitBits) & this.splitMask;
+        return (((upper << this.splitBits) | lower) << ScopeBits) | VariableScope.ConsoleMsg;
+    }
+
+    decodeRef(ref: number): number {
+        const ix = ref >>> ScopeBits;
+        const lower = ix & this.splitMask;
+        const upper = (ix >>> this.splitBits) & this.splitMask;
+        return (upper << this.splitBits) | lower;
+    }
+
+    addObject(obj: GdbOutputStoreage | any): number {
+        const ix = this.refToObjMap.size + this.offset;
+        const ref = this.encodeRef(ix);
+        this.refToObjMap.set(ix, obj);
+        return ref;
+    }
+
+    getObject(ref: number): GdbOutputStoreage | undefined {
+        const ix = this.decodeRef(ref);
+        return this.refToObjMap.get(ix);
+    }
+
+    getChildren(ref: number): DebugProtocol.Variable[] {
+        const makeRef = (item: any): number => {
+            if (item && typeof item === "object") {
+                return this.addObject(item);
+            }
+            return 0;
+        };
+        const makeValue = (item: any): string => {
+            if (item === null || item === undefined) {
+                return "null";
+            } else if (typeof item === "string") {
+                return item;
+            } else if (typeof item === "number" || typeof item === "boolean") {
+                return item.toString();
+            } else if (typeof item === "object") {
+                if (Array.isArray(item)) {
+                    return `Array[${item.length}]`;
+                } else {
+                    return "Object";
+                }
+            } else {
+                return typeof item;
+            }
+        };
+        const parent = this.getObject(ref);
+        if (!parent) {
+            return [];
+        }
+        const variables: DebugProtocol.Variable[] = [];
+        if (Array.isArray(parent) && parent.length > 0) {
+            let ix = 0;
+            for (const oob of parent) {
+                variables.push({
+                    name: `[${ix++}]`,
+                    value: makeValue(oob),
+                    type: typeof oob.type,
+                    variablesReference: makeRef(oob),
+                });
+            }
+        } else {
+            for (const [key, val] of Object.entries(parent)) {
+                variables.push({
+                    name: key,
+                    value: makeValue(val),
+                    type: typeof val.type,
+                    variablesReference: makeRef(val),
+                });
+            }
+        }
+        return variables;
+    }
+}
 // References:
 // See: https://github.com/rust-lang/rust/blob/main/src/etc/gdb_providers.py src/etc/gdb_lookup.py
 //

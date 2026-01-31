@@ -8,9 +8,9 @@ import fs from "fs";
 import path from "path";
 import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { GdbEventNames, GdbMiFrameIF, GdbMiRecord, GdbMiThreadIF, Stderr, Stdout } from "./gdb-mi/mi-types";
+import { Console, GdbEventNames, GdbMiFrameIF, GdbMiOutput, GdbMiRecord, GdbMiThreadIF, Stderr, Stdout } from "./gdb-mi/mi-types";
 import { SWODecoderConfig } from "../frontend/swo/common";
-import { VariableManager } from "./variables";
+import { GdbOutputMsgContainer, GdbOutputStoreage, VariableManager } from "./variables";
 import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands, parseStoppedThreadInfo } from "./gdb-mi/mi-commands";
@@ -21,7 +21,7 @@ import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
 import { ServerConsoleLog } from "./server-console-log";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
-import { VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
+import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
@@ -63,6 +63,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected bkptManager: BreakpointManager;
     public symbolTable: SymbolTable;
     public allPorts: Set<number> = new Set();
+    private gdbTraces = new GdbOutputMsgContainer();
 
     constructor() {
         super();
@@ -148,7 +149,7 @@ export class GDBDebugSession extends SeqDebugSession {
         response.body.supportsValueFormattingOptions = true;
         // response.body.supportTerminateDebuggee = true;
         response.body.supportsDataBreakpoints = true;
-        // response.body.supportsDisassembleRequest = true;
+        response.body.supportsDisassembleRequest = true;
         // response.body.supportsSteppingGranularity = true;
         // response.body.supportsInstructionBreakpoints = true;
         response.body.supportsReadMemoryRequest = true;
@@ -551,6 +552,14 @@ export class GDBDebugSession extends SeqDebugSession {
 
     protected async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments, request?: DebugProtocol.Request): Promise<void> {
         response.body = { variables: [] };
+        if ((args.variablesReference & ScopeMask) === VariableScope.ConsoleMsg) {
+            const children = this.gdbTraces.getChildren(args.variablesReference);
+            if (children) {
+                response.body.variables = children;
+            }
+            this.sendResponse(response);
+            return;
+        }
         if (this.isBusy()) {
             this.handleErrResponse(response, "Variables request received while target is running.");
             return;
@@ -996,6 +1005,49 @@ export class GDBDebugSession extends SeqDebugSession {
             logger.setup(Logger.LogLevel.Verbose, false, false);
         } else {
             this.sendEvent(new OutputEvent(msg, type));
+        }
+    }
+
+    public handleGdbResult(line: string, output: GdbMiOutput): void {
+        let oob = false;
+        let res = false;
+        if (line.length > 100 && this.args.debugFlags.gdbTracesParsed) {
+            if (output.outOfBandRecords && output.outOfBandRecords.length > 1 && output.outOfBandRecords[0]) {
+                oob = true;
+            }
+            if (output.resultRecord && output.resultRecord.result && Object.keys(output.resultRecord.result).length > 0) {
+                res = true;
+            }
+        }
+        if (!oob && !res) {
+            // No need to create a complex object for the output
+            this.handleMsg(Console, "-> " + line);
+            return;
+        }
+
+        if (line.length > 200) {
+            line = line.substring(0, 200) + " ... (truncated)\n";
+        }
+        line = this.wrapTimeStamp(line);
+        const obj: GdbOutputStoreage = {};
+        if (oob) {
+            obj.oob = output.outOfBandRecords;
+        }
+        if (res) {
+            obj.result = output.resultRecord?.result;
+        }
+
+        const ref = this.gdbTraces.addObject(obj);
+
+        const ev = new OutputEvent(line, Console);
+        (ev.body as DebugProtocol.OutputEvent["body"]).variablesReference = ref;
+
+        if (this.args.debugFlags.vscodeRequests) {
+            logger.setup(Logger.LogLevel.Stop, false, false);
+            this.sendEvent(ev);
+            logger.setup(Logger.LogLevel.Verbose, false, false);
+        } else {
+            this.sendEvent(ev);
         }
     }
 
@@ -1484,6 +1536,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.gdbInstance.on("stopped", this.stopEvent.bind(this));
         this.gdbInstance.on("breakpoint-deleted", this.handleBreakpointDeleted.bind(this));
         this.gdbInstance.on("msg", this.handleMsg.bind(this));
+        this.gdbInstance.on("gdb-result", this.handleGdbResult.bind(this));
         this.gdbInstance.on("breakpoint", this.handleBreakpoint.bind(this));
         this.gdbInstance.on("watchpoint", this.handleWatchpoint.bind(this, "hit"));
         this.gdbInstance.on("watchpoint-scope", this.handleWatchpoint.bind(this, "scope"));

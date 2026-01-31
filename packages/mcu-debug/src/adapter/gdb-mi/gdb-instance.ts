@@ -225,14 +225,11 @@ export class GdbInstance extends EventEmitter {
             this.currentOutofBandRecords = [];
             return;
         }
-        if (this.debugFlags.gdbTraces) {
-            this.log(Console, "-> " + line);
-        }
         let miOutput = parseGdbMiOut(line);
+        if (this.debugFlags.gdbTraces && miOutput) {
+            this.emit("gdb-result", line, miOutput);
+        }
         if (miOutput) {
-            if (this.debugFlags.gdbTracesParsed) {
-                this.log(Console, "~~ " + JSON.stringify(miOutput));
-            }
             if (miOutput.resultRecord) {
                 const token = parseInt(miOutput.resultRecord.token);
                 const pendingCmd = this.pendingCmds.get(token);
@@ -451,7 +448,7 @@ export class GdbInstance extends EventEmitter {
             const fullCommand = `${seq}${command}\n`;
 
             if (this.debugFlags.gdbTraces) {
-                this.log(Console, fullCommand);
+                this.log(Stdout, fullCommand);
             }
 
             const clearTimer = () => {
