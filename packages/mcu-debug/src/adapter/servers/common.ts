@@ -273,6 +273,7 @@ export interface DebugFlags {
     timestamps?: boolean;
     disableGdbTimeouts?: boolean;
     pathResolution?: boolean;
+    debugDisassembly?: boolean;
     anyFlags?: boolean;
 }
 

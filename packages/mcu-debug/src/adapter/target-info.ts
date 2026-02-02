@@ -157,6 +157,11 @@ export class TargetInfo {
     public endianness: "little" | "big" = "little";
     private targetMemoryRegions: TargetMemoryRegions | undefined;
     private PointerSize: number = 4; // default to 32-bit pointers
+    private archType: TargetArchitecture = TargetArchitecture.UNKNOWN;
+
+    public getArchitectureType(): TargetArchitecture {
+        return this.archType;
+    }
 
     constructor(
         private gdbInstance: GdbInstance,
@@ -198,7 +203,12 @@ export class TargetInfo {
             const tmp = await DataEvaluateExpressionAsNumber(this.gdbInstance, `sizeof(void*)`);
             this.PointerSize = tmp !== null ? tmp : 4;
         } catch {
-            this.session.handleMsg(Stderr, "Warning: Unable to determine target pointer size. Defaulting to 4 bytes.\n");
+            try {
+                const tmp = await DataEvaluateExpressionAsNumber(this.gdbInstance, `sizeof(*const ())`); // Try Rust style
+                this.PointerSize = tmp !== null ? tmp : 4;
+            } catch {
+                this.session.handleMsg(Stderr, "Warning: Unable to determine target pointer size. Defaulting to 4 bytes.\n");
+            }
         }
         try {
             const lines = (await GdbMiOrCliCommandForOob(this.gdbInstance, "show architecture")) as string[];
@@ -221,6 +231,8 @@ export class TargetInfo {
                 this.session.handleMsg(Stderr, "Warning: Unable to determine target architecture.\n");
             } else if (!isSupportedArch(this.architecture)) {
                 this.session.handleMsg(Stderr, `Warning: Target architecture '${this.architecture}' may not be fully supported.\n`);
+            } else {
+                this.archType = getTargetArchitecture(this.architecture);
             }
         } catch {
             this.session.handleMsg(Stderr, "Warning: Unable to determine target architecture.\n");
@@ -243,7 +255,7 @@ export class TargetInfo {
                         break; // end of table
                     }
                     const parts = line.split(/\s+/);
-                    if (parts.length >= 5) {
+                    if (parts.length >= 5 && parts[1] === "y") {
                         const lowAddr = parts[2];
                         const highAddr = parts[3];
                         const attrs = parts.slice(4).join(" ");

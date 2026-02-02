@@ -15,6 +15,16 @@ export function formatAddress(addr: bigint): string {
     return "0x" + addr.toString(16);
 }
 
+// Format as hex with 0x prefix - no padding to allow flexibility for 32/64-bit
+export function formatAddress64(addr: bigint): string {
+    return "0x" + addr.toString(16).padStart(16, "0");
+}
+
+// Format as hex with 0x prefix - no padding to allow flexibility for 32/64-bit
+export function formatAddress32(addr: bigint): string {
+    return "0x" + addr.toString(16).padStart(8, "0");
+}
+
 // Parse memory reference per DAP spec: "0x" prefix = hex, no prefix = decimal
 
 export function parseAddress(addr: string): bigint {

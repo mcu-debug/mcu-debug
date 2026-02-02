@@ -26,6 +26,7 @@ import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveRespo
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
 import { TcpPortScanner } from "@mcu-debug/shared";
+import { DisassemblyAdapter } from "./disassebly";
 
 let SessionCounter = 0;
 
@@ -58,6 +59,7 @@ export class GDBDebugSession extends SeqDebugSession {
     public fileMap: Map<string, number> = new Map();
     private swoLaunchPromise = Promise.resolve();
     private swoLaunched = false;
+    private disassemblyAdapter: DisassemblyAdapter;
 
     protected varManager: VariableManager;
     protected bkptManager: BreakpointManager;
@@ -81,6 +83,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.getFileId(VariableManager.GlobalFileName); // Make sure global file ID is always 1
         this.rttTcpServer = new RttTcpServer(this);
         this.rttManager = new RttBufferManager(this.liveWatchMonitor);
+        this.disassemblyAdapter = new DisassemblyAdapter(this);
     }
 
     private createEmptyThreadInfo(): GdbMiThreadInfoList {
@@ -955,8 +958,8 @@ export class GDBDebugSession extends SeqDebugSession {
         return Promise.resolve();
     }
 
-    protected disassembleRequest(response: DebugProtocol.DisassembleResponse, args: DebugProtocol.DisassembleArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+    protected async disassembleRequest(response: DebugProtocol.DisassembleResponse, args: DebugProtocol.DisassembleArguments, request?: DebugProtocol.Request): Promise<void> {
+        return this.disassemblyAdapter.disassembleRequest(response, args);
     }
     protected cancelRequest(response: DebugProtocol.CancelResponse, args: DebugProtocol.CancelArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
@@ -1200,6 +1203,7 @@ export class GDBDebugSession extends SeqDebugSession {
                         }
                     }
                 }
+                this.disassemblyAdapter.initialize();
             });
             this.handleMsg(Stdout, `MCU-Debug: Embedded MCU debug adapter version ${pkgJsonVersion} (${gitCommitHash}). ` + "Usage info: https://github.com/mcu-debug/mcu-debug#usage");
             if (this.args.debugFlags.anyFlags) {

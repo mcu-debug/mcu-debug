@@ -1162,12 +1162,12 @@
                   "gdbTraces": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable GDB MI trace output"
+                    "description": "Enable GDB MI trace output. Copy/Paste friendly."
                   },
                   "liveGdbTraces": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable live GDB MI trace output during polling (only applies to built-in liveWatch/RTT)"
+                    "description": "Enable live GDB MI trace output during polling (only applies to built-in liveWatch/RTT). Can be super verbose."
                   },
                   "vscodeRequests": {
                     "type": "boolean",
@@ -1177,12 +1177,17 @@
                   "gdbTracesParsed": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable parsed GDB MI output"
+                    "description": "Enable parsed GDB MI output. NOT Copy/Paste friendly."
                   },
                   "timestamps": {
                     "type": "boolean",
                     "default": false,
                     "description": "Show timestamps in debug output"
+                  },
+                  "debugDisassembly": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show debug output from disassembly operations"
                   },
                   "pathResolution": {
                     "type": "boolean",
@@ -2550,12 +2555,12 @@
                   "gdbTraces": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable GDB MI trace output"
+                    "description": "Enable GDB MI trace output. Copy/Paste friendly."
                   },
                   "liveGdbTraces": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable live GDB MI trace output during polling (only applies to built-in liveWatch/RTT)"
+                    "description": "Enable live GDB MI trace output during polling (only applies to built-in liveWatch/RTT). Can be super verbose."
                   },
                   "vscodeRequests": {
                     "type": "boolean",
@@ -2565,12 +2570,17 @@
                   "gdbTracesParsed": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable parsed GDB MI output"
+                    "description": "Enable parsed GDB MI output. NOT Copy/Paste friendly."
                   },
                   "timestamps": {
                     "type": "boolean",
                     "default": false,
                     "description": "Show timestamps in debug output"
+                  },
+                  "debugDisassembly": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show debug output from disassembly operations"
                   },
                   "pathResolution": {
                     "type": "boolean",
@@ -3502,6 +3512,7 @@
     "winston-vscode": "^1.0.0"
   },
   "dependencies": {
-    "@vscode/codicons": "^0.0.44"
+    "@vscode/codicons": "^0.0.44",
+    "sorted-array-type": "^1.3.0"
   }
 }

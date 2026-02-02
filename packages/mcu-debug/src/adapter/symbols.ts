@@ -183,7 +183,7 @@ export class SymbolTable {
     public symbolsByAddress: AddressToSym = new AddressToSym();
     public symbolsByAddressOrig: AddressToSym = new AddressToSym();
     // private varsByFile: { [path: string]: VariablesInFile } = null;
-    private  nmPromises: ExecPromise[] = [];
+    private nmPromises: ExecPromise[] = [];
     private executables: SymbolFile[] = [];
 
     private objdumpPath: string = "";
@@ -575,7 +575,7 @@ export class SymbolTable {
     public updateSymbolSize(node: SymbolNode, len: number) {
         this.symbolsAsIntervalTree.remove(node, node);
         node.symbol.length = len;
-        node = new SymbolNode(node.symbol, node.low as bigint, (node.high as bigint) + BigInt(len) - 1n);
+        node = new SymbolNode(node.symbol, node.low as bigint, (node.low as bigint) + BigInt(len) - 1n);
         this.symbolsAsIntervalTree.insert(node, node);
     }
 
@@ -718,10 +718,10 @@ export class SymbolTable {
     public getFunctionAtAddress(address: bigint): SymbolInformation | null {
         const symNodes = this.symbolsAsIntervalTree.search(new Interval(address, address));
         for (const symNode of symNodes) {
-             if (symNode && symNode.symbol.type === SymbolType.Function) {
-                 return symNode.symbol;
-             }
-         }
+            if (symNode && symNode.symbol.type === SymbolType.Function) {
+                return symNode.symbol;
+            }
+        }
         return null;
         // return this.allSymbols.find((s) => s.type === SymbolType.Function && s.address <= address && (s.address + s.length) > address);
     }
@@ -897,5 +897,17 @@ export class SymbolTable {
         if (this.gdbSession.args.debugFlags?.pathResolution) {
             this.gdbSession.handleMsg(Stderr, `[PathRes] ${message}\n`);
         }
+    }
+
+    public getMemoryRegions(): MemoryRegion[] {
+        return this.memoryRegions;
+    }
+    public searchSymbolsByAddress(start: bigint, end: bigint): SymbolNode[] {
+        return this.symbolsAsIntervalTree.search(new Interval(start, end), (v, k) => {
+            if (v === (k as any)) {
+                return v;
+            }
+            return v;
+        });
     }
 }
