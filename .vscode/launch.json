@@ -1,7 +1,7 @@
 // A launch configuration that compiles the extension and then opens it inside a new window
 {
 	"version": "0.1.0",
-	"configurations": [
+	"configurations": [	
 		{
 			"name": "Launch Extension",
 			"type": "extensionHost",
@@ -39,7 +39,22 @@
 				"${workspaceRoot}/packages/mcu-debug/out/test/**/*.js"
 			],
 			"preLaunchTask": "test-compile"
-		}
+		},
+		{
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug mcu-debug-helper",
+            "cargo": {
+				"cwd": "${workspaceFolder}/packages/mcu-debug-helper",
+                "args": [
+                    "build",
+                    "--bin=mcu-debug-helper" // Replace 'yourprogram' with your actual binary name
+                ]
+            },
+            "program": "${cargo:program}",
+            "args": ["/Users/hdm/mtw35/Dual-CPU_Empty_PSOC6_App/proj_cm4/build/last_config/proj_cm4.elf"],
+            "cwd": "${workspaceFolder}/packages/mcu-debug-helper"
+        }
 	],
 	"compounds": [
 		{

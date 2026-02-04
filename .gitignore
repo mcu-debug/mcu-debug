@@ -28,11 +28,13 @@ jspm_packages/
 out/
 dist/
 build/
+target/
 *.vsix
 
 # Monorepo workspace outputs
 packages/*/out/
 packages/*/dist/
+packages/*/target/
 packages/*/node_modules/
 
 # Go build outputs

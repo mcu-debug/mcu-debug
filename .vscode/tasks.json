@@ -3,7 +3,9 @@
   "tasks": [
     {
       "label": "watch",
-      "dependsOn": ["npm: watch"],
+      "dependsOn": [
+        "npm: watch"
+      ],
       "presentation": {
         "reveal": "never"
       },
@@ -12,19 +14,39 @@
         "isDefault": true
       },
       "runOptions": {
-          "runOn": "folderOpen" // Key property for autorun
+        "runOn": "folderOpen"
       }
     },
     {
       "label": "compile",
-      "dependsOn": ["npm: compile"],
+      "dependsOn": [
+        "npm: compile"
+      ],
       "presentation": {
         "reveal": "never"
       },
       "group": {
         "kind": "build",
         "isDefault": true
-      },
+      }
     },
+    {
+      "type": "cargo",
+      "command": "build",
+      "problemMatcher": [
+        "$rustc"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/packages/mcu-debug-helper",
+        "env": {
+          "RUSTFLAGS": "-C debuginfo=2"
+        }
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "label": "rust: cargo build"
+    }
   ]
 }

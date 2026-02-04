@@ -9,5 +9,8 @@
         "editor.formatOnSave": true,
         "editor.defaultFormatter": "esbenp.prettier-vscode"
     },
-    "typescript.tsdk": "node_modules/typescript/lib"
+    "typescript.tsdk": "node_modules/typescript/lib",
+    "rust-analyzer.linkedProjects": [
+        "packages/mcu-debug-helper/Cargo.toml"
+    ]
 }

@@ -1,0 +1,17 @@
+[package]
+name = "mcu-debug-helper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# For ELF/Binary parsing
+object = { version = "0.36", features = ["read", "compression"] }
+# The DWARF powerhouse
+gimli = "0.31"
+# For ultra-fast address range lookups
+addr2line = "0.24"
+# For JSON communication with your TS extension
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# For fast path/file handling
+anyhow = "1.0"

@@ -6,6 +6,7 @@ import { TargetArchitecture, TargetInfo, TargetMemoryRegion, TargetMemoryRegions
 import { formatAddress32, formatAddress64, parseAddress } from "../frontend/utils";
 import { Stdout } from "./gdb-mi/mi-types";
 import { SortedArray } from "sorted-array-type";
+import { start } from "node:repl";
 
 let dasmFormatAddress = formatAddress32;
 
@@ -243,9 +244,11 @@ export class DisassemblyAdapter {
             if (region.inVmaRegion(base)) {
                 return region.inVmaRegion(addr) ? addr : region.vmaStart;
             }
+            /*
             if (region.inLmaRegion(base)) {
                 return region.inLmaRegion(addr) ? addr : region.lmaStart;
             }
+                */
         }
         return addr;
     }
@@ -255,9 +258,11 @@ export class DisassemblyAdapter {
             if (region.inVmaRegion(base)) {
                 return region.inVmaRegion(addr) ? addr : region.vmaEnd;
             }
+            /*
             if (region.inLmaRegion(base)) {
                 return region.inLmaRegion(addr) ? addr : region.lmaEnd;
             }
+                */
         }
         return addr;
     }
@@ -293,58 +298,70 @@ export class DisassemblyAdapter {
         let endLine: number | undefined = undefined;
         let lastFile: string | undefined = undefined;
         for (const instr of instrs) {
-            const file = (instr.fullname || instr.file) as string | "<unknown file>";
-            const line = parseInt(instr.line || "1", 10);
-            if (startLine === undefined) {
-                startLine = line;
-            }
-            endLine = line;
-            if (!lastFile || lastFile !== file) {
-                startLine = line;
-                endLine = line;
-                lastFile = file;
-            }
             const lines = instr.line_asm_insn as any[];
-            if (lines === undefined || lines.length === 0) {
-                continue;
-            }
-            for (const asmLine of lines) {
-                const addressStr: string = asmLine.address;
-                const funcName = asmLine["func-name"] as string | undefined;
-                const opcodes: string = asmLine.opcodes;
-                const offset = parseInt(asmLine.offset ?? "0", 10);
-                const instr = asmLine.inst as string;
-                const useInstr = opcodes.replace(/\s/g, "").padEnd(2 * this.instrInfo!.maxSize + 2) + /* flag + */ instr;
-                const pInstr: ProtocolInstruction = {
-                    address: addressStr,
-                    pvtAddress: parseAddress(addressStr),
-                    instruction: useInstr,
-                    pvtOpcodes: opcodes,
-                    pvtLength: opcodes.split(" ").length,
-                    pvtIsData: instr.startsWith(".byte") || instr.startsWith(".word") || instr.startsWith(".hword") || instr.startsWith(".4byte") || instr.startsWith(".2byte"),
-                    location: { path: lastFile || "<unknown file>" },
-                    line: startLine,
-                    endLine: endLine,
-                };
-                if (funcName) {
-                    pInstr.symbol = this.formatSym(funcName, offset);
-                }
-                if (this.debugDisassembly) {
-                    const jStr = JSON.stringify(pInstr, (key, value) => {
-                        if (typeof value === "bigint") {
-                            return value.toString();
-                        }
-                        return value;
-                    });
-                    this.dMsg(`  ${addressStr}: ${jStr}`);
-                }
+            if (lines === undefined) {
+                // This is a naked instruction with no source info or maybe data
+                const pInstr: ProtocolInstruction = this.parseAsmInstr(instr, undefined, startLine || 1, endLine || 1);
                 ret.push(pInstr);
+            } else {
+                const file = (instr.fullname || instr.file) as string | "<unknown file>";
+                const line = parseInt(instr.line || "1", 10);
+                if (startLine === undefined) {
+                    startLine = line;
+                }
+                endLine = line;
+                if (!lastFile || lastFile !== file) {
+                    startLine = line;
+                    endLine = line;
+                    lastFile = file;
+                }
+                for (const asmLine of lines) {
+                    const pInstr: ProtocolInstruction = this.parseAsmInstr(asmLine, lastFile, startLine, endLine);
+                    ret.push(pInstr);
+                }
             }
             startLine = undefined;
             endLine = undefined;
             lastFile = undefined;
         }
         return ret;
+    }
+
+    private parseAsmInstr(asmLine: any, file: string | undefined, startLine: number, endLine: number): ProtocolInstruction {
+        const addressStr: string = asmLine.address;
+        const funcName = asmLine["func-name"] as string | undefined;
+        const opcodes: string = asmLine.opcodes;
+        const offset = parseInt(asmLine.offset ?? "0", 10);
+        const instr = asmLine.inst as string;
+        const useInstr = opcodes.replace(/\s/g, "").padEnd(2 * this.instrInfo!.maxSize + 2) + /* flag + */ instr;
+        const pInstr: ProtocolInstruction = {
+            address: addressStr,
+            pvtAddress: parseAddress(addressStr),
+            instruction: useInstr,
+            pvtOpcodes: opcodes,
+            pvtLength: opcodes.split(" ").length,
+            pvtIsData: instr.startsWith(".byte") || instr.startsWith(".word") || instr.startsWith(".hword") || instr.startsWith(".4byte") || instr.startsWith(".2byte"),
+        };
+        if (file !== undefined && startLine !== undefined) {
+            pInstr.location = { path: file };
+            pInstr.line = startLine;
+            if (endLine !== undefined && endLine !== startLine) {
+                pInstr.endLine = endLine;
+            }
+        }
+        if (funcName) {
+            pInstr.symbol = this.formatSym(funcName, offset);
+        }
+        if (this.debugDisassembly && false) {
+            const jStr = JSON.stringify(pInstr, (key, value) => {
+                if (typeof value === "bigint") {
+                    return value.toString();
+                }
+                return value;
+            });
+            this.dMsg(`  ${addressStr}: ${jStr}`);
+        }
+        return pInstr;
     }
 
     protected dMsg(msg: string): void {
@@ -392,23 +409,143 @@ export class DisassemblyAdapter {
         }
     }
 
+    private async disassembleRequestInternalBrute(response: DebugProtocol.DisassembleResponse, args: DebugProtocol.DisassembleArguments): Promise<void> {
+        if (this.instrInfo === undefined) {
+            throw new Error("Target architecture not supported for disassembly");
+        }
+        const align = (n: bigint): bigint => {
+            return (n / alignment) * alignment;
+        };
+
+        const alignment = BigInt(this.instrInfo.alignment);
+        const anchorAddress = align(parseAddress(args.memoryReference));
+        let startAddress = align(anchorAddress + BigInt(args.offset ?? 0)); // worst case
+        const instructionCount = args.instructionCount || 100;
+        const instrOffset = args.instructionOffset || 0;
+
+        const useInstrSize = BigInt(this.instrInfo.maxSize);
+        let startSearchAddress = startAddress + (BigInt(instrOffset) * useInstrSize * 110n) / 100n; // 10% more
+        if (startSearchAddress < 0n) {
+            startSearchAddress = 0n;
+        }
+        let tmp1 = this.clipLow(anchorAddress, startSearchAddress) % alignment;
+        while (tmp1 !== 0n) {
+            startSearchAddress += alignment;
+            tmp1 = startSearchAddress % alignment;
+        }
+
+        let endSearchAddress = startSearchAddress + (BigInt(instructionCount) * useInstrSize * 110n) / 100n; // 10% more
+        let tmp2 = this.clipHigh(anchorAddress, endSearchAddress) % alignment;
+        while (tmp2 !== 0n) {
+            endSearchAddress -= alignment;
+            tmp2 = endSearchAddress % alignment;
+        }
+
+        if (anchorAddress < startSearchAddress) {
+            startSearchAddress = anchorAddress;
+        }
+        if (anchorAddress > endSearchAddress) {
+            endSearchAddress = anchorAddress;
+        }
+
+        this.dMsg(`Disassemble request at ${dasmFormatAddress(anchorAddress)} with offset ${args.offset}, instructionCount ${instructionCount}, instructionOffset ${instrOffset}`);
+        this.dMsg(`Calculated address range ${dasmFormatAddress(startSearchAddress)} - ${dasmFormatAddress(endSearchAddress)}, anchor at ${dasmFormatAddress(anchorAddress)}`);
+        let range = new InstrRange(startSearchAddress, endSearchAddress);
+        let instrs: ProtocolInstruction[] = await this.gdbDisassembleRange(range);
+        let anchorIx = instrs.findIndex((instr) => instr.pvtAddress === anchorAddress);
+        let tries = this.instrInfo.maxSize / this.instrInfo.alignment;
+        let backward = startSearchAddress - BigInt(this.instrInfo.maxSize);
+        let dir = BigInt(this.clipLow(anchorAddress, backward) === backward ? -this.instrInfo.alignment : this.instrInfo.alignment);
+        while (anchorIx === -1 && tries > 0) {
+            let newStart = startSearchAddress + dir;
+            range = new InstrRange(newStart, endSearchAddress);
+            instrs = await this.gdbDisassembleRange(range);
+            anchorIx = instrs.findIndex((instr) => instr.pvtAddress === anchorAddress);
+            tries--;
+        }
+        if (anchorIx === -1) {
+            throw new Error(`Failed to find anchor instruction at address ${dasmFormatAddress(anchorAddress)}`);
+        }
+        const offsetInstrIx = anchorIx + instrOffset;
+        if (offsetInstrIx < 0) {
+            for (let i = offsetInstrIx; i < 0; i++) {
+                instrs.unshift(this.dummyInstr(startAddress - BigInt(Math.abs(i) * this.instrInfo.maxSize)));
+            }
+        }
+        if (offsetInstrIx + instructionCount > instrs.length) {
+            const toAdd = offsetInstrIx + instructionCount - instrs.length;
+            for (let i = 0; i < toAdd; i++) {
+                instrs.push(this.dummyInstr(startAddress + BigInt((instrs.length + i) * this.instrInfo.maxSize)));
+            }
+        }
+
+        if (true) {
+            this.dMsg(`Found instruction at anchor address ${dasmFormatAddress(anchorAddress)} at index ${anchorIx} in disassembled instructions`);
+            const i1 = dasmFormatAddress(instrs[0].pvtAddress);
+            const i2 = dasmFormatAddress(instrs[instructionCount - 1].pvtAddress);
+            this.dMsg(`Returning instructions from index ${offsetInstrIx}:${i1} to ${offsetInstrIx + instructionCount - 1}:${i2}`);
+        }
+
+        if (instrs.length > instructionCount) {
+            // Specs we must send EXACTLY instructionCount instructions. No less for sure. apparently no more either
+            this.dMsg(`Trimming instructions from ${instrs.length} to ${instructionCount}`);
+            instrs.splice(instructionCount);
+        }
+
+        response.body = {
+            // instructions: instrs.slice(instrOffset, instrOffset + instructionCount),
+            instructions: instrs.map((instr) => {
+                const obj = { ...instr };
+                delete (obj as any).pvtAddress;
+                delete (obj as any).pvtInstructionBytes;
+                delete (obj as any).pvtIsData;
+                return obj;
+            }),
+        };
+        this.session.sendResponse(response);
+    }
+
     private async disassembleRequestInternal(response: DebugProtocol.DisassembleResponse, args: DebugProtocol.DisassembleArguments): Promise<void> {
         if (this.instrInfo === undefined) {
             throw new Error("Target architecture not supported for disassembly");
         }
-        const anchorAddress = parseAddress(args.memoryReference);
-        let startAddress = anchorAddress + BigInt(args.offset ?? 1); // worst case
+        const align = (n: bigint): bigint => {
+            return (n / alignment) * alignment;
+        };
+
+        const alignment = BigInt(this.instrInfo.alignment);
+        const anchorAddress = align(parseAddress(args.memoryReference));
+        let startAddress = align(anchorAddress + BigInt(args.offset ?? 0)); // worst case
         const instructionCount = args.instructionCount || 100;
         const instrOffset = args.instructionOffset || 0;
 
-        const aveInsrSize = BigInt(Math.ceil((this.instrInfo.minSize + this.instrInfo.maxSize) / 2));
-        let startSearchAddress = startAddress + (BigInt(instrOffset) * aveInsrSize * 125n) / 100n; // 25% more
+        const useInstrSize = BigInt(this.instrInfo.maxSize);
+        let startSearchAddress = startAddress + (BigInt(instrOffset) * useInstrSize * 110n) / 100n; // 10% more
         if (startSearchAddress < 0n) {
             startSearchAddress = 0n;
         }
-        let endSearchAddress = startAddress + (BigInt(instructionCount) * aveInsrSize * 125n) / 100n; // 25% more
-        startSearchAddress = this.clipLow(anchorAddress, startSearchAddress);
-        endSearchAddress = this.clipHigh(anchorAddress, endSearchAddress);
+        let tmp1 = this.clipLow(anchorAddress, startSearchAddress) % alignment;
+        while (tmp1 !== 0n) {
+            startSearchAddress += alignment;
+            tmp1 = startSearchAddress % alignment;
+        }
+
+        let endSearchAddress = startSearchAddress + (BigInt(instructionCount) * useInstrSize * 110n) / 100n; // 10% more
+        let tmp2 = this.clipHigh(anchorAddress, endSearchAddress) % alignment;
+        while (tmp2 !== 0n) {
+            endSearchAddress -= alignment;
+            tmp2 = endSearchAddress % alignment;
+        }
+
+        if (anchorAddress < startSearchAddress) {
+            startSearchAddress = anchorAddress;
+        }
+        if (anchorAddress > endSearchAddress) {
+            endSearchAddress = anchorAddress;
+        }
+
+        this.dMsg(`Disassemble request at ${dasmFormatAddress(anchorAddress)} with offset ${args.offset}, instructionCount ${instructionCount}, instructionOffset ${instrOffset}`);
+        this.dMsg(`Calculated address range ${dasmFormatAddress(startSearchAddress)} - ${dasmFormatAddress(endSearchAddress)}, anchor at ${dasmFormatAddress(anchorAddress)}`);
         const ranges = this.findSymbolsInRange(startSearchAddress, endSearchAddress);
         this.dMsg(`Disassemble request at ${dasmFormatAddress(anchorAddress)} with offset ${args.offset}, instructionCount ${instructionCount}, instructionOffset ${instrOffset}`);
         this.dMsg(`Calculated start address ${dasmFormatAddress(startAddress)}`);
@@ -464,8 +601,6 @@ export class DisassemblyAdapter {
         }
 
         this.dMsg(`Found instruction at anchor address ${dasmFormatAddress(anchorAddress)} at index ${anchorIx} in disassembled instructions`);
-        startAddress = instrs[anchorIx].pvtAddress;
-
         this.dMsg(`Returning instructions from index ${offsetInstrIx} to ${offsetInstrIx + instructionCount - 1}`);
 
         response.body = {
