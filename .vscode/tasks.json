@@ -34,7 +34,10 @@
       "type": "cargo",
       "command": "build",
       "problemMatcher": [
-        "$rustc"
+        {
+          "base": "$rustc",
+          "fileLocation": ["relative", "${workspaceFolder}/packages/mcu-debug-helper"]
+        }
       ],
       "options": {
         "cwd": "${workspaceFolder}/packages/mcu-debug-helper",
