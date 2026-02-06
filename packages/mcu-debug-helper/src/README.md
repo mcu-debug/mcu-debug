@@ -80,5 +80,3 @@ Example chunk assembly flow
 ## Implementation notes
 - The helper should emit compact chunks as quickly as possible (reuse buffers, minimize allocations). The DA performs the JSON.parse + conversion to DAP objects.
 - Keep the transport and payload separate: the transport implements framed JSON (Content-Length headers) and the payloads follow the compact shapes above.
-
-If you want, I can add concrete examples of the Rust serialization and the TS assembly code in the repo (serializer + converter). 

@@ -7,20 +7,45 @@ use std::{borrow::Cow, env, fs, rc::Rc};
 
 use mcu_debug_helper::disasm_worker;
 use mcu_debug_helper::elf_items::{AddrtoLineInfo, FileTable};
+use mcu_debug_helper::memory::MemoryRegion;
 use mcu_debug_helper::protocol;
 use mcu_debug_helper::request_handler;
 use mcu_debug_helper::symbols::{Symbol, SymbolScope, SymbolTable, SymbolType};
 use mcu_debug_helper::transport::{StdioTransport, Transport};
 
-fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)> {
+/// Encapsulates all debug information loaded from an ELF/DWARF object file.
+/// Keeps both ELF and DWARF symbol tables for cross-checking during development.
+pub struct ObjectInfo {
+    /// Line number information from DWARF debug info
+    pub addr_to_line: AddrtoLineInfo,
+    /// Symbol table extracted from DWARF debug info (functions, variables, etc.)
+    pub dwarf_symbols: SymbolTable,
+    /// File table mapping file IDs to paths from DWARF
+    pub file_table: FileTable,
+    /// Memory regions/sections from ELF (e.g., .text, .data, .bss)
+    pub memory_ranges: Vec<MemoryRegion>,
+    /// Symbol table extracted from ELF symbol table (for cross-checking)
+    pub elf_symbols: SymbolTable,
+}
+
+impl ObjectInfo {
+    fn new() -> Self {
+        Self {
+            addr_to_line: AddrtoLineInfo::new(),
+            dwarf_symbols: SymbolTable::new(),
+            file_table: FileTable::new(),
+            memory_ranges: Vec::new(),
+            elf_symbols: SymbolTable::new(),
+        }
+    }
+}
+
+fn load_elf_info(path: &str) -> Result<ObjectInfo> {
     let file = fs::File::open(path)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let obj_file = object::File::parse(&*mmap)?;
 
-    let mut addr_to_line = AddrtoLineInfo::new();
-    let mut symbol_table = SymbolTable::new();
-    let mut file_table = FileTable::new();
-    let mut elf_symbols = SymbolTable::new();
+    let mut info = ObjectInfo::new();
 
     eprintln!("Idx Name          Size      Address          Align");
     for (i, section) in obj_file.sections().enumerate() {
@@ -32,24 +57,18 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
             section.address(),
             section.align(),
         );
+        if section.size() > 0 {
+            info.memory_ranges.push(MemoryRegion::new(
+                section.name().unwrap_or("").to_string(),
+                section.address(),
+                section.size(),
+                section.align(),
+            ));
+        }
     }
 
     for symbol in obj_file.symbols() {
         if let Ok(name) = symbol.name() {
-            eprintln!(
-                "Name: {:<30} | Address: 0x{:016x} | Size: {} | Kind: {:?} | Scope: {:?}",
-                name,
-                symbol.address(),
-                symbol.size(),
-                symbol.kind(),
-                if symbol.is_global() {
-                    "Global"
-                } else if symbol.is_local() {
-                    "Local"
-                } else {
-                    "Unknown"
-                }
-            );
             let kind = if symbol.kind() == object::SymbolKind::Text {
                 SymbolType::Function
             } else if symbol.kind() == object::SymbolKind::Data {
@@ -69,7 +88,7 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
                 name, kind, scope,
             );
             let dname = demangle(Some(name.to_string()));
-            elf_symbols.insert(Symbol {
+            info.elf_symbols.insert(Symbol {
                 name: dname,
                 address: symbol.address(),
                 size: symbol.size(),
@@ -142,13 +161,14 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
                                     }
                                 }
 
-                                file_table.intern(p)
+                                info.file_table.intern(p)
                             } else {
                                 0 // Unknown
                             }
                         });
 
-                        addr_to_line.append_or_insert(row.address(), global_id, line);
+                        info.addr_to_line
+                            .append_or_insert(row.address(), global_id, line);
                     }
                 }
             }
@@ -201,9 +221,9 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
 
                 // We now have a start address and a name. See if it exists in the elf symbols
                 if let Some(low) = low_opt {
-                    if let Some(existing_sym) = elf_symbols.lookup(low) {
+                    if let Some(existing_sym) = info.elf_symbols.lookup(low) {
                         // Use existing symbol info
-                        symbol_table.insert(existing_sym.clone());
+                        info.dwarf_symbols.insert(existing_sym.clone());
                         continue;
                     } else {
                         // This symbol is not in the ELF symbol table, it may have been stripped, so we skip it
@@ -230,7 +250,7 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
                     if size > 0 {
                         // eprintln!("Function: {} [0x{:x} - 0x{:x})", name, low, high);
 
-                        symbol_table.insert(Symbol {
+                        info.dwarf_symbols.insert(Symbol {
                             name,
                             address: low,
                             size,
@@ -243,7 +263,7 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
         }
     }
 
-    Ok((addr_to_line, symbol_table, file_table))
+    Ok(info)
 }
 
 fn demangle(raw_name_opt: Option<String>) -> String {
@@ -287,7 +307,7 @@ fn main() -> Result<()> {
     });
 
     // Load ELF info (symbols, DWARF) - fast compared to disassembly
-    let (_addr_to_line, _symbol_table, _file_table) = load_elf_info(&path)?;
+    let _obj_info = load_elf_info(&path)?;
     eprintln!("Loaded ELF info for: {}", path);
 
     // Notify DA that symbol table is ready
