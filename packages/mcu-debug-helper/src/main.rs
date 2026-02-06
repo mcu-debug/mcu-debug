@@ -1,19 +1,16 @@
 use anyhow::Result;
 use gimli::Reader;
 use object::{Object, ObjectSection, ObjectSymbol};
+use std::sync::mpsc::channel;
 use std::thread;
-use std::{
-    borrow::Cow,
-    env, fs,
-    process::exit,
-    rc::Rc,
-};
+use std::{borrow::Cow, env, fs, rc::Rc};
 
-use std::time::Instant;
-
+use mcu_debug_helper::disasm_worker;
 use mcu_debug_helper::elf_items::{AddrtoLineInfo, FileTable};
-use mcu_debug_helper::get_assembly::get_disasm_from_objdump;
+use mcu_debug_helper::protocol;
+use mcu_debug_helper::request_handler;
 use mcu_debug_helper::symbols::{Symbol, SymbolScope, SymbolTable, SymbolType};
+use mcu_debug_helper::transport::{StdioTransport, Transport};
 
 fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)> {
     let file = fs::File::open(path)?;
@@ -25,9 +22,9 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
     let mut file_table = FileTable::new();
     let mut elf_symbols = SymbolTable::new();
 
-    println!("Idx Name          Size      Address          Align");
+    eprintln!("Idx Name          Size      Address          Align");
     for (i, section) in obj_file.sections().enumerate() {
-        println!(
+        eprintln!(
             "{:<3} {:<12} {:<8x} {:<16x} {:<5}",
             i,
             section.name().unwrap_or(""),
@@ -39,7 +36,7 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
 
     for symbol in obj_file.symbols() {
         if let Ok(name) = symbol.name() {
-            println!(
+            eprintln!(
                 "Name: {:<30} | Address: 0x{:016x} | Size: {} | Kind: {:?} | Scope: {:?}",
                 name,
                 symbol.address(),
@@ -67,7 +64,7 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
             } else {
                 SymbolScope::Unknown
             };
-            println!(
+            eprintln!(
                 "Demangling symbol: {} | Kind: {:?} | Scope: {:?}",
                 name, kind, scope,
             );
@@ -166,7 +163,6 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
             // Find functions (subprograms)
             if entry.tag() == gimli::DW_TAG_subprogram {
                 // 1. Extract Symbol Name
-                let mut name = "unknown".to_string();
 
                 // Try linkage_name first (Mangled)
                 let linkage_name_attr = entry
@@ -193,7 +189,7 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
                     }
                 }
 
-                name = demangle(raw_name_opt);
+                let name = demangle(raw_name_opt);
 
                 // 2. Extract Address Range
                 let mut low_opt = None;
@@ -232,7 +228,7 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
                     let size = high.saturating_sub(low);
 
                     if size > 0 {
-                        // println!("Function: {} [0x{:x} - 0x{:x})", name, low, high);
+                        // eprintln!("Function: {} [0x{:x} - 0x{:x})", name, low, high);
 
                         symbol_table.insert(Symbol {
                             name,
@@ -273,56 +269,49 @@ fn demangle(raw_name_opt: Option<String>) -> String {
 }
 
 fn main() -> Result<()> {
-    // For prototyping, take the ELF path as an argument
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        println!("Usage: mcu-debug-helper <path_to_elf>");
+        eprintln!("Usage: mcu-debug-helper <path_to_elf>");
         return Ok(());
     }
-
     let path = args[1].clone();
 
-    let th_path = path.clone();
-    let th_handle = thread::spawn(move || {
-        let now = Instant::now();
-        let assembly = get_disasm_from_objdump(&th_path);
-        match assembly {
-            Ok(listing) => {
-                println!(
-                    "Disassembly loaded: {} lines, {} blocks",
-                    listing.lines.len(),
-                    listing.blocks.len()
-                );
-            }
-            Err(e) => {
-                println!("Failed to get disassembly: {}", e);
-            }
-        }
+    // Setup transport (uses stdout's built-in locking)
+    let mut transport = StdioTransport::new();
 
-        let elapsed = now.elapsed();
-        println!("Disassembly loading took: {:.2?}", elapsed);
+    // Spawn disassembly worker (long-running; doesn't block main)
+    let (req_tx, req_rx) = channel();
+    let path_clone = path.clone();
+    thread::spawn(move || {
+        disasm_worker::run_disassembly_worker(&path_clone, req_rx);
     });
 
-    th_handle.join().unwrap();
-    exit(0);
+    // Load ELF info (symbols, DWARF) - fast compared to disassembly
+    let (_addr_to_line, _symbol_table, _file_table) = load_elf_info(&path)?;
+    eprintln!("Loaded ELF info for: {}", path);
 
-    // We load everything here. The mmap and dwarf context are dropped
-    // when load_elf_info returns, effectively "jettisoning" the heavy parsing data.
-    // The returned structures (addr_to_line, symbol_table) contain only
-    // the necessary owned data (Strings, u64s) and live on the stack/heap
-    // managed by main.
-    let (addr_to_line, symbol_table, file_table) = load_elf_info(&path)?;
+    // Notify DA that symbol table is ready
+    let notify = protocol::symbol_table_ready_notification("local-session", "0.1.0");
+    transport
+        .write_message(&notify)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    eprintln!("Sent SymbolTableReady notification");
 
-    println!("Loaded ELF info for: {}", path);
-
-    // Simple verification
-    let matches = symbol_table.lookup_range(0x10000000, 0x10002000); // PSOC6 flash range usually
-    println!(
-        "Found {} overlapping symbols in range 0x10000000 - 0x10002000",
-        matches.len()
-    );
-
-    th_handle.join().unwrap();
+    // Main request loop
+    loop {
+        match transport.read_message() {
+            Ok(msg) => {
+                eprintln!("Received request: {}", msg);
+                if !request_handler::dispatch_request(&msg, &req_tx) {
+                    eprintln!("Unknown request type: {}", msg);
+                }
+            }
+            Err(e) => {
+                eprintln!("Transport read error or EOF: {}", e);
+                break;
+            }
+        }
+    }
 
     Ok(())
 }

@@ -167,10 +167,10 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
         listing.addr_map.insert(addr, listing.lines.len());
         listing.lines.push(rc_line.clone());
         current_block.lines.push(rc_line.clone());
-        if count < 1000  {
+        if count < 1000 {
             // Debug print first 1000 lines
             let tmp = rc_line.format_bytes();
-            println!("{}", tmp);
+            eprintln!("{}", tmp);
         }
         count += 1;
     }

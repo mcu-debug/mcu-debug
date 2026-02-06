@@ -14,7 +14,7 @@ fn test_elf_ingestion_and_lookups() {
     // 3. API Test: Find specific Global
     let rtt_addr = db.find_symbol_by_name("_SEGGER_RTT");
     assert!(rtt_addr.is_some(), "Could not find _SEGGER_RTT");
-    println!("Found RTT at: 0x{:x}", rtt_addr.unwrap());
+    eprintln!("Found RTT at: 0x{:x}", rtt_addr.unwrap());
 
     // 4. API Test: Find Statics for a file
     let test_file = canonicalize_path("./src/main.c");

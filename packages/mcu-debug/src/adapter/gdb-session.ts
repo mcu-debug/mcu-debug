@@ -26,7 +26,7 @@ import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveRespo
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
 import { TcpPortScanner } from "@mcu-debug/shared";
-import { DisassemblyAdapter } from "./disassebly";
+import { DisassemblyAdapter } from "./disassebly-gdb";
 
 let SessionCounter = 0;
 
