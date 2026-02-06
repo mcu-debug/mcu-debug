@@ -56,7 +56,7 @@ impl AssemblyLine {
     }
 
     pub fn format_bytes(&self) -> String {
-        return format!("{:X}:{}:{}", self.address, self.bytes, self.instruction);
+        format!("{:X}:{}:{}", self.address, self.bytes, self.instruction)
     }
 }
 
@@ -64,6 +64,12 @@ pub struct AssemblyListing {
     pub lines: Vec<Rc<AssemblyLine>>,
     pub addr_map: std::collections::BTreeMap<u64, usize>, // address to index in lines
     pub blocks: Vec<AssemblyBlock>,
+}
+
+impl Default for AssemblyListing {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AssemblyListing {
@@ -92,7 +98,7 @@ impl AssemblyListing {
 pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Error>> {
     // Spawn objdump and stream its stdout to avoid allocating the whole output
     let mut child = Command::new("arm-none-eabi-objdump")
-        .args(&["-Cd", arg])
+        .args(["-Cd", arg])
         .stdout(Stdio::piped())
         .spawn()?;
 
@@ -161,7 +167,7 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
         listing.addr_map.insert(addr, listing.lines.len());
         listing.lines.push(rc_line.clone());
         current_block.lines.push(rc_line.clone());
-        if (count < 1000) {
+        if count < 1000  {
             // Debug print first 1000 lines
             let tmp = rc_line.format_bytes();
             println!("{}", tmp);

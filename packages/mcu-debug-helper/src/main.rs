@@ -5,18 +5,14 @@ use std::thread;
 use std::{
     borrow::Cow,
     env, fs,
-    num::{NonZero, NonZeroU64},
     process::exit,
     rc::Rc,
 };
 
-use std::time::Duration;
 use std::time::Instant;
 
 use mcu_debug_helper::elf_items::{AddrtoLineInfo, FileTable};
-use mcu_debug_helper::get_assembly::{
-    get_disasm_from_objdump, AssemblyBlock, AssemblyLine, AssemblyListing,
-};
+use mcu_debug_helper::get_assembly::get_disasm_from_objdump;
 use mcu_debug_helper::symbols::{Symbol, SymbolScope, SymbolTable, SymbolType};
 
 fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)> {
@@ -80,8 +76,8 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
                 name: dname,
                 address: symbol.address(),
                 size: symbol.size(),
-                kind: kind,
-                scope: scope,
+                kind,
+                scope,
             });
         }
     }
@@ -120,45 +116,42 @@ fn load_elf_info(path: &str) -> Result<(AddrtoLineInfo, SymbolTable, FileTable)>
             let mut file_map: std::collections::HashMap<u64, u32> =
                 std::collections::HashMap::new();
 
-            let header = program.header();
+            let _header = program.header();
 
             // Rows
             let mut rows = program.rows();
             while let Some((header, row)) = rows.next_row()? {
                 if row.is_stmt() {
-                    match row.line() {
-                        Some(line) => {
-                            let local_file_idx = row.file_index();
+                    if let Some(line) = row.line() {
+                        let local_file_idx = row.file_index();
 
-                            // Resolve file path lazy-ish
-                            let global_id = *file_map.entry(local_file_idx).or_insert_with(|| {
-                                if let Some(fe) = header.file(local_file_idx) {
-                                    let mut p = String::new();
-                                    let dir_idx = fe.directory_index();
-                                    if let Some(dir_attr) = header.directory(dir_idx) {
-                                        if let Ok(d_s) = dwarf.attr_string(&unit, dir_attr) {
-                                            if let Ok(s) = d_s.to_string_lossy() {
-                                                p.push_str(&s);
-                                                p.push('/');
-                                            }
-                                        }
-                                    }
-
-                                    if let Ok(n_s) = dwarf.attr_string(&unit, fe.path_name()) {
-                                        if let Ok(s) = n_s.to_string_lossy() {
+                        // Resolve file path lazy-ish
+                        let global_id = *file_map.entry(local_file_idx).or_insert_with(|| {
+                            if let Some(fe) = header.file(local_file_idx) {
+                                let mut p = String::new();
+                                let dir_idx = fe.directory_index();
+                                if let Some(dir_attr) = header.directory(dir_idx) {
+                                    if let Ok(d_s) = dwarf.attr_string(&unit, dir_attr) {
+                                        if let Ok(s) = d_s.to_string_lossy() {
                                             p.push_str(&s);
+                                            p.push('/');
                                         }
                                     }
-
-                                    file_table.intern(p)
-                                } else {
-                                    0 // Unknown
                                 }
-                            });
 
-                            addr_to_line.append_or_insert(row.address(), global_id, line);
-                        }
-                        None => {}
+                                if let Ok(n_s) = dwarf.attr_string(&unit, fe.path_name()) {
+                                    if let Ok(s) = n_s.to_string_lossy() {
+                                        p.push_str(&s);
+                                    }
+                                }
+
+                                file_table.intern(p)
+                            } else {
+                                0 // Unknown
+                            }
+                        });
+
+                        addr_to_line.append_or_insert(row.address(), global_id, line);
                     }
                 }
             }
@@ -276,7 +269,7 @@ fn demangle(raw_name_opt: Option<String>) -> String {
             }
         }
     }
-    return name;
+    name
 }
 
 fn main() -> Result<()> {

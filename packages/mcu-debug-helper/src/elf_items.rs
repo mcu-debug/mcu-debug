@@ -9,6 +9,12 @@ pub struct FileTable {
     next_id: u32,
 }
 
+impl Default for FileTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileTable {
     pub fn new() -> Self {
         Self {
@@ -66,6 +72,12 @@ pub struct AddrtoLineInfo {
     entries: std::collections::BTreeMap<u64, LineInfoEntry>,
 }
 
+impl Default for AddrtoLineInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AddrtoLineInfo {
     pub fn new() -> Self {
         Self {
@@ -74,15 +86,15 @@ impl AddrtoLineInfo {
     }
     pub fn add_entry(&mut self, address: u64, file_id: u32, line: NonZero<u64>) {
         let ent = LineInfoEntry::new(file_id, line);
-        self.entries.insert(address as u64, ent);
+        self.entries.insert(address, ent);
     }
     pub fn get_entry(&self, address: u64) -> Option<&LineInfoEntry> {
-        self.entries.get(&(address as u64))
+        self.entries.get(&{ address })
     }
 
     pub fn append_or_insert(&mut self, address: u64, file_id: u32, line: NonZeroU64) {
         self.entries
-            .entry(address as u64)
+            .entry(address)
             .and_modify(|entry| entry.add_line(&line))
             .or_insert_with(|| LineInfoEntry::new(file_id, line));
     }
