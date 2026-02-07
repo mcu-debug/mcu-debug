@@ -35,16 +35,21 @@ Example notification (SymbolTableReady):
 
 ### Disassembly payloads (compact wire format)
 
-To keep throughput high we use a compact, array-based message for disassembly when sending bulk data from helper → DA. Each line is a 4-tuple array: `[addressHex, bytesHex, instructionText, rawLineText]`.
+To keep throughput high we use a compact, array-based message for disassembly when sending bulk data from helper → DA. Each asm line is an object with a very small field names. xxx. We chose this instead of a tuple of strings just to keep debugging easier and yet be compact. VSCode max ask was about 400 instructions which may turn out to be ~32KB. Most often, it is just 50 instructions
 
-Top-level compact message (chunked):
+(Note: Address is a hex string without a prefix to be JSON compatible, no leading zero. Can be upto 64 bits
+
+Example message:
 ```json
 {
-  "t": "disasm_chunk",
-  "id": 42,                // sequence id for this request/session
-  "start": "0x1000",     // address of first line in this chunk
-  "final": false,          // true for the last chunk
-  "lines": [ ["0x1000","00 20","movs r0,#0"," 1000: 00 20 movs r0,#0"], ... ]
+   "t":"disasm_response",
+   "seq":42,
+   "file_table":{"1":"file1.c"},
+   "func_table":{"2":"func1"},
+   "instructions":[
+      {"a":"4096","b":"00 20","i":"movs r0,#0","f":-1,"F":-1,"sl":-1,"el":-1},
+      {"a":"40AC","b":"01 30","i":"adds r0,r1","f":-1,"F":-1,"sl":-1,"el":-1}
+   ]
 }
 ```
 
@@ -53,14 +58,7 @@ Notes about the compact format
 - `bytesHex` is a human-readable hex string (space separated or compact) — there is no other binary data in the payload.
 - `instructionText` and `rawLineText` are UTF-8 strings. Use `from_utf8_lossy` on the Rust side if needed; DA should treat names and text as Unicode strings.
 
-Chunking rules and constraints
-- Chunking between the helper and the DA (Rust ↔ TypeScript) is allowed and expected for large disassemblies. Each chunk includes the same `id` and a `final` flag. The DA must assemble chunks for a given `id` and only produce a DAP DisassembleResponse to VSCode once the final chunk is received.
-- VS Code expects a single valid DAP response per `Disassemble` request. You must not stream multiple partial DAP responses to VSCode for a single `Disassemble` request. The DA is responsible for assembling compact chunks into a single DAP-compliant response (typically limited to ~400 instructions per DAP response in practice).
-
-Example chunk assembly flow
-1. VSCode sends `Disassemble` to the DA.
-2. DA sends a request to helper (with `id`), helper replies with one or more `disasm_chunk` messages (same `id`), final chunk marked with `final: true`.
-3. DA assembles all chunks and constructs the DAP `DisassembleResponse` object (an `instructions` array of DAP `Instruction` objects) and sends that single response back to VSCode.
+VS Code expects a single valid DAP response per `Disassemble` request. You must not stream multiple partial DAP responses to VSCode for a single `Disassemble` request.
 
 ### Errors, timeouts and backpressure
 - If a DA request arrives before `SymbolTableReady`, the DA may wait with a configurable timeout. If timed out, return a DAP error response to VSCode (do not block the UI indefinitely).

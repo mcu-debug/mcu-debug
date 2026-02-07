@@ -1,49 +1,44 @@
 /// Protocol message types and helpers for the helper ↔ DA communication.
+use crate::helper_requests::HelperEvent;
+use serde_json::{json, Value};
 
-use serde_json::json;
-
-/// Request from main thread to disassembly worker.
+/// Request from main thread to disassembly worker. This is our internal representation of a disassemble request,
+/// parsed from DAP-style forwarded requests.
 #[derive(Debug)]
 pub struct DisasmRequest {
-    pub start: Option<u64>,
-    pub count: usize,
+    // memory_reference is used to correlate with known good address. For example a current PC or an
+    // instruction address from a breakpoint, or something we returned as a valid instruction address
+    // in a previous response.
+    pub memory_reference: u64,
+    pub start_addr: u64, // This the the memory_reference plus/minus any byte offset
+    pub instr_offset: i64,
+    pub instr_count: u64,
     pub seq_id: u64,
 }
 
-/// Build a SymbolTableReady notification.
-pub fn symbol_table_ready_notification(session_id: &str, version: &str) -> serde_json::Value {
+/// Wrap an event in a JSON-RPC notification envelope for sending to the DA.
+pub fn wrap_event_as_notification(event: &HelperEvent) -> Value {
     json!({
         "jsonrpc": "2.0",
-        "method": "SymbolTableReady",
-        "params": {
-            "sessionId": session_id,
-            "helperVersion": version
-        }
+        "method": "HelperEvent",
+        "params": event
     })
 }
 
-/// Build a DisassemblyReady notification.
-pub fn disassembly_ready_notification(
-    session_id: &str,
-    version: &str,
-    lines: usize,
-) -> serde_json::Value {
-    json!({
-        "jsonrpc": "2.0",
-        "method": "DisassemblyReady",
-        "params": {
-            "sessionId": session_id,
-            "helperVersion": version,
-            "lines": lines,
-        }
-    })
+/// Build a SymbolTableReady event notification.
+pub fn symbol_table_ready_notification(session_id: &str, version: &str) -> Value {
+    let event = HelperEvent::SymbolTableReady {
+        session_id: session_id.to_string(),
+        version: version.to_string(),
+    };
+    wrap_event_as_notification(&event)
 }
 
-/// Parse a hex or decimal string to u64.
-pub fn parse_hex_or_dec(s: &str) -> Option<u64> {
-    if s.starts_with("0x") || s.starts_with("0X") {
-        u64::from_str_radix(&s[2..], 16).ok()
-    } else {
-        s.parse::<u64>().ok()
-    }
+/// Build a DisassemblyReady event notification.
+pub fn disassembly_ready_notification(session_id: &str, instruction_count: u64) -> Value {
+    let event = HelperEvent::DisassemblyReady {
+        session_id: session_id.to_string(),
+        instruction_count,
+    };
+    wrap_event_as_notification(&event)
 }

@@ -1,44 +1,17 @@
 use anyhow::Result;
 use gimli::Reader;
 use object::{Object, ObjectSection, ObjectSymbol};
-use std::sync::mpsc::channel;
+use std::sync::{mpsc::channel, Arc};
 use std::thread;
 use std::{borrow::Cow, env, fs, rc::Rc};
 
 use mcu_debug_helper::disasm_worker;
-use mcu_debug_helper::elf_items::{AddrtoLineInfo, FileTable};
+use mcu_debug_helper::elf_items::ObjectInfo;
 use mcu_debug_helper::memory::MemoryRegion;
 use mcu_debug_helper::protocol;
 use mcu_debug_helper::request_handler;
-use mcu_debug_helper::symbols::{Symbol, SymbolScope, SymbolTable, SymbolType};
+use mcu_debug_helper::symbols::{Symbol, SymbolScope, SymbolType};
 use mcu_debug_helper::transport::{StdioTransport, Transport};
-
-/// Encapsulates all debug information loaded from an ELF/DWARF object file.
-/// Keeps both ELF and DWARF symbol tables for cross-checking during development.
-pub struct ObjectInfo {
-    /// Line number information from DWARF debug info
-    pub addr_to_line: AddrtoLineInfo,
-    /// Symbol table extracted from DWARF debug info (functions, variables, etc.)
-    pub dwarf_symbols: SymbolTable,
-    /// File table mapping file IDs to paths from DWARF
-    pub file_table: FileTable,
-    /// Memory regions/sections from ELF (e.g., .text, .data, .bss)
-    pub memory_ranges: Vec<MemoryRegion>,
-    /// Symbol table extracted from ELF symbol table (for cross-checking)
-    pub elf_symbols: SymbolTable,
-}
-
-impl ObjectInfo {
-    fn new() -> Self {
-        Self {
-            addr_to_line: AddrtoLineInfo::new(),
-            dwarf_symbols: SymbolTable::new(),
-            file_table: FileTable::new(),
-            memory_ranges: Vec::new(),
-            elf_symbols: SymbolTable::new(),
-        }
-    }
-}
 
 fn load_elf_info(path: &str) -> Result<ObjectInfo> {
     let file = fs::File::open(path)?;
@@ -299,16 +272,24 @@ fn main() -> Result<()> {
     // Setup transport (uses stdout's built-in locking)
     let mut transport = StdioTransport::new();
 
-    // Spawn disassembly worker (long-running; doesn't block main)
+    // Create channels: request dispatch + ObjectInfo delivery to worker
     let (req_tx, req_rx) = channel();
+    let (obj_info_tx, obj_info_rx) = channel();
+
+    // Spawn disassembly worker immediately (loads objdump in parallel)
     let path_clone = path.clone();
     thread::spawn(move || {
-        disasm_worker::run_disassembly_worker(&path_clone, req_rx);
+        disasm_worker::run_disassembly_worker(&path_clone, req_rx, obj_info_rx);
     });
 
-    // Load ELF info (symbols, DWARF) - fast compared to disassembly
-    let _obj_info = load_elf_info(&path)?;
+    // Load ELF info in parallel with worker's disassembly loading
+    let obj_info = Arc::new(load_elf_info(&path)?);
     eprintln!("Loaded ELF info for: {}", path);
+
+    // Send ObjectInfo to worker (Arc makes it cheap to send)
+    if obj_info_tx.send(Arc::clone(&obj_info)).is_err() {
+        eprintln!("Warning: Worker exited before receiving ObjectInfo");
+    }
 
     // Notify DA that symbol table is ready
     let notify = protocol::symbol_table_ready_notification("local-session", "0.1.0");

@@ -52,8 +52,8 @@ impl FileTable {
 }
 
 pub struct LineInfoEntry {
-    file_id: u32,
-    line: Vec<NonZero<u64>>, // A single address may map to multiple lines
+    pub file_id: u32,
+    pub line: Vec<NonZero<u64>>, // A single address may map to multiple lines
 }
 
 impl LineInfoEntry {
@@ -69,7 +69,7 @@ impl LineInfoEntry {
 }
 
 pub struct AddrtoLineInfo {
-    entries: std::collections::BTreeMap<u64, LineInfoEntry>,
+    pub entries: std::collections::BTreeMap<u64, LineInfoEntry>,
 }
 
 impl Default for AddrtoLineInfo {
@@ -97,5 +97,32 @@ impl AddrtoLineInfo {
             .entry(address)
             .and_modify(|entry| entry.add_line(&line))
             .or_insert_with(|| LineInfoEntry::new(file_id, line));
+    }
+}
+
+/// Encapsulates all debug information loaded from an ELF/DWARF object file.
+/// Keeps both ELF and DWARF symbol tables for cross-checking during development.
+pub struct ObjectInfo {
+    /// Line number information from DWARF debug info
+    pub addr_to_line: AddrtoLineInfo,
+    /// Symbol table extracted from DWARF debug info (functions, variables, etc.)
+    pub dwarf_symbols: crate::symbols::SymbolTable,
+    /// File table mapping file IDs to paths from DWARF
+    pub file_table: FileTable,
+    /// Memory regions/sections from ELF (e.g., .text, .data, .bss)
+    pub memory_ranges: Vec<crate::memory::MemoryRegion>,
+    /// Symbol table extracted from ELF symbol table (for cross-checking)
+    pub elf_symbols: crate::symbols::SymbolTable,
+}
+
+impl ObjectInfo {
+    pub fn new() -> Self {
+        Self {
+            addr_to_line: AddrtoLineInfo::new(),
+            dwarf_symbols: crate::symbols::SymbolTable::new(),
+            file_table: FileTable::new(),
+            memory_ranges: Vec::new(),
+            elf_symbols: crate::symbols::SymbolTable::new(),
+        }
     }
 }
