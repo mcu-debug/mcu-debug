@@ -3476,13 +3476,21 @@
     "copy-codicons": "mkdir -p resources/codicons && sh scripts/copy-codicons.sh",
     "generate-manifest": "node scripts/update-package-json.js",
     "update-commit-hash": "node scripts/commit-hash.js",
-    "compile": "npm run copy-codicons && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
+    "build-rust-dev": "cd ../.. && ./scripts/build-binaries.sh dev",
+    "compile": "npm run build-rust-dev && npm run copy-codicons && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
     "check-types": "tsc-strict --noEmit",
     "watch": "npm run copy-codicons && npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc-strict --noEmit --watch --project tsconfig.json",
     "vscode:prepublish": "npm run package",
-    "package": "npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js --production"
+    "build-rust-prod": "cd ../.. && ./scripts/build-binaries.sh prod",
+    "build-all": "npm run build-rust-prod && node scripts/generate-ignore-files.js && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js --production",
+    "package": "npm run build-all && npm-run-all package:*",
+    "package:darwin-arm64": "vsce package --target darwin-arm64 --ignoreFile out/ignore-file.darwin-arm64",
+    "package:darwin-x64": "vsce package --target darwin-x64 --ignoreFile out/ignore-file.darwin-x64",
+    "package:linux-x64": "vsce package --target linux-x64 --ignoreFile out/ignore-file.linux-x64",
+    "package:linux-arm64": "vsce package --target linux-arm64 --ignoreFile out/ignore-file.linux-arm64",
+    "package:win32-x64": "vsce package --target win32-x64 --ignoreFile out/ignore-file.win32-x64"
   },
   "devDependencies": {
     "@flatten-js/interval-tree": "^2.0.3",

@@ -1,6 +1,7 @@
 use std::num::{NonZero, NonZeroU64};
+use std::sync::Arc;
 
-use crate::utils::canonicalize_path;
+use crate::{symbols::Symbol, utils::canonicalize_path};
 
 pub struct FileTable {
     // Map from file index to file path
@@ -100,6 +101,31 @@ impl AddrtoLineInfo {
     }
 }
 
+pub struct StaticFileMapping {
+    pub file_map: std::collections::BTreeMap<String, Vec<Arc<Symbol>>>,
+}
+
+impl StaticFileMapping {
+    pub fn new() -> Self {
+        Self {
+            file_map: std::collections::BTreeMap::new(),
+        }
+    }
+    pub fn insert(&mut self, file_path: String, symbol: Arc<Symbol>) {
+        if let Some(existing) = self.file_map.get_mut(&file_path) {
+            existing.push(symbol);
+            return;
+        }
+        self.file_map.insert(file_path, vec![symbol]);
+    }
+
+    pub fn sort_symbols(&mut self) {
+        for symbols in self.file_map.values_mut() {
+            symbols.sort_by_key(|s| s.name.clone());
+        }
+    }
+}
+
 /// Encapsulates all debug information loaded from an ELF/DWARF object file.
 /// Keeps both ELF and DWARF symbol tables for cross-checking during development.
 pub struct ObjectInfo {
@@ -113,6 +139,13 @@ pub struct ObjectInfo {
     pub memory_ranges: Vec<crate::memory::MemoryRegion>,
     /// Symbol table extracted from ELF symbol table (for cross-checking)
     pub elf_symbols: crate::symbols::SymbolTable,
+    /// Static file to symbols mapping for quick lookup of which symbols are defined in which files
+    /// This will be called quite frequently in some use cases
+    pub static_file_mapping: StaticFileMapping,
+
+    pub global_symbols: Vec<Arc<Symbol>>, // List of global symbols for quick access
+
+    pub rtt_symbol_address: Option<u64>, // Address of RTT control block if found
 }
 
 impl ObjectInfo {
@@ -123,6 +156,14 @@ impl ObjectInfo {
             file_table: FileTable::new(),
             memory_ranges: Vec::new(),
             elf_symbols: crate::symbols::SymbolTable::new(),
+            static_file_mapping: StaticFileMapping::new(),
+            global_symbols: Vec::new(),
+            rtt_symbol_address: None,
         }
+    }
+
+    pub fn sort_globals_and_statics(&mut self) {
+        self.global_symbols.sort_by_key(|s| s.name.clone());
+        self.static_file_mapping.sort_symbols();
     }
 }

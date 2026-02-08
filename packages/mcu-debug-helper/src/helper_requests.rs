@@ -171,8 +171,6 @@ pub enum HelperEvent {
     RTTFound {
         session_id: String,
         address: String, // hex address
-        num_up_channels: u32,
-        num_down_channels: u32,
     },
 
     /// Progress update for long-running operations

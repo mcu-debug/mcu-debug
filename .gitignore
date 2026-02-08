@@ -36,6 +36,7 @@ packages/*/out/
 packages/*/dist/
 packages/*/target/
 packages/*/node_modules/
+packages/mcu-debug/bin/
 
 # Go build outputs
 packages/proxy-server/bin/

@@ -20,4 +20,6 @@ yarn.lock
 docs/**
 scripts/**
 coverage/**
+bin/mcy-debug-helper
+bin/mcu-debug-helper.exe
 .DS_Store

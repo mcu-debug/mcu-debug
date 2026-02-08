@@ -1,17 +1,30 @@
 use anyhow::Result;
+use clap::Parser;
 use gimli::Reader;
 use object::{Object, ObjectSection, ObjectSymbol};
 use std::sync::{mpsc::channel, Arc};
 use std::thread;
-use std::{borrow::Cow, env, fs, rc::Rc};
+use std::{borrow::Cow, fs, rc::Rc};
 
 use mcu_debug_helper::disasm_worker;
 use mcu_debug_helper::elf_items::ObjectInfo;
 use mcu_debug_helper::memory::MemoryRegion;
-use mcu_debug_helper::protocol;
+use mcu_debug_helper::protocol::{self, rtt_found_notification};
 use mcu_debug_helper::request_handler;
 use mcu_debug_helper::symbols::{Symbol, SymbolScope, SymbolType};
 use mcu_debug_helper::transport::{StdioTransport, Transport};
+
+/// Helper to extract a string from a DWARF attribute value
+fn dwarf_attr_to_string(
+    dwarf: &gimli::Dwarf<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
+    unit: &gimli::Unit<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
+    attr: gimli::AttributeValue<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
+) -> Option<String> {
+    dwarf
+        .attr_string(unit, attr)
+        .ok()
+        .and_then(|d_s| d_s.to_string_lossy().ok().map(|cow| cow.to_string()))
+}
 
 fn load_elf_info(path: &str) -> Result<ObjectInfo> {
     let file = fs::File::open(path)?;
@@ -56,6 +69,7 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
             } else {
                 SymbolScope::Unknown
             };
+            let is_data = kind == SymbolType::Data;
             eprintln!(
                 "Demangling symbol: {} | Kind: {:?} | Scope: {:?}",
                 name, kind, scope,
@@ -68,6 +82,15 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
                 kind,
                 scope,
             });
+            if (name == "_SEGGER_RTT" || name == "SEGGER_RTT") && is_data {
+                info.rtt_symbol_address = Some(symbol.address());
+                rtt_found_notification("local-session", &format!("0x{:x}", symbol.address()));
+                eprintln!(
+                    "Found RTT symbol '{}' at address 0x{:x}",
+                    name,
+                    symbol.address()
+                );
+            }
         }
     }
 
@@ -96,15 +119,17 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
     // but for now we propagate the error.
     let dwarf = gimli::Dwarf::load(&load_section)?;
 
-    // Iterate over Compilation Units to find line info
+    // Iterate over Compilation Units to process line info and symbols
     let mut units = dwarf.units();
     while let Some(header) = units.next()? {
         let unit = dwarf.unit(header)?;
-        if let Some(program) = unit.line_program.clone() {
-            // Mapping from CU-local file index to Global File ID
-            let mut file_map: std::collections::HashMap<u64, u32> =
-                std::collections::HashMap::new();
 
+        // Mapping from CU-local file index to Global File ID
+        // Shared between line program processing and symbol extraction
+        let mut file_map: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+
+        // Process line program if present
+        if let Some(program) = unit.line_program.clone() {
             let _header = program.header();
 
             // Rows
@@ -119,19 +144,22 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
                             if let Some(fe) = header.file(local_file_idx) {
                                 let mut p = String::new();
                                 let dir_idx = fe.directory_index();
+
+                                // Get directory path
                                 if let Some(dir_attr) = header.directory(dir_idx) {
-                                    if let Ok(d_s) = dwarf.attr_string(&unit, dir_attr) {
-                                        if let Ok(s) = d_s.to_string_lossy() {
-                                            p.push_str(&s);
-                                            p.push('/');
-                                        }
+                                    if let Some(dir_str) =
+                                        dwarf_attr_to_string(&dwarf, &unit, dir_attr)
+                                    {
+                                        p.push_str(&dir_str);
+                                        p.push('/');
                                     }
                                 }
 
-                                if let Ok(n_s) = dwarf.attr_string(&unit, fe.path_name()) {
-                                    if let Ok(s) = n_s.to_string_lossy() {
-                                        p.push_str(&s);
-                                    }
+                                // Get file name
+                                if let Some(file_str) =
+                                    dwarf_attr_to_string(&dwarf, &unit, fe.path_name())
+                                {
+                                    p.push_str(&file_str);
                                 }
 
                                 info.file_table.intern(p)
@@ -146,92 +174,158 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
                 }
             }
         }
-    }
 
-    units = dwarf.units();
-    while let Some(header) = units.next()? {
-        let unit = dwarf.unit(header)?;
+        // Process debug info entries for symbols (functions and variables)
         let mut entries = unit.entries();
+
         while let Some((_, entry)) = entries.next_dfs()? {
-            // Find functions (subprograms)
-            if entry.tag() == gimli::DW_TAG_subprogram {
-                // 1. Extract Symbol Name
+            match entry.tag() {
+                // Handle functions (subprograms)
+                gimli::DW_TAG_subprogram => {
+                    // 1. Extract Symbol Name
 
-                // Try linkage_name first (Mangled)
-                let linkage_name_attr = entry
-                    .attr_value(gimli::DW_AT_linkage_name)?
-                    .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
+                    // Try linkage_name first (Mangled)
+                    let linkage_name_attr = entry
+                        .attr_value(gimli::DW_AT_linkage_name)?
+                        .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
 
-                let mut raw_name_opt: Option<String> = None;
+                    let mut raw_name_opt: Option<String> = None;
 
-                if let Some(attr) = linkage_name_attr {
-                    if let Ok(s) = dwarf.attr_string(&unit, attr) {
-                        if let Ok(sl) = s.to_string_lossy() {
-                            raw_name_opt = Some(sl.to_string());
+                    if let Some(attr) = linkage_name_attr {
+                        raw_name_opt = dwarf_attr_to_string(&dwarf, &unit, attr);
+                    }
+
+                    if raw_name_opt.is_none() {
+                        if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
+                            raw_name_opt = dwarf_attr_to_string(&dwarf, &unit, name_attr);
+                        }
+                    }
+
+                    let name = demangle(raw_name_opt);
+
+                    // 2. Extract Address Range
+                    let mut low_opt = None;
+                    if let Some(gimli::AttributeValue::Addr(addr)) =
+                        entry.attr_value(gimli::DW_AT_low_pc)?
+                    {
+                        low_opt = Some(addr);
+                    }
+
+                    // We now have a start address and a name. See if it exists in the elf symbols
+                    if let Some(low) = low_opt {
+                        if let Some(existing_sym) = info.elf_symbols.lookup(low) {
+                            // Use existing symbol info
+                            info.dwarf_symbols.insert(existing_sym.clone());
+                            continue;
+                        } else {
+                            // This symbol is not in the ELF symbol table, it may have been stripped, so we skip it
+                            continue;
+                        }
+                    }
+
+                    let mut high_opt = None;
+                    if let Some(high_attr) = entry.attr_value(gimli::DW_AT_high_pc)? {
+                        match high_attr {
+                            gimli::AttributeValue::Addr(addr) => high_opt = Some(addr), // Absolute address
+                            gimli::AttributeValue::Udata(size) => {
+                                if let Some(low) = low_opt {
+                                    high_opt = Some(low + size);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let (Some(low), Some(high)) = (low_opt, high_opt) {
+                        let size = high.saturating_sub(low);
+
+                        if size > 0 {
+                            // eprintln!("Function: {} [0x{:x} - 0x{:x})", name, low, high);
+
+                            info.dwarf_symbols.insert(Symbol {
+                                name,
+                                address: low,
+                                size,
+                                kind: SymbolType::Function,
+                                scope: SymbolScope::Global,
+                            });
                         }
                     }
                 }
 
-                if raw_name_opt.is_none() {
-                    if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
-                        if let Ok(s) = dwarf.attr_string(&unit, name_attr) {
-                            if let Ok(sl) = s.to_string_lossy() {
-                                raw_name_opt = Some(sl.to_string());
+                // Handle static/global variables
+                gimli::DW_TAG_variable => {
+                    // Extract variable name
+                    let mut raw_name_opt: Option<String> = None;
+
+                    // Try linkage_name first (for global variables)
+                    let linkage_name_attr = entry
+                        .attr_value(gimli::DW_AT_linkage_name)?
+                        .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
+
+                    if let Some(attr) = linkage_name_attr {
+                        raw_name_opt = dwarf_attr_to_string(&dwarf, &unit, attr);
+                    }
+
+                    if raw_name_opt.is_none() {
+                        if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
+                            raw_name_opt = dwarf_attr_to_string(&dwarf, &unit, name_attr);
+                        }
+                    }
+
+                    let name = demangle(raw_name_opt);
+
+                    // Extract address from DW_AT_location
+                    let mut addr_opt = None;
+                    if let Some(attr_value) = entry.attr_value(gimli::DW_AT_location)? {
+                        if let gimli::AttributeValue::Exprloc(expr) = attr_value {
+                            // Simple case: DW_OP_addr followed by an address
+                            let mut eval = expr.evaluation(unit.encoding());
+                            if let Ok(result) = eval.evaluate() {
+                                if let gimli::EvaluationResult::Complete = result {
+                                    let pieces = eval.result();
+                                    if pieces.len() == 1 {
+                                        if let gimli::Location::Address { address } =
+                                            pieces[0].location
+                                        {
+                                            addr_opt = Some(address);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                }
 
-                let name = demangle(raw_name_opt);
-
-                // 2. Extract Address Range
-                let mut low_opt = None;
-                if let Some(gimli::AttributeValue::Addr(addr)) =
-                    entry.attr_value(gimli::DW_AT_low_pc)?
-                {
-                    low_opt = Some(addr);
-                }
-
-                // We now have a start address and a name. See if it exists in the elf symbols
-                if let Some(low) = low_opt {
-                    if let Some(existing_sym) = info.elf_symbols.lookup(low) {
-                        // Use existing symbol info
-                        info.dwarf_symbols.insert(existing_sym.clone());
-                        continue;
-                    } else {
-                        // This symbol is not in the ELF symbol table, it may have been stripped, so we skip it
-                        continue;
-                    }
-                }
-
-                let mut high_opt = None;
-                if let Some(high_attr) = entry.attr_value(gimli::DW_AT_high_pc)? {
-                    match high_attr {
-                        gimli::AttributeValue::Addr(addr) => high_opt = Some(addr), // Absolute address
-                        gimli::AttributeValue::Udata(size) => {
-                            if let Some(low) = low_opt {
-                                high_opt = Some(low + size);
+                    if let Some(addr) = addr_opt {
+                        // Check if it exists in ELF symbols
+                        if let Some(existing_sym) = info.elf_symbols.lookup(addr) {
+                            // Use existing symbol info
+                            let arc_sym = info.dwarf_symbols.insert(existing_sym.clone());
+                            if (arc_sym.scope == SymbolScope::Global)
+                                && (arc_sym.kind == SymbolType::Data)
+                            {
+                                info.static_file_mapping
+                                    .insert(arc_sym.name.clone(), arc_sym);
+                                eprintln!(
+                                    "Found global variable '{}' at address 0x{:x} from DWARF",
+                                    existing_sym.name, existing_sym.address
+                                );
                             }
+                        } else {
+                            // Try to determine size from type information
+                            // For now, use a default size (could be enhanced later)
+                            info.dwarf_symbols.insert(Symbol {
+                                name,
+                                address: addr,
+                                size: 0, // Size unknown without type info
+                                kind: SymbolType::Data,
+                                scope: SymbolScope::Global, // Could check DW_AT_external
+                            });
                         }
-                        _ => {}
                     }
                 }
 
-                if let (Some(low), Some(high)) = (low_opt, high_opt) {
-                    let size = high.saturating_sub(low);
-
-                    if size > 0 {
-                        // eprintln!("Function: {} [0x{:x} - 0x{:x})", name, low, high);
-
-                        info.dwarf_symbols.insert(Symbol {
-                            name,
-                            address: low,
-                            size,
-                            kind: SymbolType::Function,
-                            scope: SymbolScope::Global,
-                        });
-                    }
-                }
+                _ => {}
             }
         }
     }
@@ -261,13 +355,31 @@ fn demangle(raw_name_opt: Option<String>) -> String {
     name
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Enable RTT search and reporting (experimental)
+    #[arg(short = 'r', long = "rtt-search", default_value_t = false)]
+    rtt_search: bool,
+
+    /// Path(s) to ELF file(s) to analyze
+    #[arg(required = true, num_args = 1..)]
+    elf_files: Vec<String>,
+}
+
 fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: mcu-debug-helper <path_to_elf>");
-        return Ok(());
-    }
-    let path = args[1].clone();
+    let args = Args::parse();
+
+    /*
+        let args_vec: Vec<String> = env::args().collect();
+        if args_vec.len() < 2 {
+            eprintln!("Usage: mcu-debug-helper <path_to_elf>");
+            return Ok(());
+        }
+        let path = args_vec[1].clone();
+    */
+    // TODO: Support multiple ELF files - for now just use the first one
+    let path = args.elf_files[0].clone();
 
     // Setup transport (uses stdout's built-in locking)
     let mut transport = StdioTransport::new();
@@ -283,8 +395,11 @@ fn main() -> Result<()> {
     });
 
     // Load ELF info in parallel with worker's disassembly loading
-    let obj_info = Arc::new(load_elf_info(&path)?);
+    let mut obj_info_data = load_elf_info(&path)?;
     eprintln!("Loaded ELF info for: {}", path);
+    obj_info_data.sort_globals_and_statics(); // Sort symbols once so clients don't have to sort repeatedly
+
+    let obj_info = Arc::new(obj_info_data); // Now immutable and shareable across threads
 
     // Send ObjectInfo to worker (Arc makes it cheap to send)
     if obj_info_tx.send(Arc::clone(&obj_info)).is_err() {

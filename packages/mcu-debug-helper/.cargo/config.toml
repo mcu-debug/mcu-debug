@@ -1,3 +1,26 @@
 [env]
 TS_RS_EXPORT_DIR = { value = "../shared/dasm-helper", relative = true }
 TS_RS_LARGE_INT = "number"
+
+# Cross-compilation linker configuration for building on macOS
+# Install dependencies: brew tap messense/macos-cross-toolchains && brew install x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu && brew install mingw-w64
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-unknown-linux-gnu-gcc"
+# Note: Full static linking on Linux with glibc is problematic (getaddrinfo, NSS).
+# For truly static Linux binaries, use musl targets instead.
+
+[target.x86_64-unknown-linux-gnu]
+linker = "x86_64-unknown-linux-gnu-gcc"
+# Note: Full static linking on Linux with glibc is problematic (getaddrinfo, NSS).
+# For truly static Linux binaries, use musl targets instead.
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-gnu]
+linker = "aarch64-w64-mingw32-gcc"
+ar = "aarch64-w64-mingw32-ar"
+rustflags = ["-C", "target-feature=+crt-static"]

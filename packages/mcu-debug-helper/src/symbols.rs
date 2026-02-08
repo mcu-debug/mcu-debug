@@ -45,7 +45,7 @@ impl SymbolTable {
         }
     }
 
-    pub fn insert(&mut self, symbol: Symbol) {
+    pub fn insert(&mut self, symbol: Symbol) -> Arc<Symbol> {
         // If there are duplicate start addresses, this overwrites.
         // DWARF can have alias symbols; you might want to handle that differently if needed.
         let arc_symbol = Arc::new(symbol);
@@ -53,7 +53,8 @@ impl SymbolTable {
 
         self.symbols_by_addr
             .insert(arc_symbol.address, arc_symbol.clone());
-        self.symbols_by_name.insert(name, arc_symbol);
+        self.symbols_by_name.insert(name, arc_symbol.clone());
+        arc_symbol
     }
 
     /// Find the symbol that contains the given address

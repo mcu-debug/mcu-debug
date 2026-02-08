@@ -21,7 +21,7 @@ pub fn wrap_event_as_notification(event: &HelperEvent) -> Value {
     json!({
         "jsonrpc": "2.0",
         "method": "HelperEvent",
-        "params": event
+        "args": event
     })
 }
 
@@ -39,6 +39,14 @@ pub fn disassembly_ready_notification(session_id: &str, instruction_count: u64) 
     let event = HelperEvent::DisassemblyReady {
         session_id: session_id.to_string(),
         instruction_count,
+    };
+    wrap_event_as_notification(&event)
+}
+
+pub fn rtt_found_notification(session_id: &str, address: &str) -> Value {
+    let event = HelperEvent::RTTFound {
+        session_id: session_id.to_string(),
+        address: address.to_string(),
     };
     wrap_event_as_notification(&event)
 }
