@@ -20,11 +20,13 @@ use std::rc::Rc;
 /// and present that data as needed.
 ///
 
+#[derive(Debug)]
 pub struct AssemblyLine {
     pub address: u64,
     pub bytes: String,
     pub instruction: String,
     pub raw_line: String, // For debugging, may be useful to have the original line from objdump, for now
+    pub offset_in_function: u32, // Offset in bytes from the start of the function, for display purposes. Cell allows us to set this after the fact when we identify function boundaries.
 
     // These are all optional, -1 means not available
     // Use Cell for interior mutability - allows updating these fields even when behind Rc
@@ -64,6 +66,7 @@ impl AssemblyLine {
         instruction: String,
         raw_line: String,
         function_id: i32,
+        offset_in_function: u32,
     ) -> Self {
         Self {
             address,
@@ -71,6 +74,7 @@ impl AssemblyLine {
             instruction,
             raw_line,
             function_id: Cell::new(function_id),
+            offset_in_function: offset_in_function,
             file_id: Cell::new(-1),
             start_line: Cell::new(-1),
             start_column: Cell::new(-1),
@@ -106,11 +110,24 @@ impl AssemblyLine {
             start_column: Cell::new(self.start_column.get()),
             end_line: Cell::new(self.end_line.get()),
             end_column: Cell::new(self.end_column.get()),
+            offset_in_function: self.offset_in_function,
         }
     }
 
     pub fn format_bytes(&self) -> String {
-        format!("{:X}:{}:{}", self.address, self.bytes, self.instruction)
+        let offset_str = if self.function_id.get() > 0 {
+            format!(
+                " <{}+0x{:X}>",
+                self.function_id.get(),
+                self.offset_in_function
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "{:X}:{}\t{}\t{}",
+            self.address, offset_str, self.bytes, self.instruction
+        )
     }
 }
 
@@ -158,6 +175,7 @@ impl AssemblyListing {
             String::from("<invalid instr>"),
             String::new(),
             -1,
+            0,
         );
 
         // 1. Find the instruction at or immediately before the target_addr
@@ -245,7 +263,7 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
 
     let mut listing = AssemblyListing::new();
     let mut current_block = AssemblyBlock::new(String::new(), 0, -1);
-    let re_hex_start = Regex::new(r"^[0-9a-fA-F]").unwrap();
+    let re_hex_start = Regex::new(r"^[0-9a-fA-F]{8,}").unwrap();
 
     let mut count = 0;
     loop {
@@ -264,7 +282,17 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
             buf.pop();
         }
 
+        if buf.is_empty() {
+            // An empty line indicates end of a block
+            if current_block.line_count() > 0 {
+                listing.blocks.push(current_block);
+            }
+            current_block = AssemblyBlock::new(String::new(), 0, -1);
+            continue;
+        }
+
         let line = String::from_utf8_lossy(&buf);
+        eprint!("Read line: {}\n", line); // Debug print every line read from objdump
         let s: &str = line.as_ref();
         if !re_hex_start.is_match(s) || !s.contains(':') {
             continue;
@@ -300,12 +328,25 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
             instr_text += &words[3..].join(" ");
         }
 
+        if addr < current_block.start_address {
+            eprintln!(
+                "Offset in function: addr: 0x{:X}, current block start: 0x{:X}",
+                addr, current_block.start_address
+            );
+            // New block without a header - push the old block and start a new one with an empty name
+            if current_block.line_count() > 0 {
+                listing.blocks.push(current_block);
+            }
+            current_block = AssemblyBlock::new(String::new(), addr, listing.blocks.len() as i32);
+            continue;
+        }
         let rc_line = Rc::new(AssemblyLine::new(
             addr,
             bytes,
             instr_text,
             s.to_string(),
             current_block.id,
+            (addr - current_block.start_address) as u32,
         ));
         listing.addr_map.insert(addr, listing.lines.len());
         listing.lines.push(rc_line.clone());

@@ -184,6 +184,7 @@ mod tests {
             "movs r0,#0".to_string(),
             " 1000: 00 20 movs r0,#0".to_string(),
             -1,
+            0,
         );
         let l2 = AssemblyLine::new(
             0x1002,
@@ -191,6 +192,7 @@ mod tests {
             "adds r0,r1".to_string(),
             " 1002: 01 30 adds r0,r1".to_string(),
             -1,
+            0,
         );
         listing.insert_line(l1);
         listing.insert_line(l2);
@@ -206,5 +208,26 @@ mod tests {
         );
         let json_str = serde_json::to_string_pretty(&s).unwrap();
         println!("{}", json_str);
+    }
+
+    #[test]
+    fn disasm_from_file() {
+        let path = "../../mylfs/proj_cm4.elf";
+        match get_disasm_from_objdump(path) {
+            Ok(listing) => {
+                println!(
+                    "Disassembly loaded: {} lines, {} blocks",
+                    listing.lines.len(),
+                    listing.blocks.len()
+                );
+                const MAX_LINES: usize = 100;
+                for line in &listing.lines[1000..1000 + MAX_LINES.min(listing.lines.len())] {
+                    println!("{}", line.format_bytes());
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to load disassembly: {}", e);
+            }
+        }
     }
 }

@@ -12,6 +12,7 @@ fn main() {
         "movs r0,#0".to_string(),
         " 1000: 00 20 movs r0,#0".to_string(),
         -1,
+        0,
     );
     let l2 = AssemblyLine::new(
         0x1002,
@@ -19,6 +20,7 @@ fn main() {
         "adds r0,r1".to_string(),
         " 1002: 01 30 adds r0,r1".to_string(),
         -1,
+        0,
     );
     listing.insert_line(l1);
     listing.insert_line(l2);

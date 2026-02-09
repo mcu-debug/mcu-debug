@@ -301,16 +301,23 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
                         if let Some(existing_sym) = info.elf_symbols.lookup(addr) {
                             // Use existing symbol info
                             let arc_sym = info.dwarf_symbols.insert(existing_sym.clone());
-                            if (arc_sym.scope == SymbolScope::Global)
-                                && (arc_sym.kind == SymbolType::Data)
-                            {
-                                info.static_file_mapping
-                                    .insert(arc_sym.name.clone(), arc_sym);
-                                eprintln!(
-                                    "Found global variable '{}' at address 0x{:x} from DWARF",
-                                    existing_sym.name, existing_sym.address
-                                );
+                            if arc_sym.kind == SymbolType::Data {
+                                if arc_sym.scope == SymbolScope::Static {
+                                    info.static_file_mapping
+                                        .insert(arc_sym.name.clone(), arc_sym);
+                                    eprintln!(
+                                        "Found global variable '{}' at address 0x{:x} from DWARF",
+                                        existing_sym.name, existing_sym.address
+                                    );
+                                } else if arc_sym.scope == SymbolScope::Global {
+                                    info.global_symbols.push(arc_sym);
+                                    eprintln!(
+                                        "Found global variable '{}' at address 0x{:x} from DWARF",
+                                        existing_sym.name, existing_sym.address
+                                    );
+                                }
                             }
+                            continue;
                         } else {
                             // Try to determine size from type information
                             // For now, use a default size (could be enhanced later)
