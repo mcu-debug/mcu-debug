@@ -122,6 +122,7 @@ pub struct SerInstruction {
     // These are all optional, -1 means not available
     // Use Cell for interior mutability - allows updating these fields even when behind Rc
     pub f: i32, // function_id
+    pub o: u32, // offset in function
     pub F: i32, // file_id
     pub sl: i32,
     pub el: i32,

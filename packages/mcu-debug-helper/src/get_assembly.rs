@@ -117,7 +117,7 @@ impl AssemblyLine {
     pub fn format_bytes(&self) -> String {
         let offset_str = if self.function_id.get() > 0 {
             format!(
-                " <{}+0x{:X}>",
+                " <{}+0x{:x}>",
                 self.function_id.get(),
                 self.offset_in_function
             )
@@ -125,7 +125,7 @@ impl AssemblyLine {
             String::new()
         };
         format!(
-            "{:X}:{}\t{}\t{}",
+            "{:x}:{}\t{}\t{}",
             self.address, offset_str, self.bytes, self.instruction
         )
     }
@@ -263,7 +263,7 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
 
     let mut listing = AssemblyListing::new();
     let mut current_block = AssemblyBlock::new(String::new(), 0, -1);
-    let re_hex_start = Regex::new(r"^[0-9a-fA-F]{8,}").unwrap();
+    let re_hex_start = Regex::new(r"^[0-9a-f]+").unwrap(); // Yes, only look for lowercase hex
 
     let mut count = 0;
     loop {
@@ -291,64 +291,65 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
             continue;
         }
 
-        let line = String::from_utf8_lossy(&buf);
-        eprint!("Read line: {}\n", line); // Debug print every line read from objdump
-        let s: &str = line.as_ref();
-        if !re_hex_start.is_match(s) || !s.contains(':') {
+        let line = String::from_utf8_lossy(&buf).trim().to_string();
+        let raw_line: &str = line.as_ref();
+        if !re_hex_start.is_match(raw_line) || !raw_line.contains(':') {
             continue;
         }
 
-        let words: Vec<&str> = s.split_whitespace().collect();
-        if words.len() < 2 {
-            continue;
-        }
-
-        if s.ends_with(">:") {
-            let name = words[1]
+        let mut words = raw_line.split("\t").collect::<Vec<&str>>();
+        if (words.len() == 1) && raw_line.ends_with(">:") {
+            let parts: Vec<&str> = raw_line.split_whitespace().collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let name = parts[1]
                 .trim_start_matches('<')
                 .trim_end_matches(">:")
                 .trim_end_matches('>');
-            let addr = u64::from_str_radix(words[0].trim_end_matches(':'), 16).unwrap_or(0);
+            let address = u64::from_str_radix(parts[0].trim_end_matches(':'), 16).unwrap_or(0);
             if current_block.line_count() > 0 {
+                // Maybe we should also push if the block has a name? For now we require at least one instruction to push
+                // a block, but objdump can emit empty blocks for labels and such.
                 listing.blocks.push(current_block);
             }
-            current_block = AssemblyBlock::new(name.to_string(), addr, listing.blocks.len() as i32);
+            current_block =
+                AssemblyBlock::new(name.to_string(), address, listing.blocks.len() as i32);
             continue;
         }
 
+        words = words.into_iter().map(|w| w.trim()).collect::<Vec<&str>>();
         if words.len() < 3 {
             continue;
         }
 
-        let addr = u64::from_str_radix(words[0].trim_end_matches(':'), 16).unwrap_or(0);
-        let bytes = words[1].to_string();
-        let mut instr_text = words[2].to_string();
-        if words.len() > 3 {
-            instr_text += "\t";
-            instr_text += &words[3..].join(" ");
-        }
+        let address = u64::from_str_radix(words[0].trim_end_matches(':'), 16).unwrap_or(0);
+        let mut bytes = words[1].to_string();
+        bytes.retain(|c| !c.is_whitespace());
+        let instruction = words[2..].join("\t").to_string();
 
-        if addr < current_block.start_address {
+        if address < current_block.start_address {
+            // This shouldn't happen in well-formed objdump output, but if it does, we can treat it as a new block. Log it for debugging.
             eprintln!(
-                "Offset in function: addr: 0x{:X}, current block start: 0x{:X}",
-                addr, current_block.start_address
+                "Offset in function: address: 0x{:X}, current block start: 0x{:X}",
+                address, current_block.start_address
             );
             // New block without a header - push the old block and start a new one with an empty name
             if current_block.line_count() > 0 {
                 listing.blocks.push(current_block);
             }
-            current_block = AssemblyBlock::new(String::new(), addr, listing.blocks.len() as i32);
+            current_block = AssemblyBlock::new(String::new(), address, listing.blocks.len() as i32);
             continue;
         }
         let rc_line = Rc::new(AssemblyLine::new(
-            addr,
+            address,
             bytes,
-            instr_text,
-            s.to_string(),
+            instruction,
+            raw_line.to_string(),
             current_block.id,
-            (addr - current_block.start_address) as u32,
+            (address - current_block.start_address) as u32,
         ));
-        listing.addr_map.insert(addr, listing.lines.len());
+        listing.addr_map.insert(address, listing.lines.len());
         listing.lines.push(rc_line.clone());
         current_block.lines.push(rc_line.clone());
         if count < 1000 {

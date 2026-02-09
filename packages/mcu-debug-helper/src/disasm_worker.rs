@@ -162,6 +162,7 @@ impl SerInstruction {
             b: instr.bytes.clone(),
             i: instr.instruction.clone(),
             f: instr.function_id.get(),
+            o: instr.offset_in_function,
             F: instr.file_id.get(),
             sl: instr.start_line.get(),
             el: instr.end_line.get(),
@@ -171,6 +172,8 @@ impl SerInstruction {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, io::Write};
+
     use super::*;
     use crate::get_assembly::{AssemblyLine, AssemblyListing};
 
@@ -213,6 +216,7 @@ mod tests {
     #[test]
     fn disasm_from_file() {
         let path = "../../mylfs/proj_cm4.elf";
+        let out_path = "../../tmp/disasm_output.txt";
         match get_disasm_from_objdump(path) {
             Ok(listing) => {
                 println!(
@@ -224,6 +228,20 @@ mod tests {
                 for line in &listing.lines[1000..1000 + MAX_LINES.min(listing.lines.len())] {
                     println!("{}", line.format_bytes());
                 }
+                let mut fd = fs::File::create(out_path).expect("Failed to create output file");
+                for line in &listing.lines {
+                    if line.function_id.get() >= 0 && line.offset_in_function == 0 {
+                        // This is the first instruction of a function, add a separator line for readability
+                        let func_name =
+                            listing.blocks[line.function_id.get() as usize].name.clone();
+                        fd.write(format!("\n// Function: {}\n", func_name).as_bytes())
+                            .expect("Failed to write function header");
+                    }
+                    fd.write(format!("{}\n", line.format_bytes()).as_bytes())
+                        .expect("Failed to write line");
+                }
+                fd.sync_all().expect("Failed to flush output file");
+                println!("Disassembly written to {}", out_path);
             }
             Err(e) => {
                 eprintln!("Failed to load disassembly: {}", e);
