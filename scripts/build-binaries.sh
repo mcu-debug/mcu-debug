@@ -78,9 +78,6 @@ if [[ "$mode" == "dev" ]]; then
   # Copy root binary
   copy_artifact "$dbg_path" "$BINDIR" "$BIN_NAME" || true
 
-  # Copy per-platform dir
-  copy_artifact "$dbg_path" "$BINDIR/$host" "$exe_name" || true
-
   echo "Dev build complete. Main binary: $BINDIR/$BIN_NAME"
   exit 0
 fi
