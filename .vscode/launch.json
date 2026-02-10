@@ -22,6 +22,9 @@
 			"program": "${workspaceRoot}/packages/mcu-debug/dist/adapter.js",
 			"stopOnEntry": false,
 			"args": [ "--server=4721" ],
+			"env": {
+				"PROD_MCU_DEBUG_HELPER": "1"
+			},
 			"sourceMaps": true,
 			"outFiles": [
 				"${workspaceRoot}/packages/mcu-debug/dist/*.js"
@@ -61,7 +64,7 @@
 		{
 			"name": "Extension + Debug Server",
 			"configurations": ["Launch Extension", "Debug Server"],
-      		"preLaunchTask": "npm: compile"
+      		"preLaunchTask": "compile"
 		}
 	]
 }

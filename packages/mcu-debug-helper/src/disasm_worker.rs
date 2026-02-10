@@ -11,13 +11,14 @@ use std::time::Instant;
 
 /// Run the disassembly worker: load objdump, wait for ObjectInfo, serve requests.
 pub fn run_disassembly_worker(
+    objdump_path: &str,
     elf_path: &str,
     req_rx: Receiver<DisasmRequest>,
     obj_info_rx: Receiver<Arc<ObjectInfo>>,
 ) {
     let now = Instant::now();
 
-    match get_disasm_from_objdump(elf_path) {
+    match get_disasm_from_objdump(objdump_path, elf_path) {
         Ok(listing) => {
             eprintln!(
                 "Disassembly loaded: {} lines, {} blocks in {:.2?}",
@@ -217,7 +218,7 @@ mod tests {
     fn disasm_from_file() {
         let path = "../../mylfs/proj_cm4.elf";
         let out_path = "../../tmp/disasm_output.txt";
-        match get_disasm_from_objdump(path) {
+        match get_disasm_from_objdump("arm-none-eabi-objdump", path) {
             Ok(listing) => {
                 println!(
                     "Disassembly loaded: {} lines, {} blocks",

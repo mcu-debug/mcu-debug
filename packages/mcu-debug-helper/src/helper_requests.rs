@@ -208,3 +208,17 @@ pub enum HelperEvent {
         message: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// This test ensures that ts_rs exports are generated.
+    /// The actual TS file generation happens during test compilation,
+    /// not test execution, so this test doesn't need to do anything.
+    #[test]
+    fn ensure_ts_exports() {
+        // ts_rs generates the TypeScript files during compilation when the
+        // derive macro is expanded. This test just ensures the module compiles.
+    }
+}

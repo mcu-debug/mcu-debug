@@ -27,6 +27,7 @@ import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
 import { TcpPortScanner } from "@mcu-debug/shared";
 import { DisassemblyAdapter } from "./disassebly-gdb";
+import { DebugHelper } from "./helper";
 
 let SessionCounter = 0;
 
@@ -60,6 +61,7 @@ export class GDBDebugSession extends SeqDebugSession {
     private swoLaunchPromise = Promise.resolve();
     private swoLaunched = false;
     private disassemblyAdapter: DisassemblyAdapter;
+    private debugHelper: DebugHelper;
 
     protected varManager: VariableManager;
     protected bkptManager: BreakpointManager;
@@ -84,6 +86,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.rttTcpServer = new RttTcpServer(this);
         this.rttManager = new RttBufferManager(this.liveWatchMonitor);
         this.disassemblyAdapter = new DisassemblyAdapter(this);
+        this.debugHelper = new DebugHelper(this);
     }
 
     private createEmptyThreadInfo(): GdbMiThreadInfoList {
@@ -1283,6 +1286,14 @@ export class GDBDebugSession extends SeqDebugSession {
             // Following can be deferred to configurationDone
             await loadSymbolsPromise;
             await tInfoPromise;
+            if (this.debugHelperPromise) {
+                try {
+                    await this.debugHelperPromise;
+                    this.handleMsg(Stderr, "Debug helper initialized successfully.\n");
+                } catch (e) {
+                    this.handleMsg(Stderr, `WARNING: Debug helper initialization failed. Please report this issue. Debugging may still work ${e}\n`);
+                }
+            }
             this.gdbInstance.currentCommandTimeout = GdbInstance.DefaultCommandTimeout;
             reportTime("Ready for full debugging");
         } catch (e) {
@@ -1290,9 +1301,11 @@ export class GDBDebugSession extends SeqDebugSession {
         }
     }
 
+    private debugHelperPromise: Promise<void> | null = null;
     private async loadSymbols(): Promise<void> {
         try {
             const execs: SymbolFile[] = this.args.symbolFiles || [defSymbolFile(this.args.executable)];
+            this.debugHelperPromise = this.debugHelper.initialize(execs);
             this.symbolTable.initialize(execs);
             await this.symbolTable.loadSymbols();
             const rttConfig = this.args.pvtRttConfig || this.args.rttConfig;

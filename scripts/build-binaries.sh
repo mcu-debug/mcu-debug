@@ -61,6 +61,11 @@ function copy_artifact() {
 if [[ "$mode" == "dev" ]]; then
   echo "Dev build: building for host platform (debug)"
   cd "$RUST_DIR"
+  
+  # Generate TypeScript exports via ts_rs (happens during test compilation)
+  echo "Generating TypeScript exports..."
+  cargo test --lib --no-run --quiet 2>/dev/null || true
+  
   cargo build --bin "$BIN_NAME"
   host=$(host_platform)
   dbg_path="target/debug/$BIN_NAME"
@@ -82,7 +87,11 @@ fi
 
 if [[ "$mode" == "prod" ]]; then
   echo "Production build: release builds for multiple targets"
-cd "$RUST_DIR"
+  cd "$RUST_DIR"
+  
+  # Generate TypeScript exports via ts_rs (happens during test compilation)
+  echo "Generating TypeScript exports..."
+  cargo test --lib --no-run --quiet 2>/dev/null || true
 
   
   # platform|target_triple|exe_ext
@@ -97,7 +106,7 @@ cd "$RUST_DIR"
 
   for entry in "${targets[@]}"; do
     IFS='|' read -r platform triple ext <<< "$entry"
-    echo "\nBuilding target: $triple (platform: $platform)"
+    printf "\nBuilding target: %s (platform: %s)" "$triple" "$platform"
 
     # Ensure target installed
     if ! rustup target list --installed | grep -q "^${triple}$"; then

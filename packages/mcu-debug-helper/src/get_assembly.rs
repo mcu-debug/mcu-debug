@@ -246,10 +246,13 @@ impl AssemblyListing {
     }
 }
 
-pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Error>> {
+pub fn get_disasm_from_objdump(
+    objdump_path: &str,
+    elf_path: &str,
+) -> Result<AssemblyListing, Box<dyn Error>> {
     // Spawn objdump and stream its stdout to avoid allocating the whole output
-    let mut child = Command::new("arm-none-eabi-objdump")
-        .args(["-Cd", arg])
+    let mut child = Command::new(objdump_path)
+        .args(["-Cd", elf_path])
         .stdout(Stdio::piped())
         .spawn()?;
 
@@ -265,7 +268,6 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
     let mut current_block = AssemblyBlock::new(String::new(), 0, -1);
     let re_hex_start = Regex::new(r"^[0-9a-f]+").unwrap(); // Yes, only look for lowercase hex
 
-    let mut count = 0;
     loop {
         buf.clear();
         let n = reader.read_until(b'\n', &mut buf)?;
@@ -352,12 +354,6 @@ pub fn get_disasm_from_objdump(arg: &str) -> Result<AssemblyListing, Box<dyn Err
         listing.addr_map.insert(address, listing.lines.len());
         listing.lines.push(rc_line.clone());
         current_block.lines.push(rc_line.clone());
-        if count < 1000 {
-            // Debug print first 1000 lines
-            let tmp = rc_line.format_bytes();
-            eprintln!("{}", tmp);
-        }
-        count += 1;
     }
 
     // ensure child finishes

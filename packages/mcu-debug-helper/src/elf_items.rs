@@ -124,6 +124,13 @@ impl StaticFileMapping {
             symbols.sort_by_key(|s| s.name.clone());
         }
     }
+
+    pub fn get_statics_for_file(&self, file_path: &str) -> Vec<Arc<Symbol>> {
+        self.file_map
+            .get(file_path)
+            .cloned()
+            .unwrap_or_else(Vec::new)
+    }
 }
 
 /// Encapsulates all debug information loaded from an ELF/DWARF object file.

@@ -20,7 +20,8 @@
     {
       "label": "compile",
       "dependsOn": [
-        "npm: compile"
+        "Build Helper",
+        "npm: compile",
       ],
       "presentation": {
         "reveal": "never"
@@ -50,6 +51,20 @@
         "isDefault": true
       },
       "label": "rust: cargo build"
+    },
+    {
+      "type": "shell",
+      "label": "Build Helper",
+      "command": "./scripts/build-binaries.sh",
+      "args": ["dev"],
+      "options": {
+          "cwd": "${workspaceFolder}"
+      },
+      "group": {
+          "kind": "build",
+          "isDefault": true
+      },
+      "problemMatcher": []
     }
   ]
 }

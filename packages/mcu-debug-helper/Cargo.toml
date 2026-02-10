@@ -23,3 +23,4 @@ cpp_demangle = "0.5.1"
 regex = "1"
 ts-rs = "12.0.1"
 clap = { version = "4.5.57", features = ["derive"] }
+capstone = "0.14.0"

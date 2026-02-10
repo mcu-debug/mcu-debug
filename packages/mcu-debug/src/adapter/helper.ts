@@ -8,6 +8,7 @@ import type { GlobalsResponse } from "@mcu-debug/shared/dasm-helper/GlobalsRespo
 import type { StaticsResponse } from "@mcu-debug/shared/dasm-helper/StaticsResponse";
 import type { SymbolLookupResponse } from "@mcu-debug/shared/dasm-helper/SymbolLookupResponse";
 import type { HelperEvent } from "@mcu-debug/shared/dasm-helper/HelperEvent";
+import { getObjdumpPath } from "./symbols";
 
 type HelperResponse = DisasmResponse | GlobalsResponse | StaticsResponse | SymbolLookupResponse;
 
@@ -62,20 +63,13 @@ export class DebugHelper {
     // You can chose to wait on the promise 'rttSymbolReady' to know when the search is complete and the result is
     // ready (address or not).
     public rttSymbolAddress?: string;
-    public symbolTableReady = new Promise<void>((resolve, reject) => {
-        this.symbolTablePromiseResolve = resolve;
-        this.symbolTableReject = reject;
-    });
-    public rttSymbolReady = new Promise<void>((resolve, reject) => {
-        // This will be resolved when the RTT symbol is found during initialization (if enabled)
-        this.rttSymbolPromiseResolve = resolve;
-        this.rttSymbolPromiseReject = reject;
-    });
+    public symbolTableReady: Promise<void>;
+    public rttSymbolReady: Promise<void>;
     private lookingForRTT = false;
-    private symbolTablePromiseResolve!: () => void;
+    private symbolTableResolve!: () => void;
     private symbolTableReject!: (reason?: any) => void;
-    private rttSymbolPromiseResolve!: () => void;
-    private rttSymbolPromiseReject!: (reason?: any) => void;
+    private rttSymbolResolve!: () => void;
+    private rttSymbolReject!: (reason?: any) => void;
     process: NodeJS.Process = process;
     private helperProcess?: ChildProcess;
     private rawBuffer = Buffer.alloc(0);
@@ -85,12 +79,23 @@ export class DebugHelper {
     private processingMessages = false;
     private messagesProcessedInBatch = 0;
     private readonly MAX_MESSAGES_PER_BATCH = 50; // Process at most 50 messages before yielding
+    private startTime = Date.now();
 
     // Reusable buffers for protocol parsing (avoid allocations in hot path)
     private static readonly CRLF_CRLF = Buffer.from("\r\n\r\n");
     private static readonly NL_NL = Buffer.from("\n\n");
 
-    constructor(private session: GDBDebugSession) {}
+    constructor(private session: GDBDebugSession) {
+        this.rttSymbolReady = new Promise<void>((resolve, reject) => {
+            // This will be resolved when the RTT symbol is found during initialization (if enabled)
+            this.rttSymbolResolve = resolve;
+            this.rttSymbolReject = reject;
+        });
+        this.symbolTableReady = new Promise<void>((resolve, reject) => {
+            this.symbolTableResolve = resolve;
+            this.symbolTableReject = reject;
+        });
+    }
 
     async initialize(fileConfigs: SymbolFile[]): Promise<void> {
         try {
@@ -112,15 +117,20 @@ export class DebugHelper {
             if (!helperPath) {
                 throw new Error("Helper executable not found");
             }
+            const objdumpPath = getObjdumpPath(this.session.args);
 
-            const args = [];
+            const args = ["--objdump-path", objdumpPath];
+            if (this.process.env.PROD_MCU_DEBUG_HELPER === "1") {
+                args.push("--timing");
+            }
             if (this.session.args.rttConfig?.enabled && (this.session.args.rttConfig.address === "auto" || !this.session.args.rttConfig.address)) {
                 args.push(`--rtt-search`);
                 this.lookingForRTT = true;
-            } else {
-                this.rttSymbolPromiseResolve(); // Resolve RTT promise since we're not looking for it, to avoid hanging any RTT-dependent features waiting for it
+            } else if (this.rttSymbolResolve) {
+                this.rttSymbolResolve(); // Resolve RTT promise since we're not looking for it, to avoid hanging any RTT-dependent features waiting for it
             }
             // Spawn the helper process with the list of executables as arguments
+            this.session.handleMsg(Stdout, `Starting helper process: ${helperPath} ${[...args, ...executables].join(" ")}`);
             this.helperProcess = spawn(helperPath, [...args, ...executables], {
                 stdio: ["pipe", "pipe", "pipe"],
             });
@@ -140,6 +150,9 @@ export class DebugHelper {
             this.helperProcess.on("close", (code) => {
                 this.session.handleMsg(Stderr, `Helper process exited with code ${code}`);
             });
+            this.helperProcess.on("spawn", () => {
+                this.startTime = Date.now();
+            });
         } catch (error) {
             this.session.handleMsg(Stderr, `Failed to initialize DebugHelper: ${error}`);
             this.symbolTableReject(error);
@@ -154,7 +167,11 @@ export class DebugHelper {
         if (platform === "win32") {
             helperName += ".exe";
         }
-        const helperPath = `${extPath}/bin/${platform}-${arch}/${helperName}`;
+        let helperPath = `${extPath}/bin/${helperName}`;
+        if (existsSync(helperPath) && this.process.env.PROD_MCU_DEBUG_HELPER !== "1") {
+            return helperPath;
+        }
+        helperPath = `${extPath}/bin/${platform}-${arch}/${helperName}`;
         if (existsSync(helperPath)) {
             return helperPath;
         } else {
@@ -289,8 +306,8 @@ export class DebugHelper {
         }
 
         // Otherwise, it's an event
-        if (message.type) {
-            this.handleHelperEvent(message as HelperEvent);
+        if (message.method === "HelperEvent") {
+            this.handleHelperEvent(message.args as HelperEvent);
         } else {
             this.session.handleMsg(Stderr, `Unknown helper message format: ${JSON.stringify(message)}`);
         }
@@ -298,25 +315,29 @@ export class DebugHelper {
 
     private handleHelperEvent(event: HelperEvent) {
         switch (event.type) {
-            case "SymbolTableReady":
-                this.symbolTablePromiseResolve();
+            case "SymbolTableReady": {
+                this.symbolTableResolve();
                 if (!this.rttSymbolAddress && this.lookingForRTT) {
                     this.session.handleMsg(Stdout, `Symbol table ready but RTT symbol not found. RTT features will be disabled.`);
-                    this.rttSymbolPromiseResolve(); // Resolve RTT promise anyway to avoid hanging if RTT symbol is missing
+                    this.rttSymbolResolve(); // Resolve RTT promise anyway to avoid hanging if RTT symbol is missing
                 }
-                this.session.handleMsg(Stdout, `Symbol table ready (version: ${event.version})`);
+                const delta = Date.now() - this.startTime;
+                this.session.handleMsg(Stderr, `mcu-debug-helper: Symbol table ready (version: ${event.version}, elapsed: ${delta}ms)`);
                 break;
-
-            case "DisassemblyReady":
-                this.session.handleMsg(Stdout, `Disassembly ready (${event.instruction_count} instructions)`);
+            }
+            case "DisassemblyReady": {
+                const delta = Date.now() - this.startTime;
+                this.session.handleMsg(Stderr, `mcu-debug-helper: Disassembly ready (${event.instruction_count} instructions, elapsed: ${delta}ms)`);
                 break;
+            }
 
-            case "RTTFound":
+            case "RTTFound": {
                 this.rttSymbolAddress = event.address;
-                this.rttSymbolPromiseResolve();
-                this.session.handleMsg(Stdout, `RTT found at ${event.address}`);
+                this.rttSymbolResolve();
+                const delta = Date.now() - this.startTime;
+                this.session.handleMsg(Stderr, `mcu-debug-helper: RTT found at ${event.address}, elapsed: ${delta}ms`);
                 break;
-
+            }
             case "Progress":
                 const progressMsg = event.message || `${event.operation}: ${event.percentage ?? "?"}%`;
                 this.session.handleMsg(Stdout, progressMsg);

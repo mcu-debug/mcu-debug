@@ -1,7 +1,7 @@
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { SpawnLineReader, SymbolFile, validateELFHeader, canonicalizePath } from "./servers/common";
+import { SpawnLineReader, SymbolFile, validateELFHeader, canonicalizePath, ConfigurationArguments } from "./servers/common";
 // import { IntervalTree, Interval } from "node-interval-tree";
 import { Interval, IntervalTree } from "@flatten-js/interval-tree";
 
@@ -38,6 +38,23 @@ export interface SymbolInformation {
     // line?: number;                // Only available when using nm
     instructions: DisassemblyInstruction[];
     hidden: boolean;
+}
+
+export function getObjdumpPath(args: ConfigurationArguments): string {
+    let objdumpPath = args.objdumpPath;
+    if (!objdumpPath) {
+        objdumpPath = os.platform() !== "win32" ? `${args.toolchainPrefix}-objdump` : `${args.toolchainPrefix}-objdump.exe`;
+        if (args.toolchainPath) {
+            objdumpPath = path.normalize(path.join(args.toolchainPath, objdumpPath));
+        } else if (args.gdbPath) {
+            const tmp = replaceProgInPath(args.gdbPath, /gdb/i, "objdump");
+            objdumpPath = tmp || objdumpPath;
+        }
+    }
+    if (objdumpPath) {
+        objdumpPath = objdumpPath.replace(/\\/g, "/");
+    }
+    return objdumpPath;
 }
 
 const OBJDUMP_SYMBOL_RE = RegExp(/^([0-9a-f]+)\s([lg !])([w ])([C ])([W ])([I ])([dD ])([FfO ])\s(.*?)\t([0-9a-f]+)\s(.*)$/);
@@ -193,19 +210,7 @@ export class SymbolTable {
     public initialize(executables: SymbolFile[]) {
         this.executables = executables;
         const args = this.gdbSession.args;
-        this.objdumpPath = args.objdumpPath;
-        if (!this.objdumpPath) {
-            this.objdumpPath = os.platform() !== "win32" ? `${args.toolchainPrefix}-objdump` : `${args.toolchainPrefix}-objdump.exe`;
-            if (args.toolchainPath) {
-                this.objdumpPath = path.normalize(path.join(args.toolchainPath, this.objdumpPath));
-            } else if (args.gdbPath) {
-                const tmp = replaceProgInPath(args.gdbPath, /gdb/i, "objdump");
-                this.objdumpPath = tmp || this.objdumpPath;
-            }
-        }
-        if (this.objdumpPath) {
-            this.objdumpPath = this.objdumpPath.replace(/\\/g, "/");
-        }
+        this.objdumpPath = getObjdumpPath(args);
     }
 
     /**

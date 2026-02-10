@@ -4,6 +4,7 @@ use gimli::Reader;
 use object::{Object, ObjectSection, ObjectSymbol};
 use std::sync::{mpsc::channel, Arc};
 use std::thread;
+use std::time::{Duration, Instant};
 use std::{borrow::Cow, fs, rc::Rc};
 
 use mcu_debug_helper::disasm_worker;
@@ -26,23 +27,28 @@ fn dwarf_attr_to_string(
         .and_then(|d_s| d_s.to_string_lossy().ok().map(|cow| cow.to_string()))
 }
 
-fn load_elf_info(path: &str) -> Result<ObjectInfo> {
+fn load_elf_info(path: &str, timing: bool) -> Result<ObjectInfo> {
+    let start = Instant::now();
     let file = fs::File::open(path)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let obj_file = object::File::parse(&*mmap)?;
+    if timing {
+        eprintln!("  ⏱️  File open + mmap + parse: {:.2?}", start.elapsed());
+    }
 
     let mut info = ObjectInfo::new();
 
-    eprintln!("Idx Name          Size      Address          Align");
-    for (i, section) in obj_file.sections().enumerate() {
-        eprintln!(
-            "{:<3} {:<12} {:<8x} {:<16x} {:<5}",
-            i,
-            section.name().unwrap_or(""),
-            section.size(),
-            section.address(),
-            section.align(),
-        );
+    let step = Instant::now();
+    // eprintln!("Idx Name          Size      Address          Align");
+    for (_i, section) in obj_file.sections().enumerate() {
+        // eprintln!(
+        //     "{:<3} {:<12} {:<8x} {:<16x} {:<5}",
+        //     i,
+        //     section.name().unwrap_or(""),
+        //     section.size(),
+        //     section.address(),
+        //     section.align(),
+        // );
         if section.size() > 0 {
             info.memory_ranges.push(MemoryRegion::new(
                 section.name().unwrap_or("").to_string(),
@@ -52,7 +58,11 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
             ));
         }
     }
+    if timing {
+        eprintln!("  ⏱️  Process sections: {:.2?}", step.elapsed());
+    }
 
+    let step = Instant::now();
     for symbol in obj_file.symbols() {
         if let Ok(name) = symbol.name() {
             let kind = if symbol.kind() == object::SymbolKind::Text {
@@ -70,10 +80,6 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
                 SymbolScope::Unknown
             };
             let is_data = kind == SymbolType::Data;
-            eprintln!(
-                "Demangling symbol: {} | Kind: {:?} | Scope: {:?}",
-                name, kind, scope,
-            );
             let dname = demangle(Some(name.to_string()));
             info.elf_symbols.insert(Symbol {
                 name: dname,
@@ -93,8 +99,12 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
             }
         }
     }
+    if timing {
+        eprintln!("  ⏱️  Process ELF symbols: {:.2?}", step.elapsed());
+    }
 
     // Load DWARF sections
+    let step = Instant::now();
     let load_section =
         |id: gimli::SectionId| -> Result<gimli::EndianRcSlice<gimli::RunTimeEndian>> {
             let data = obj_file
@@ -118,10 +128,25 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
     // If DWARF loading fails, we might still want to return symbols if possible,
     // but for now we propagate the error.
     let dwarf = gimli::Dwarf::load(&load_section)?;
+    if timing {
+        eprintln!("  ⏱️  Load DWARF sections: {:.2?}", step.elapsed());
+    }
 
     // Iterate over Compilation Units to process line info and symbols
+    let step = Instant::now();
     let mut units = dwarf.units();
+    let mut unit_count = 0;
+    let mut total_line_time = Duration::from_secs(0);
+    let mut total_entries_time = Duration::from_secs(0);
+    let mut total_subprogram_time = Duration::from_secs(0);
+    let mut total_variable_time = Duration::from_secs(0);
+    let mut total_line_rows = 0;
+    let mut total_entries = 0;
+    let mut total_subprograms = 0;
+    let mut total_variables = 0;
+    let mut local_or_global: usize = 0;
     while let Some(header) = units.next()? {
+        unit_count += 1;
         let unit = dwarf.unit(header)?;
 
         // Mapping from CU-local file index to Global File ID
@@ -129,12 +154,14 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
         let mut file_map: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
 
         // Process line program if present
+        let line_start = Instant::now();
         if let Some(program) = unit.line_program.clone() {
             let _header = program.header();
 
             // Rows
             let mut rows = program.rows();
             while let Some((header, row)) = rows.next_row()? {
+                total_line_rows += 1;
                 if row.is_stmt() {
                     if let Some(line) = row.line() {
                         let local_file_idx = row.file_index();
@@ -174,14 +201,33 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
                 }
             }
         }
+        total_line_time += line_start.elapsed();
 
         // Process debug info entries for symbols (functions and variables)
+        // Use DFS but only process top-level entries (depth 1)
+        let entries_start = Instant::now();
         let mut entries = unit.entries();
+        let mut current_depth: isize = 0;
 
-        while let Some((_, entry)) = entries.next_dfs()? {
+        while let Some((delta_depth, entry)) = entries.next_dfs()? {
+            current_depth += delta_depth;
+
+            // If we're too deep, skip to next sibling to avoid traversing nested entries
+            if current_depth > 1 {
+                continue;
+            }
+
+            // Only process top-level entries (depth == 1)
+            if current_depth != 1 {
+                continue;
+            }
+
+            total_entries += 1;
             match entry.tag() {
                 // Handle functions (subprograms)
                 gimli::DW_TAG_subprogram => {
+                    let subprogram_start = Instant::now();
+                    total_subprograms += 1;
                     // 1. Extract Symbol Name
 
                     // Try linkage_name first (Mangled)
@@ -251,10 +297,13 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
                             });
                         }
                     }
+                    total_subprogram_time += subprogram_start.elapsed();
                 }
 
                 // Handle static/global variables
                 gimli::DW_TAG_variable => {
+                    let variable_start = Instant::now();
+                    total_variables += 1;
                     // Extract variable name
                     let mut raw_name_opt: Option<String> = None;
 
@@ -275,66 +324,51 @@ fn load_elf_info(path: &str) -> Result<ObjectInfo> {
 
                     let name = demangle(raw_name_opt);
 
-                    // Extract address from DW_AT_location
-                    let mut addr_opt = None;
-                    if let Some(attr_value) = entry.attr_value(gimli::DW_AT_location)? {
-                        if let gimli::AttributeValue::Exprloc(expr) = attr_value {
-                            // Simple case: DW_OP_addr followed by an address
-                            let mut eval = expr.evaluation(unit.encoding());
-                            if let Ok(result) = eval.evaluate() {
-                                if let gimli::EvaluationResult::Complete = result {
-                                    let pieces = eval.result();
-                                    if pieces.len() == 1 {
-                                        if let gimli::Location::Address { address } =
-                                            pieces[0].location
-                                        {
-                                            addr_opt = Some(address);
-                                        }
-                                    }
-                                }
+                    // Lookup by name in ELF symbols (avoids expensive DWARF expression evaluation)
+                    if let Some(existing_sym) = info.elf_symbols.get_by_name(&name) {
+                        let arc_sym = info.dwarf_symbols.insert(existing_sym.clone());
+                        if arc_sym.kind == SymbolType::Data {
+                            if arc_sym.scope == SymbolScope::Static {
+                                info.static_file_mapping
+                                    .insert(arc_sym.name.clone(), arc_sym);
+                                local_or_global += 1;
+                            } else if arc_sym.scope == SymbolScope::Global {
+                                info.global_symbols.push(arc_sym);
+                                local_or_global += 1;
                             }
                         }
                     }
-
-                    if let Some(addr) = addr_opt {
-                        // Check if it exists in ELF symbols
-                        if let Some(existing_sym) = info.elf_symbols.lookup(addr) {
-                            // Use existing symbol info
-                            let arc_sym = info.dwarf_symbols.insert(existing_sym.clone());
-                            if arc_sym.kind == SymbolType::Data {
-                                if arc_sym.scope == SymbolScope::Static {
-                                    info.static_file_mapping
-                                        .insert(arc_sym.name.clone(), arc_sym);
-                                    eprintln!(
-                                        "Found global variable '{}' at address 0x{:x} from DWARF",
-                                        existing_sym.name, existing_sym.address
-                                    );
-                                } else if arc_sym.scope == SymbolScope::Global {
-                                    info.global_symbols.push(arc_sym);
-                                    eprintln!(
-                                        "Found global variable '{}' at address 0x{:x} from DWARF",
-                                        existing_sym.name, existing_sym.address
-                                    );
-                                }
-                            }
-                            continue;
-                        } else {
-                            // Try to determine size from type information
-                            // For now, use a default size (could be enhanced later)
-                            info.dwarf_symbols.insert(Symbol {
-                                name,
-                                address: addr,
-                                size: 0, // Size unknown without type info
-                                kind: SymbolType::Data,
-                                scope: SymbolScope::Global, // Could check DW_AT_external
-                            });
-                        }
-                    }
+                    total_variable_time += variable_start.elapsed();
                 }
 
                 _ => {}
             }
         }
+        total_entries_time += entries_start.elapsed();
+    }
+    if timing {
+        eprintln!(
+            "  ⏱️  Process {} compilation units: {:.2?}",
+            unit_count,
+            step.elapsed()
+        );
+        eprintln!(
+            "    ├─ Line programs ({} rows): {:.2?}",
+            total_line_rows, total_line_time
+        );
+        eprintln!(
+            "    └─ Debug entries ({} entries): {:.2?}",
+            total_entries, total_entries_time
+        );
+        eprintln!(
+            "       ├─ Subprograms ({} funcs): {:.2?}",
+            total_subprograms, total_subprogram_time
+        );
+        eprintln!(
+            "       └─ Variables ({} vars): {:.2?} (locals or globals: {})",
+            total_variables, total_variable_time, local_or_global
+        );
+        eprintln!("  ⏱️  TOTAL load_elf_info: {:.2?}", start.elapsed());
     }
 
     Ok(info)
@@ -369,6 +403,17 @@ struct Args {
     #[arg(short = 'r', long = "rtt-search", default_value_t = false)]
     rtt_search: bool,
 
+    #[arg(
+        short = 'o',
+        long = "objdump-path",
+        default_value = "arm-none-eabi-objdump"
+    )]
+    objdump_path: String,
+
+    /// Enable detailed timing measurements for performance profiling
+    #[arg(long = "timing", default_value_t = false)]
+    timing: bool,
+
     /// Path(s) to ELF file(s) to analyze
     #[arg(required = true, num_args = 1..)]
     elf_files: Vec<String>,
@@ -394,17 +439,40 @@ fn main() -> Result<()> {
     // Create channels: request dispatch + ObjectInfo delivery to worker
     let (req_tx, req_rx) = channel();
     let (obj_info_tx, obj_info_rx) = channel();
+    let now = Instant::now();
 
     // Spawn disassembly worker immediately (loads objdump in parallel)
     let path_clone = path.clone();
+    let objdump_path_clone = args.objdump_path.clone();
     thread::spawn(move || {
-        disasm_worker::run_disassembly_worker(&path_clone, req_rx, obj_info_rx);
+        disasm_worker::run_disassembly_worker(
+            &objdump_path_clone,
+            &path_clone,
+            req_rx,
+            obj_info_rx,
+        );
     });
-
+    if args.timing {
+        eprintln!("Started reading ${} (elapsed: {:.2?})", path, now.elapsed());
+    }
     // Load ELF info in parallel with worker's disassembly loading
-    let mut obj_info_data = load_elf_info(&path)?;
-    eprintln!("Loaded ELF info for: {}", path);
+    let mut obj_info_data = load_elf_info(&path, args.timing)?;
+    if args.timing {
+        eprintln!(
+            "Loaded ELF info for: {} (elapsed: {:.2?})",
+            path,
+            now.elapsed()
+        );
+    }
+
+    let sort_start = Instant::now();
     obj_info_data.sort_globals_and_statics(); // Sort symbols once so clients don't have to sort repeatedly
+    if args.timing {
+        eprintln!(
+            "  ⏱️  Sort globals and statics: {:.2?}",
+            sort_start.elapsed()
+        );
+    }
 
     let obj_info = Arc::new(obj_info_data); // Now immutable and shareable across threads
 
@@ -418,14 +486,17 @@ fn main() -> Result<()> {
     transport
         .write_message(&notify)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    eprintln!("Sent SymbolTableReady notification");
+    eprintln!(
+        "Sent SymbolTableReady notification to DA (elapsed: {:.2?})",
+        now.elapsed()
+    );
 
     // Main request loop
     loop {
         match transport.read_message() {
             Ok(msg) => {
                 eprintln!("Received request: {}", msg);
-                if !request_handler::dispatch_request(&msg, &req_tx) {
+                if !request_handler::dispatch_request(&msg, &req_tx, Arc::clone(&obj_info)) {
                     eprintln!("Unknown request type: {}", msg);
                 }
             }
