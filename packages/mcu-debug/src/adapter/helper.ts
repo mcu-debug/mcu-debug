@@ -372,7 +372,7 @@ export class DebugHelper {
 
         let newlineIndex: number;
         while ((newlineIndex = this.stderrBuffer.indexOf("\n")) !== -1) {
-            const line = this.stderrBuffer.substring(0, newlineIndex).trim();
+            const line = this.stderrBuffer.substring(0, newlineIndex).trimEnd();
             this.stderrBuffer = this.stderrBuffer.substring(newlineIndex + 1);
 
             if (line.length > 0) {

@@ -211,8 +211,6 @@ pub enum HelperEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// This test ensures that ts_rs exports are generated.
     /// The actual TS file generation happens during test compilation,
     /// not test execution, so this test doesn't need to do anything.

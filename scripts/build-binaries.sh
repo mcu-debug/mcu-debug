@@ -69,10 +69,9 @@ if [[ "$mode" == "dev" ]]; then
   cargo build --bin "$BIN_NAME"
   host=$(host_platform)
   dbg_path="target/debug/$BIN_NAME"
-  exe_name="$BIN_NAME"
   if [[ "$host" == win32-* ]]; then
     dbg_path="target/debug/$BIN_NAME.exe"
-    exe_name="$BIN_NAME.exe"
+    BIN_NAME="$BIN_NAME.exe"
   fi
 
   # Copy root binary
