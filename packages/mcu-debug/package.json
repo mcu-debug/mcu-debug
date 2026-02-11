@@ -21,7 +21,7 @@
     "type": "git",
     "url": "git+https://github.com/mcu-debug/mcu-debug.git"
   },
-  "license": "MIT",
+  "license": "MIT AND Apache-2.0",
   "author": "Haneef Mohammed <haneefdm@gmail.com>",
   "extensionKind": [
     "workspace"

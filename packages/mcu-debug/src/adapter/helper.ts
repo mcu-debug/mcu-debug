@@ -1,4 +1,18 @@
-import { existsSync } from "fs";
+// Copyright (c) 2026 MCU-Debug Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import { existsSync, statSync, chmodSync } from "fs";
 import { spawn, ChildProcess } from "child_process";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
 import { GDBDebugSession } from "./gdb-session";
@@ -70,7 +84,6 @@ export class DebugHelper {
     private symbolTableReject!: (reason?: any) => void;
     private rttSymbolResolve!: () => void;
     private rttSymbolReject!: (reason?: any) => void;
-    process: NodeJS.Process = process;
     private helperProcess?: ChildProcess;
     private rawBuffer = Buffer.alloc(0);
     private stderrBuffer = "";
@@ -120,7 +133,7 @@ export class DebugHelper {
             const objdumpPath = getObjdumpPath(this.session.args);
 
             const args = ["--objdump-path", objdumpPath];
-            if (this.process.env.PROD_MCU_DEBUG_HELPER === "1") {
+            if (process.env.PROD_MCU_DEBUG_HELPER === "1") {
                 args.push("--timing");
             }
             const rttConfig = this.session.args.pvtRttConfig ?? this.session.args.rttConfig;
@@ -170,7 +183,7 @@ export class DebugHelper {
             helperName += ".exe";
         }
         let helperPath = `${extPath}/bin/${helperName}`;
-        if (existsSync(helperPath) && this.process.env.PROD_MCU_DEBUG_HELPER !== "1") {
+        if (existsSync(helperPath) && process.env.PROD_MCU_DEBUG_HELPER !== "1") {
             return helperPath;
         }
         helperPath = `${extPath}/bin/${platform}-${arch}/${helperName}`;
@@ -179,6 +192,24 @@ export class DebugHelper {
         } else {
             throw new Error(`mcu-debug-helper executable not found for platform ${platform} and architecture ${arch} at path ${helperPath}`);
         }
+    }
+
+    private getHelperExecPath() {
+        let helperPath = this.getHelperExecutable();
+        try {
+            // Quick defensive check before spawning
+            if (process.platform !== "win32") {
+                const stats = statSync(helperPath);
+                if (!(stats.mode & 0o100)) {
+                    // Check if the owner-execute bit is missing
+                    chmodSync(helperPath, 0o755);
+                }
+            }
+        } catch (error) {
+            this.session.handleMsg(Stderr, `Error finding helper executable: ${error}`);
+            throw error;
+        }
+        return helperPath;
     }
 
     private handleHelperStdout(message: Buffer | string) {

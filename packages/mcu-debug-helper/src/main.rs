@@ -1,3 +1,17 @@
+// Copyright (c) 2026 MCU-Debug Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use anyhow::Result;
 use clap::Parser;
 use gimli::Reader;
@@ -219,21 +233,19 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
         // Use DFS but only process top-level entries (depth 1)
         let entries_start = Instant::now();
         let mut entries = unit.entries();
-        let mut current_depth: isize = 0;
-
-        while let Some((delta_depth, entry)) = entries.next_dfs()? {
-            current_depth += delta_depth;
-
-            // If we're too deep, skip to next sibling to avoid traversing nested entries
-            if current_depth > 1 {
-                continue;
+        while let Some((_, entry)) = entries.next_dfs()? {
+            match entry.tag() {
+                gimli::DW_TAG_subprogram => {
+                    break;
+                }
+                gimli::DW_TAG_variable => {
+                    break;
+                }
+                _ => {}
             }
+        }
 
-            // Only process top-level entries (depth == 1)
-            if current_depth != 1 {
-                continue;
-            }
-
+        while let Some(entry) = entries.next_sibling()? {
             total_entries += 1;
             match entry.tag() {
                 // Handle functions (subprograms)

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 MCU-Debug Authors.
+// This source code is licensed under the MIT license found in the
+// LICENSE-MIT file in the root directory of this source tree.
+
 import * as vscode from "vscode";
 import * as path from "path";
 
