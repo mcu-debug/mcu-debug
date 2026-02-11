@@ -1272,7 +1272,7 @@ export class VariableManager {
                     }
                     return [];
                 }
-                vars = this.debugSession.symbolTable.getGlobalVariablesNames();
+                vars = await this.debugSession.debugHelper.getGlobalsNames();
             } else {
                 vars = this.debugSession.symbolTable.getGlobalVariablesNames();
             }
