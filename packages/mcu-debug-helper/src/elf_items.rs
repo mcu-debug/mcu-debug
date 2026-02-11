@@ -15,6 +15,7 @@
 use std::num::{NonZero, NonZeroU64};
 use std::sync::Arc;
 
+use crate::utils::CanonicalPath;
 use crate::{symbols::Symbol, utils::canonicalize_path};
 
 pub struct FileTable {
@@ -116,21 +117,21 @@ impl AddrtoLineInfo {
 }
 
 pub struct StaticFileMapping {
-    pub file_map: std::collections::BTreeMap<String, Vec<Arc<Symbol>>>,
+    pub file_map: std::collections::HashMap<CanonicalPath, Vec<Arc<Symbol>>>,
 }
 
 impl StaticFileMapping {
     pub fn new() -> Self {
         Self {
-            file_map: std::collections::BTreeMap::new(),
+            file_map: std::collections::HashMap::new(),
         }
     }
-    pub fn insert(&mut self, file_path: String, symbol: Arc<Symbol>) {
-        if let Some(existing) = self.file_map.get_mut(&file_path) {
+    pub fn insert(&mut self, file_path: &CanonicalPath, symbol: Arc<Symbol>) {
+        if let Some(existing) = self.file_map.get_mut(file_path) {
             existing.push(symbol);
             return;
         }
-        self.file_map.insert(file_path, vec![symbol]);
+        self.file_map.insert(file_path.clone(), vec![symbol]);
     }
 
     pub fn sort_symbols(&mut self) {
@@ -139,7 +140,7 @@ impl StaticFileMapping {
         }
     }
 
-    pub fn get_statics_for_file(&self, file_path: &str) -> Vec<Arc<Symbol>> {
+    pub fn get_statics_for_file(&self, file_path: &CanonicalPath) -> Vec<Arc<Symbol>> {
         self.file_map
             .get(file_path)
             .cloned()

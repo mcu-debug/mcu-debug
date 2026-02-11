@@ -1,3 +1,3 @@
 // This file is auto-generated. Do not edit manually.
-export const gitCommitHash = 'af0269a+dirty';
+export const gitCommitHash = 'ac51f60+dirty';
 export const pkgJsonVersion = '0.1.0';

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::protocol::DisasmRequest;
+use crate::utils::CanonicalPath;
 /// Request parsing and dispatch for the main request loop.
 use crate::{helper_requests::*, transport, ObjectInfo};
 use serde_json::Value;
@@ -106,9 +107,10 @@ fn handle_globals_request(msg: &Value, obj_info: Arc<ObjectInfo>) -> bool {
 fn handle_statics_request(msg: &Value, obj_info: Arc<ObjectInfo>) -> bool {
     match serde_json::from_value::<StaticsRequest>(msg.clone()) {
         Ok(typed_req) => {
+            let canonical_file_name = CanonicalPath::new(&typed_req.file_name);
             let statics = obj_info
                 .static_file_mapping
-                .get_statics_for_file(&typed_req.file_name);
+                .get_statics_for_file(&canonical_file_name);
             let statics_ary: Vec<(String, String)> = statics
                 .iter()
                 .map(|sym| (sym.name.clone(), format!("0x{:x}", sym.address)))

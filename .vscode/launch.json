@@ -55,7 +55,8 @@
                 ]
             },
             "program": "${cargo:program}",
-            "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/stm32f429-rtt.elf"],
+            // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/stm32f429-rtt.elf"],
+            "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/proj_cm4.elf"],
             "cwd": "${workspaceFolder}/packages/mcu-debug-helper",
             "console": "internalConsole"
         }

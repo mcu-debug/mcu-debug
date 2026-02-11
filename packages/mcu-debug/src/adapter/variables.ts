@@ -1351,7 +1351,7 @@ export class VariableManager {
                     }
                     return [];
                 }
-                vars = this.debugSession.symbolTable.getStaticVariablesNames(fullFileName);
+                vars = await this.debugSession.debugHelper.getStaticsNames(fullFileName);
             } else {
                 vars = this.debugSession.symbolTable.getStaticVariablesNames(fullFileName);
                 if (vars.length === 0 && fullFileId !== fileId) {

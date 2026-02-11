@@ -83,3 +83,30 @@ pub fn canonicalize_path(source_path: &str) -> String {
 
     final_path
 }
+
+pub fn is_absolute_path(path: &str) -> bool {
+    let path = Path::new(path);
+    path.is_absolute()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CanonicalPath {
+    path: String,
+}
+
+impl CanonicalPath {
+    pub fn new(source_path: &str) -> Self {
+        let canonical = canonicalize_path(source_path);
+        Self { path: canonical }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.path
+    }
+}
+
+impl std::fmt::Display for CanonicalPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path)
+    }
+}

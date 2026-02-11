@@ -15,6 +15,7 @@
 use anyhow::Result;
 use clap::Parser;
 use gimli::Reader;
+use mcu_debug_helper::utils::{is_absolute_path, CanonicalPath};
 use object::{Object, ObjectSection, ObjectSymbol};
 use std::process::exit;
 use std::sync::{mpsc::channel, Arc};
@@ -77,6 +78,7 @@ fn process_dwarf_entry(
     dwarf: &gimli::Dwarf<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
     unit: &gimli::Unit<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
     info: &mut ObjectInfo,
+    unit_file_name: &CanonicalPath,
     stats: &mut ProcessingStats,
 ) -> Result<()> {
     match entry.tag() {
@@ -187,8 +189,7 @@ fn process_dwarf_entry(
                 let arc_sym = info.dwarf_symbols.insert(existing_sym.clone());
                 if arc_sym.kind == SymbolType::Data {
                     if arc_sym.scope == SymbolScope::Static {
-                        info.static_file_mapping
-                            .insert(arc_sym.name.clone(), arc_sym);
+                        info.static_file_mapping.insert(unit_file_name, arc_sym);
                         stats.local_or_global += 1;
                     } else if arc_sym.scope == SymbolScope::Global {
                         info.global_symbols.push(arc_sym);
@@ -342,6 +343,30 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
         unit_count += 1;
         let unit = dwarf.unit(header)?;
 
+        let mut unit_file_name = unit
+            .name
+            .as_ref()
+            .and_then(|n| n.to_string_lossy().ok())
+            .map(|cow| cow.into_owned())
+            .unwrap_or_else(|| "<unknown CU>".to_string());
+
+        if !is_absolute_path(&unit_file_name) {
+            if let Some(comp_dir_attr) = unit.comp_dir.as_ref() {
+                if let Ok(comp_dir_cow) = comp_dir_attr.to_string_lossy() {
+                    let comp_dir = comp_dir_cow.as_ref();
+                    unit_file_name = format!("{}/{}", comp_dir, unit_file_name);
+                }
+            }
+        }
+        let canonical_unit_file_name: CanonicalPath = CanonicalPath::new(&unit_file_name);
+
+        if timing {
+            eprintln!(
+                "  ⏱️  Start processing CU #{}: {}",
+                unit_count, unit_file_name
+            );
+        }
+
         // Mapping from CU-local file index to Global File ID
         // Shared between line program processing and symbol extraction
         let mut file_map: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
@@ -408,7 +433,14 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
                 gimli::DW_TAG_subprogram | gimli::DW_TAG_variable => {
                     // Process this first entry
                     stats.total_entries += 1;
-                    process_dwarf_entry(entry, &dwarf, &unit, &mut info, &mut stats)?;
+                    process_dwarf_entry(
+                        entry,
+                        &dwarf,
+                        &unit,
+                        &mut info,
+                        &canonical_unit_file_name,
+                        &mut stats,
+                    )?;
                     first_entry_found = true;
                     break;
                 }
@@ -420,7 +452,14 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
         if first_entry_found {
             while let Some(entry) = entries.next_sibling()? {
                 stats.total_entries += 1;
-                process_dwarf_entry(entry, &dwarf, &unit, &mut info, &mut stats)?;
+                process_dwarf_entry(
+                    entry,
+                    &dwarf,
+                    &unit,
+                    &mut info,
+                    &canonical_unit_file_name,
+                    &mut stats,
+                )?;
             }
         }
         stats.total_entries_time += entries_start.elapsed();
