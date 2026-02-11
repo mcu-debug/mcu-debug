@@ -123,7 +123,9 @@ export class DebugHelper {
             if (this.process.env.PROD_MCU_DEBUG_HELPER === "1") {
                 args.push("--timing");
             }
-            if (this.session.args.rttConfig?.enabled && (this.session.args.rttConfig.address === "auto" || !this.session.args.rttConfig.address)) {
+            const rttConfig = this.session.args.pvtRttConfig ?? this.session.args.rttConfig;
+            const needRtt = rttConfig?.enabled && (rttConfig.address === "auto" || !rttConfig.address);
+            if (needRtt) {
                 args.push(`--rtt-search`);
                 this.lookingForRTT = true;
             } else if (this.rttSymbolResolve) {
@@ -450,11 +452,21 @@ export class DebugHelper {
         return this.sendRequest<GlobalsResponse>("globals", {});
     }
 
+    async getGlobalsNames(): Promise<string[]> {
+        const response = await this.getGlobals();
+        return response.globals.map(([name, _type]) => name);
+    }
+
     /**
      * Get static variables for a specific file.
      */
     async getStatics(fileName: string): Promise<StaticsResponse> {
         return this.sendRequest<StaticsResponse>("statics", { file_name: fileName });
+    }
+
+    async getStaticsNames(fileName: string): Promise<string[]> {
+        const response = await this.getStatics(fileName);
+        return response.statics.map(([name, _type]) => name);
     }
 
     /**

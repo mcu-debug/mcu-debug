@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use gimli::Reader;
 use object::{Object, ObjectSection, ObjectSymbol};
+use std::process::exit;
 use std::sync::{mpsc::channel, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,9 +28,16 @@ fn dwarf_attr_to_string(
         .and_then(|d_s| d_s.to_string_lossy().ok().map(|cow| cow.to_string()))
 }
 
-fn load_elf_info(path: &str, timing: bool) -> Result<ObjectInfo> {
+fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Result<ObjectInfo> {
     let start = Instant::now();
-    let file = fs::File::open(path)?;
+    let file_result = fs::File::open(path);
+    let file = match file_result {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error opening ELF file '{}': {}", path, e);
+            exit(1);
+        }
+    };
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let obj_file = object::File::parse(&*mmap)?;
     if timing {
@@ -82,18 +90,22 @@ fn load_elf_info(path: &str, timing: bool) -> Result<ObjectInfo> {
             let is_data = kind == SymbolType::Data;
             let dname = demangle(Some(name.to_string()));
             info.elf_symbols.insert(Symbol {
-                name: dname,
+                name: dname.clone(),
                 address: symbol.address(),
                 size: symbol.size(),
                 kind,
                 scope,
             });
-            if (name == "_SEGGER_RTT" || name == "SEGGER_RTT") && is_data {
+            if (dname == "_SEGGER_RTT" || dname == "SEGGER_RTT") && is_data {
                 info.rtt_symbol_address = Some(symbol.address());
-                rtt_found_notification("local-session", &format!("0x{:x}", symbol.address()));
+                let notify =
+                    rtt_found_notification("local-session", &format!("0x{:x}", symbol.address()));
+                transport
+                    .write_message(&notify)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
                 eprintln!(
                     "Found RTT symbol '{}' at address 0x{:x}",
-                    name,
+                    dname,
                     symbol.address()
                 );
             }
@@ -456,7 +468,7 @@ fn main() -> Result<()> {
         eprintln!("Started reading ${} (elapsed: {:.2?})", path, now.elapsed());
     }
     // Load ELF info in parallel with worker's disassembly loading
-    let mut obj_info_data = load_elf_info(&path, args.timing)?;
+    let mut obj_info_data = load_elf_info(&path, &mut transport, args.timing)?;
     if args.timing {
         eprintln!(
             "Loaded ELF info for: {} (elapsed: {:.2?})",

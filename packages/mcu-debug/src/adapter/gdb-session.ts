@@ -27,7 +27,9 @@ import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
 import { TcpPortScanner } from "@mcu-debug/shared";
 import { DisassemblyAdapter } from "./disassebly-gdb";
-import { DebugHelper } from "./helper";
+import { DebugHelper, withTimeout } from "./helper";
+
+export const RustDebugHelperEnabled = true;
 
 let SessionCounter = 0;
 
@@ -61,7 +63,7 @@ export class GDBDebugSession extends SeqDebugSession {
     private swoLaunchPromise = Promise.resolve();
     private swoLaunched = false;
     private disassemblyAdapter: DisassemblyAdapter;
-    private debugHelper: DebugHelper;
+    public debugHelper: DebugHelper;
 
     protected varManager: VariableManager;
     protected bkptManager: BreakpointManager;
@@ -1306,8 +1308,11 @@ export class GDBDebugSession extends SeqDebugSession {
         try {
             const execs: SymbolFile[] = this.args.symbolFiles || [defSymbolFile(this.args.executable)];
             this.debugHelperPromise = this.debugHelper.initialize(execs);
-            this.symbolTable.initialize(execs);
-            await this.symbolTable.loadSymbols();
+            if (RustDebugHelperEnabled) {
+                this.symbolTable.initialize(execs);
+            } else {
+                await this.symbolTable.loadSymbols();
+            }
             const rttConfig = this.args.pvtRttConfig || this.args.rttConfig;
             if (rttConfig?.enabled) {
                 const symName = this.symbolTable.rttSymbolName;
@@ -1316,16 +1321,31 @@ export class GDBDebugSession extends SeqDebugSession {
                     rttConfig.address = "auto";
                 }
                 if (rttConfig.address === "auto") {
-                    const rttSym = this.symbolTable.getGlobalOrStaticVarByName(symName);
-                    if (!rttSym) {
-                        rttConfig.enabled = false;
-                        this.handleMsg(Stderr, `Could not find symbol '${symName}' in executable. ` + "Make sure you compile/link with debug ON or you can specify your own RTT address\n");
-                    } else {
+                    try {
+                        let rttAddress: string | undefined = undefined;
+                        if (RustDebugHelperEnabled) {
+                            await withTimeout(5000, this.debugHelper.rttSymbolReady);
+                            rttAddress = this.debugHelper.rttSymbolAddress ?? undefined;
+                            if (!rttAddress) {
+                                throw new Error("RTT symbol address not found by debug helper in entire symbol table. Make sure _SEGGER_RTT symbol is present (not optimized out)");
+                            }
+                        } else {
+                            const rttSym = this.symbolTable.getGlobalOrStaticVarByName(symName);
+                            if (!rttSym) {
+                                rttConfig.enabled = false;
+                                throw new Error(`Could not find symbol '${symName}' in executable. ` + "Make sure you compile/link with debug ON or you can specify your own RTT address\n");
+                            } else {
+                                rttAddress = formatAddress(rttSym!.address);
+                            }
+                        }
+
+                        rttConfig.address = rttAddress;
                         const searchStr = rttConfig.searchId || "SEGGER RTT";
-                        rttConfig.address = formatAddress(rttSym.address);
                         rttConfig.searchSize = Math.max(rttConfig.searchSize || 0, searchStr.length);
                         rttConfig.searchId = searchStr;
                         rttConfig.clearSearch = rttConfig.clearSearch === undefined ? true : rttConfig.clearSearch;
+                    } catch (e) {
+                        this.handleMsg(Stderr, `WARNING: Debug helper getRTTAddress failed. RTT address auto-detection may not work. Please report this issue. ${e}\n`);
                     }
                 }
             }

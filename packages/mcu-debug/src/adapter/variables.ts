@@ -2,14 +2,14 @@ import { IValueIdentifiable, ValueHandleRegistry, ValueHandleRegistryPrimitive }
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { GdbEventNames, GdbMiOutput, GdbMiRecord, GdbRecordResult, VarUpdateRecord } from "./gdb-mi/mi-types";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { GDBDebugSession } from "./gdb-session";
+import { GDBDebugSession, RustDebugHelperEnabled } from "./gdb-session";
 import { copyInterfaceProperties, toStringDecHexOctBin, toStringDecHexOctBin32or64 } from "./servers/common";
 import { GdbProtocolVariable, GdbProtocolVariableTemplate } from "./custom-requests";
 import { VariableScope, VariableTypeMask, decodeReference, ActualScopeMask, ScopeBits, ScopeMask, encodeScopeReference, encodeVarReference } from "./var-scopes";
 import { DataEvaluateExpression, DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";
 import { TargetInfo } from "./target-info";
 import { MemoryRequests } from "./memory";
-import { off } from "node:cluster";
+import { withTimeout } from "./helper";
 
 // These are the fields that uniquely identify a variable
 export class VariableKeys implements IValueIdentifiable {
@@ -1262,7 +1262,20 @@ export class VariableManager {
 
     public async getGlobalVariables(): Promise<GdbProtocolVariable[]> {
         try {
-            const vars = this.debugSession.symbolTable.getGlobalVariables();
+            let vars: string[] = [];
+            if (RustDebugHelperEnabled) {
+                try {
+                    await withTimeout(1000, this.debugSession.debugHelper.symbolTableReady);
+                } catch {
+                    if (this.debugSession.args.debugFlags.anyFlags) {
+                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Warning: Timeout waiting for symbol table to be ready for global variables\n`);
+                    }
+                    return [];
+                }
+                vars = this.debugSession.symbolTable.getGlobalVariablesNames();
+            } else {
+                vars = this.debugSession.symbolTable.getGlobalVariablesNames();
+            }
             const variables: GdbProtocolVariable[] = [];
             const container = this.getContainer(VariableScope.Global) as VariableContainerForGlobals;
             const fileId = container.getFileId(VariableManager.GlobalFileName);
@@ -1274,19 +1287,19 @@ export class VariableManager {
                 if (container.gdbInstance.IsRunning()) {
                     break;
                 }
-                const key = new VariableKeys(0, v.name, useRef);
+                const key = new VariableKeys(0, v, useRef);
                 const existingVar = container.getVariableByKey(key);
                 try {
                     if (existingVar === undefined) {
-                        const gdbVarName = this.createGdbName(container, v.name, 0, 0);
+                        const gdbVarName = this.createGdbName(container, v, 0, 0);
                         // There should be a better way to create a global variable by name but gdb mi doesn't seem to
                         // have a way to do it directly. So we use var-create with @ for scope which works for globals/statics
                         // because it can still collide with a local variable of same name in current frame, but that is rare enough to ignore for now.
                         // There HAS to be a better way to do this, I just couldn't find it in gdb mi docs.
-                        const cmd = `-var-create ${gdbVarName} @ ${v.name}`;
+                        const cmd = `-var-create ${gdbVarName} @ ${v}`;
                         const varCreateRecord = await container.gdbInstance.sendCommand(cmd);
                         const record = varCreateRecord.resultRecord?.result as any;
-                        const [varObj, handle] = container.parseMiGlobalVariable(v.name, record, VariableScope.GlobalVariable, 0, VariableManager.GlobalFileName);
+                        const [varObj, handle] = container.parseMiGlobalVariable(v, record, VariableScope.GlobalVariable, 0, VariableManager.GlobalFileName);
                         if (varObj !== undefined) {
                             if (record["numchild"] && parseInt(record["numchild"]) > 0) {
                                 varObj.variablesReference = handle!;
@@ -1308,7 +1321,7 @@ export class VariableManager {
                     }
                 } catch (e) {
                     if (this.debugSession.args.debugFlags.anyFlags) {
-                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting global variable ${v.name}: ${e}\n`);
+                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting global variable ${v}: ${e}\n`);
                     }
                 }
             }
@@ -1328,11 +1341,24 @@ export class VariableManager {
             const fileName = this.debugSession.getFileById(fileId);
             const fullFileName = this.debugSession.getFileById(fullFileId);
             let useName = fullFileName;
-            let vars = this.debugSession.symbolTable.getStaticVariables(fullFileName);
-            if (vars.length === 0 && fullFileId !== fileId) {
-                // Try again with just file name
-                vars = this.debugSession.symbolTable.getStaticVariables(fileName);
-                useName = fileName;
+            let vars: string[] = [];
+            if (RustDebugHelperEnabled) {
+                try {
+                    await withTimeout(2000, this.debugSession.debugHelper.symbolTableReady);
+                } catch {
+                    if (this.debugSession.args.debugFlags.anyFlags) {
+                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Warning: Timeout waiting for symbol table to be ready for global variables\n`);
+                    }
+                    return [];
+                }
+                vars = this.debugSession.symbolTable.getStaticVariablesNames(fullFileName);
+            } else {
+                vars = this.debugSession.symbolTable.getStaticVariablesNames(fullFileName);
+                if (vars.length === 0 && fullFileId !== fileId) {
+                    // Try again with just file name
+                    vars = this.debugSession.symbolTable.getStaticVariablesNames(fileName);
+                    useName = fileName;
+                }
             }
             const useFileId = container.getFileId(useName);
             if (useFileId === undefined) {
@@ -1343,19 +1369,20 @@ export class VariableManager {
                 if (container.gdbInstance.IsRunning()) {
                     break;
                 }
-                const key = new VariableKeys(0, v.name, useRef);
+                const key = new VariableKeys(0, v, useRef);
                 const existingVar = container.getVariableByKey(key);
                 try {
                     if (existingVar === undefined) {
-                        const gdbVarName = this.createGdbName(container, v.name, fileId, fullFileId);
+                        const gdbVarName = this.createGdbName(container, v, fileId, fullFileId);
                         // There should be a better way to create a global variable by name but gdb mi doesn't seem to
                         // have a way to do it directly. So we use var-create with @ for scope which works for globals/statics
                         // because it can still collide with a local variable of same name in current frame, but that is rare enough to ignore for now.
                         // There HAS to be a better way to do this, I just couldn't find it in gdb mi docs.
-                        const cmd = `-var-create ${gdbVarName} @ ${v.name}`;
+                        const cmd = `-var-create ${gdbVarName} @ ${v}`;
+
                         const varCreateRecord = await container.gdbInstance.sendCommand(cmd);
                         const record = varCreateRecord.resultRecord?.result as any;
-                        const [varObj, handle] = container.parseMiGlobalVariable(v.name, record, VariableScope.StaticVariable, 0, useName);
+                        const [varObj, handle] = container.parseMiGlobalVariable(v, record, VariableScope.StaticVariable, 0, useName);
                         if (varObj !== undefined) {
                             if (record["numchild"] && parseInt(record["numchild"]) > 0) {
                                 varObj.variablesReference = handle!;
@@ -1377,7 +1404,7 @@ export class VariableManager {
                     }
                 } catch (e) {
                     if (this.debugSession.args.debugFlags.anyFlags) {
-                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting global variable ${v.name}: ${e}\n`);
+                        this.debugSession.handleMsg(GdbEventNames.Console, `mcu-debug: Error getting global variable ${v}: ${e}\n`);
                     }
                 }
             }

@@ -739,6 +739,10 @@ export class SymbolTable {
         return this.globalVars;
     }
 
+    public getGlobalVariablesNames(): string[] {
+        return this.globalVars.map((s) => s.name);
+    }
+
     public async getStaticVariableNames(file: string): Promise<string[]> {
         await this.finishNmSymbols();
         const syms = this.getStaticVariables(file);
@@ -792,6 +796,12 @@ export class SymbolTable {
 
         this.logPathResolution(`  Found ${ret.length} static variables after variant search`);
         this.staticsByFile[canonical] = ret;
+        return ret;
+    }
+
+    public getStaticVariablesNames(file: string): string[] {
+        const syms = this.getStaticVariables(file);
+        const ret = syms.map((s) => s.name);
         return ret;
     }
 

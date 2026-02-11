@@ -55,7 +55,7 @@
                 ]
             },
             "program": "${cargo:program}",
-            "args": ["/Users/hdm/mtw35/Dual-CPU_Empty_PSOC6_App/proj_cm4/build/last_config/proj_cm4.elf"],
+            "args": ["--rtt-search", "${workspaceFolder}/mylfs/stm32f429-rtt.elf"],
             "cwd": "${workspaceFolder}/packages/mcu-debug-helper",
             "console": "internalConsole"
         }
