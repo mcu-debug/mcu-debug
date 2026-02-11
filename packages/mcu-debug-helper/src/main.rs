@@ -42,6 +42,181 @@ fn dwarf_attr_to_string(
         .and_then(|d_s| d_s.to_string_lossy().ok().map(|cow| cow.to_string()))
 }
 
+/// Statistics for processing DWARF compilation units
+struct ProcessingStats {
+    total_line_rows: usize,
+    total_line_time: Duration,
+    total_entries: usize,
+    total_entries_time: Duration,
+    total_subprograms: usize,
+    total_subprogram_time: Duration,
+    total_variables: usize,
+    total_variable_time: Duration,
+    local_or_global: usize,
+}
+
+impl ProcessingStats {
+    fn new() -> Self {
+        Self {
+            total_line_rows: 0,
+            total_line_time: Duration::from_secs(0),
+            total_entries: 0,
+            total_entries_time: Duration::from_secs(0),
+            total_subprograms: 0,
+            total_subprogram_time: Duration::from_secs(0),
+            total_variables: 0,
+            total_variable_time: Duration::from_secs(0),
+            local_or_global: 0,
+        }
+    }
+}
+
+/// Process a single DWARF debug info entry (subprogram or variable)
+fn process_dwarf_entry(
+    entry: &gimli::DebuggingInformationEntry<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
+    dwarf: &gimli::Dwarf<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
+    unit: &gimli::Unit<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
+    info: &mut ObjectInfo,
+    stats: &mut ProcessingStats,
+) -> Result<()> {
+    match entry.tag() {
+        // Handle functions (subprograms)
+        gimli::DW_TAG_subprogram => {
+            let subprogram_start = Instant::now();
+            stats.total_subprograms += 1;
+            // 1. Extract Symbol Name
+
+            // Try linkage_name first (Mangled)
+            let linkage_name_attr = entry
+                .attr_value(gimli::DW_AT_linkage_name)?
+                .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
+
+            let mut raw_name_opt: Option<String> = None;
+
+            if let Some(attr) = linkage_name_attr {
+                raw_name_opt = dwarf_attr_to_string(dwarf, unit, attr);
+            }
+
+            if raw_name_opt.is_none() {
+                if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
+                    raw_name_opt = dwarf_attr_to_string(dwarf, unit, name_attr);
+                }
+            }
+
+            let name = demangle(raw_name_opt);
+
+            // 2. Extract Address Range
+            let mut low_opt = None;
+            if let Some(gimli::AttributeValue::Addr(addr)) =
+                entry.attr_value(gimli::DW_AT_low_pc)?
+            {
+                low_opt = Some(addr);
+            }
+
+            // We now have a start address and a name. See if it exists in the elf symbols
+            if let Some(low) = low_opt {
+                if let Some(existing_sym) = info.elf_symbols.lookup(low) {
+                    // Use existing symbol info
+                    info.dwarf_symbols.insert(existing_sym.clone());
+                    stats.total_subprogram_time += subprogram_start.elapsed();
+                    return Ok(());
+                } else {
+                    // This symbol is not in the ELF symbol table, it may have been stripped, so we skip it
+                    stats.total_subprogram_time += subprogram_start.elapsed();
+                    return Ok(());
+                }
+            }
+
+            let mut high_opt = None;
+            if let Some(high_attr) = entry.attr_value(gimli::DW_AT_high_pc)? {
+                match high_attr {
+                    gimli::AttributeValue::Addr(addr) => high_opt = Some(addr), // Absolute address
+                    gimli::AttributeValue::Udata(size) => {
+                        if let Some(low) = low_opt {
+                            high_opt = Some(low + size);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let (Some(low), Some(high)) = (low_opt, high_opt) {
+                let size = high.saturating_sub(low);
+
+                if size > 0 {
+                    // eprintln!("Function: {} [0x{:x} - 0x{:x})", name, low, high);
+
+                    info.dwarf_symbols.insert(Symbol {
+                        name,
+                        address: low,
+                        size,
+                        kind: SymbolType::Function,
+                        scope: SymbolScope::Global,
+                    });
+                }
+            }
+            stats.total_subprogram_time += subprogram_start.elapsed();
+        }
+
+        // Handle static/global variables
+        gimli::DW_TAG_variable => {
+            let variable_start = Instant::now();
+            stats.total_variables += 1;
+            // Extract variable name
+            let mut raw_name_opt: Option<String> = None;
+
+            // Try linkage_name first (for global variables)
+            let linkage_name_attr = entry
+                .attr_value(gimli::DW_AT_linkage_name)?
+                .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
+
+            if let Some(attr) = linkage_name_attr {
+                raw_name_opt = dwarf_attr_to_string(dwarf, unit, attr);
+            }
+
+            if raw_name_opt.is_none() {
+                if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
+                    raw_name_opt = dwarf_attr_to_string(dwarf, unit, name_attr);
+                }
+            }
+
+            let name = demangle(raw_name_opt);
+
+            // Lookup by name in ELF symbols (avoids expensive DWARF expression evaluation)
+            if let Some(existing_sym) = info.elf_symbols.get_by_name(&name) {
+                let arc_sym = info.dwarf_symbols.insert(existing_sym.clone());
+                if arc_sym.kind == SymbolType::Data {
+                    if arc_sym.scope == SymbolScope::Static {
+                        info.static_file_mapping
+                            .insert(arc_sym.name.clone(), arc_sym);
+                        stats.local_or_global += 1;
+                    } else if arc_sym.scope == SymbolScope::Global {
+                        info.global_symbols.push(arc_sym);
+                        stats.local_or_global += 1;
+                    } else {
+                        eprintln!(
+                            "Warning: DWARF variable '{}' found but ELF symbol has unknown scope. Please report this issue.",
+                            name
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "Warning: DWARF variable '{}' found but ELF symbol is not data. Please report this issue.",
+                        name
+                    );
+                }
+            } else {
+                // This variable is not in the ELF symbol table, it may have been stripped, so we skip it
+                // These were probably optimized out anyway
+            }
+            stats.total_variable_time += variable_start.elapsed();
+        }
+
+        _ => {}
+    }
+    Ok(())
+}
+
 fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Result<ObjectInfo> {
     let start = Instant::now();
     let file_result = fs::File::open(path);
@@ -162,15 +337,7 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
     let step = Instant::now();
     let mut units = dwarf.units();
     let mut unit_count = 0;
-    let mut total_line_time = Duration::from_secs(0);
-    let mut total_entries_time = Duration::from_secs(0);
-    let mut total_subprogram_time = Duration::from_secs(0);
-    let mut total_variable_time = Duration::from_secs(0);
-    let mut total_line_rows = 0;
-    let mut total_entries = 0;
-    let mut total_subprograms = 0;
-    let mut total_variables = 0;
-    let mut local_or_global: usize = 0;
+    let mut stats = ProcessingStats::new();
     while let Some(header) = units.next()? {
         unit_count += 1;
         let unit = dwarf.unit(header)?;
@@ -187,7 +354,7 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
             // Rows
             let mut rows = program.rows();
             while let Some((header, row)) = rows.next_row()? {
-                total_line_rows += 1;
+                stats.total_line_rows += 1;
                 if row.is_stmt() {
                     if let Some(line) = row.line() {
                         let local_file_idx = row.file_index();
@@ -227,148 +394,36 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
                 }
             }
         }
-        total_line_time += line_start.elapsed();
+        stats.total_line_time += line_start.elapsed();
 
         // Process debug info entries for symbols (functions and variables)
-        // Use DFS but only process top-level entries (depth 1)
+        // Find first top-level entry (subprogram or variable), then iterate siblings
         let entries_start = Instant::now();
         let mut entries = unit.entries();
+
+        // Find first subprogram or variable (top-level entry)
+        let mut first_entry_found = false;
         while let Some((_, entry)) = entries.next_dfs()? {
             match entry.tag() {
-                gimli::DW_TAG_subprogram => {
-                    break;
-                }
-                gimli::DW_TAG_variable => {
+                gimli::DW_TAG_subprogram | gimli::DW_TAG_variable => {
+                    // Process this first entry
+                    stats.total_entries += 1;
+                    process_dwarf_entry(entry, &dwarf, &unit, &mut info, &mut stats)?;
+                    first_entry_found = true;
                     break;
                 }
                 _ => {}
             }
         }
 
-        while let Some(entry) = entries.next_sibling()? {
-            total_entries += 1;
-            match entry.tag() {
-                // Handle functions (subprograms)
-                gimli::DW_TAG_subprogram => {
-                    let subprogram_start = Instant::now();
-                    total_subprograms += 1;
-                    // 1. Extract Symbol Name
-
-                    // Try linkage_name first (Mangled)
-                    let linkage_name_attr = entry
-                        .attr_value(gimli::DW_AT_linkage_name)?
-                        .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
-
-                    let mut raw_name_opt: Option<String> = None;
-
-                    if let Some(attr) = linkage_name_attr {
-                        raw_name_opt = dwarf_attr_to_string(&dwarf, &unit, attr);
-                    }
-
-                    if raw_name_opt.is_none() {
-                        if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
-                            raw_name_opt = dwarf_attr_to_string(&dwarf, &unit, name_attr);
-                        }
-                    }
-
-                    let name = demangle(raw_name_opt);
-
-                    // 2. Extract Address Range
-                    let mut low_opt = None;
-                    if let Some(gimli::AttributeValue::Addr(addr)) =
-                        entry.attr_value(gimli::DW_AT_low_pc)?
-                    {
-                        low_opt = Some(addr);
-                    }
-
-                    // We now have a start address and a name. See if it exists in the elf symbols
-                    if let Some(low) = low_opt {
-                        if let Some(existing_sym) = info.elf_symbols.lookup(low) {
-                            // Use existing symbol info
-                            info.dwarf_symbols.insert(existing_sym.clone());
-                            continue;
-                        } else {
-                            // This symbol is not in the ELF symbol table, it may have been stripped, so we skip it
-                            continue;
-                        }
-                    }
-
-                    let mut high_opt = None;
-                    if let Some(high_attr) = entry.attr_value(gimli::DW_AT_high_pc)? {
-                        match high_attr {
-                            gimli::AttributeValue::Addr(addr) => high_opt = Some(addr), // Absolute address
-                            gimli::AttributeValue::Udata(size) => {
-                                if let Some(low) = low_opt {
-                                    high_opt = Some(low + size);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    if let (Some(low), Some(high)) = (low_opt, high_opt) {
-                        let size = high.saturating_sub(low);
-
-                        if size > 0 {
-                            // eprintln!("Function: {} [0x{:x} - 0x{:x})", name, low, high);
-
-                            info.dwarf_symbols.insert(Symbol {
-                                name,
-                                address: low,
-                                size,
-                                kind: SymbolType::Function,
-                                scope: SymbolScope::Global,
-                            });
-                        }
-                    }
-                    total_subprogram_time += subprogram_start.elapsed();
-                }
-
-                // Handle static/global variables
-                gimli::DW_TAG_variable => {
-                    let variable_start = Instant::now();
-                    total_variables += 1;
-                    // Extract variable name
-                    let mut raw_name_opt: Option<String> = None;
-
-                    // Try linkage_name first (for global variables)
-                    let linkage_name_attr = entry
-                        .attr_value(gimli::DW_AT_linkage_name)?
-                        .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
-
-                    if let Some(attr) = linkage_name_attr {
-                        raw_name_opt = dwarf_attr_to_string(&dwarf, &unit, attr);
-                    }
-
-                    if raw_name_opt.is_none() {
-                        if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
-                            raw_name_opt = dwarf_attr_to_string(&dwarf, &unit, name_attr);
-                        }
-                    }
-
-                    let name = demangle(raw_name_opt);
-
-                    // Lookup by name in ELF symbols (avoids expensive DWARF expression evaluation)
-                    if let Some(existing_sym) = info.elf_symbols.get_by_name(&name) {
-                        let arc_sym = info.dwarf_symbols.insert(existing_sym.clone());
-                        if arc_sym.kind == SymbolType::Data {
-                            if arc_sym.scope == SymbolScope::Static {
-                                info.static_file_mapping
-                                    .insert(arc_sym.name.clone(), arc_sym);
-                                local_or_global += 1;
-                            } else if arc_sym.scope == SymbolScope::Global {
-                                info.global_symbols.push(arc_sym);
-                                local_or_global += 1;
-                            }
-                        }
-                    }
-                    total_variable_time += variable_start.elapsed();
-                }
-
-                _ => {}
+        // Process remaining siblings if we found a first entry
+        if first_entry_found {
+            while let Some(entry) = entries.next_sibling()? {
+                stats.total_entries += 1;
+                process_dwarf_entry(entry, &dwarf, &unit, &mut info, &mut stats)?;
             }
         }
-        total_entries_time += entries_start.elapsed();
+        stats.total_entries_time += entries_start.elapsed();
     }
     if timing {
         eprintln!(
@@ -378,19 +433,19 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
         );
         eprintln!(
             "    ├─ Line programs ({} rows): {:.2?}",
-            total_line_rows, total_line_time
+            stats.total_line_rows, stats.total_line_time
         );
         eprintln!(
             "    └─ Debug entries ({} entries): {:.2?}",
-            total_entries, total_entries_time
+            stats.total_entries, stats.total_entries_time
         );
         eprintln!(
             "       ├─ Subprograms ({} funcs): {:.2?}",
-            total_subprograms, total_subprogram_time
+            stats.total_subprograms, stats.total_subprogram_time
         );
         eprintln!(
             "       └─ Variables ({} vars): {:.2?} (locals or globals: {})",
-            total_variables, total_variable_time, local_or_global
+            stats.total_variables, stats.total_variable_time, stats.local_or_global
         );
         eprintln!("  ⏱️  TOTAL load_elf_info: {:.2?}", start.elapsed());
     }
