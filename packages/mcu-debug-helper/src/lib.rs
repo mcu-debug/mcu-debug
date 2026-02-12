@@ -13,6 +13,7 @@
 // limitations under the License.
 
 // Crate root: declare modules and control visibility
+pub mod debug;
 pub mod disasm_worker;
 pub mod elf_items;
 pub mod get_assembly;

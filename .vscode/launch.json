@@ -23,7 +23,8 @@
 			"stopOnEntry": false,
 			"args": [ "--server=4721" ],
 			"env": {
-				"PROD_MCU_DEBUG_HELPER": "1"
+				"RUST_BACKTRACE": "1",
+				"PROD_MCU_DEBUG_HELPER": "0"
 			},
 			"sourceMaps": true,
 			"outFiles": [
@@ -46,7 +47,7 @@
 		{
             "type": "lldb",
             "request": "launch",
-            "name": "Debug mcu-debug-helper",
+            "name": "Launch mcu-debug-helper",
             "cargo": {
 				"cwd": "${workspaceFolder}/packages/mcu-debug-helper",
                 "args": [
@@ -59,6 +60,13 @@
             "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/proj_cm4.elf"],
             "cwd": "${workspaceFolder}/packages/mcu-debug-helper",
             "console": "internalConsole"
+        },
+        {
+            "type": "lldb",
+            "request": "attach",
+            "name": "Attach mcu-debug-helper",
+            "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug-helper",
+            "sourceLanguages": ["rust"]
         }
 	],
 	"compounds": [

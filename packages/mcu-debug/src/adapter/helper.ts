@@ -23,6 +23,7 @@ import type { StaticsResponse } from "@mcu-debug/shared/dasm-helper/StaticsRespo
 import type { SymbolLookupResponse } from "@mcu-debug/shared/dasm-helper/SymbolLookupResponse";
 import type { HelperEvent } from "@mcu-debug/shared/dasm-helper/HelperEvent";
 import { getObjdumpPath } from "./symbols";
+import { DebugProtocol } from "@vscode/debugprotocol";
 
 type HelperResponse = DisasmResponse | GlobalsResponse | StaticsResponse | SymbolLookupResponse;
 
@@ -135,6 +136,9 @@ export class DebugHelper {
             const args = ["--objdump-path", objdumpPath];
             if (process.env.PROD_MCU_DEBUG_HELPER === "1") {
                 args.push("--timing");
+            }
+            if (this.session.args.debugFlags?.anyFlags) {
+                args.push("--debug");
             }
             const rttConfig = this.session.args.pvtRttConfig ?? this.session.args.rttConfig;
             const needRtt = rttConfig?.enabled && (rttConfig.address === "auto" || !rttConfig.address);
@@ -472,7 +476,8 @@ export class DebugHelper {
     /**
      * Request disassembly for a memory region.
      */
-    async disassemble(args: { memoryReference: string; offset?: number; instructionOffset?: number; instructionCount: number; resolveSymbols?: boolean }): Promise<DisasmResponse> {
+    //async disassemble(args: { memoryReference: string; offset?: number; instructionOffset?: number; instructionCount: number; resolveSymbols?: boolean }): Promise<DisasmResponse> {
+    async disassemble(args: DebugProtocol.DisassembleArguments): Promise<DisasmResponse> {
         return this.sendRequest<DisasmResponse>("disassemble", { arguments: args });
     }
 

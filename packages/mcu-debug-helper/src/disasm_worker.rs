@@ -13,6 +13,7 @@
 // limitations under the License.
 
 /// Disassembly worker thread - loads objdump output and serves requests.
+use crate::debug_println;
 use crate::elf_items::{LineInfoEntry, ObjectInfo};
 use crate::get_assembly::{get_disasm_from_objdump, AssemblyLine, AssemblyListing};
 use crate::helper_requests::{DisasmResponse, SerInstruction};
@@ -34,7 +35,8 @@ pub fn run_disassembly_worker(
 
     match get_disasm_from_objdump(objdump_path, elf_path) {
         Ok(listing) => {
-            eprintln!(
+            use crate::info_println;
+            info_println!(
                 "Disassembly loaded: {} lines, {} blocks in {:.2?}",
                 listing.lines.len(),
                 listing.blocks.len(),
@@ -51,10 +53,10 @@ pub fn run_disassembly_worker(
             }
 
             // Wait for ObjectInfo from main thread (blocks until available)
-            eprintln!("Worker waiting for ObjectInfo...");
+            debug_println!("Worker waiting for ObjectInfo...");
             let obj_info = match obj_info_rx.recv() {
                 Ok(info) => {
-                    eprintln!(
+                    debug_println!(
                         "Worker received ObjectInfo with {} memory regions",
                         info.memory_ranges.len()
                     );
@@ -109,18 +111,37 @@ fn serve_disassembly_requests(
     // - obj_info.file_table for file paths
 
     while let Ok(req) = req_rx.recv() {
-        eprintln!("Worker processing request: {:?}", req);
+        debug_println!("Worker processing request: {:?}", req);
         let obj_info = obj_info_.as_ref();
         let global_file_table = obj_info.map(|info| &info.file_table);
 
-        let before = if (req.instr_offset) < 0 {
+        let before = if req.instr_offset < 0 {
             req.instr_offset.abs() as usize
         } else {
             0
         };
 
-        let after = req.instr_count as usize - before as usize;
+        let after = req.instr_count as usize - before;
+        debug_println!(
+            "DEBUG: target=0x{:x}, before={}, after={}, total_requested={}",
+            req.start_addr,
+            before,
+            after,
+            before + after
+        );
         let window = listing.get_window(req.start_addr, before, after);
+        debug_println!(
+            "DEBUG: window.len()={}, first={}, last={}",
+            window.len(),
+            window
+                .first()
+                .map(|i| format!("0x{:x}", i.address))
+                .unwrap_or_else(|| "none".to_string()),
+            window
+                .last()
+                .map(|i| format!("0x{:x}", i.address))
+                .unwrap_or_else(|| "none".to_string())
+        );
         let mut func_table: HashMap<u32, String> = HashMap::new();
         let mut file_table: HashMap<u32, String> = HashMap::new();
         for instr in &window {
@@ -148,7 +169,7 @@ fn serve_disassembly_requests(
         {
             eprintln!("Worker failed to write disasm response: {}", e);
         } else {
-            eprintln!("Worker sent disasm response for seq_id {}", req.seq_id);
+            debug_println!("Worker sent disasm response for seq_id {}", req.seq_id);
         }
     }
 }
@@ -262,5 +283,173 @@ mod tests {
                 eprintln!("Failed to load disassembly: {}", e);
             }
         }
+    }
+
+    #[test]
+    fn test_get_window_instruction_offset() {
+        let path = "../../mylfs/proj_cm4.elf";
+        let listing = match get_disasm_from_objdump("arm-none-eabi-objdump", path) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Failed to load disassembly: {}", e);
+                return;
+            }
+        };
+
+        // Find the 'main' function as our reference point
+        let main_block = listing
+            .blocks
+            .iter()
+            .find(|b| b.name == "main")
+            .expect("Failed to find 'main' function");
+
+        // Use an instruction in the middle of main as the reference
+        let reference_instr = main_block
+            .lines
+            .get(10)
+            .expect("main function should have at least 10 instructions");
+        let reference_addr = reference_instr.address;
+
+        println!(
+            "Using reference address: 0x{:x} (main+{})",
+            reference_addr, reference_instr.offset_in_function
+        );
+
+        // Test Case 1: Large backward offset (DAP instructionOffset=-200, instructionCount=400)
+        // Expected: 200 instructions before target, target at index 200, 199 after
+        {
+            let before = 200;
+            let after = 200;
+            let window = listing.get_window(reference_addr, before, after);
+
+            assert_eq!(
+                window.len(),
+                400,
+                "Test 1: Should return exactly 400 instructions"
+            );
+            assert_eq!(
+                window[200].address, reference_addr,
+                "Test 1: Reference instruction should be at index 200"
+            );
+
+            // Verify no gaps in addresses (allowing for variable instruction sizes)
+            for i in 0..window.len() - 1 {
+                assert!(
+                    window[i + 1].address > window[i].address,
+                    "Test 1: Addresses should be strictly increasing at index {}",
+                    i
+                );
+            }
+
+            println!("✓ Test 1 passed: instructionOffset=-200, instructionCount=400");
+        }
+
+        // Test Case 2: No offset, forward only (DAP instructionOffset=0, instructionCount=50)
+        // Expected: Target at index 0, 49 instructions after
+        {
+            let before = 0;
+            let after = 50;
+            let window = listing.get_window(reference_addr, before, after);
+
+            assert_eq!(
+                window.len(),
+                50,
+                "Test 2: Should return exactly 50 instructions"
+            );
+            assert_eq!(
+                window[0].address, reference_addr,
+                "Test 2: Reference instruction should be at index 0"
+            );
+
+            // Verify no gaps
+            for i in 0..window.len() - 1 {
+                assert!(
+                    window[i + 1].address > window[i].address,
+                    "Test 2: Addresses should be strictly increasing at index {}",
+                    i
+                );
+            }
+
+            println!("✓ Test 2 passed: instructionOffset=0, instructionCount=50");
+        }
+
+        // Test Case 3: Small backward offset (DAP instructionOffset=-10, instructionCount=20)
+        // Expected: 10 instructions before target, target at index 10, 9 after
+        {
+            let before = 10;
+            let after = 10;
+            let window = listing.get_window(reference_addr, before, after);
+
+            assert_eq!(
+                window.len(),
+                20,
+                "Test 3: Should return exactly 20 instructions"
+            );
+            assert_eq!(
+                window[10].address, reference_addr,
+                "Test 3: Reference instruction should be at index 10"
+            );
+
+            // Verify no gaps
+            for i in 0..window.len() - 1 {
+                assert!(
+                    window[i + 1].address > window[i].address,
+                    "Test 3: Addresses should be strictly increasing at index {}",
+                    i
+                );
+            }
+
+            println!("✓ Test 3 passed: instructionOffset=-10, instructionCount=20");
+        }
+
+        // Test Case 4: Just the target instruction (DAP instructionOffset=0, instructionCount=1)
+        // Expected: Just the reference instruction
+        {
+            let before = 0;
+            let after = 1;
+            let window = listing.get_window(reference_addr, before, after);
+
+            assert_eq!(
+                window.len(),
+                1,
+                "Test 4: Should return exactly 1 instruction"
+            );
+            assert_eq!(
+                window[0].address, reference_addr,
+                "Test 4: Reference instruction should be the only one"
+            );
+
+            println!("✓ Test 4 passed: instructionOffset=0, instructionCount=1");
+        }
+
+        // Test Case 5: Backward only (DAP instructionOffset=-25, instructionCount=25)
+        // Expected: 24 instructions before target, target at index 24
+        {
+            let before = 25;
+            let after = 0;
+            let window = listing.get_window(reference_addr, before, after);
+
+            assert_eq!(
+                window.len(),
+                25,
+                "Test 5: Should return exactly 25 instructions"
+            );
+            // When after=0, we still need the target, so it should be at index 24 (last of before section)
+            // Actually, this is a special case - let's see what the behavior is
+
+            println!(
+                "Test 5: before=25, after=0, got {} instructions",
+                window.len()
+            );
+            if window.len() > 0 {
+                println!(
+                    "  First: 0x{:x}, Last: 0x{:x}",
+                    window[0].address,
+                    window.last().unwrap().address
+                );
+            }
+        }
+
+        println!("\n✅ All get_window tests passed!");
     }
 }

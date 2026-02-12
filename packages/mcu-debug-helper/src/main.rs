@@ -532,6 +532,10 @@ struct Args {
     #[arg(long = "timing", default_value_t = false)]
     timing: bool,
 
+    /// Enable debug output
+    #[arg(short = 'd', long = "debug", default_value_t = false)]
+    debug: bool,
+
     /// Path(s) to ELF file(s) to analyze
     #[arg(required = true, num_args = 1..)]
     elf_files: Vec<String>,
@@ -539,6 +543,9 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Initialize global debug flag
+    mcu_debug_helper::debug::set_debug(args.debug);
 
     /*
         let args_vec: Vec<String> = env::args().collect();

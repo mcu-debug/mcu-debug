@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::debug_println;
 use regex::Regex;
 use std::cell::Cell;
 use std::error::Error;
@@ -181,8 +182,15 @@ impl AssemblyListing {
 
     /// The "Magic" lookup: find N instructions before or after a target address.
     /// Returns owned values since filler instructions may be synthesized.
+    ///
+    /// Returns exactly `before + after` instructions total, where:
+    /// - Instructions 0 to `before - 1` are before the target (if before > 0)
+    /// - The target instruction (at or immediately before target_addr) is at index `before`
+    /// - Instructions `before + 1` to `before + after - 1` are after the target
+    ///
+    /// The target instruction is always included as the first instruction of the "after" section.
     pub fn get_window(&self, target_addr: u64, before: usize, after: usize) -> Vec<AssemblyLine> {
-        let mut result: Vec<AssemblyLine> = Vec::with_capacity(before + after + 1);
+        let mut result: Vec<AssemblyLine> = Vec::with_capacity(before + after);
         let dummy_instr = AssemblyLine::new(
             0,
             String::new(),
@@ -195,14 +203,21 @@ impl AssemblyListing {
         // 1. Find the instruction at or immediately before the target_addr
         // range(..=target_addr) gives us everything up to the target, .next_back() is the closest
         if let Some((&start_addr, _)) = self.addr_map.range(..=target_addr).next_back() {
+            debug_println!(
+                "get_window: target=0x{:x}, found start_addr=0x{:x}, before={}, after={}",
+                target_addr,
+                start_addr,
+                before,
+                after
+            );
             if before > 0 {
-                // 2. Grab the 'before' instructions
-                // We take all instructions up to start_addr, reverse them, take 'before' + 1 (the current one)
+                // 2. Grab the 'before' instructions (NOT including the target)
+                // We take all instructions before start_addr, reverse them, take 'before'
                 let before_indices: Vec<_> = self
                     .addr_map
-                    .range(..=start_addr)
+                    .range(..start_addr)
                     .rev()
-                    .take(before + 1)
+                    .take(before)
                     .map(|(_, inst)| inst.clone())
                     .collect();
                 let mut before_instrs: Vec<AssemblyLine> = before_indices
@@ -215,13 +230,17 @@ impl AssemblyListing {
                             .clone()
                     })
                     .collect();
-                let mut tmp_addr = before_instrs[0].address;
-                while before_instrs.len() < before + 1 {
+                let mut tmp_addr = if !before_instrs.is_empty() {
+                    before_instrs[0].address
+                } else {
+                    start_addr
+                };
+                while before_instrs.len() < before {
                     // pad with dummy instructions if we don't have enough
                     let mut tmp = dummy_instr.clone();
-                    tmp.address = tmp_addr - 2; // arbitrary address. TODO: Use minimum instruction size for the architecture to calculate a more realistic address
+                    tmp.address = tmp_addr.saturating_sub(2); // arbitrary address. TODO: Use minimum instruction size for the architecture to calculate a more realistic address
                     before_instrs.push(tmp);
-                    tmp_addr -= 2;
+                    tmp_addr = tmp_addr.saturating_sub(2);
                 }
 
                 // Reverse them back to chronological order
@@ -229,10 +248,17 @@ impl AssemblyListing {
             }
 
             if after > 0 {
-                // 3. Grab the 'after' instructions
+                // 3. Grab the 'after' instructions (always starting at the target)
+                // The target instruction is always the first of the 'after' section
+                let after_start_addr = start_addr;
+                debug_println!(
+                    "get_window: after section, after_start_addr=0x{:x}",
+                    after_start_addr
+                );
+
                 let after_instrs = self
                     .addr_map
-                    .range((start_addr + 1)..)
+                    .range(after_start_addr..)
                     .take(after)
                     .map(|(_, inst)| inst.clone());
                 let mut after_instrs: Vec<AssemblyLine> = after_instrs
@@ -244,7 +270,11 @@ impl AssemblyListing {
                             .clone()
                     })
                     .collect();
-                let mut tmp_addr = after_instrs[after_instrs.len() - 1].address;
+                let mut tmp_addr = if !after_instrs.is_empty() {
+                    after_instrs[after_instrs.len() - 1].address
+                } else {
+                    start_addr
+                };
                 while after_instrs.len() < after {
                     // pad with dummy instructions if we don't have enough
                     let mut tmp = dummy_instr.clone();
@@ -255,7 +285,69 @@ impl AssemblyListing {
 
                 result.extend(after_instrs);
             }
+        } else {
+            // Edge case: target_addr is before all known addresses or map is empty
+            // Still provide the requested padding with dummy instructions
+
+            // Create 'before' dummy instructions (target will be the last of these)
+            let mut tmp_addr = target_addr;
+            for _ in 0..before {
+                tmp_addr = tmp_addr.saturating_sub(2);
+                let mut tmp = dummy_instr.clone();
+                tmp.address = tmp_addr;
+                result.push(tmp);
+            }
+            result.reverse(); // Put them in chronological order
+
+            // Try to get real 'after' instructions starting from the first available address
+            let first_real_addr = self.addr_map.keys().next().copied();
+            if let Some(first_addr) = first_real_addr {
+                if first_addr > target_addr {
+                    // Get real instructions starting from the first address
+                    let after_instrs = self
+                        .addr_map
+                        .range(first_addr..)
+                        .take(after)
+                        .map(|(_, inst)| inst.clone());
+                    let after_instrs: Vec<AssemblyLine> = after_instrs
+                        .map(|ix| {
+                            self.lines
+                                .get(ix)
+                                .expect(
+                                    "index from addr_map should always be valid in lines vector",
+                                )
+                                .as_ref()
+                                .clone()
+                        })
+                        .collect();
+
+                    // Pad with dummies between target and first real address if needed
+                    let gap = (first_addr.saturating_sub(target_addr)) / 2;
+                    let mut tmp_addr = target_addr;
+                    for _ in 0..gap.min(after as u64) {
+                        tmp_addr += 2;
+                        if tmp_addr >= first_addr {
+                            break;
+                        }
+                        let mut tmp = dummy_instr.clone();
+                        tmp.address = tmp_addr;
+                        result.push(tmp);
+                    }
+
+                    result.extend(after_instrs);
+                }
+            }
+
+            // Final padding if we still don't have enough
+            let mut tmp_addr = result.last().map(|l| l.address).unwrap_or(target_addr);
+            while result.len() < before + after {
+                tmp_addr += 2;
+                let mut tmp = dummy_instr.clone();
+                tmp.address = tmp_addr;
+                result.push(tmp);
+            }
         }
+        debug_println!("get_window: returning {} instructions", result.len());
         result
     }
 }

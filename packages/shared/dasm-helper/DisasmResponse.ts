@@ -11,4 +11,4 @@ import type { SerInstruction } from "./SerInstruction";
  * expected to cache them across responses, but they may contain overlapping information with previous responses.
  * The client can choose to cache them if it wants, but it should not rely on them being the same across responses.
  */
-export type DisasmResponse = { req: string, seq: number, file_table: { [key in number]: string }, func_table: { [key in number]: string }, instructions: Array<SerInstruction>, };
+export type DisasmResponse = { req: string, seq: bigint, file_table: { [key in number]: string }, func_table: { [key in number]: string }, instructions: Array<SerInstruction>, };

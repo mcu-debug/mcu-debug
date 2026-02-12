@@ -62,9 +62,9 @@ if [[ "$mode" == "dev" ]]; then
   echo "Dev build: building for host platform (debug)"
   cd "$RUST_DIR"
   
-  # Generate TypeScript exports via ts_rs (happens during test compilation)
+  # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   echo "Generating TypeScript exports..."
-  cargo test --lib --no-run --quiet 2>/dev/null || true
+  cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
   
   cargo build --bin "$BIN_NAME"
   host=$(host_platform)
@@ -85,9 +85,9 @@ if [[ "$mode" == "prod" ]]; then
   echo "Production build: release builds for multiple targets"
   cd "$RUST_DIR"
   
-  # Generate TypeScript exports via ts_rs (happens during test compilation)
+  # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   echo "Generating TypeScript exports..."
-  cargo test --lib --no-run --quiet 2>/dev/null || true
+  cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
 
   
   # platform|target_triple|exe_ext
