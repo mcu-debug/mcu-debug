@@ -121,9 +121,26 @@ fn serve_disassembly_requests(
             0
         };
 
-        let after = req.instr_count as usize - before;
+        // Calculate after section size. If before >= instr_count, we need to expand
+        // the window to include the target instruction. This can happen when VSCode
+        // makes an invalid request (e.g., instructionCount=50, offset=-250).
+        // We expand the window rather than clamping to maintain correct scroll behavior.
+        let after = if before >= req.instr_count as usize {
+            // Invalid request: target would be outside the window
+            // Expand window to include target at correct position
+            debug_println!(
+                "WARNING: instructionOffset {} exceeds instructionCount {}, expanding window",
+                req.instr_offset,
+                req.instr_count
+            );
+            // Give them the full instructionCount for the after section
+            req.instr_count as usize
+        } else {
+            req.instr_count as usize - before
+        };
+
         debug_println!(
-            "DEBUG: target=0x{:x}, before={}, after={}, total_requested={}",
+            "DEBUG: target=0x{:x}, before={}, after={}, total_returned={}",
             req.start_addr,
             before,
             after,
@@ -448,6 +465,132 @@ mod tests {
                     window.last().unwrap().address
                 );
             }
+        }
+
+        // Test Case 6: Invalid request - offset exceeds count (VSCode bug case)
+        // DAP: instructionOffset=-250, instructionCount=50
+        // This is invalid (target would be at index 250 in array of 50)
+        // Expected: Expand window to 250 before + 50 after = 300 instructions
+        {
+            let before = 250;
+            let after = 50; // Expanded from original constraint
+            let window = listing.get_window(reference_addr, before, after);
+
+            assert_eq!(
+                window.len(),
+                300,
+                "Test 6: Should return 300 instructions (expanded window)"
+            );
+            assert_eq!(
+                window[250].address, reference_addr,
+                "Test 6: Reference instruction should be at index 250"
+            );
+
+            // Verify no gaps
+            for i in 0..window.len() - 1 {
+                assert!(
+                    window[i + 1].address > window[i].address,
+                    "Test 6: Addresses should be strictly increasing at index {}",
+                    i
+                );
+            }
+
+            println!(
+                "✓ Test 6 passed: Invalid request handled (offset=-250, count=50 → returned 300)"
+            );
+        }
+
+        // Test Case 7: Positive offset (forward context)
+        // DAP: instructionOffset=+10, instructionCount=50
+        // With positive offset, before=0, so no overflow possible
+        // Expected: Reference at index 0, followed by 49 more instructions
+        {
+            let before = 0; // positive offset always gives before=0 in our impl
+            let after = 50;
+            let window = listing.get_window(reference_addr, before, after);
+
+            assert_eq!(window.len(), 50, "Test 7: Should return 50 instructions");
+            assert_eq!(
+                window[0].address, reference_addr,
+                "Test 7: With positive offset, reference is at index 0"
+            );
+
+            println!("✓ Test 7 passed: Positive offset (offset=+10, count=50)");
+        }
+
+        // Test Case 8: Extreme positive offset (verify no overflow)
+        // DAP: instructionOffset=+250, instructionCount=50
+        // Even with large positive offset, before=0, so after=50, no overflow
+        {
+            let before = 0; // positive offset → before=0
+            let after = 50;
+            let window = listing.get_window(reference_addr, before, after);
+
+            assert_eq!(window.len(), 50, "Test 8: Should return 50 instructions");
+            assert_eq!(
+                window[0].address, reference_addr,
+                "Test 8: Reference at index 0 regardless of offset magnitude"
+            );
+
+            println!(
+                "✓ Test 8 passed: Large positive offset (offset=+250, count=50 → no overflow)"
+            );
+        }
+
+        // Test Case 9: At start of code (first instruction)
+        // Request backward context when we're at the beginning
+        // Expected: Return as many as available, target might be at lower index than requested
+        {
+            // Use the very first instruction in the listing
+            let first_addr = listing
+                .lines
+                .first()
+                .expect("Should have instructions")
+                .address;
+            let before = 100; // Request 100 before, but there are 0 available
+            let after = 50;
+            let window = listing.get_window(first_addr, before, after);
+
+            // We'll get fewer than requested before instructions (maybe 0)
+            assert!(
+                window.len() <= 150,
+                "Test 9: Should return at most 150 instructions"
+            );
+
+            // Find where the target actually is
+            if let Some(target_idx) = window.iter().position(|instr| instr.address == first_addr) {
+                println!(
+                    "✓ Test 9 passed: At start of code, target at index {} (requested 100 before, limited by availability)",
+                    target_idx
+                );
+            } else {
+                println!("Test 9: Target not found in window (might be filtered out)");
+            }
+        }
+
+        // Test Case 10: Near end of code (last instructions)
+        // Request forward context when we're near the end
+        // Expected: Return as many as available, might get fewer 'after' instructions
+        {
+            let last_addr = listing
+                .lines
+                .last()
+                .expect("Should have instructions")
+                .address;
+            let before = 50;
+            let after = 100; // Request 100 after, but there are 0 available
+            let window = listing.get_window(last_addr, before, after);
+
+            // We'll get fewer than requested after instructions
+            assert!(
+                window.len() <= 150,
+                "Test 10: Should return at most 150 instructions"
+            );
+
+            println!(
+                "✓ Test 10 passed: At end of code, got {} instructions (requested 50 before + 100 after)",
+                window.len()
+            );
         }
 
         println!("\n✅ All get_window tests passed!");

@@ -150,7 +150,7 @@ export class DisassemblyAdapterNew {
                 // pvtAddress: parseAddress("0x" + instr.a),
                 //pvtOpcodes: instr.b,
                 // pvtIsData: instr.i.startsWith("."),
-                address: formatAddress(parseAddress("0x" + instr.a)),
+                address: dasmFormatAddress(parseAddress("0x" + instr.a)),
                 instruction: instr.i,
                 instructionBytes: instr.b,
                 symbol: func,
