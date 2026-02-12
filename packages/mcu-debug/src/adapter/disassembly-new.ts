@@ -145,18 +145,18 @@ export class DisassemblyAdapterNew {
         const fileTable = rsp.file_table;
         const instrs = rsp.instructions.map((instr: SerInstruction) => {
             const func = funcTable[instr.f] ? this.formatSym(funcTable[instr.f], instr.o) : undefined;
-            const el = instr.el !== undefined && instr.sl !== undefined ? (instr.el - instr.sl > 5 ? instr.sl + 5 : instr.el) : undefined; // limit the max line range to 5 for better UI display, can be adjusted as needed
+            const el = typeof instr.el === "number" && typeof instr.sl === "number" ? (instr.el - instr.sl > 5 ? instr.sl + 5 : instr.el) : undefined; // limit the max line range to 5 for better UI display, can be adjusted as needed
             const pvtInstr: DebugProtocol.DisassembledInstruction = {
                 // pvtAddress: parseAddress("0x" + instr.a),
                 //pvtOpcodes: instr.b,
                 // pvtIsData: instr.i.startsWith("."),
                 address: dasmFormatAddress(parseAddress("0x" + instr.a)),
-                instruction: instr.b + "\t    " + instr.i,
+                instruction: (instr.b ?? "") + "\t    " + (instr.i ?? ""),
                 instructionBytes: func ?? "",
                 // instructionBytes: instr.b,
                 symbol: func,
-                location: { path: instr.F >= 0 ? fileTable[instr.F] : undefined },
-                line: instr.sl !== undefined && instr.sl >= 0 ? instr.sl : undefined,
+                location: { path: typeof instr.F === "number" && instr.F >= 0 ? fileTable[instr.F] : undefined },
+                line: typeof instr.sl === "number" && instr.sl >= 0 ? instr.sl : undefined,
                 endLine: el,
                 // If an instruction starts with a dot, it is something like ".word 0x12345678" which is actually data,
                 // not an instruction, so we mark it as "invalid" for presentation hint to let the UI show it differently.
