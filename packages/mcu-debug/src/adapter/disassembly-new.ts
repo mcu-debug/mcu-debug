@@ -151,12 +151,17 @@ export class DisassemblyAdapterNew {
                 //pvtOpcodes: instr.b,
                 // pvtIsData: instr.i.startsWith("."),
                 address: dasmFormatAddress(parseAddress("0x" + instr.a)),
-                instruction: instr.i,
-                instructionBytes: instr.b,
+                instruction: instr.b + "\t    " + instr.i,
+                instructionBytes: func ?? "",
+                // instructionBytes: instr.b,
                 symbol: func,
                 location: { path: instr.F >= 0 ? fileTable[instr.F] : undefined },
                 line: instr.sl !== undefined && instr.sl >= 0 ? instr.sl : undefined,
                 endLine: el,
+                // If an instruction starts with a dot, it is something like ".word 0x12345678" which is actually data,
+                // not an instruction, so we mark it as "invalid" for presentation hint to let the UI show it differently.
+                // This is a heuristic, but it works for many common cases of data intermixed with code in embedded firmware.
+                presentationHint: !instr.i || instr.i.startsWith(".") ? "invalid" : "normal",
             };
             return pvtInstr;
         });
