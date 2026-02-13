@@ -14,11 +14,11 @@
 
 /// Disassembly worker thread - loads objdump output and serves requests.
 use crate::debug_println;
-use crate::elf_items::{LineInfoEntry, ObjectInfo};
-use crate::get_assembly::{get_disasm_from_objdump, AssemblyLine, AssemblyListing};
-use crate::helper_requests::{DisasmResponse, SerInstruction};
-use crate::protocol::{disassembly_ready_notification, DisasmRequest};
-use crate::transport;
+use crate::da_helper::elf_items::{LineInfoEntry, ObjectInfo};
+use crate::da_helper::get_assembly::{get_disasm_from_objdump, AssemblyLine, AssemblyListing};
+use crate::da_helper::helper_requests::{DisasmResponse, SerInstruction};
+use crate::da_helper::protocol::{disassembly_ready_notification, DisasmRequest};
+use crate::common::transport;
 use serde_json;
 use std::collections::HashMap;
 use std::sync::{mpsc::Receiver, Arc};
@@ -228,7 +228,7 @@ mod tests {
     use std::{fs, io::Write};
 
     use super::*;
-    use crate::get_assembly::{AssemblyLine, AssemblyListing};
+    use crate::da_helper::get_assembly::{AssemblyLine, AssemblyListing};
 
     #[test]
     fn serialize_compact_basic() {

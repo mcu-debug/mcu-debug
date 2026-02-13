@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /// Protocol message types and helpers for the helper ↔ DA communication.
-use crate::helper_requests::HelperEvent;
+use crate::da_helper::helper_requests::HelperEvent;
 use serde_json::{json, Value};
 
 /// Request from main thread to disassembly worker. This is our internal representation of a disassemble request,

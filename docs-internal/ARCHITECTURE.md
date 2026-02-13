@@ -6,7 +6,7 @@ The new debug adapter architecture will split the debug adapter into a client an
 
 ## Problem definition
 
-Before we delve into the details, what is the problem we are solving? Today, running the extension in WSL or a container is problematic. They may not have good access to the USB ports that connect to the board. We have USBIP but it is very fussy and setip can be problematic. Less of a problem on Linux perhaps.
+Before we delve into the details, what is the problem we are solving? Today, running the extension in WSL or a container is problematic. They may not have good access to the USB ports that connect to the board. We have USBIP but it is very fussy and setup can be problematic. Less of a problem on Linux perhaps.
 
 ## Server
 
@@ -278,6 +278,8 @@ The only risk with this pattern is if a header gets corrupted (rare with TCP, bu
   
 ### 6. Code snippet for waiting for channel to be ready
 
+This was proposed by Claude but I don't think such a thing exists...have it here to try/rule it out
+
 ```TS
 // Proxy server sends notification when ready
 proxyConnection.on('channel_ready', (channelId) => {
@@ -291,4 +293,116 @@ await this.rspReady.promise;
 
 ---
 
+## Implementation Gotchas
+
+### 1. Port Allocation Race Window & `SO_REUSEPORT`
+
+The race window between port allocation and gdb-server launch is real but manageable. The standard mitigation is:
+
+1. Allocate ports using `TcpListener::bind("127.0.0.1:0")` — the OS picks a free port
+2. Read the assigned port via `listener.local_addr().unwrap().port()`
+3. Keep the listener socket open to "hold" the port until the gdb-server is ready to launch
+4. Close the listener and immediately launch the gdb-server
+
+On Linux, set `SO_REUSEPORT` on the listener socket so the gdb-server can rebind the same port immediately after the listener closes. Without this, there's a brief `TIME_WAIT` period where the port may appear unavailable. In Rust:
+
+```rust
+use std::net::TcpListener;
+use socket2::{Socket, Domain, Type, Protocol};
+
+fn allocate_port_with_reuseport() -> std::io::Result<(TcpListener, u16)> {
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_port(true)?;  // Linux-specific, no-op on macOS
+    socket.bind(&"127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap().into())?;
+    socket.listen(1)?;
+    let listener: TcpListener = socket.into();
+    let port = listener.local_addr()?.port();
+    Ok((listener, port))
+}
+```
+
+Note: `SO_REUSEPORT` is Linux-specific. On macOS and Windows, the `TIME_WAIT` behavior differs and this is less of an issue. The `socket2` crate handles the platform differences.
+
+### 2. SSH Tunnel Lifecycle & Keepalives
+
+SSH tunnels die silently behind NAT/firewalls if no data flows for a few minutes. Two layers of defense:
+
+**SSH-level keepalives** (configure when spawning the SSH connection):
+```
+ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 user@host
+```
+This sends a keepalive every 15 seconds and drops the connection after 3 missed responses (45 seconds of silence).
+
+**Application-level heartbeats** (the Funnel Protocol heartbeat described above) provide a second layer. If the Probe Agent doesn't respond to a heartbeat within the timeout, the Debug Adapter should:
+
+- **Tear down the debug session and notify the user** — do NOT attempt silent reconnection
+- A stale debug session against an MCU is worse than a clean restart (the MCU's state may have changed, breakpoints may be invalid, registers may be stale)
+- Display a clear error: "Connection to Probe Agent lost. Please restart the debug session."
+
+### 3. Transport Abstraction (v2)
+
+For v1, **SSH handles all transport needs** — including WSL2 (enable OpenSSH Server on Windows, SSH from WSL to `localhost`) and Docker containers (SSH from container to host). The only requirement is that the host where the probe is attached runs an SSH server.
+
+For v2, if SSH proves too heavyweight for same-machine WSL/Docker cases, add a `Transport` trait:
+```rust
+trait Transport {
+    fn spawn_remote(&self, command: &str) -> Result<Process>;
+    fn copy_file(&self, local: &Path, remote: &str) -> Result<()>;
+    fn open_tunnel(&self, local_port: u16, remote_port: u16) -> Result<Tunnel>;
+}
+```
+With implementations for `SshTransport`, `DockerTransport` (via `docker exec`), `WslTransport` (via `wsl.exe`), and `LocalTransport` (direct process spawn). But this is an optimization — SSH-only is the correct starting point.
+
+### 4. Multi-Probe Discovery (Deferred)
+
+Multi-probe support (scanning USB bus, returning probe inventory) is deferred to a later phase. For v1, require `serialNumber` in `launch.json` when multiple probes are present. This is the correct approach for lab/CI environments where repeatability matters — users should explicitly specify which probe to use rather than relying on auto-detection.
+
+---
+
+## Implementation Phases
+
+### Phase 1: Unified Rust Binary with Proxy Subcommand
+
+**Goal:** A single `mcu-debug-helper` binary that can run as both the DA helper (existing) and the Probe Agent (new), selected via subcommand.
+
+- Refactor `mcu-debug-helper` into subcommand structure: `mcu-debug-helper da-helper [args]` and `mcu-debug-helper proxy [args]`
+- Implement the Funnel Protocol framing in Rust (5-byte header parser: stream ID + payload length)
+- Implement the JSON-RPC control channel on Stream ID 0 (`initialize`, `startStream`, `streamStatus`, `heartbeat`)
+- Test locally: Debug Adapter ↔ Proxy on localhost via TCP
+
+**Deliverable:** Proxy that accepts a TCP connection, speaks the Funnel Protocol, and can echo/forward streams.
+
+### Phase 2: Process Management in the Proxy
+
+**Goal:** The Proxy can launch and manage gdb-server processes on behalf of the Debug Adapter.
+
+- Port allocation using `TcpListener::bind(":0")` with `SO_REUSEPORT`
+- gdb-server spawn and lifecycle management (launch from command line, monitor stdio, kill on session end)
+- Binary stream forwarding: Proxy listens on local ports, forwards bytes through Funnel to Debug Adapter
+- Handle the kill service for gdb-servers that don't exit after gdb disconnects
+
+**Deliverable:** Debug Adapter can request port allocation, launch a gdb-server, and communicate with it through the Proxy — all on localhost.
+
+### Phase 3: SSH Integration in the Extension (TypeScript)
+
+**Goal:** The VS Code extension can transparently start and connect to a Proxy on a remote host.
+
+- Implement the "Probe-and-Deploy" flow from [Remote-Proxy.md](Remote-Proxy.md):
+  - Version check via SSH (`mcu-debug-helper --version`)
+  - Auto-deploy binary via SCP for detected architecture (`uname -m`)
+  - Launch Proxy via SSH (`ssh user@host "~/.mcu-debug/bin/mcu-debug-helper proxy --port 0 --token <secret>"`)
+- Parse Discovery JSON from Proxy stdout
+- Set up SSH tunnel (`-L` forwarding to Proxy port)
+- Implement the state machine in TypeScript: Connecting → Checking → Deploying → Starting → Tunneling → Ready
+- Configure SSH keepalives (`ServerAliveInterval=15`, `ServerAliveCountMax=3`)
+
+**Deliverable:** End-to-end remote debugging — user clicks "Start Debugging" and the extension handles SSH, deployment, tunneling, and cleanup.
+
+### Phase 4: Polish & Hardening
+
+- Auto-update logic (version mismatch → SCP new binary)
+- Error recovery and user-facing diagnostics (clear messages on tunnel death, deploy failure, etc.)
+- Timeout handling for each state machine transition
+- Graceful shutdown: clean up SSH tunnels, kill remote Proxy, terminate gdb-servers
+- Testing across platforms (Linux → Linux, macOS → Linux, Windows → WSL2)
 

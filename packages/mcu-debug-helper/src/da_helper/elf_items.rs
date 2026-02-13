@@ -15,8 +15,9 @@
 use std::num::{NonZero, NonZeroU64};
 use std::sync::Arc;
 
-use crate::utils::CanonicalPath;
-use crate::{symbols::Symbol, utils::canonicalize_path};
+use crate::common::utils::CanonicalPath;
+use crate::common::utils::canonicalize_path;
+use crate::da_helper::symbols::Symbol;
 
 pub struct FileTable {
     // Map from file index to file path
@@ -154,13 +155,13 @@ pub struct ObjectInfo {
     /// Line number information from DWARF debug info
     pub addr_to_line: AddrtoLineInfo,
     /// Symbol table extracted from DWARF debug info (functions, variables, etc.)
-    pub dwarf_symbols: crate::symbols::SymbolTable,
+    pub dwarf_symbols: crate::da_helper::symbols::SymbolTable,
     /// File table mapping file IDs to paths from DWARF
     pub file_table: FileTable,
     /// Memory regions/sections from ELF (e.g., .text, .data, .bss)
-    pub memory_ranges: Vec<crate::memory::MemoryRegion>,
+    pub memory_ranges: Vec<crate::da_helper::memory::MemoryRegion>,
     /// Symbol table extracted from ELF symbol table (for cross-checking)
-    pub elf_symbols: crate::symbols::SymbolTable,
+    pub elf_symbols: crate::da_helper::symbols::SymbolTable,
     /// Static file to symbols mapping for quick lookup of which symbols are defined in which files
     /// This will be called quite frequently in some use cases
     pub static_file_mapping: StaticFileMapping,
@@ -174,10 +175,10 @@ impl ObjectInfo {
     pub fn new() -> Self {
         Self {
             addr_to_line: AddrtoLineInfo::new(),
-            dwarf_symbols: crate::symbols::SymbolTable::new(),
+            dwarf_symbols: crate::da_helper::symbols::SymbolTable::new(),
             file_table: FileTable::new(),
             memory_ranges: Vec::new(),
-            elf_symbols: crate::symbols::SymbolTable::new(),
+            elf_symbols: crate::da_helper::symbols::SymbolTable::new(),
             static_file_mapping: StaticFileMapping::new(),
             global_symbols: Vec::new(),
             rtt_symbol_address: None,

@@ -12,16 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Crate root: organized into three sub-modules
-pub mod common;
-pub mod da_helper;
-pub mod proxy_helper;
+//! Common utilities shared between DA helper and proxy helper.
 
-// Re-export commonly used API from the library for binaries/tests
-pub use da_helper::elf_items::ObjectInfo;
-pub use da_helper::get_assembly::get_disasm_from_objdump;
-
-// Re-export common modules at crate level for backward compatibility
-pub use common::debug;
-pub use common::transport;
-pub use common::utils;
+pub mod debug;
+pub mod transport;
+pub mod utils;

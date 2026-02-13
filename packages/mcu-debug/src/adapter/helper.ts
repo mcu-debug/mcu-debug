@@ -133,7 +133,7 @@ export class DebugHelper {
             }
             const objdumpPath = getObjdumpPath(this.session.args);
 
-            const args = ["--objdump-path", objdumpPath];
+            const args = ["da-helper", "--objdump-path", objdumpPath];
             if (process.env.PROD_MCU_DEBUG_HELPER === "1") {
                 args.push("--timing");
             }

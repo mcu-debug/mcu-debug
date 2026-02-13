@@ -27,7 +27,7 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] REPL
   - [x] SetVariable
   - [x] SetExpr
-- [ ] Debug/Trace
+- [x] Debug/Trace
   - [x] SWO
   - [x] RTT
   - [x] `New:` Native RTT support

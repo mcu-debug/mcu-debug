@@ -12,16 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Crate root: organized into three sub-modules
-pub mod common;
-pub mod da_helper;
-pub mod proxy_helper;
+//! Debug Adapter helper — ELF parsing, disassembly, symbol lookup.
+//! This is the existing mcu-debug-helper functionality, now behind the `da-helper` subcommand.
 
-// Re-export commonly used API from the library for binaries/tests
-pub use da_helper::elf_items::ObjectInfo;
-pub use da_helper::get_assembly::get_disasm_from_objdump;
+pub mod disasm_worker;
+pub mod elf_items;
+pub mod get_assembly;
+pub mod helper_requests;
+pub mod memory;
+pub mod protocol;
+pub mod request_handler;
+pub mod run;
+pub mod symbols;
 
-// Re-export common modules at crate level for backward compatibility
-pub use common::debug;
-pub use common::transport;
-pub use common::utils;
+// These modules are experimental/incomplete and not yet wired up:
+// pub mod capstone;
+// pub mod instr;
+// pub mod instrdb;
+// pub mod serice;
+
+// Re-export commonly used types
+pub use elf_items::ObjectInfo;
+pub use get_assembly::get_disasm_from_objdump;
