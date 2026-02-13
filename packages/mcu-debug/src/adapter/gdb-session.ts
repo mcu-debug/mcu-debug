@@ -162,7 +162,7 @@ export class GDBDebugSession extends SeqDebugSession {
         response.body.supportsDataBreakpoints = true;
         response.body.supportsDisassembleRequest = true;
         // response.body.supportsSteppingGranularity = true;
-        // response.body.supportsInstructionBreakpoints = true;
+        response.body.supportsInstructionBreakpoints = true;
         response.body.supportsReadMemoryRequest = true;
         response.body.supportsWriteMemoryRequest = true;
 
@@ -980,12 +980,22 @@ export class GDBDebugSession extends SeqDebugSession {
     protected breakpointLocationsRequest(response: DebugProtocol.BreakpointLocationsResponse, args: DebugProtocol.BreakpointLocationsArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
-    protected setInstructionBreakpointsRequest(
+    protected async setInstructionBreakpointsRequest(
         response: DebugProtocol.SetInstructionBreakpointsResponse,
         args: DebugProtocol.SetInstructionBreakpointsArguments,
         request?: DebugProtocol.Request,
-    ): void {
-        this.sendResponse(response);
+    ): Promise<void> {
+        try {
+            response.body = { breakpoints: [] };
+            this.suppressStoppedEvents = this.isRunning();
+            await this.bkptManager.setInstructionBreakPointsRequest(response, args);
+            this.sendResponse(response);
+        } catch (e) {
+            this.handleErrResponse(response, `SetBreakPoints request failed: ${e}`);
+        } finally {
+            this.suppressStoppedEvents = false;
+            Promise.resolve();
+        }
     }
 
     protected timeStart = Date.now();

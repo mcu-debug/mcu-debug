@@ -33,6 +33,13 @@ export function parseAddress(addr: string): bigint {
     return BigInt(trimmed);
 }
 
+export function parseAddressCleaned(addr: string): bigint {
+    let trimmed = addr.trim().split(" ")[0]; // in case the address has extra info like "0x1234: someFunc+5"
+    trimmed = trimmed.split(":")[0]; // in case the address has extra info like "0x1234: someFunc+5"
+    // BigInt handles both "0x..." (hex) and plain numbers (decimal)
+    return BigInt(trimmed);
+}
+
 export function parseBigint(value: string): bigint {
     return parseAddress(value);
 }

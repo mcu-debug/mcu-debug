@@ -53,11 +53,11 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] Streaming Live Watch
   - [x] `New:` SetVar
   - [x] `New:` SetExpr
-- [ ] Disassembly. Needs total overhaul, even more generic processor/ISA support
+- [x] Disassembly. Needs total overhaul, even more generic processor/ISA support
   - [x] Basic - True to source disassembly based of objdump.
-  - [ ] GDB/Capstone based disassembly (or hybrid)
+  - [ ] GDB/Capstone based disassembly (or hybrid). Maybe post release
   - [x] `New:` 64-bit support
-  - [ ] Instruction breakpoints
+  - [x] Instruction breakpoints
 - [x] **Multi-core orchestration**
 - [ ] **Remote Gdb-server support. New design, new feature. Better support for containers, wsl, remote labs**
 

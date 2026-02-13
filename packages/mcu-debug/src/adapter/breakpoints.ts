@@ -3,6 +3,7 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { canonicalizePath } from "./servers/common";
 import { GDBDebugSession } from "./gdb-session";
 import { Stderr } from "./gdb-mi/mi-types";
+import { parseAddress, parseAddressCleaned } from "../frontend/utils";
 
 //
 // TODO: Strategy for managing breakppints
@@ -38,6 +39,14 @@ export class SourceBreakpoints {
     }
 }
 
+export class InstrBreakpoints {
+    breakpoints: Map<number, DebugProtocol.InstructionBreakpoint>;
+
+    constructor() {
+        this.breakpoints = new Map<number, DebugProtocol.InstructionBreakpoint>();
+    }
+}
+
 export class FunctionBreakpoints {
     breakpoints: Map<number, DebugProtocol.FunctionBreakpoint>;
 
@@ -54,6 +63,7 @@ export class DataBreakpoint {
 }
 export class BreakpointManager {
     functionBreakpoints: FunctionBreakpoints;
+    instrBreakpoints: InstrBreakpoints;
     fileBreakpoints: Map<string, SourceBreakpoints>;
     dataBreakpoints: DataBreakpoint;
 
@@ -64,6 +74,7 @@ export class BreakpointManager {
         this.functionBreakpoints = new FunctionBreakpoints();
         this.fileBreakpoints = new Map<string, SourceBreakpoints>();
         this.dataBreakpoints = new DataBreakpoint();
+        this.instrBreakpoints = new InstrBreakpoints();
     }
 
     /**
@@ -202,6 +213,64 @@ export class BreakpointManager {
             response.body = {
                 breakpoints: bps,
             };
+        });
+    }
+
+    public async setInstructionBreakPointsRequest(response: DebugProtocol.SetInstructionBreakpointsResponse, args: DebugProtocol.SetInstructionBreakpointsArguments): Promise<void> {
+        await this.executeWhileStopped(async () => {
+            const toDelete: number[] = [];
+            for (const [id, bp] of this.instrBreakpoints.breakpoints) {
+                toDelete.push(id);
+            }
+            await this.deleteBreakpoints(toDelete);
+            this.instrBreakpoints.breakpoints.clear();
+
+            const promises: Promise<any>[] = [];
+            for (const bp of args.breakpoints || []) {
+                const addr = parseAddressCleaned(bp.instructionReference) + BigInt(bp.offset ?? 0);
+                // Prepopulate with unverified breakpoints
+                let bkptArgs = "";
+                if (bp.condition) {
+                    bkptArgs += `-c "${escapeGdbString(bp.condition)}" `;
+                }
+                if (bp.hitCondition) {
+                    bkptArgs += `${this.parseHitContion(bp.hitCondition)} `;
+                }
+                if (this.gdbSession.args.hardwareBreakpoints?.require) {
+                    bkptArgs += "-h ";
+                }
+                bkptArgs += `*0x${addr.toString(16)}`;
+                const p = this.gdbInstance.sendCommand(`-break-insert ${bkptArgs}`);
+                promises.push(p);
+            }
+            const bps: DebugProtocol.Breakpoint[] = [];
+            let counter = 0;
+            for (const p of promises) {
+                try {
+                    const miOutput = await p;
+                    const bp = args.breakpoints ? args.breakpoints[counter] : null;
+                    const bpInfo = miOutput.resultRecord.result["bkpt"];
+                    const bpId = parseInt(bpInfo["number"]);
+                    const dbgBp: DebugProtocol.Breakpoint = {
+                        id: bpId,
+                        verified: true,
+                        instructionReference: bpInfo["addr"] ?? bp?.instructionReference ?? undefined,
+                    };
+                    bps.push(dbgBp);
+                    if (bp) {
+                        this.instrBreakpoints.breakpoints.set(bpId, bp);
+                    }
+                } catch (err: Error | any) {
+                    const addr = args.breakpoints ? args.breakpoints[counter].instructionReference : "<unknown>";
+                    this.gdbSession.handleMsg(Stderr, `Error setting instruction breakpoint ${addr}: ${err}`);
+                    bps.push({
+                        verified: false,
+                        message: err.toString(),
+                    } as DebugProtocol.Breakpoint);
+                }
+                counter++;
+            }
+            response.body = { breakpoints: bps };
         });
     }
 

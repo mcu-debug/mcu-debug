@@ -34,7 +34,7 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { SymbolInformation, SymbolTable, SymbolType, SymbolNode, MemoryRegion } from "./symbols";
 import { TargetArchitecture, TargetInfo, TargetMemoryRegion, TargetMemoryRegions } from "./target-info";
-import { formatAddress, formatAddress32, formatAddress64, parseAddress } from "../frontend/utils";
+import { formatAddress, formatAddress32, formatAddress64, parseAddress, parseAddressCleaned } from "../frontend/utils";
 import { Stdout } from "./gdb-mi/mi-types";
 import { SortedArray } from "sorted-array-type";
 import { start } from "node:repl";
@@ -139,6 +139,7 @@ export class DisassemblyAdapterNew {
         if (this.instrInfo === undefined) {
             throw new Error("Target architecture not supported for disassembly");
         }
+        args.memoryReference = "0x" + parseAddressCleaned(args.memoryReference).toString(16); // ensure it's in hex format without 0x prefix, as expected by the debug helper
 
         const rsp = await this.debugHelper.disassemble(args);
         const funcTable = rsp.func_table;
