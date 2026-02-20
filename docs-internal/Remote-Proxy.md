@@ -1,3 +1,7 @@
+# OBSOLETE
+
+See [Proxy-Plan.md](./Proxy-Plan.md)
+
 To implement a **Remote Proxy Discovery** that feels "magic" to the user while remaining architecturally clean, you need a robust handshake that handles both **Bootstrap** (getting the proxy on the machine) and **Discovery** (finding where it's running).
 
 Since you are using SSH as your primary "Secure Transport," you can leverage it not just for a tunnel, but as the **deployment and orchestration agent**.
