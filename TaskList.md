@@ -27,6 +27,7 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] REPL
   - [x] SetVariable
   - [x] SetExpr
+- [ ] Add probe-rs as a gdb-server
 - [x] Debug/Trace
   - [x] SWO
   - [x] RTT
