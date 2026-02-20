@@ -102,10 +102,12 @@ Communication between them uses `vscode.commands.executeCommand`, which VS Code'
 
 ```typescript
 // UI extension (local) registers when proxy is ready:
+// token was generated BEFORE spawning the agent and passed as --token <value>;
+// it is not read back from Discovery JSON.
 vscode.commands.registerCommand('mcu-debug-ui.getProxyEndpoint', () => ({
     host: resolvedProxyHost,   // e.g. '127.0.0.1', 'host.docker.internal', etc.
     port: discoveredPort,      // OS-assigned port from Discovery JSON
-    token: discoveredToken,    // Secret from Discovery JSON
+    token: knownToken,         // Set by launcher; never extracted from agent stdout
 }));
 
 // Workspace extension (remote) calls before debug session:
@@ -115,6 +117,47 @@ const endpoint = await vscode.commands.executeCommand<ProxyEndpoint>(
 // Then injects into ConfigurationArguments as pvtProxyHost / pvtProxyPort / pvtProxyToken
 // so the DA (which has no VS Code APIs) can connect without knowing about VS Code at all.
 ```
+
+---
+
+## Token Design
+
+The token is a short-lived shared secret used to verify that the DA connecting to the Probe Agent is the one that is supposed to be there. It is **not** a substitute for transport security — that is the job of the SSH tunnel or network topology. Its purpose is to prevent a rogue process on the same machine from connecting to a Probe Agent that belongs to someone else.
+
+**Design principle: the launcher sets the token, not the agent.**
+
+Whoever starts the Probe Agent decides the token and passes it as `--token <value>`. The agent never invents a token — it only accepts and validates one. This reversal from the earlier design (where the agent generated the token and emitted it in Discovery JSON) has two benefits:
+
+1. The extension already knows the token before the agent starts, so it does not need to parse it back out of stdout. The Discovery JSON simplifies to just `{"status", "port", "pid"}` — no secret leaking through a channel the extension doesn't fully control.
+2. In daemon mode, the person starting the daemon decides the token (or omits it), which is the natural place for that decision.
+
+### Token modes
+
+| How agent is started                                | Token source                                                                              | Agent behavior                                                                                  |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Extension-launched (per-session or VS Code session) | Extension generates `crypto.randomBytes(16).toString('hex')`, passes as `--token <value>` | Validates token on every `initialize` from the DA                                               |
+| Manually launched, explicit token                   | User passes `--token mytoken`                                                             | Validates token; writes value to `~/.mcu-debug/agent.token` for the extension to read           |
+| Manually launched, no flag                          | Agent generates a random token itself                                                     | Validates token; writes generated value to `~/.mcu-debug/agent.token` for the extension to read |
+| Manually launched, `--no-token`                     | User explicitly opts out                                                                  | Skips token validation entirely; extension connects without a token                             |
+
+The **token file** (`~/.mcu-debug/agent.token`) is the handshake mechanism for daemon mode. The extension reads it via direct file read (`auto`) or `ssh cat ~/.mcu-debug/agent.token` (`ssh` type) after the agent is confirmed running. This requires no out-of-band communication and no user configuration in the common case.
+
+### Token as a `hostConfig` override
+
+The `token` field in `hostConfig` follows the same override pattern as `serverpath`, `gdbPath`, etc. — the extension has a sensible automatic behavior (read the token file for daemon mode, generate one for extension-launched mode), and `token` lets the user override that when they have a reason to:
+
+```jsonc
+// Most users never set this.
+// Useful when the daemon token is fixed by lab policy and
+// reading the token file via SSH is not practical.
+"hostConfig": {
+    "type": "ssh",
+    "sshHost": "user@lab-server",
+    "token": "mytoken"   // overrides auto-read from ~/.mcu-debug/agent.token
+}
+```
+
+`token` should **never** go into a committed `launch.json` — it belongs in user settings or a `.env`-style file excluded from source control. Document this clearly in the user-facing docs.
 
 ---
 
@@ -134,7 +177,12 @@ Only two user-facing types. Everything else is an implementation detail.
 
         // Optional for both types: workspace files to copy to the probe host
         // before gdb-server launch (e.g. OpenOCD .cfg files)
-        "syncFiles": ["*.cfg", "board/*.cfg"]
+        "syncFiles": ["*.cfg", "board/*.cfg"],
+
+        // Optional: override the token the extension would otherwise auto-manage.
+        // For daemon mode when the token file is not accessible or a fixed
+        // lab-policy token is preferred. Do NOT commit this to source control.
+        "token": "mytoken"
     }
 }
 ```
@@ -169,15 +217,16 @@ This is the LAB scenario (Topology B above). The Probe Agent runs on the **Lab S
 
 1. **Version check:** `ssh user@lab "mcu-debug-helper --version"` — is binary present and current?
 2. **Deploy if needed:** `scp mcu-debug-helper-<arch> user@lab:~/.mcu-debug/bin/mcu-debug-helper` — binary for the lab server's arch (`uname -m` on the lab server)
-3. **Launch Probe Agent on lab server:** `ssh user@lab "~/.mcu-debug/bin/mcu-debug-helper proxy --port 0 --token <secret>"` — Probe Agent prints Discovery JSON to stdout
-4. **Parse Discovery JSON:** `{ "status": "ready", "port": 54321, "token": "abc", "pid": 9876 }`
-5. **Open SSH tunnel from Engineer Machine to lab server:** `ssh -L 127.0.0.1:<localPort>:127.0.0.1:54321 -N user@lab` with keepalives (`ServerAliveInterval=15 ServerAliveCountMax=3`)
-6. **Inject into args:** `pvtProxyHost = "127.0.0.1"`, `pvtProxyPort = localPort`, `pvtProxyToken = token`
-7. **Stage files:** Send `syncFiles` contents to Probe Agent via Funnel `stageFiles` RPC — Agent writes them to a temp dir on the lab server and returns the path; DA rewrites gdb-server args accordingly
-8. **Debug session runs** — GDB talks to `127.0.0.1:<ghost_port>` on Engineer Machine; tunnel carries bytes to gdb-server on Lab Server
-9. **Cleanup:** Tear down SSH tunnel; Probe Agent exits (kills gdb-server if still running); staging dir cleaned up
+3. **Generate token:** Extension generates `token = crypto.randomBytes(16).toString('hex')`
+4. **Launch Probe Agent on lab server:** `ssh user@lab "~/.mcu-debug/bin/mcu-debug-helper proxy --port 0 --token <token>"` — token is an input, not an output
+5. **Parse Discovery JSON:** `{ "status": "ready", "port": 54321, "pid": 9876 }` — no token in output; extension already has it
+6. **Open SSH tunnel from Engineer Machine to lab server:** `ssh -L 127.0.0.1:<localPort>:127.0.0.1:54321 -N user@lab` with keepalives (`ServerAliveInterval=15 ServerAliveCountMax=3`)
+7. **Inject into args:** `pvtProxyHost = "127.0.0.1"`, `pvtProxyPort = localPort`, `pvtProxyToken = token`
+8. **Stage files:** Send `syncFiles` contents to Probe Agent via Funnel `stageFiles` RPC — Agent writes them to a temp dir on the lab server and returns the path; DA rewrites gdb-server args accordingly
+9. **Debug session runs** — GDB talks to `127.0.0.1:<ghost_port>` on Engineer Machine; tunnel carries bytes to gdb-server on Lab Server
+10. **Cleanup:** Tear down SSH tunnel; Probe Agent exits (kills gdb-server if still running); staging dir cleaned up
 
-**Daemon alternative:** If the Probe Agent is already running on the lab server (manually or via a system service), skip steps 1–5. The UI extension connects directly to a known port. Set `pvtProxyPort` to the pre-configured port. This is the preferred model for shared lab infrastructure.
+**Daemon alternative:** If the Probe Agent is already running on the lab server (manually or via a system service), skip steps 1–6. The UI extension reads `~/.mcu-debug/agent.token` from the lab server via `ssh cat` to get the token (or uses the `hostConfig.token` override if set), then connects directly to the known port. This is the preferred model for shared lab infrastructure.
 
 ### Why `ssh -L` needs no firewall changes
 
@@ -193,15 +242,19 @@ The `-L` tunnel is established by the `ssh` client running on the **Engineer Mac
 | `ssh` — per-session       | Lab Server       | Debug session   | UI extension at session start | Agent spawned via SSH; killed when tunnel tears down                              |
 | `ssh` — daemon            | Lab Server       | Persistent      | User / system service         | Pre-started agent; UI extension connects to known port; preferred for shared labs |
 
-### Proxy startup & discovery
+### Probe Agent startup & discovery
 
-The proxy always prints a single-line JSON to stdout immediately on startup:
+The Probe Agent always prints a single-line Discovery JSON to stdout immediately on startup:
 
 ```json
-{ "status": "ready", "port": 54321, "token": "abc-123-xyz", "pid": 9876 }
+{ "status": "ready", "port": 54321, "pid": 9876 }
 ```
 
-The UI extension reads this from the child process stdout and stores `{port, token}` in memory. All subsequent debug sessions in the same VS Code session reuse the same endpoint (for `auto`).
+No token in the output — the launcher already knows the token because it supplied it as `--token`. The UI extension reads this from the child process stdout (or the SSH session stdout for `ssh` type) and stores `{port}` in memory. The token was already known before the agent started.
+
+For daemon mode (agent started without `--token` or with `--token <value>`), the agent writes the token to `~/.mcu-debug/agent.token` on the Probe Host. The extension retrieves it via direct file read (`auto`) or `ssh cat ~/.mcu-debug/agent.token` (`ssh` type) before the first connection.
+
+All subsequent debug sessions in the same VS Code session reuse the same endpoint (for `auto`).
 
 ### Watchdog / crash recovery
 
@@ -236,12 +289,12 @@ loop {
 
 The DA receives all connection info as private fields injected by the UI extension via the frontend (which has VS Code APIs). These are never set by the user:
 
-| Field                   | Set by   | Meaning                                       |
-| ----------------------- | -------- | --------------------------------------------- |
-| `pvtProxyHost`          | Frontend | Resolved host string for DA to connect to     |
-| `pvtProxyPort`          | Frontend | OS-assigned proxy port (from Discovery JSON)  |
-| `pvtProxyToken`         | Frontend | Authentication token (from Discovery JSON)    |
-| `pvtSshTunnelLocalPort` | Frontend | Local port of the `-L` tunnel (ssh type only) |
+| Field                   | Set by   | Meaning                                                                                                                       |
+| ----------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `pvtProxyHost`          | Frontend | Resolved host string for DA to connect to                                                                                     |
+| `pvtProxyPort`          | Frontend | Proxy port (from Discovery JSON for extension-launched; configured port for daemon)                                           |
+| `pvtProxyToken`         | Frontend | Token — generated by extension (extension-launched), read from token file (daemon), or taken from `hostConfig.token` override |
+| `pvtSshTunnelLocalPort` | Frontend | Local port of the `-L` tunnel (`ssh` type only)                                                                               |
 
 ---
 

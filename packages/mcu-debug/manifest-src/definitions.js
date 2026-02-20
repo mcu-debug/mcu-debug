@@ -426,6 +426,16 @@ module.exports = {
                 items: { type: "string" },
                 default: [],
             },
+            token: {
+                type: "string",
+                description:
+                    "Override the token used to authenticate with the Probe Agent. " +
+                    "Only needed for daemon mode when the token file (~/.mcu-debug/agent.token) is not accessible, " +
+                    "or when a fixed lab-policy token is preferred. " +
+                    "When omitted, the extension auto-manages the token: it generates one for extension-launched agents, " +
+                    "or reads it from the token file for pre-running daemons. " +
+                    "Do NOT commit this value to source control — use VS Code user settings or a secrets manager.",
+            },
         },
     },
     rttConfig: {
