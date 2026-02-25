@@ -84,7 +84,7 @@ if [[ "$mode" == "dev" ]]; then
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   echo "Generating TypeScript exports..."
   cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
-  cargo test --lib host_side::tests::ensure_ts_exports --quiet 2>/dev/null || true
+  cargo test --lib proxy_server::tests::ensure_ts_exports --quiet 2>/dev/null || true
   format_ts_exports
 
   cargo build --bin "$BIN_NAME"
@@ -109,7 +109,7 @@ if [[ "$mode" == "prod" ]]; then
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   echo "Generating TypeScript exports..."
   cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
-  cargo test --lib host_side::tests::ensure_ts_exports --quiet 2>/dev/null || true
+  cargo test --lib proxy_server::tests::ensure_ts_exports --quiet 2>/dev/null || true
   format_ts_exports
 
   # platform|target_triple|exe_ext

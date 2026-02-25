@@ -420,10 +420,14 @@ module.exports = {
             syncFiles: {
                 type: "array",
                 description:
-                    "Glob patterns (relative to ${workspaceFolder}) for files to copy to the probe host before the gdb-server starts. " +
+                    "Glob patterns (relative to ${cwd}) for files to copy to the probe host before the gdb-server starts. " +
                     "Required when gdb-server config files (e.g. OpenOCD .cfg) live in the workspace but the gdb-server runs remotely. " +
                     "Files are staged in a per-session temp directory on the host and cleaned up when the session ends.",
-                items: { type: "string" },
+                items: { type: "object" },
+                properties: {
+                    local: { type: "string", description: "Glob pattern for files to sync, relative to ${cwd}. Example: '*.cfg'." },
+                    remote: { type: "string", description: "Remote path to sync the files to. If not specified, the local path is used." },
+                },
                 default: [],
             },
             token: {

@@ -287,8 +287,8 @@ export interface HostConfig {
     // User-facing fields (set in launch.json)
     type: "auto" | "ssh" | "local"; // "local" is internal/testing only, not exposed in package.json schema
     sshHost?: string; // Required when type === "ssh"
-    syncFiles?: string[];
     token?: string; // Override for daemon-mode token; auto-managed when absent (do not commit to source control)
+    syncFiles?: { local: string; remote?: string }[]; // List of files to sync (host-local path glob patterns and optional remote path)
 
     // Private/calculated fields — set by the frontend (which has VS Code APIs)
     // before passing ConfigurationArguments to the DA (which has no VS Code APIs).

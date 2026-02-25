@@ -14,6 +14,10 @@ export type ControlMessage = { seq: number } & (
                * SemVer string representing the version
                */
               version: string;
+              /**
+               * Base directory unique-id of the remote launch dir for debugging
+               */
+              remote_launch_uid: string;
           };
       }
     | {
@@ -54,4 +58,5 @@ export type ControlMessage = { seq: number } & (
     | { method: "streamStatus"; params: { stream_id: number } }
     | { method: "startStream"; params: { stream_id: number } }
     | { method: "heartbeat" }
+    | { method: "syncFile"; params: { relative_path: string; content: Array<number> } }
 );

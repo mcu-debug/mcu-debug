@@ -1,7 +1,7 @@
 import * as net from "net";
 import { GDBDebugSession } from "./gdb-session";
 import { GDBServerSession } from "./server-session";
-import { ConfigurationArguments, TcpPortDef, TcpPortDefMap } from "./servers/common";
+import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap } from "./servers/common";
 import { existsSync } from "fs";
 import { DebugHelper } from "./helper";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
@@ -11,6 +11,8 @@ import { PortReserved } from "@mcu-debug/shared/proxy-protocol/PortReserved";
 import { PortSet } from "@mcu-debug/shared/proxy-protocol/PortSet";
 import { PortAllocatorSpec } from "@mcu-debug/shared/proxy-protocol/PortAllocatorSpec";
 import { EventEmitter } from "stream";
+import * as crypto from "crypto";
+import { glob, GlobOptions } from "glob";
 
 type StreamStatus = "starting" | "running" | "ready" | "timedOut" | "closed";
 
@@ -68,20 +70,74 @@ export class ProxyClient extends EventEmitter {
             return false;
         }
         try {
+            let cwd = canonicalizePath(this.args.cwd || process.cwd());
+            let cdir = crypto.createHash("sha256").update(cwd).digest("hex");
+            cdir = cdir.length > 16 ? cdir.substring(0, 16) : cdir;
             const cmd: ControlMessage = {
                 seq: this.nextSeq++,
                 method: "initialize",
                 params: {
                     token: token,
                     version: "1.0.3",
+                    remote_launch_uid: cdir,
                 },
             };
             await this.awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
             this.session.handleMsg(Stdout, `Proxy session initialized`);
+            await this.syncFiles(cwd);
             return true;
         } catch (err) {
             this.session.handleMsg(Stderr, `Failed to initialize proxy session: ${err}`);
             return false;
+        }
+    }
+
+    private async syncFiles(cwd: string) {
+        const syncFiles = this.session.args.hostConfig?.syncFiles || [];
+        for (const file of syncFiles) {
+            const localPath = file.local;
+            const remotePath = file.remote || localPath;
+            try {
+                const files = await this.findFiles(cwd, localPath);
+                if (!existsSync(localPath)) {
+                    this.session.handleMsg(Stderr, `File specified for syncing does not exist: ${localPath}`);
+                    continue;
+                }
+                try {
+                    const content = Buffer.from(require("fs").readFileSync(localPath)).toJSON().data as Array<number>;
+                    const cmd: ControlMessage = {
+                        seq: this.nextSeq++,
+                        method: "syncFile",
+                        params: {
+                            relative_path: remotePath,
+                            content: content,
+                        },
+                    };
+                    await this.awaitWithTimeout(this.sendControlCommand(cmd), this.timeout).catch((err) => {
+                        this.session.handleMsg(Stderr, `Failed to sync file ${localPath} to ${remotePath}: ${err}`);
+                    });
+                } catch (err) {
+                    this.session.handleMsg(Stderr, `Failed to read file for syncing: ${localPath}, error: ${err}`);
+                }
+            } catch (err) {
+                this.session.handleMsg(Stderr, `Failed to find files for syncing with pattern ${localPath}: ${err}`);
+            }
+        }
+    }
+
+    private async findFiles(cwd: string, globPattern: string): Promise<string[]> {
+        try {
+            const options: GlobOptions = {
+                cwd: cwd,
+                nodir: true,
+                absolute: false,
+                follow: false,
+            };
+            const files = (await glob(globPattern, options)) as string[];
+            return files;
+        } catch (error) {
+            this.session.handleMsg(Stderr, `Failed to find files with pattern ${globPattern} in ${cwd}: ${error}`);
+            return [];
         }
     }
 

@@ -5,11 +5,14 @@ use serde_json::Value;
 
 use anyhow::anyhow;
 use std::collections::HashMap;
+use std::env;
+use std::fs;
 use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -153,6 +156,8 @@ pub enum ControlRequest {
         token: String,
         /** SemVer string representing the version */
         version: String,
+        /** Base directory unique-id of the remote launch dir for debugging */
+        remote_launch_uid: String,
     },
 
     #[serde(rename = "allocatePorts")]
@@ -189,6 +194,13 @@ pub enum ControlRequest {
     /** Heartbeat message to keep the connection alive */
     #[serde(rename = "heartbeat")]
     Heartbeat,
+
+    /** Sync a file to the remote server */
+    #[serde(rename = "syncFile")]
+    SyncFile {
+        relative_path: String,
+        content: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
@@ -232,7 +244,10 @@ pub enum StreamStatus {
 pub enum ControlResponseData {
     /** Initialize response: Just a version string */
     #[serde(rename = "initialize")]
-    Initialize { version: String },
+    Initialize {
+        version: String,
+        server_launch_uid: String,
+    },
     /** AllocatePorts response: List of reserved ports. This is a flat list in the same order as what was requested */
     #[serde(rename = "allocatePorts")]
     AllocatePorts { ports: Vec<PortReserved> },
@@ -334,6 +349,8 @@ pub struct ProxyServer {
     // port waiters, stdout/stderr forwarders) sends ProxyEvent here.
     event_rx: Receiver<ProxyEvent>,
     event_tx: Sender<ProxyEvent>,
+
+    server_launch_uid: String,
 }
 
 impl ProxyServer {
@@ -350,6 +367,7 @@ impl ProxyServer {
             event_rx,
             event_tx,
             next_stream_id: 3,
+            server_launch_uid: String::new(),
         }
     }
 
@@ -625,14 +643,23 @@ impl ProxyServer {
                         eprintln!("Failed to send StreamStatus response: {}", e);
                     });
             }
+            ControlRequest::SyncFile { .. } => {
+                eprintln!("Received SyncFile request");
+                self.handle_sync_file(&msg);
+            }
         }
     }
 
     fn handle_initialize(&mut self, msg: &ControlMessage) {
-        if let ControlRequest::Initialize { token, version } = &msg.request {
+        if let ControlRequest::Initialize {
+            token,
+            version,
+            remote_launch_uid,
+        } = &msg.request
+        {
             eprintln!(
-                "Received Initialize request with version {} and token {:?}",
-                version, token
+                "Received Initialize request with version {} and token {:?} and remote_launch_uid {:?}",
+                version, token, remote_launch_uid
             );
             let mut err = false;
             let mut err_msg = String::new();
@@ -644,6 +671,24 @@ impl ProxyServer {
                 err_msg = format!("Error: Unsupported version {}", version);
                 err = true;
             }
+            let dir = PathBuf::from(env::temp_dir())
+                .join("mcu-proxy-server")
+                .join(remote_launch_uid)
+                .into_os_string()
+                .into_string()
+                .unwrap()
+                .replace('\\', "/");
+            if err != true {
+                match fs::create_dir_all(&dir) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("Failed to create directory {:?}: {}", dir, e);
+                        err = true;
+                        err_msg = format!("Failed to create directory {:?}: {}", dir, e);
+                    }
+                }
+            }
+
             if err {
                 err_msg = format!("Initialization failed, closing connection: {}", err_msg);
                 eprintln!("{}", err_msg);
@@ -661,8 +706,10 @@ impl ProxyServer {
                 self.exit = true;
             } else {
                 eprintln!("Initialization successful");
+                self.server_launch_uid = dir.clone();
                 let data = ControlResponseData::Initialize {
                     version: CURRENT_VERSION.to_string(),
+                    server_launch_uid: dir,
                 };
                 ControlResponse::success(msg.seq, Some(data))
                     .send(&mut self.stream)
@@ -930,6 +977,48 @@ impl ProxyServer {
         eprintln!("Timeout waiting for port {}", port);
         Err(anyhow!("Timeout waiting for port {}", port))
     }
+
+    fn handle_sync_file(&mut self, msg: &ControlMessage) {
+        if let ControlRequest::SyncFile {
+            relative_path,
+            content,
+        } = &msg.request
+        {
+            eprintln!("Received SyncFile request for path {}", relative_path);
+            let full_path = PathBuf::from(self.server_launch_uid.clone()).join(relative_path);
+            match fs::write(full_path.clone(), content) {
+                Ok(_) => {
+                    ControlResponse::success(msg.seq, None)
+                        .send(&mut self.stream)
+                        .unwrap_or_else(|e| {
+                            eprintln!("Failed to send success response: {}", e);
+                        });
+                }
+                Err(e) => {
+                    let err_msg = format!(
+                        "Failed to write file {} => {}: {}",
+                        relative_path,
+                        full_path.display(),
+                        e
+                    );
+                    eprintln!("{}", err_msg);
+                    ControlResponse::error(msg.seq, err_msg)
+                        .send(&mut self.stream)
+                        .unwrap_or_else(|e| {
+                            eprintln!("Failed to send error response: {}", e);
+                        });
+                }
+            }
+        } else {
+            eprintln!(
+                "BUG: handle_sync_file called with wrong request type: {:?}",
+                msg.request
+            );
+            ControlResponse::error(msg.seq, "Internal error: wrong handler".to_string())
+                .send(&mut self.stream)
+                .ok();
+        }
+    }
 }
 
 pub enum WaitPortResult {
@@ -1087,6 +1176,7 @@ mod tests {
             request: ControlRequest::Initialize {
                 token: "adis-ababa".to_string(),
                 version: CURRENT_VERSION.to_string(),
+                remote_launch_uid: "test-uid".to_string(),
             },
         };
         seq += 1;
@@ -1107,8 +1197,13 @@ mod tests {
         });
         let response: ControlResponse = serde_json::from_str(&msg).unwrap();
         assert!(response.success);
-        if let Some(ControlResponseData::Initialize { version }) = response.data {
+        if let Some(ControlResponseData::Initialize {
+            version,
+            server_launch_uid,
+        }) = response.data
+        {
             assert_eq!(version, CURRENT_VERSION);
+            assert!(server_launch_uid.contains("test-uid"));
         } else {
             panic!("Expected Initialize response data");
         }

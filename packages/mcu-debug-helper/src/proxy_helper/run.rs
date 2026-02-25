@@ -24,7 +24,7 @@ use std::{
     thread,
 };
 
-use crate::proxy_helper::host_side::ProxyServer;
+use crate::proxy_helper::proxy_server::ProxyServer;
 
 #[derive(Args, Debug)]
 pub struct ProxyArgs {

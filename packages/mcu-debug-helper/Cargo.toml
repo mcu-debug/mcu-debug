@@ -25,3 +25,4 @@ ts-rs = "12.0.1"
 clap = { version = "4.5.57", features = ["derive"] }
 capstone = "0.14.0"
 tokio = { version = "1.49.0", features = ["full"] }
+tempfile = "3.26.0"
