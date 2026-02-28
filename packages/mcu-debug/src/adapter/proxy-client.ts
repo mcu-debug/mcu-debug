@@ -82,6 +82,7 @@ export class ProxyClient extends EventEmitter {
                     token: token,
                     version: "1.0.3",
                     remote_launch_uid: cdir,
+                    port_wait_mode: "monitor",
                 },
             };
             await this.awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);

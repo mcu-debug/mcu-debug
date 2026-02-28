@@ -168,6 +168,8 @@ pub enum ControlRequest {
         version: String,
         /** Base directory unique-id of the remote launch dir for debugging */
         remote_launch_uid: String,
+        /** Port wait mode for this session */
+        port_wait_mode: Option<PortWaitMode>, // If specified, overrides the default port wait mode for this session. This allows the client to choose the strategy that works best for its environment and needs, without requiring different builds of the proxy helper.
     },
 
     #[serde(rename = "allocatePorts")]
@@ -364,11 +366,14 @@ pub struct ProxyServer {
     event_tx: Sender<ProxyEvent>,
 
     server_launch_uid: String,
+
+    session_port_wait_mode: PortWaitMode,
 }
 
 impl ProxyServer {
     pub fn new(args: ProxyArgs, stream: TcpStream) -> Self {
         let (event_tx, event_rx) = channel();
+        let session_port_wait_mode = args.port_wait_mode.clone();
 
         Self {
             args,
@@ -381,6 +386,7 @@ impl ProxyServer {
             event_tx,
             next_stream_id: 3,
             server_launch_uid: String::new(),
+            session_port_wait_mode,
         }
     }
 
@@ -683,11 +689,12 @@ impl ProxyServer {
             token,
             version,
             remote_launch_uid,
+            port_wait_mode,
         } = &msg.request
         {
             eprintln!(
-                "Received Initialize request with version {} and token {:?} and remote_launch_uid {:?}",
-                version, token, remote_launch_uid
+                "Received Initialize request with version {} and token {:?} and remote_launch_uid {:?} and port_wait_mode {:?}",
+                version, token, remote_launch_uid, port_wait_mode
             );
             let mut err = false;
             let mut err_msg = String::new();
@@ -738,6 +745,9 @@ impl ProxyServer {
             } else {
                 eprintln!("Initialization successful");
                 self.server_launch_uid = dir.clone();
+                if let Some(mode) = port_wait_mode {
+                    self.session_port_wait_mode = *mode;
+                }
                 let data = ControlResponseData::Initialize {
                     version: CURRENT_VERSION.to_string(),
                     server_launch_uid: dir,
@@ -884,7 +894,7 @@ impl ProxyServer {
                 });
             }
 
-            match self.args.port_wait_mode {
+            match self.session_port_wait_mode {
                 PortWaitMode::ConnectHold => {
                     self.spawn_port_waiters(ports, true, 0);
                 }
@@ -1127,6 +1137,7 @@ mod tests {
         StreamStatus::export(&config).unwrap();
         ControlRequest::export(&config).unwrap();
         ControlMessage::export(&config).unwrap();
+        PortWaitMode::export(&config).unwrap();
         ProxyServerEvents::export(&config).unwrap();
         ControlResponse::export(&config).unwrap();
         ControlResponseData::export(&config).unwrap();
@@ -1256,6 +1267,7 @@ mod tests {
                 token: "adis-ababa".to_string(),
                 version: CURRENT_VERSION.to_string(),
                 remote_launch_uid: "test-uid".to_string(),
+                port_wait_mode: None,
             },
         };
         seq += 1;

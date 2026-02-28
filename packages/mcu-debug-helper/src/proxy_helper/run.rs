@@ -20,6 +20,8 @@ use anyhow::Result;
 use clap::Args;
 use clap::ValueEnum;
 use flexi_logger::{Age, Cleanup, Criterion, Duplicate, FileSpec, Logger, LoggerHandle, Naming};
+use serde::Deserialize;
+use serde::Serialize;
 use std::{
     backtrace::Backtrace,
     io::Write,
@@ -33,7 +35,9 @@ use std::{
 
 use crate::proxy_helper::proxy_server::ProxyServer;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
+#[serde(rename_all = "camelCase")]
 pub enum PortWaitMode {
     /// Existing behavior: proactively connect and keep forwarding stream open.
     ConnectHold,
@@ -62,7 +66,7 @@ pub struct ProxyArgs {
     pub debug: bool,
 
     /// Strategy to detect stream-port readiness
-    #[arg(long = "port-wait-mode", value_enum, default_value_t = PortWaitMode::ConnectHold)]
+    #[arg(long = "port-wait-mode", value_enum, default_value_t = PortWaitMode::Monitor)]
     pub port_wait_mode: PortWaitMode,
 
     /// Also emit log lines to stderr (file logging is always enabled)
