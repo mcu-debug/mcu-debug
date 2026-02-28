@@ -9,6 +9,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$ROOT_DIR/packages/mcu-debug-helper"
 BINDIR="$ROOT_DIR/packages/mcu-debug/bin"
+PROXY_BINDIR="$ROOT_DIR/packages/mcu-debug-proxy/bin"
 BIN_NAME="mcu-debug-helper"
 
 mkdir -p "$BINDIR"
@@ -77,6 +78,21 @@ function copy_artifact() {
   echo "Wrote: $dest_dir/$dest_name"
 }
 
+function sync_proxy_binaries() {
+  mkdir -p "$PROXY_BINDIR"
+  rm -rf "$PROXY_BINDIR"/*
+  cp -R "$BINDIR"/. "$PROXY_BINDIR"/
+  echo "Synchronized helper binaries to: $PROXY_BINDIR"
+}
+
+function has_cross() {
+  command -v cross >/dev/null 2>&1
+}
+
+function has_container_runtime() {
+  command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1
+}
+
 if [[ "$mode" == "dev" ]]; then
   echo "Dev build: building for host platform (debug)"
   cd "$RUST_DIR"
@@ -97,6 +113,7 @@ if [[ "$mode" == "dev" ]]; then
 
   # Copy root binary
   copy_artifact "$dbg_path" "$BINDIR" "$BIN_NAME" || true
+  sync_proxy_binaries
 
   echo "Dev build complete. Main binary: $BINDIR/$BIN_NAME"
   exit 0
@@ -105,6 +122,14 @@ fi
 if [[ "$mode" == "prod" ]]; then
   echo "Production build: release builds for multiple targets"
   cd "$RUST_DIR"
+
+  # CI guard: if cross exists, require a container runtime so builds don't silently
+  # downgrade to host cargo fallback in automated environments.
+  if [[ "${CI:-}" == "true" ]] && has_cross && ! has_container_runtime; then
+    echo "Error: CI requires container runtime when 'cross' is installed."
+    echo "Install Docker or Podman, or remove/disable cross in this CI environment."
+    exit 1
+  fi
   
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   echo "Generating TypeScript exports..."
@@ -113,12 +138,13 @@ if [[ "$mode" == "prod" ]]; then
   format_ts_exports
 
   # platform|target_triple|exe_ext
+  # Linux targets intentionally use MUSL to produce static-friendly binaries.
   # Note: aarch64-pc-windows-gnu not yet in stable Rust, omitted for now
   targets=(
     "darwin-arm64|aarch64-apple-darwin|"
     "darwin-x64|x86_64-apple-darwin|"
-    "linux-arm64|aarch64-unknown-linux-gnu|"
-    "linux-x64|x86_64-unknown-linux-gnu|"
+    "linux-arm64|aarch64-unknown-linux-musl|"
+    "linux-x64|x86_64-unknown-linux-musl|"
     "win32-x64|x86_64-pc-windows-gnu|.exe"
   )
 
@@ -126,14 +152,27 @@ if [[ "$mode" == "prod" ]]; then
     IFS='|' read -r platform triple ext <<< "$entry"
     printf "\nBuilding target: %s (platform: %s)" "$triple" "$platform"
 
+    builder="cargo"
+    if [[ "$triple" != *"-apple-darwin" ]] && has_cross && has_container_runtime; then
+      builder="cross"
+    fi
+    echo ""
+    echo "Using builder: $builder"
+
     # Ensure target installed
-    if ! rustup target list --installed | grep -q "^${triple}$"; then
+    if [[ "$builder" == "cargo" ]] && ! rustup target list --installed | grep -q "^${triple}$"; then
       echo "Adding rust target: $triple"
       rustup target add "$triple" || true
     fi
 
-    # Try cargo build --release --target. If it fails, suggest `cross`.
-    if cargo build --release --bin "$BIN_NAME" --target "$triple"; then
+    # Build for target. Prefer `cross` for non-Darwin targets when available.
+    if [[ "$builder" == "cross" ]]; then
+      build_cmd=(cross build --release --bin "$BIN_NAME" --target "$triple")
+    else
+      build_cmd=(cargo build --release --bin "$BIN_NAME" --target "$triple")
+    fi
+
+    if "${build_cmd[@]}"; then
       artifact="target/$triple/release/$BIN_NAME$ext"
       dest_dir="$BINDIR/$platform"
       dest_name="$BIN_NAME$ext"
@@ -143,9 +182,16 @@ if [[ "$mode" == "prod" ]]; then
         echo "Expected artifact not found: $artifact"
       fi
     else
-      echo "cargo build failed for $triple. Consider installing and using 'cross' for cross-compilation or ensure the appropriate linker/toolchain is available."
+      echo "$builder build failed for $triple."
+      if [[ "$builder" == "cross" ]]; then
+        echo "Make sure Docker/Podman is available for cross container builds."
+      else
+        echo "Consider installing 'cross' (cargo install cross --locked) or ensure native toolchain/linker availability."
+      fi
     fi
   done
+
+  sync_proxy_binaries
 
   echo "Production build done. Binaries under: $BINDIR"
   exit 0

@@ -1,6 +1,6 @@
 {
   "name": "mcu-debug-proxy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "preview": true,
   "description": "A debugger and debug adapter for MCUs",
   "keywords": [

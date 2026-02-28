@@ -19,10 +19,10 @@ Produces debug binary at `packages/mcu-debug/bin/mcu-debug-helper`
 ./scripts/setup-cross-compile.sh
 ```
 
-This installs:
-- Linux cross-compilers (x86_64, aarch64)
-- MinGW-w64 for Windows cross-compilation
+This configures:
+- `cross` (container-based cross compilation)
 - Rust target standard libraries
+- Optional native fallback toolchains when requested
 
 **Then build all targets**:
 ```bash
@@ -42,14 +42,24 @@ packages/mcu-debug/bin/
 
 ## Target Details
 
-| Platform            | Target Triple               | Notes                                      |
-| ------------------- | --------------------------- | ------------------------------------------ |
-| macOS Apple Silicon | `aarch64-apple-darwin`      | Native on M1/M2/M3 Macs                    |
-| macOS Intel         | `x86_64-apple-darwin`       | Native, can cross-compile on Apple Silicon |
-| Linux ARM64         | `aarch64-unknown-linux-gnu` | Requires cross-compiler                    |
-| Linux x64           | `x86_64-unknown-linux-gnu`  | Requires cross-compiler                    |
-| Windows ARM64       | `aarch64-pc-windows-gnu`    | MinGW cross-compiler                       |
-| Windows x64         | `x86_64-pc-windows-gnu`     | MinGW cross-compiler                       |
+| Platform            | Target Triple                | Notes                                      |
+| ------------------- | ---------------------------- | ------------------------------------------ |
+| macOS Apple Silicon | `aarch64-apple-darwin`       | Native on M1/M2/M3 Macs                    |
+| macOS Intel         | `x86_64-apple-darwin`        | Native, can cross-compile on Apple Silicon |
+| Linux ARM64         | `aarch64-unknown-linux-musl` | Static-friendly via musl                   |
+| Linux x64           | `x86_64-unknown-linux-musl`  | Static-friendly via musl                   |
+| Windows ARM64       | `aarch64-pc-windows-gnu`     | MinGW cross-compiler                       |
+| Windows x64         | `x86_64-pc-windows-gnu`      | MinGW cross-compiler                       |
+
+## Build Strategy
+
+- `darwin-*` targets: built natively with `cargo`.
+- Linux/Windows targets: built with `cross` when available.
+- If `cross` is not installed, build script falls back to native `cargo` + local linkers.
+
+This keeps clone/build workflows working on macOS, Linux, and Windows:
+- Native local builds continue to work per-platform.
+- Multi-target release builds are easiest with `cross` + Docker/Podman.
 
 ## Binary Dependencies and Static Linking
 
@@ -64,15 +74,11 @@ Despite our best efforts, **truly static binaries are only achievable on some pl
 - **Size**: ~3.4 MB (release)
 
 #### Linux Binaries (linux-arm64, linux-x64)
-- **Status**: Dynamically linked against glibc
-- **Dependencies**: 
-  - `libc.so.6` (glibc 2.17+ required)
-  - `libgcc_s.so.1`
-  - `libpthread.so.0`, `libdl.so.2`, `librt.so.1`
-- **Portability**: Will run on any Linux with glibc 2.17+ (RHEL 7+, Ubuntu 14.04+, Debian 8+)
-- **Size**: ~4.0 MB (release)
-- **Why not static?**: glibc's `getaddrinfo()` requires dynamic linking for DNS resolution and NSS
-- **Alternative**: For truly static Linux binaries, use musl targets (`x86_64-unknown-linux-musl`) instead
+- **Status**: Built with MUSL targets for static-friendly outputs
+- **Dependencies**: Typically no glibc runtime dependency (`libc.so.6`)
+- **Portability**: Better cross-distro portability than glibc-linked binaries
+- **Size**: Usually larger than glibc-linked builds
+- **Note**: Verify with `file`/`readelf` in CI to enforce static expectations
 
 #### Windows Binaries (win32-x64, win32-arm64)
 - **Status**: C runtime statically linked, Windows APIs dynamically linked
@@ -130,7 +136,7 @@ otool -L packages/mcu-debug/bin/darwin-arm64/mcu-debug-helper
 # Linux - check shared object dependencies  
 ldd packages/mcu-debug/bin/linux-x64/mcu-debug-helper
 # or from macOS:
-x86_64-unknown-linux-gnu-objdump -p packages/mcu-debug/bin/linux-x64/mcu-debug-helper | grep NEEDED
+x86_64-unknown-linux-musl-objdump -p packages/mcu-debug/bin/linux-x64/mcu-debug-helper | grep NEEDED
 
 # Windows - check DLL dependencies
 # (from macOS with mingw-w64 installed)
@@ -140,20 +146,21 @@ x86_64-w64-mingw32-objdump -p packages/mcu-debug/bin/win32-x64/mcu-debug-helper.
 ## Linker Configuration
 
 Cross-compilation linkers are configured in `packages/mcu-debug-helper/.cargo/config.toml`:
-- Linux targets use GNU cross-compilers (`*-linux-gnu-gcc`)
-- Windows targets use MinGW (`*-w64-mingw32-gcc`)
+- Linux release targets use MUSL triples (`*-unknown-linux-musl`)
+- `cross` is preferred for Linux/Windows to avoid local linker friction
+- Windows targets remain GNU ABI (`x86_64-pc-windows-gnu`)
 - macOS targets use native Xcode toolchain
 
 ## Troubleshooting
 
-### Linux cross-compilation fails
+### cross build fails (Linux/Windows targets)
 ```bash
-# Verify cross-compiler is installed
-aarch64-unknown-linux-gnu-gcc --version
-x86_64-unknown-linux-gnu-gcc --version
+# Verify cross + container runtime
+cross --version
+docker --version   # or podman --version
 
 # Reinstall if needed
-brew reinstall aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
+cargo install cross --locked
 ```
 
 ### Windows cross-compilation fails
@@ -170,7 +177,7 @@ brew reinstall mingw-w64
 If you prefer not to install native cross-compilers:
 ```bash
 cargo install cross
-cross build --release --target aarch64-unknown-linux-gnu
+cross build --release --target aarch64-unknown-linux-musl
 ```
 
 ## CI/CD

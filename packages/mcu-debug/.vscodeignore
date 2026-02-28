@@ -21,3 +21,8 @@ docs/**
 scripts/**
 coverage/**
 .DS_Store
+tmp/**
+**/tmp/**
+**/.#*
+**/*~
+bin/mcu-debug-helper*

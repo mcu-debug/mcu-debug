@@ -3,6 +3,19 @@ const path = require("path");
 const definitions = require("../manifest-src/definitions");
 
 const PACKAGE_JSON_PATH = path.join(__dirname, "../package.json");
+const PROXY_PACKAGE_JSON_PATH = path.join(__dirname, "../../mcu-debug-proxy/package.json");
+
+function enforceVersionSync(pkg) {
+    const proxyPkg = JSON.parse(fs.readFileSync(PROXY_PACKAGE_JSON_PATH, "utf8"));
+    if (pkg.version !== proxyPkg.version) {
+        throw new Error(
+            `Version mismatch detected:\n` +
+                `  packages/mcu-debug/package.json: ${pkg.version}\n` +
+                `  packages/mcu-debug-proxy/package.json: ${proxyPkg.version}\n` +
+                `Keep extension versions synchronized before running update-package-json.js.`,
+        );
+    }
+}
 
 function createPlatformProps(name, description) {
     const props = {};
@@ -212,6 +225,24 @@ function generateDebuggers() {
 
 function updatePackageJson() {
     const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, "utf8"));
+
+    enforceVersionSync(pkg);
+
+    // Keep packaging scripts non-recursive.
+    // `vsce package` always runs `vscode:prepublish`; if that script calls `npm run package`,
+    // and `package` itself calls `vsce package`, packaging recurses indefinitely.
+    if (pkg.scripts) {
+        pkg.scripts["vscode:prepublish"] = "npm run build-all";
+        pkg.scripts["package"] = "npm-run-all package:*";
+
+        for (const target of ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-x64"]) {
+            const key = `package:${target}`;
+            const cmd = pkg.scripts[key];
+            if (typeof cmd === "string" && cmd.includes("vsce package") && !cmd.includes("--no-dependencies")) {
+                pkg.scripts[key] = `${cmd} --no-dependencies`;
+            }
+        }
+    }
 
     // Update configuration
     pkg.contributes.configuration = generateConfiguration();

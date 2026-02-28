@@ -7,3 +7,4 @@ esbuild.js
 .npmrc
 *.map
 **/*.ts
+bin/mcu-debug-helper*

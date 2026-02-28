@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
-import { ProxyHostType, resolveProxyNetworkMode } from "@mcu-debug/shared";
+import { computeProxyLaunchPolicy, ProxyHostType, ProxyNetworkMode, resolveProxyNetworkMode } from "@mcu-debug/shared";
 import { STLinkServerController } from "../adapter/servers/stlink";
 import { GDBServerConsole } from "./server_console";
 import { parseAddress } from "./utils";
@@ -43,7 +43,20 @@ const JLINK_VALID_RTOS: string[] = ["Azure", "ChibiOS", "embOS", "FreeRTOS", "Nu
 export class CortexDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
     constructor(private context: vscode.ExtensionContext) {}
 
-    private resolveNetworkMode(config: ConfigOptions): string | undefined {
+    private resolveWslGatewayHost(): string | undefined {
+        try {
+            const resolv = fs.readFileSync("/etc/resolv.conf", "utf8");
+            const match = resolv.match(/^nameserver\s+(\S+)$/m);
+            if (match && match[1]) {
+                return match[1].trim();
+            }
+        } catch {
+            // Ignore errors and fall back to loopback.
+        }
+        return undefined;
+    }
+
+    private resolveNetworkMode(config: ConfigOptions): ProxyNetworkMode | undefined {
         const hostType = config.hostConfig?.type as ProxyHostType | undefined;
         if (!hostType) {
             return undefined;
@@ -251,7 +264,24 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
         }
 
         if (config.hostConfig) {
-            config.hostConfig.pvtNetworkMode = this.resolveNetworkMode(config);
+            const resolvedMode = this.resolveNetworkMode(config);
+            config.hostConfig.pvtNetworkMode = resolvedMode;
+            if (resolvedMode) {
+                const policy = computeProxyLaunchPolicy(resolvedMode);
+                let resolvedProxyHost = policy.proxyHostForDA;
+
+                if (!config.hostConfig.pvtProxyBindHost) {
+                    config.hostConfig.pvtProxyBindHost = policy.bindHost;
+                }
+
+                if (resolvedMode === "auto-wsl" && resolvedProxyHost === "<wsl-gateway-ip>") {
+                    resolvedProxyHost = this.resolveWslGatewayHost() || "127.0.0.1";
+                }
+
+                if (!config.hostConfig.pvtProxyHost) {
+                    config.hostConfig.pvtProxyHost = resolvedProxyHost;
+                }
+            }
         }
 
         return config;

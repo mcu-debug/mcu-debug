@@ -1,7 +1,7 @@
 {
   "name": "mcu-debug",
   "publisher": "mcu-debug",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "preview": true,
   "description": "A debugger and debug adapter for MCUs",
   "displayName": "MCU-Debug",
@@ -3596,15 +3596,15 @@
     "watch": "npm run copy-codicons && npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc-strict --noEmit --watch --project tsconfig.json",
-    "vscode:prepublish": "npm run package",
+    "vscode:prepublish": "npm run build-all",
     "build-rust-prod": "cd ../.. && ./scripts/build-binaries.sh prod",
     "build-all": "npm run build-rust-prod && node scripts/generate-ignore-files.js && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js --production",
-    "package": "npm run build-all && npm-run-all package:*",
-    "package:darwin-arm64": "vsce package --target darwin-arm64 --ignoreFile out/ignore-file.darwin-arm64",
-    "package:darwin-x64": "vsce package --target darwin-x64 --ignoreFile out/ignore-file.darwin-x64",
-    "package:linux-x64": "vsce package --target linux-x64 --ignoreFile out/ignore-file.linux-x64",
-    "package:linux-arm64": "vsce package --target linux-arm64 --ignoreFile out/ignore-file.linux-arm64",
-    "package:win32-x64": "vsce package --target win32-x64 --ignoreFile out/ignore-file.win32-x64"
+    "package": "npm-run-all package:*",
+    "package:darwin-arm64": "vsce package --target darwin-arm64 --ignoreFile out/ignore-file.darwin-arm64 --no-dependencies",
+    "package:darwin-x64": "vsce package --target darwin-x64 --ignoreFile out/ignore-file.darwin-x64 --no-dependencies",
+    "package:linux-x64": "vsce package --target linux-x64 --ignoreFile out/ignore-file.linux-x64 --no-dependencies",
+    "package:linux-arm64": "vsce package --target linux-arm64 --ignoreFile out/ignore-file.linux-arm64 --no-dependencies",
+    "package:win32-x64": "vsce package --target win32-x64 --ignoreFile out/ignore-file.win32-x64 --no-dependencies"
   },
   "devDependencies": {
     "@flatten-js/interval-tree": "^2.0.3",

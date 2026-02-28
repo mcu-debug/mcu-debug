@@ -37,6 +37,7 @@ packages/*/dist/
 packages/*/target/
 packages/*/node_modules/
 packages/mcu-debug/bin/
+packages/mcu-debug-proxy/bin/
 
 # ts_rs default bindings output (real exports go to packages/shared/)
 packages/mcu-debug-helper/bindings/
