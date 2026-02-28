@@ -3599,12 +3599,7 @@
     "vscode:prepublish": "npm run build-all",
     "build-rust-prod": "cd ../.. && ./scripts/build-binaries.sh prod",
     "build-all": "npm run build-rust-prod && node scripts/generate-ignore-files.js && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js --production",
-    "package": "npm-run-all package:*",
-    "package:darwin-arm64": "vsce package --target darwin-arm64 --ignoreFile out/ignore-file.darwin-arm64 --no-dependencies",
-    "package:darwin-x64": "vsce package --target darwin-x64 --ignoreFile out/ignore-file.darwin-x64 --no-dependencies",
-    "package:linux-x64": "vsce package --target linux-x64 --ignoreFile out/ignore-file.linux-x64 --no-dependencies",
-    "package:linux-arm64": "vsce package --target linux-arm64 --ignoreFile out/ignore-file.linux-arm64 --no-dependencies",
-    "package:win32-x64": "vsce package --target win32-x64 --ignoreFile out/ignore-file.win32-x64 --no-dependencies"
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@flatten-js/interval-tree": "^2.0.3",

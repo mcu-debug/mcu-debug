@@ -1,6 +1,7 @@
 .vscode/**
 .vscode-test/**
 unused/**
+images/unused/**
 out/**
 src/**
 .gitignore

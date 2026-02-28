@@ -233,14 +233,11 @@ function updatePackageJson() {
     // and `package` itself calls `vsce package`, packaging recurses indefinitely.
     if (pkg.scripts) {
         pkg.scripts["vscode:prepublish"] = "npm run build-all";
-        pkg.scripts["package"] = "npm-run-all package:*";
+        pkg.scripts["package"] = "vsce package --no-dependencies";
 
+        // Unified VSIX is the default packaging strategy.
         for (const target of ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-x64"]) {
-            const key = `package:${target}`;
-            const cmd = pkg.scripts[key];
-            if (typeof cmd === "string" && cmd.includes("vsce package") && !cmd.includes("--no-dependencies")) {
-                pkg.scripts[key] = `${cmd} --no-dependencies`;
-            }
+            delete pkg.scripts[`package:${target}`];
         }
     }
 

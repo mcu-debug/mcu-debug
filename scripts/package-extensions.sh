@@ -34,8 +34,7 @@ bash ./scripts/sync-helper-binaries.sh
 echo "==> Packaging mcu-debug..."
 cd packages/mcu-debug
 rm -f ./*.vsix
-npm run package
-mv ./*.vsix ../../dist/
+vsce package --no-dependencies --out ../../dist/
 
 echo ""
 echo "==> Packaging mcu-debug-proxy..."
