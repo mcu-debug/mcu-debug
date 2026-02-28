@@ -354,7 +354,12 @@ export class ProxyClient extends EventEmitter {
                         this.handleGdbServerExited(msg.params.pid, msg.params.exit_code);
                         break;
                     case "streamReady":
-                        this.handleStreamReady(msg.params.stream_id, msg.params.port);
+                        this.handleStreamReady(msg.params.stream_id, msg.params.port, false);
+                        break;
+                    case "streamStarted":
+                        // This is just informational, we will actually start the stream when gdb connects to it or right away for non-gdb streams
+                        this.session.handleMsg(Stdout, `Stream ${msg.params.stream_id} is ready on remote port ${msg.params.port}`);
+                        this.handleStreamReady(msg.params.stream_id, msg.params.port, true);
                         break;
                     case "streamClosed":
                         this.handleStreamClosed(msg.params.stream_id);
@@ -388,7 +393,7 @@ export class ProxyClient extends EventEmitter {
         this.emit("gdbServerExited", { pid, exit_code });
     }
 
-    private async handleStreamReady(stream_id: any, port: any) {
+    private async handleStreamReady(stream_id: any, port: any, isStarted: boolean) {
         const portReserved = this.streamIdToPortInfo.get(stream_id);
         if (!portReserved) {
             this.session.handleMsg(Stderr, `Received streamReady event for unknown stream_id ${stream_id}`);
@@ -401,7 +406,7 @@ export class ProxyClient extends EventEmitter {
         }
         const stream_name = portReserved.stream_id_str;
         try {
-            portReserved.status = "ready";
+            portReserved.status = isStarted ? "running" : "ready";
             /*
             if (!portReserved.stream_id_str.startsWith("gdb")) {
                 // If this is not a gdb stream we open right away. For geb streams, if we open right away we will
@@ -506,13 +511,14 @@ export class RemoteStream {
     }
 
     dataFromServer(data: Buffer) {
-        this.proxyManager.session.handleMsg(Stdout, `==> Received data from proxy for stream ${this.pInfo.stream_id_str} (stream_id ${this.pInfo.stream_id}): ${data.toString()}`);
+        const toStr = data.toString();
+        this.proxyManager.session.handleMsg(Stdout, `==> Received data from proxy for stream ${this.pInfo.stream_id_str} (stream_id ${this.pInfo.stream_id}): '${toStr}'`);
         // Should we buffer this if there are no clients connected? For now we just drop it, but maybe we should
         // buffer it and send it when a client connects?
         if (this.clientConnections.length === 0 || this.pInfo.status !== "running") {
             this.proxyManager.session.handleMsg(
                 Stdout,
-                `Buffering data from proxy for stream ${this.pInfo.stream_id_str} (stream_id ${this.pInfo.stream_id}) because there are no clients connected or stream is not running, data: '${data.toString()}'`,
+                `Buffering data from proxy for stream ${this.pInfo.stream_id_str} (stream_id ${this.pInfo.stream_id}) because there are no clients connected or stream is not running, data: '${toStr}'`,
             );
             this.fromServerBuffer = Buffer.concat([this.fromServerBuffer, data]);
         } else {
@@ -529,9 +535,10 @@ export class RemoteStream {
 
     dataFromClent(data: Buffer) {
         if (this.pInfo.status !== "running") {
+            const toStr = data.toString();
             this.proxyManager.session.handleMsg(
                 Stdout,
-                `<== Buffering data to proxy for stream ${this.pInfo.stream_id_str} (stream_id ${this.pInfo.stream_id}) because the stream is not running, data: '${data.toString()}'`,
+                `<== Buffering data to proxy for stream ${this.pInfo.stream_id_str} (stream_id ${this.pInfo.stream_id}) because the stream is not running, data: '${toStr}'`,
             );
             this.toServerBuffer = Buffer.concat([this.toServerBuffer, data]);
             return;

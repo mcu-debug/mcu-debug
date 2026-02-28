@@ -73,6 +73,7 @@ enum ProxyEvent {
         stream_id: u8,
         port: u16,
         stream: TcpStream,
+        ready_tx: Sender<()>, // One-shot ack from main loop after stream is registered in self.streams
         msg_seq: u64, // Sequence number of the original StartStream request that triggered this connection, used for sending the StreamStatus response
     },
     /// A port is ready for a connection, client can now connect to the forwarded port, but we won't forward data until they do
@@ -306,6 +307,9 @@ pub enum ProxyServerEvents {
     /** Stream has started */
     #[serde(rename = "streamReady")]
     StreamReady { stream_id: u8, port: u16 },
+    /** Stream has started */
+    #[serde(rename = "streamStarted")]
+    StreamStarted { stream_id: u8, port: u16 },
     /** Stream has closed */
     #[serde(rename = "streamClosed")]
     StreamClosed { stream_id: u8 },
@@ -496,6 +500,7 @@ impl ProxyServer {
                     stream_id,
                     port,
                     stream,
+                    ready_tx,
                     msg_seq,
                 } => {
                     eprintln!("Port {} (stream {}) connected!", port, stream_id);
@@ -503,18 +508,32 @@ impl ProxyServer {
                         pinfo.stream = Some(stream);
                     } else {
                         eprintln!("Internal Error: Received PortConnected for unknown stream_id {}, this should not happen", stream_id);
+                        self.streams.insert(
+                            stream_id,
+                            PortInfo {
+                                port,
+                                stream_id,
+                                stream: Some(stream),
+                            },
+                        );
                     }
-                    let data = ControlResponseData::StreamStatus {
-                        stream_id,
-                        status: StreamStatus::Connected,
-                    };
-                    ControlResponse::success(msg_seq, Some(data))
-                        .send(&mut self.stream)
-                        .unwrap_or_else(|e| {
-                            eprintln!("Failed to send success response: {}", e);
-                        });
-                    // let event = ProxyServerEvents::StreamStarted { stream_id, port };
-                    // let _ = event.send(&mut self.stream);
+                    // Unblock the waiter thread only after stream registration is visible
+                    // in self.streams, so forwarding cannot start before this point.
+                    ready_tx.send(()).ok();
+                    if msg_seq != 0 {
+                        let data = ControlResponseData::StreamStatus {
+                            stream_id,
+                            status: StreamStatus::Connected,
+                        };
+                        ControlResponse::success(msg_seq, Some(data))
+                            .send(&mut self.stream)
+                            .unwrap_or_else(|e| {
+                                eprintln!("Failed to send success response: {}", e);
+                            });
+                    } else {
+                        let event = ProxyServerEvents::StreamStarted { stream_id, port };
+                        let _ = event.send(&mut self.stream);
+                    }
                 }
                 ProxyEvent::PortReady { stream_id, port } => {
                     eprintln!(
@@ -857,7 +876,7 @@ impl ProxyServer {
                 });
             }
 
-            self.spawn_port_waiters(ports, false, 0);
+            self.spawn_port_waiters(ports, true, 0);
 
             let data = ControlResponseData::StartGdbServer {
                 pid: self.process.as_ref().unwrap().id(),
@@ -883,8 +902,8 @@ impl ProxyServer {
             let event_tx = self.event_tx.clone();
 
             std::thread::spawn(move || {
-                let duration = if keep_open {
-                    Duration::from_millis(300) // Shorter timeout when just checking for readiness
+                let duration = if msg_seq != 0 {
+                    Duration::from_millis(30) // Shorter timeout when opening on demand
                 } else {
                     Duration::from_secs(10 * 60) // Longer timeout when we intend to forward the stream
                 };
@@ -904,16 +923,34 @@ impl ProxyServer {
 
                         // Clone stream: one for reading (this thread), one for writing (main thread)
                         let read_stream = tcp_stream.try_clone().expect("Failed to clone stream");
-
+                        let (ready_tx, ready_rx) = channel();
                         // Send the write-end to the main thread
-                        event_tx
+                        if event_tx
                             .send(ProxyEvent::PortConnected {
                                 stream_id,
                                 port,
                                 stream: tcp_stream,
+                                ready_tx,
                                 msg_seq,
                             })
-                            .ok();
+                            .is_err()
+                        {
+                            eprintln!(
+                                "Main loop is gone before stream {} registration, aborting forwarder",
+                                stream_id
+                            );
+                            return;
+                        }
+
+                        // Wait until the main loop has inserted/updated self.streams for
+                        // this stream_id before forwarding bytes into the funnel.
+                        if ready_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+                            eprintln!(
+                                "Timed out waiting for stream {} registration; not starting forwarder",
+                                stream_id
+                            );
+                            return;
+                        }
 
                         // Start forwarding TCP → Client in THIS thread
                         read_and_forward(stream_id, read_stream, event_tx);
@@ -963,7 +1000,6 @@ impl ProxyServer {
         let mut once = true;
 
         while once || Instant::now() < deadline {
-            eprintln!("Attempting to connect to port {}...", port);
             once = false;
             match TcpStream::connect(("127.0.0.1", port)) {
                 Ok(stream) => {

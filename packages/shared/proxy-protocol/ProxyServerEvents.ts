@@ -8,5 +8,6 @@ export type ProxyServerEvents =
     | { event: "gdbServerLaunched"; params: { pid: number; port: number } }
     | { event: "gdbServerExited"; params: { pid: number; exit_code: number } }
     | { event: "streamReady"; params: { stream_id: number; port: number } }
+    | { event: "streamStarted"; params: { stream_id: number; port: number } }
     | { event: "streamClosed"; params: { stream_id: number } }
     | { event: "streamTimedOut"; params: { stream_id: number } };
