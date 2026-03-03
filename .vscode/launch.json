@@ -69,7 +69,8 @@
             "type": "lldb",
             "request": "attach",
             "name": "Attach mcu-debug-helper",
-            "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug-helper",
+            "pid": "${command:pickMyProcess}",
+			"program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug-helper",
             "sourceLanguages": ["rust"]
         }
 	],

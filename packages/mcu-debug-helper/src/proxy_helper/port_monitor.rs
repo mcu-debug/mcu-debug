@@ -18,6 +18,7 @@
 // if we disconnect. Also, gdb-servers may timeout if we open on the server side and there is no client connection.
 // We want to note the fact that the connection is open but not actually connect until the real client connects to
 // the proxy server.
+use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
 use std::time::Duration;
@@ -86,7 +87,11 @@ fn get_port_waiter_command() -> (String, Vec<String>) {
     }
 }
 
-pub fn wait_for_ports(ports: Vec<(u8, u16)>, tx: Sender<ProxyEvent>) -> std::io::Result<()> {
+pub fn wait_for_ports(
+    ports: Vec<(u8, u16)>,
+    tx: Sender<ProxyEvent>,
+    stop_rx: Receiver<()>,
+) -> std::io::Result<()> {
     std::thread::spawn(move || {
         let (prog, args) = get_port_waiter_command();
         let mut port_map = HashMap::<u16, u8>::from_iter(
@@ -99,6 +104,18 @@ pub fn wait_for_ports(ports: Vec<(u8, u16)>, tx: Sender<ProxyEvent>) -> std::io:
         let mut interval = Duration::from_millis(quick_interval);
         let mut count = 0;
         while !port_map.is_empty() {
+            match stop_rx.try_recv() {
+                Ok(_) => {
+                    eprintln!("Port monitor received stop signal; exiting thread");
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    eprintln!("Port monitor stop channel disconnected; exiting thread");
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+
             let output = std::process::Command::new(&prog)
                 .args(&args)
                 .output()
@@ -144,11 +161,32 @@ pub fn wait_for_ports(ports: Vec<(u8, u16)>, tx: Sender<ProxyEvent>) -> std::io:
                 port_map.remove(&port);
             }
             count += 1;
-            if count == (5 * 1000 / quick_interval) {
-                // After 5 seconds, switch to a fixed 1 second interval to avoid spamming the system with lsof/netstat calls
+            if count == (10 * 1000 / quick_interval) {
+                // After 10 seconds, switch to a fixed 1 second interval to avoid spamming the system with lsof/netstat calls
                 interval = Duration::from_secs(1);
+                eprintln!(
+                    "Still waiting for ports to be ready after 10 seconds, check interval {:?}s",
+                    interval.as_secs()
+                );
+            } else if count == (5 * 60 * 1000 / quick_interval) {
+                // After 5 minutes, switch to a 30 second interval as we may be waiting forever...but just in case
+                interval = Duration::from_secs(30);
+                eprintln!(
+                    "Still waiting for ports to be ready after 5 minutes, check interval {:?}s",
+                    interval.as_secs()
+                );
             }
-            std::thread::sleep(interval);
+            match stop_rx.recv_timeout(interval) {
+                Ok(_) => {
+                    eprintln!("Port monitor received stop signal; exiting thread");
+                    return;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    eprintln!("Port monitor stop channel disconnected; exiting thread");
+                    return;
+                }
+            }
         }
     });
     Ok(())

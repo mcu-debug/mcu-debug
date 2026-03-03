@@ -376,6 +376,7 @@ pub struct ProxyServer {
     server_launch_uid: String,
 
     session_port_wait_mode: PortWaitMode,
+    monitor_stop_tx: Option<Sender<()>>,
 }
 
 impl ProxyServer {
@@ -395,10 +396,18 @@ impl ProxyServer {
             next_stream_id: 3,
             server_launch_uid: String::new(),
             session_port_wait_mode,
+            monitor_stop_tx: None,
+        }
+    }
+
+    fn stop_port_monitor(&mut self) {
+        if let Some(tx) = self.monitor_stop_tx.take() {
+            tx.send(()).ok();
         }
     }
 
     pub fn end_process(&mut self) {
+        self.stop_port_monitor();
         if let Some(child) = &mut self.process {
             let _ = child.kill();
             let _ = child.wait();
@@ -864,6 +873,7 @@ impl ProxyServer {
             server_regexes,
         } = &msg.request
         {
+            self.stop_port_monitor();
             let _ = config_args;
             let _ = server_regexes;
             let ports: Vec<(u8, u16)> = self
@@ -919,8 +929,12 @@ impl ProxyServer {
                     self.spawn_port_waiters(ports, false, 0);
                 }
                 PortWaitMode::Monitor => {
-                    if let Err(e) = wait_for_ports(ports, self.event_tx.clone()) {
+                    self.stop_port_monitor();
+                    let (stop_tx, stop_rx) = channel();
+                    self.monitor_stop_tx = Some(stop_tx);
+                    if let Err(e) = wait_for_ports(ports, self.event_tx.clone(), stop_rx) {
                         eprintln!("Failed to start port monitor: {}", e);
+                        self.monitor_stop_tx = None;
                     }
                 }
             }
