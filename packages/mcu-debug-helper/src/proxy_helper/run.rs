@@ -193,9 +193,10 @@ pub fn run(args: ProxyArgs) -> Result<()> {
 
     // Print Discovery JSON to stdout: {"status": "ready", "port": <actual_port>, "pid": <pid>}
     println!(
-        "{{\"status\": \"ready\", \"port\": {}, \"pid\": {}}}",
+        "{{\"status\": \"ready\", \"port\": {}, \"pid\": {}, \"token\": \"{}\"}}",
         listener.local_addr()?.port(),
-        std::process::id()
+        std::process::id(),
+        args.token
     );
     std::io::stdout().flush()?;
 

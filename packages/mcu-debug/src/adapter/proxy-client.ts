@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { GDBDebugSession } from "./gdb-session";
 import { GDBServerSession, getEnvFromConfig } from "./server-session";
-import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap } from "./servers/common";
+import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, awaitWithTimeout } from "./servers/common";
 import { existsSync } from "fs";
 import { DebugHelper } from "./helper";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
@@ -46,6 +46,14 @@ export class ProxyClient extends EventEmitter {
         this.args = session.args;
     }
 
+    public logInfo(message: string) {
+        this.session.handleMsg(Stdout, `[proxy-client] ${message}`);
+    }
+
+    public logError(message: string) {
+        this.session.handleMsg(Stderr, `[proxy-client] ${message}`);
+    }
+
     async start(): Promise<boolean> {
         this.args = this.session.args;
         if (!this.args.hostConfig) {
@@ -60,18 +68,18 @@ export class ProxyClient extends EventEmitter {
                 if (networkMode === "local") {
                     await this.startProxy(remoteHost, remotePort);
                     if (!(await this.waitForProxyReady(remoteHost, remotePort, 10000, 150))) {
-                        this.session.handleMsg(Stderr, `Failed to connect to proxy on ${remoteHost}:${remotePort}`);
+                        this.logError(`Failed to connect to proxy on ${remoteHost}:${remotePort}`);
                         return false;
                     } else {
-                        this.session.handleMsg(Stdout, `Connected to proxy on ${remoteHost}:${remotePort}`);
+                        this.logInfo(`Connected to proxy on ${remoteHost}:${remotePort}`);
                     }
                 } else {
-                    this.session.handleMsg(Stderr, `Failed to connect to proxy on ${remoteHost}:${remotePort} (network mode: ${networkMode}). Please ensure the proxy is running.`);
+                    this.logError(`Failed to connect to proxy on ${remoteHost}:${remotePort} (network mode: ${networkMode}). Please ensure the proxy is running.`);
                     return false;
                 }
             }
         } catch (err) {
-            this.session.handleMsg(Stderr, `Failed to connect to proxy (network mode: ${networkMode}). Please ensure the proxy is running and accessible. ${err}`);
+            this.logError(`Failed to connect to proxy (network mode: ${networkMode}). Please ensure the proxy is running and accessible. ${err}`);
             return false;
         }
         try {
@@ -88,12 +96,12 @@ export class ProxyClient extends EventEmitter {
                     port_wait_mode: "monitor",
                 },
             };
-            await this.awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
-            this.session.handleMsg(Stdout, `Proxy session initialized`);
+            await awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
+            this.logInfo(`Proxy session initialized`);
             await this.syncFiles(cwd);
             return true;
         } catch (err) {
-            this.session.handleMsg(Stderr, `Failed to initialize proxy session: ${err}`);
+            this.logError(`Failed to initialize proxy session: ${err}`);
             return false;
         }
     }
@@ -120,15 +128,15 @@ export class ProxyClient extends EventEmitter {
                                 content: content,
                             },
                         };
-                        await this.awaitWithTimeout(this.sendControlCommand(cmd), this.timeout).catch((err) => {
-                            this.session.handleMsg(Stderr, `Failed to sync file ${f} to ${remotePath}: ${err}`);
+                        await awaitWithTimeout(this.sendControlCommand(cmd), this.timeout).catch((err) => {
+                            this.logError(`Failed to sync file ${f} to ${remotePath}: ${err}`);
                         });
                     } catch (err) {
-                        this.session.handleMsg(Stderr, `Failed to read file for syncing: ${f}, error: ${err}`);
+                        this.logError(`Failed to read file for syncing: ${f}, error: ${err}`);
                     }
                 }
             } catch (err) {
-                this.session.handleMsg(Stderr, `Failed to find files for syncing with pattern ${localPattern}: ${err}`);
+                this.logError(`Failed to find files for syncing with pattern ${localPattern}: ${err}`);
             }
         }
     }
@@ -144,14 +152,14 @@ export class ProxyClient extends EventEmitter {
             const files = (await glob(globPattern, options)) as string[];
             return files;
         } catch (error) {
-            this.session.handleMsg(Stderr, `Failed to find files with pattern ${globPattern} in ${cwd}: ${error}`);
+            this.logError(`Failed to find files with pattern ${globPattern} in ${cwd}: ${error}`);
             return [];
         }
     }
 
     private sendControlCommand(cmd: ControlMessage): Promise<any> {
         if (!this.socket) {
-            this.session.handleMsg(Stderr, "Proxy socket is not connected");
+            this.logError("Proxy socket is not connected");
             return Promise.reject(new Error("Proxy socket is not connected"));
         }
         const msg = JSON.stringify(cmd);
@@ -165,7 +173,7 @@ export class ProxyClient extends EventEmitter {
 
     public sendCommandBytes(stream_id: number, data: Buffer) {
         if (!this.socket) {
-            this.session.handleMsg(Stderr, "Proxy socket is not connected");
+            this.logError("Proxy socket is not connected");
             return;
         }
         const header = Buffer.alloc(5);
@@ -181,9 +189,9 @@ export class ProxyClient extends EventEmitter {
             method: "endSession",
         };
         try {
-            await this.awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
+            await awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
         } catch (err) {
-            this.session.handleMsg(Stderr, `Failed to end proxy session: ${err}`);
+            this.logError(`Failed to end proxy session: ${err}`);
         }
         this.socket?.end();
         this.socket = null;
@@ -202,35 +210,35 @@ export class ProxyClient extends EventEmitter {
             const helper = new DebugHelper(this.session);
             const path = helper.getHelperExecPath();
             if (!path || !existsSync(path)) {
-                this.session.handleMsg(Stderr, `Proxy helper executable not found at ${path}`);
+                this.logError(`Proxy helper executable not found at ${path}`);
                 reject(new Error("Proxy helper executable not found"));
                 return;
             }
             try {
                 const args = ["proxy", "--host", host, "--port", port.toString()];
-                this.session.handleMsg(Stdout, `Starting proxy helper with command: ${path} ${args.join(" ")}`);
+                this.logInfo(`Starting proxy helper with command: ${path} ${args.join(" ")}`);
                 const proxyProcess = spawn(path, args, {
                     // detached: true,
                     // stdio: "ignore",
                 });
                 proxyProcess.stdout?.on("data", (data) => {
-                    this.session.handleMsg(Stdout, `Proxy stdout: ${data.toString()}`);
+                    this.logInfo(`Proxy stdout: ${data.toString()}`);
                 });
                 proxyProcess.stderr?.on("data", (data) => {
-                    this.session.handleMsg(Stderr, `Proxy stderr: ${data.toString()}`);
+                    this.logError(`Proxy stderr: ${data.toString()}`);
                 });
                 proxyProcess.on("spawn", () => {
-                    this.session.handleMsg(Stdout, `Proxy helper started on ${host}:${port}`);
+                    this.logInfo(`Proxy helper started on ${host}:${port}`);
                     this.proxyProcess = proxyProcess;
                     resolve();
                 });
                 proxyProcess.on("error", (err) => {
-                    this.session.handleMsg(Stderr, `Failed to start proxy helper: ${err}`);
+                    this.logError(`Failed to start proxy helper: ${err}`);
                     reject(err);
                 });
                 proxyProcess.unref();
             } catch (err) {
-                this.session.handleMsg(Stderr, `Failed to start proxy helper: ${err}`);
+                this.logError(`Failed to start proxy helper: ${err}`);
                 reject(err);
             }
         });
@@ -245,7 +253,7 @@ export class ProxyClient extends EventEmitter {
             });
             socket.once("error", (e) => {
                 if (logErrors) {
-                    this.session.handleMsg(Stderr, `Error connecting to proxy on ${host}:${port} - ${e.message}`);
+                    this.logError(`Error connecting to proxy on ${host}:${port} - ${e.message}`);
                 }
                 socket.destroy();
                 resolve(false);
@@ -262,7 +270,7 @@ export class ProxyClient extends EventEmitter {
                 this.handleProxyData(data);
             });
             socket.on("close", () => {
-                this.session.handleMsg(Stdout, "Proxy connection closed");
+                this.logInfo("Proxy connection closed");
                 this.socket = null;
             });
         });
@@ -307,7 +315,7 @@ export class ProxyClient extends EventEmitter {
                 },
             };
             try {
-                const ret = (await this.awaitWithTimeout(this.sendControlCommand(cmd), this.timeout)) as any;
+                const ret = (await awaitWithTimeout(this.sendControlCommand(cmd), this.timeout)) as any;
                 const ports = ret?.allocatePorts?.ports;
                 for (const p of ports || []) {
                     const port = p as PortReserved;
@@ -321,7 +329,7 @@ export class ProxyClient extends EventEmitter {
                 }
                 resolve(this.clientPorts);
             } catch (err) {
-                this.session.handleMsg(Stderr, `Failed to allocate ports: ${err}`);
+                this.logError(`Failed to allocate ports: ${err}`);
                 reject(err);
             }
         });
@@ -340,7 +348,7 @@ export class ProxyClient extends EventEmitter {
                 server_regexes: regexes.map((r) => r.source),
             },
         };
-        return this.awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
+        return awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
     }
 
     private msgBuffer: Buffer = Buffer.alloc(0);
@@ -385,7 +393,7 @@ export class ProxyClient extends EventEmitter {
                 if (stream) {
                     stream.dataFromServer(payload, stream_id);
                 } else {
-                    this.session.handleMsg(Stderr, `Received data for unknown stream_id ${stream_id}`);
+                    this.logError(`Received data for unknown stream_id ${stream_id}`);
                 }
                 return;
             }
@@ -403,30 +411,30 @@ export class ProxyClient extends EventEmitter {
                         break;
                     case "streamStarted":
                         // This is just informational, we will actually start the stream when gdb connects to it or right away for non-gdb streams
-                        this.session.handleMsg(Stdout, `Stream ${msg.params.stream_id} is ready on remote port ${msg.params.port}`);
+                        this.logInfo(`Stream ${msg.params.stream_id} is ready on remote port ${msg.params.port}`);
                         this.handleStreamReady(msg.params.stream_id, msg.params.port, true);
                         break;
                     case "streamClosed":
                         this.handleStreamClosed(msg.params.stream_id);
                         break;
                     default:
-                        this.session.handleMsg(Stderr, `Received unknown proxy event: ${msg.event}`);
+                        this.logError(`Received unknown proxy event: ${msg.event}`);
                 }
                 // This is an event message from the proxy, handle it accordingly
             } else if (msg.seq && this.pendingPromises.has(msg.seq)) {
                 const { resolve, reject } = this.pendingPromises.get(msg.seq)!;
                 this.pendingPromises.delete(msg.seq);
-                this.session.handleMsg(Stdout, `Received response for seq ${msg.seq}: ${JSON.stringify(msg)}`);
+                this.logInfo(`Received response for seq ${msg.seq}: ${JSON.stringify(msg)}`);
                 if (msg.success) {
                     resolve(msg.data);
                 } else {
                     reject(new Error(msg.error || "Unknown error from proxy"));
                 }
             } else {
-                this.session.handleMsg(Stderr, `Received response with unknown seq: ${msg.seq}`);
+                this.logError(`Received response with unknown seq: ${msg.seq}`);
             }
         } catch (err) {
-            this.session.handleMsg(Stderr, `Failed to parse proxy message: ${err}`);
+            this.logError(`Failed to parse proxy message: ${err}`);
         }
     }
 
@@ -441,12 +449,12 @@ export class ProxyClient extends EventEmitter {
     private async handleStreamReady(stream_id: any, port: any, isStarted: boolean) {
         const portReserved = this.streamIdToPortInfo.get(stream_id);
         if (!portReserved) {
-            this.session.handleMsg(Stderr, `Received streamReady event for unknown stream_id ${stream_id}`);
+            this.logError(`Received streamReady event for unknown stream_id ${stream_id}`);
             return;
         }
         const portDef = this.clientPorts[portReserved.stream_id_str];
         if (!portDef) {
-            this.session.handleMsg(Stderr, `No local port mapping found for stream ${portReserved.stream_id_str}`);
+            this.logError(`No local port mapping found for stream ${portReserved.stream_id_str}`);
             return;
         }
         const stream_name = portReserved.stream_id_str;
@@ -463,7 +471,7 @@ export class ProxyClient extends EventEmitter {
             await remoteStream.initialize();
             this.clientStreams.set(stream_id, remoteStream);
         } catch (err) {
-            this.session.handleMsg(Stderr, `Failed to create remote stream for stream_id ${stream_id}, stream_name ${stream_name}: ${err}`);
+            this.logError(`Failed to create remote stream for stream_id ${stream_id}, stream_name ${stream_name}: ${err}`);
         }
     }
 
@@ -482,7 +490,7 @@ export class ProxyClient extends EventEmitter {
             this.pendingStreamStarts.set(curSeq, portReserved);
         }
         const stream_name = portReserved.stream_id_str;
-        this.session.handleMsg(Stdout, `${isDuplicate ? "Duplicating" : "Starting"} stream ${stream_name} (stream_id ${stream_id})`);
+        this.logInfo(`${isDuplicate ? "Duplicating" : "Starting"} stream ${stream_name} (stream_id ${stream_id})`);
         const startStreamCmd: ControlMessage = {
             seq: curSeq,
             method: method,
@@ -494,7 +502,7 @@ export class ProxyClient extends EventEmitter {
             this.pendingStreamStarts.set(curSeq, portReserved);
         }
         try {
-            const ret = await this.awaitWithTimeout(this.sendControlCommand(startStreamCmd), this.timeout);
+            const ret = await awaitWithTimeout(this.sendControlCommand(startStreamCmd), this.timeout);
             if (!ret || !ret.streamStatus || ret.streamStatus.status !== "Connected") {
                 throw new Error(`Failed to start stream for stream_id ${stream_id}, stream_name ${stream_name}`);
             }
@@ -503,7 +511,7 @@ export class ProxyClient extends EventEmitter {
                 portReserved.stream_id = ret.streamStatus.stream_id; // This is the new stream id for the duplicated stream
                 this.streamIdToPortInfo.set(portReserved.stream_id, portReserved);
                 this.clientStreams.set(portReserved.stream_id, remoteServer!);
-                this.session.handleMsg(Stdout, `Duplicate stream_id ${stream_id} command succeeded for stream ${stream_name} (stream_id ${portReserved.stream_id})`);
+                this.logInfo(`Duplicate stream_id ${stream_id} command succeeded for stream ${stream_name} (stream_id ${portReserved.stream_id})`);
             }
             streamObj.setStreamId(portReserved.stream_id);
             portReserved.status = "connected";
@@ -512,7 +520,7 @@ export class ProxyClient extends EventEmitter {
             if (isDuplicate) {
                 this.pendingStreamStarts.delete(curSeq);
             }
-            this.session.handleMsg(Stderr, `Failed to ${isDuplicate ? "duplicate" : "start"} stream for stream_id ${stream_id}, stream_name ${stream_name}: ${err}`);
+            this.logError(`Failed to ${isDuplicate ? "duplicate" : "start"} stream for stream_id ${stream_id}, stream_name ${stream_name}: ${err}`);
             throw err;
         }
     }
@@ -520,22 +528,10 @@ export class ProxyClient extends EventEmitter {
     private handleStreamClosed(stream_id: any) {
         const stream = this.clientStreams.get(stream_id);
         if (stream) {
-            this.session.handleMsg(Stdout, `Closing stream ${stream_id}`);
+            this.logInfo(`Closing stream ${stream_id}`);
             stream.close();
             this.clientStreams.delete(stream_id);
         }
-    }
-
-    awaitWithTimeout<T>(p: Promise<T>, timeout: number): Promise<T> {
-        // A promise that rejects after 'timeout' milliseconds
-        const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => {
-                reject(new Error(`Execution timeout of ${timeout}ms reached`));
-            }, timeout);
-        });
-
-        // Race the original promise against the timeout promise
-        return Promise.race([p, timeoutPromise]);
     }
 }
 
@@ -567,7 +563,7 @@ export class RemoteServer {
                 socket.on("error", (e) => {
                     cleanupSocket(socket);
                     if (!this.endingSession) {
-                        this.proxyManager.session.handleMsg(Stderr, `Error on client socket for ${this.pInfo.stream_id_str}: ${e.message}`);
+                        this.proxyManager.logError(`Error on client socket for ${this.pInfo.stream_id_str}: ${e.message}`);
                         throw new Error(`Error on client socket for ${this.pInfo.stream_id_str}, ${e}`);
                     }
                 });
@@ -579,7 +575,7 @@ export class RemoteServer {
                     // ids until the proxy assigns a stream id for the new connection. For now, we will just reject the second connection if it
                     // happens before the first one is fully established. Data from the socket can be byffered by the RemoteStream object until
                     // the stream id is assigned, so we won't lose any data from the first connection.
-                    this.proxyManager.session.handleMsg(Stderr, `Internal Received new connection for stream ${this.pInfo.stream_id_str} but stream_id ${useStreamId} is already in use`);
+                    this.proxyManager.logError(`Internal Received new connection for stream ${this.pInfo.stream_id_str} but stream_id ${useStreamId} is already in use`);
                     socket.end();
                     return;
                 }
@@ -601,7 +597,7 @@ export class RemoteServer {
                         success = await this.startStream(stream);
                     }
                 } catch (err) {
-                    this.proxyManager.session.handleMsg(Stderr, `Failed to start stream for stream_id ${this.pInfo.stream_id}, stream_name ${this.pInfo.stream_id_str}: ${err}`);
+                    this.proxyManager.logError(`Failed to start stream for stream_id ${this.pInfo.stream_id}, stream_name ${this.pInfo.stream_id_str}: ${err}`);
                 }
                 if (!success) {
                     socket.end();
@@ -610,10 +606,7 @@ export class RemoteServer {
             })
             .on("listening", () => {
                 this.portDef.remotePort = this.pInfo.port;
-                this.proxyManager.session.handleMsg(
-                    Stdout,
-                    `Local server for stream ${this.pInfo.stream_id_str} is listening on port ${this.portDef.localPort}, forwarding to remote port ${this.pInfo.port}`,
-                );
+                this.proxyManager.logInfo(`Local server for stream ${this.pInfo.stream_id_str} is listening on port ${this.portDef.localPort}, forwarding to remote port ${this.pInfo.port}`);
                 this.proxyManager.emit("streamStarted", this.portDef);
             })
             .listen(this.portDef.localPort);
@@ -630,7 +623,7 @@ export class RemoteServer {
                     resolve(true);
                 })
                 .catch((err) => {
-                    this.proxyManager.session.handleMsg(Stderr, `Failed to ${method} for stream_id ${this.pInfo.stream_id}, stream_name ${this.pInfo.stream_id_str}: ${err}`);
+                    this.proxyManager.logError(`Failed to ${method} for stream_id ${this.pInfo.stream_id}, stream_name ${this.pInfo.stream_id_str}: ${err}`);
                     resolve(false);
                 });
         });
@@ -645,7 +638,7 @@ export class RemoteServer {
         if (stream) {
             stream.dataFromServer(data);
         } else {
-            this.proxyManager.session.handleMsg(Stderr, `Received data from server for unknown stream_id ${stream_id}`);
+            this.proxyManager.logError(`Received data from server for unknown stream_id ${stream_id}`);
         }
     }
 
@@ -654,10 +647,7 @@ export class RemoteServer {
             return;
         }
         if (this.socketsByStreamId.has(new_stream_id)) {
-            this.proxyManager.session.handleMsg(
-                Stderr,
-                `Attempting to set stream_id to ${new_stream_id} for stream that already has stream_id ${this.socketsByStreamId.get(new_stream_id)?.stream_id}`,
-            );
+            this.proxyManager.logError(`Attempting to set stream_id to ${new_stream_id} for stream that already has stream_id ${this.socketsByStreamId.get(new_stream_id)?.stream_id}`);
             return;
         }
         this.socketsByStreamId.delete(stream.stream_id);
@@ -708,11 +698,11 @@ export class RemoteStream {
             return;
         }
         if (this.stream_id >= 0) {
-            this.proxyManager.session.handleMsg(Stderr, `Attempting to set stream_id to ${stream_id} for stream that already has stream_id ${this.stream_id}`);
+            this.proxyManager.logError(`Attempting to set stream_id to ${stream_id} for stream that already has stream_id ${this.stream_id}`);
         }
         if (this.stream_id < 0) {
             this.server.resetStreamId(stream_id, this);
-            this.proxyManager.session.handleMsg(Stdout, `Stream ${this.streamLocalName} is now connected to proxy as ${this.streamRemoteName}`);
+            this.proxyManager.logInfo(`Stream ${this.streamLocalName} is now connected to proxy as ${this.streamRemoteName}`);
         }
         this.initStreamId(stream_id);
     }
@@ -721,7 +711,7 @@ export class RemoteStream {
         this.stream_id = stream_id;
         this.streamLocalName = `stream_name ${this.server.pInfo.stream_id_str} (stream_id ${this.stream_id}), local port ${this.server.portDef.localPort}`;
         this.streamRemoteName = `remote stream_id ${this.stream_id}, remote port ${this.server.portDef.remotePort}`;
-        this.proxyManager.session.handleMsg(Stdout, `Stream ${this.streamLocalName} is now connected to proxy as ${this.streamRemoteName}`);
+        this.proxyManager.logInfo(`Stream ${this.streamLocalName} is now connected to proxy as ${this.streamRemoteName}`);
         if (this.toServerBuffer.length > 0) {
             this.dataFromClent(this.toServerBuffer);
         }
@@ -736,22 +726,19 @@ export class RemoteStream {
     dataFromServer(data: Buffer) {
         const toStr = data.toString();
         if (traceTraffic) {
-            this.proxyManager.session.handleMsg(Stdout, `==> Received data from proxy for stream ${this.streamLocalName}: '${toStr}'`);
+            this.proxyManager.logInfo(`==> Received data from proxy for stream ${this.streamLocalName}: '${toStr}'`);
         }
         if (this.stream_id < 0) {
             // Not sure how this can happen, but just in case, we buffer data from the server until the
             // stream is connected. This should be rare or never happen because we only set stream_id
             // after the stream is connected, but we want to be safe and not lose any data from the server
             if (traceTraffic) {
-                this.proxyManager.session.handleMsg(
-                    Stdout,
-                    `Buffering data from proxy for stream ${this.streamLocalName} because there are no clients connected or stream is not running, data: '${toStr}'`,
-                );
+                this.proxyManager.logInfo(`Buffering data from proxy for stream ${this.streamLocalName} because there are no clients connected or stream is not running, data: '${toStr}'`);
             }
             this.fromServerBuffer = Buffer.concat([this.fromServerBuffer, data]);
         } else {
             if (traceTraffic) {
-                this.proxyManager.session.handleMsg(Stdout, `Forwarding data from proxy for stream ${this.streamLocalName} to ${this.streamRemoteName}`);
+                this.proxyManager.logInfo(`Forwarding data from proxy for stream ${this.streamLocalName} to ${this.streamRemoteName}`);
             }
             this.socket.write(data);
             this.fromServerBuffer = Buffer.alloc(0);
@@ -762,7 +749,7 @@ export class RemoteStream {
         if (this.stream_id < 0) {
             if (traceTraffic) {
                 const toStr = data.toString();
-                this.proxyManager.session.handleMsg(Stdout, `<== Buffering data to proxy for stream ${this.streamLocalName} because the stream is not connected, data: '${toStr}'`);
+                this.proxyManager.logInfo(`<== Buffering data to proxy for stream ${this.streamLocalName} because the stream is not connected, data: '${toStr}'`);
             }
             this.toServerBuffer = Buffer.concat([this.toServerBuffer, data]);
             return;

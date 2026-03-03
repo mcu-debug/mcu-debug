@@ -3,14 +3,18 @@
 	"version": "0.1.0",
 	"configurations": [	
 		{
-			"name": "Launch Extension",
+			"name": "Launch Extensions (Single Host)",
 			"type": "extensionHost",
 			"request": "launch",
 			"runtimeExecutable": "${execPath}",
-			"args": ["--extensionDevelopmentPath=${workspaceRoot}/packages/mcu-debug"],//, "--unhandled-rejections=strict" ],
+			"args": [
+				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug",
+				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy"
+			],
 			"sourceMaps": true,
 			"outFiles": [
-				"${workspaceRoot}/packages/mcu-debug/dist/*.js"
+				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
+				"${workspaceFolder}/packages/mcu-debug-proxy/dist/*.js"
 			],
       		// "preLaunchTask": "npm: compile"
     	},
@@ -19,7 +23,7 @@
 			"type": "node",
 			"request": "launch",
 			"runtimeArgs": [ "--nolazy", "--trace-warnings"],//, "--unhandled-rejections=strict" ],
-			"program": "${workspaceRoot}/packages/mcu-debug/dist/adapter.js",
+			"program": "${workspaceFolder}/packages/mcu-debug/dist/adapter.js",
 			"stopOnEntry": false,
 			"args": [ "--server=4721" ],
 			"env": {
@@ -28,7 +32,7 @@
 			},
 			"sourceMaps": true,
 			"outFiles": [
-				"${workspaceRoot}/packages/mcu-debug/dist/*.js"
+				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
 			],
       		// "preLaunchTask": "npm: compile"
 		},
@@ -37,10 +41,10 @@
 			"type": "extensionHost",
 			"request": "launch",
 			"runtimeExecutable": "${execPath}",
-			"args": ["--extensionDevelopmentPath=${workspaceRoot}/packages/mcu-debug", "--extensionTestsPath=${workspaceRoot}/packages/mcu-debug/out/test/suite/index" ],
+			"args": ["--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug", "--extensionTestsPath=${workspaceFolder}/packages/mcu-debug/out/test/suite/index" ],
 			"sourceMaps": true,
 			"outFiles": [
-				"${workspaceRoot}/packages/mcu-debug/out/test/**/*.js"
+				"${workspaceFolder}/packages/mcu-debug/out/test/**/*.js"
 			],
 			"preLaunchTask": "test-compile"
 		},
@@ -71,8 +75,8 @@
 	],
 	"compounds": [
 		{
-			"name": "Extension + Debug Server",
-			"configurations": ["Launch Extension", "Debug Server"],
+			"name": "Extensions + Debug Server",
+			"configurations": ["Launch Extensions (Single Host)", "Debug Server"],
       		"preLaunchTask": "compile"
 		}
 	]

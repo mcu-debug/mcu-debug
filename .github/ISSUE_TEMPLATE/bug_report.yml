@@ -7,14 +7,14 @@ body:
       value: |
         ### 🛑 STOP! READ THIS FIRST 🛑
         Most issues cannot be solved without **Debug Console Logs**. 
-        Please enable `"showDevDebugOutput": true` in your `launch.json` before submitting.
+        Please use `"debugFlags":` and enable gdbTraces in your `launch.json` before submitting.
 
   - type: checkboxes
     id: checks
     attributes:
       label: Pre-flight Checklist
       options:
-        - label: I have enabled verbose logging (`showDevDebugOutput: true`).
+        - label: I have enabled verbose logging (`debugFlags: true`) and gdbTraces in my `launch.json`.
           required: true
         - label: I have attached the relevant section of the Debug Console log.
           required: true

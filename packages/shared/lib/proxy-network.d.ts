@@ -6,5 +6,12 @@ export interface ProxyLaunchPolicy {
     proxyHostForDA: string;
     reason: string;
 }
+export interface ProxyLaunchResults {
+    policy: ProxyLaunchPolicy;
+    consoleMessages: string[];
+    consoleErrors: string[];
+    token: string | null;
+    serverPort: number | null;
+}
 export declare function resolveProxyNetworkMode(hostType?: ProxyHostType, remoteName?: string): ProxyNetworkMode;
 export declare function computeProxyLaunchPolicy(mode: ProxyNetworkMode): ProxyLaunchPolicy;

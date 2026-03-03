@@ -27,7 +27,9 @@
   "activationEvents": [
     "onDebugResolve:cortex-debug",
     "onDebugResolve:mcu-debug",
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:mcu-debug-proxy.getNetworkPolicy",
+    "onCommand:mcu-debug-proxy.startProxyServer"
   ],
   "categories": [
     "Other"

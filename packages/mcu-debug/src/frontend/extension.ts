@@ -10,7 +10,7 @@ import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
 import { EditableTreeViewProvider } from "./webview_tree/editable-tree";
 
 import { RTTCore, SWOCore } from "./swo/core";
-import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ADAPTER_DEBUG_MODE, ChainedConfig } from "../adapter/servers/common";
+import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ChainedConfig } from "../adapter/servers/common";
 import { Reporting } from "../analytics/reporting";
 
 import { CortexDebugConfigurationProvider } from "./configprovider";
@@ -74,7 +74,6 @@ export class MCUDebugExtension {
             vscode.commands.registerCommand("mcu-debug.examineMemory", this.examineMemory.bind(this)),
 
             vscode.commands.registerCommand("mcu-debug.resetDevice", this.resetDevice.bind(this)),
-            vscode.commands.registerCommand("mcu-debug.pvtEnableDebug", this.pvtCycleDebugMode.bind(this)),
 
             vscode.commands.registerCommand("mcu-debug.liveWatch.addExpr", this.addLiveWatchExpr.bind(this)),
             vscode.commands.registerCommand("mcu-debug.liveWatch.removeExpr", this.removeLiveWatchExpr.bind(this)),
@@ -169,17 +168,6 @@ export class MCUDebugExtension {
             const fName = config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "");
             this.gdbServerConsole?.createLogFile(fName);
         }
-        if (e.affectsConfiguration(`mcu-debug.${MCUDebugKeys.DEV_DEBUG_MODE}`)) {
-            const config = vscode.workspace.getConfiguration("mcu-debug");
-            const dbgMode = config.get(MCUDebugKeys.DEV_DEBUG_MODE, ADAPTER_DEBUG_MODE.NONE);
-            for (const s of CDebugSession.CurrentSessions) {
-                try {
-                    s.session.customRequest("set-debug-mode", { mode: dbgMode });
-                } catch (e) {
-                    console.error("set-debug-mode", e);
-                }
-            }
-        }
     }
 
     private getSVDFile(device: string): string {
@@ -271,15 +259,6 @@ export class MCUDebugExtension {
         } catch (e) {
             console.error(e);
         }
-    }
-
-    private pvtCycleDebugMode() {
-        const config = vscode.workspace.getConfiguration("mcu-debug");
-        const curVal: ADAPTER_DEBUG_MODE = config.get(MCUDebugKeys.DEV_DEBUG_MODE, ADAPTER_DEBUG_MODE.NONE);
-        const validVals = Object.values(ADAPTER_DEBUG_MODE);
-        let ix = validVals.indexOf(curVal);
-        ix = ix < 0 ? (ix = 0) : (ix + 1) % validVals.length;
-        config.set(MCUDebugKeys.DEV_DEBUG_MODE, validVals[ix]);
     }
 
     // Debug Events

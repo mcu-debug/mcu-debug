@@ -11,19 +11,10 @@ import { GDBDebugSession } from "../gdb-session";
 import { DecoderSpec } from "@mcu-debug/shared";
 import * as readline from "readline";
 
-export enum ADAPTER_DEBUG_MODE {
-    NONE = "none",
-    PARSED = "parsed",
-    BOTH = "both",
-    RAW = "raw",
-    VSCODE = "vscode",
-}
-
 export enum MCUDebugKeys {
     REGISTER_DISPLAY_MODE = "registerUseNaturalFormat",
     VARIABLE_DISPLAY_MODE = "variableUseNaturalFormat",
     SERVER_LOG_FILE_NAME = "dbgServerLogfile",
-    DEV_DEBUG_MODE = "showDevDebugOutput",
 }
 
 export enum NumberFormat {
@@ -284,6 +275,7 @@ export enum SessionMode {
 }
 
 export interface HostConfig {
+    enabled: boolean;
     // User-facing fields (set in launch.json)
     type: "auto" | "ssh" | "local"; // "local" is internal/testing only, not exposed in package.json schema
     sshHost?: string; // Required when type === "ssh"
@@ -349,14 +341,11 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     pvtRttConfig: RTTConfiguration;
     swoConfig: SWOConfiguration;
     liveWatch: LiveWatchConfig;
-    hostConfig: HostConfig | null;
+    hostConfig?: HostConfig;
     graphConfig: any[];
     /// Triple slashes will cause the line to be ignored by the options-doc.py script
     /// We don't expect the following to be in booleann form or have the value of 'none' after
     /// The config provider has done the conversion. If it exists, it means output 'something'
-    showDevDebugOutput: ADAPTER_DEBUG_MODE;
-    pvtShowDevDebugOutput: ADAPTER_DEBUG_MODE;
-    showDevDebugTimestamps: boolean;
     debugFlags: DebugFlags;
     cwd: string;
     extensionPath: string;
@@ -1173,4 +1162,16 @@ export function copyInterfaceProperties<T extends object, S extends T>(source: S
     }
 
     return result;
+}
+
+export function awaitWithTimeout<T>(p: Promise<T>, timeout: number): Promise<T> {
+    // A promise that rejects after 'timeout' milliseconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+            reject(new Error(`Execution timeout of ${timeout}ms reached`));
+        }, timeout);
+    });
+
+    // Race the original promise against the timeout promise
+    return Promise.race([p, timeoutPromise]);
 }

@@ -1,12 +1,11 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
-import { computeProxyLaunchPolicy, ProxyHostType, ProxyNetworkMode, resolveProxyNetworkMode } from "@mcu-debug/shared";
+import { computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode } from "@mcu-debug/shared";
 import { STLinkServerController } from "../adapter/servers/stlink";
 import { GDBServerConsole } from "./server_console";
 import { parseAddress } from "./utils";
 import {
-    ADAPTER_DEBUG_MODE,
     ChainedConfigurations,
     ChainedEvents,
     MCUDebugKeys,
@@ -15,9 +14,23 @@ import {
     defSymbolFile,
     ConfigurationArguments,
     SWOConfiguration,
+    awaitWithTimeout,
 } from "../adapter/servers/common";
 import { CDebugChainedSessionItem, CDebugSession } from "./cortex_debug_session";
 import * as path from "path";
+
+let currentPolicy: ProxyLaunchPolicy | null = null;
+let proxyLaunchResults: ProxyLaunchResults | null = null;
+export function launchProxyServer(policy: ProxyLaunchPolicy): Promise<void> {
+    return new Promise<void>((resolve) => {
+        const command = "mcu-debug-proxy.startProxyServer";
+        vscode.commands.executeCommand<ProxyLaunchResults>(command, policy).then((value: ProxyLaunchResults) => {
+            proxyLaunchResults = value;
+            currentPolicy = policy;
+            resolve();
+        });
+    });
+}
 
 type ConfigOptions = vscode.DebugConfiguration & ConfigurationArguments;
 
@@ -78,13 +91,15 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
         ];
     }
 
-    public resolveDebugConfiguration(folder: vscode.WorkspaceFolder | undefined, config: ConfigOptions, token?: vscode.CancellationToken): vscode.ProviderResult<vscode.DebugConfiguration> {
+    public async resolveDebugConfiguration(folder: vscode.WorkspaceFolder | undefined, config: ConfigOptions, token?: vscode.CancellationToken): Promise<vscode.DebugConfiguration | undefined> {
         if (GDBServerConsole.BackendPort <= 0) {
             vscode.window.showErrorMessage("GDB server console not yet ready. Please try again. Report this problem");
             return undefined;
         }
         config.gdbServerConsolePort = GDBServerConsole.BackendPort;
         config.pvtAvoidPorts = CDebugSession.getAllUsedPorts();
+
+        await this.handleHostConfig(config);
 
         // Flatten the platform specific stuff as it is not done by VSCode at this point.
         switch (os.platform()) {
@@ -263,7 +278,11 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
             return undefined;
         }
 
-        if (config.hostConfig) {
+        return config;
+    }
+
+    private async handleHostConfig(config: ConfigOptions) {
+        if (config.hostConfig && config.hostConfig.enabled && config.hostConfig.type) {
             const resolvedMode = this.resolveNetworkMode(config);
             config.hostConfig.pvtNetworkMode = resolvedMode;
             if (resolvedMode) {
@@ -281,10 +300,29 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 if (!config.hostConfig.pvtProxyHost) {
                     config.hostConfig.pvtProxyHost = resolvedProxyHost;
                 }
+                if (!currentPolicy || currentPolicy.bindHost !== policy.bindHost) {
+                    try {
+                        await awaitWithTimeout(launchProxyServer(policy), 10000);
+                    } catch (error) {
+                        vscode.window.showErrorMessage(`mcu-debug-proxy failed to launch proxy server: ${error}`);
+                        throw error;
+                    }
+                }
+                if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
+                    vscode.window.showErrorMessage("mcu-debug-proxy did not return a valid port");
+                    throw new Error("mcu-debug-proxy did not return a valid port");
+                }
+                config.hostConfig.pvtProxyPort = proxyLaunchResults!.serverPort as number;
+                config.hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
+            } else {
+                vscode.window.showWarningMessage(
+                    `Unknown hostConfig.type "${config.hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`,
+                );
+                delete config.hostConfig;
             }
+        } else {
+            delete config.hostConfig;
         }
-
-        return config;
     }
 
     public resolveDebugConfigurationWithSubstitutedVariables(

@@ -445,13 +445,13 @@ export class SymbolTable {
                         }
                     });
                     cxt.reader.on("close", (code, signal) => {
-                        if (trace || this.gdbSession.args.showDevDebugOutput) {
+                        if (trace) {
                             const ms = Date.now() - objdumpStart;
                             this.gdbSession.handleMsg(Stderr, `Finished reading symbols from objdump: Time: ${ms} ms. File: ${executable}\n`);
                         }
                     });
 
-                    if (trace || this.gdbSession.args.showDevDebugOutput) {
+                    if (trace) {
                         this.gdbSession.handleMsg(Stderr, `Reading symbols from ${this.objdumpPath} ${objDumpArgs.join(" ")}\n`);
                     }
                     objdumpPromises.push({
@@ -490,13 +490,13 @@ export class SymbolTable {
                         }
                     });
                     cxt.reader.on("close", () => {
-                        if (trace || this.gdbSession.args.showDevDebugOutput) {
+                        if (trace) {
                             const ms = Date.now() - nmStart;
                             this.gdbSession.handleMsg(Stderr, `Finished reading symbols from nm: Time: ${ms} ms. File: ${executable}\n`);
                         }
                     });
 
-                    if (trace || this.gdbSession.args.showDevDebugOutput) {
+                    if (trace) {
                         this.gdbSession.handleMsg(Stderr, `Reading symbols from ${nmProg} ${nmArgs.join(" ")}\n`);
                     }
                     this.nmPromises.push({

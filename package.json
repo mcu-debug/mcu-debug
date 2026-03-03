@@ -3,12 +3,13 @@
   "private": true,
   "workspaces": [
     "packages/shared",
-    "packages/mcu-debug"
+    "packages/mcu-debug",
+    "packages/mcu-debug-proxy"
   ],
   "scripts": {
     "watch": "npm run watch --workspaces",
     "build": "npm run build --workspaces",
-    "compile": "./scripts/install-hooks.sh && npm run compile --workspaces",
+    "compile": "./scripts/install-hooks.sh && npm run compile --workspace=packages/shared --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
     "prepare": "./scripts/install-hooks.sh",
     "version:bump-extensions": "node ./scripts/bump-extensions-version.js",
     "build:types": "./scripts/generate-types.sh",

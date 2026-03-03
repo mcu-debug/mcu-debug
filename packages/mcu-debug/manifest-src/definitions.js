@@ -365,19 +365,6 @@ module.exports = {
             ],
         },
     },
-    showDevDebugOutput: {
-        enum: ["none", "parsed", "raw", "both", "vscode"],
-        default: "none",
-        description: "Deprecated: Use debugFlags instead. Used to debug this extension.",
-        deprecationMessage: "Please use 'debugFlags' to set individual debug modes.",
-        type: "string",
-    },
-    showDevDebugTimestamps: {
-        default: false,
-        description: "Deprecated: Use debugFlags instead. Show timestamps when 'showDevDebugOutput' is enabled",
-        deprecationMessage: "Please use 'debugFlags' to set individual debug modes.",
-        type: "boolean",
-    },
     debugFlags: {
         description: "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",
         type: "object",
@@ -415,6 +402,11 @@ module.exports = {
             'The "ssh" type connects explicitly to a separate probe host machine via SSH, ' +
             "useful for lab setups where the probe is on a dedicated server.",
         properties: {
+            enabled: {
+                type: "boolean",
+                default: false,
+                description: "Enable/Disable remote probe support. When true, the gdb-server runs on a host machine that has the USB debug probe attached.",
+            },
             type: {
                 enum: ["auto", "ssh"],
                 default: "auto",
