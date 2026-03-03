@@ -63,8 +63,7 @@ function nextWatchdogDelayMs(): number {
     return Math.min(WATCHDOG_BASE_DELAY_MS * Math.pow(2, n), 5000);
 }
 
-async function startProxyServer(hostType: ProxyHostType = "auto"): Promise<ProxyLaunchResults> {
-    const policy = computeLaunchPolicy(hostType);
+async function startProxyServer(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults> {
     proxyPolicy = policy;
     const ret = await startProxyServerWithPolicy();
     return ret;
@@ -208,8 +207,14 @@ export function activate(context: vscode.ExtensionContext) {
         }),
         // This is the main command that the mcu-debug extension will call to start the proxy server. It will return
         // the launch results, including the policy, console messages, errors, token, and server port.
-        vscode.commands.registerCommand("mcu-debug-proxy.startProxyServer", (hostType?: ProxyHostType) => {
-            return startProxyServer(hostType || "auto");
+        vscode.commands.registerCommand("mcu-debug-proxy.startProxyServer", (policy: ProxyLaunchPolicy) => {
+            if (policy) {
+                if (childP) {
+                    childP.kill();
+                    childP = null as any;
+                }
+                return startProxyServer(policy);
+            }
         }),
     ];
     context.subscriptions.push(...disposables);
