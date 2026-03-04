@@ -12,6 +12,7 @@ use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
 use std::net::TcpStream;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
@@ -167,7 +168,9 @@ pub enum ControlRequest {
         /** SemVer string representing the version */
         version: String,
         /** Base directory unique-id of the remote launch dir for debugging */
-        remote_launch_uid: String,
+        workspace_uid: String,
+        /** Unique identifier for the session */
+        session_uid: String,
         /** Port wait mode for this session */
         port_wait_mode: Option<PortWaitMode>, // If specified, overrides the default port wait mode for this session. This allows the client to choose the strategy that works best for its environment and needs, without requiring different builds of the proxy helper.
     },
@@ -260,10 +263,7 @@ pub enum StreamStatus {
 pub enum ControlResponseData {
     /** Initialize response: Just a version string */
     #[serde(rename = "initialize")]
-    Initialize {
-        version: String,
-        server_launch_uid: String,
-    },
+    Initialize { version: String, server_cwd: String },
     /** AllocatePorts response: List of reserved ports. This is a flat list in the same order as what was requested */
     #[serde(rename = "allocatePorts")]
     AllocatePorts { ports: Vec<PortReserved> },
@@ -373,7 +373,7 @@ pub struct ProxyServer {
     event_rx: Receiver<ProxyEvent>,
     event_tx: Sender<ProxyEvent>,
 
-    server_launch_uid: String,
+    server_cwd: String,
 
     session_port_wait_mode: PortWaitMode,
     monitor_stop_tx: Option<Sender<()>>,
@@ -394,7 +394,7 @@ impl ProxyServer {
             event_rx,
             event_tx,
             next_stream_id: 3,
-            server_launch_uid: String::new(),
+            server_cwd: String::new(),
             session_port_wait_mode,
             monitor_stop_tx: None,
         }
@@ -704,7 +704,6 @@ impl ProxyServer {
                     });
             }
             ControlRequest::SyncFile { .. } => {
-                eprintln!("Received SyncFile request");
                 self.handle_sync_file(&msg);
             }
         }
@@ -714,13 +713,14 @@ impl ProxyServer {
         if let ControlRequest::Initialize {
             token,
             version,
-            remote_launch_uid,
+            workspace_uid,
+            session_uid,
             port_wait_mode,
         } = &msg.request
         {
             eprintln!(
-                "Received Initialize request with version {} and token {:?} and remote_launch_uid {:?} and port_wait_mode {:?}",
-                version, token, remote_launch_uid, port_wait_mode
+                "Received Initialize request with version {} and token {:?} and workspace_uid {:?} and session_uid {:?} and port_wait_mode {:?}",
+                version, token, workspace_uid, session_uid, port_wait_mode
             );
             let mut err = false;
             let mut err_msg = String::new();
@@ -734,7 +734,8 @@ impl ProxyServer {
             }
             let dir = PathBuf::from(env::temp_dir())
                 .join("mcu-proxy-server")
-                .join(remote_launch_uid)
+                .join(workspace_uid)
+                .join(session_uid)
                 .into_os_string()
                 .into_string()
                 .unwrap()
@@ -770,13 +771,13 @@ impl ProxyServer {
                 self.exit = true;
             } else {
                 eprintln!("Initialization successful");
-                self.server_launch_uid = dir.clone();
+                self.server_cwd = dir.clone();
                 if let Some(mode) = port_wait_mode {
                     self.session_port_wait_mode = *mode;
                 }
                 let data = ControlResponseData::Initialize {
                     version: CURRENT_VERSION.to_string(),
-                    server_launch_uid: dir,
+                    server_cwd: dir,
                 };
                 ControlResponse::success(msg.seq, Some(data))
                     .send(&mut self.stream)
@@ -884,7 +885,7 @@ impl ProxyServer {
                     (plistner.stream_id, plistner.port)
                 })
                 .collect();
-            let dir = self.server_launch_uid.clone();
+            let dir = self.server_cwd.clone();
             let child = match Command::new(server_path)
                 .args(server_args)
                 .envs(server_env.as_ref().unwrap_or(&HashMap::new()))
@@ -1129,8 +1130,27 @@ impl ProxyServer {
             content,
         } = &msg.request
         {
-            eprintln!("Received SyncFile request for path {}", relative_path);
-            let full_path = PathBuf::from(self.server_launch_uid.clone()).join(relative_path);
+            if !is_safe_relative_sync_path(relative_path) {
+                let err_msg = format!(
+                    "Invalid sync path '{}': must be a safe relative file path under session root",
+                    relative_path
+                );
+                eprintln!("{}", err_msg);
+                ControlResponse::error(msg.seq, err_msg)
+                    .send(&mut self.stream)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to send error response: {}", e);
+                    });
+                return;
+            }
+
+            let full_path = PathBuf::from(self.server_cwd.clone()).join(relative_path);
+            eprintln!(
+                "Received SyncFile request for path {} ==> {}, size: {} bytes",
+                relative_path,
+                full_path.display(),
+                content.len()
+            );
             create_parent_dirs(full_path.to_str().unwrap());
             match fs::write(full_path.clone(), content) {
                 Ok(_) => {
@@ -1181,6 +1201,24 @@ pub fn is_connected(stream: &TcpStream) -> bool {
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => true, // Still connected
         Err(_) => false,                                         // Disconnected
     }
+}
+
+fn is_safe_relative_sync_path(relative_path: &str) -> bool {
+    if relative_path.is_empty() {
+        return false;
+    }
+
+    let path = Path::new(relative_path);
+    if path.is_absolute() || path.file_name().is_none() {
+        return false;
+    }
+
+    !path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    })
 }
 
 fn create_parent_dirs(file_path_str: &str) {
@@ -1336,7 +1374,8 @@ mod tests {
             request: ControlRequest::Initialize {
                 token: "adis-ababa".to_string(),
                 version: CURRENT_VERSION.to_string(),
-                remote_launch_uid: "test-uid".to_string(),
+                workspace_uid: "test-uid".to_string(),
+                session_uid: "test-session-uid".to_string(),
                 port_wait_mode: None,
             },
         };
@@ -1360,11 +1399,11 @@ mod tests {
         assert!(response.success);
         if let Some(ControlResponseData::Initialize {
             version,
-            server_launch_uid,
+            server_cwd,
         }) = response.data
         {
             assert_eq!(version, CURRENT_VERSION);
-            assert!(server_launch_uid.contains("test-uid"));
+            assert!(server_cwd.contains("test-uid"));
         } else {
             panic!("Expected Initialize response data");
         }

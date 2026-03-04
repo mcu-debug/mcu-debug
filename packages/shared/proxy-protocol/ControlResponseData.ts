@@ -3,7 +3,7 @@ import type { PortReserved } from "./PortReserved";
 import type { StreamStatus } from "./StreamStatus";
 
 export type ControlResponseData =
-    | { initialize: { version: string; server_launch_uid: string } }
+    | { initialize: { version: string; server_cwd: string } }
     | { allocatePorts: { ports: Array<PortReserved> } }
     | { startGdbServer: { pid: number } }
     | { streamStatus: { stream_id: number; status: StreamStatus; msg_seq: number } }

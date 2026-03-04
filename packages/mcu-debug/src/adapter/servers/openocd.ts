@@ -203,10 +203,22 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
 
     public serverArguments(): string[] {
         let serverargs: string[] = [];
+        let helpers = `${this.args.extensionPath}/support/openocd-helpers.tcl`;
+        if (this.args.hostConfig?.enabled) {
+            const remoteHelpers = "./mcu-debug-helper/support/openocd-helpers.tcl";
+            this.args.hostConfig.syncFiles = this.args.hostConfig.syncFiles || [];
+            this.args.hostConfig.syncFiles.push({ local: helpers, remote: remoteHelpers });
+            helpers = remoteHelpers;
+            if (this.args.searchDir.length === 0) {
+                this.args.searchDir = ["."];
+            } else if (!this.args.searchDir.includes(".")) {
+                this.args.searchDir.unshift(".");
+            }
+        }
 
         // This should come before anything else so that gdb/tcl/telnet ports can be used in OpenoCD V12
         // without a warning and older versions will work fine as well
-        serverargs.push("-f", `${this.args.extensionPath}/support/openocd-helpers.tcl`);
+        serverargs.push("-f", helpers);
 
         // Regardless of the target processor, we will only supply the processor '0's port#
         // OpenOcd will increment and assign the right port-numer to the right processor

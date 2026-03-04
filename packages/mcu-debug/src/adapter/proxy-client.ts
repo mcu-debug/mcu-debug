@@ -39,6 +39,7 @@ export class ProxyClient extends EventEmitter {
     private socket: net.Socket | null = null;
     private clientStreams: Map<number, RemoteServer> = new Map();
     private heartbeatTimer: NodeJS.Timeout | null = null;
+    private cwd: string = process.cwd();
     constructor(
         public session: GDBDebugSession,
         public serverSession: GDBServerSession,
@@ -59,6 +60,26 @@ export class ProxyClient extends EventEmitter {
 
     public logError(message: string) {
         this.session.handleMsg(Stderr, `[proxy-client] ${message}`);
+    }
+
+    private isUnsafeRelativePath(inputPath: string): boolean {
+        if (!inputPath) {
+            return false;
+        }
+        const normalized = inputPath.replace(/\\/g, "/");
+        if (normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized)) {
+            return true;
+        }
+        const parts = normalized.split("/").filter((segment) => segment.length > 0);
+        return parts.some((segment) => segment === "..");
+    }
+
+    private normalizeRelativePath(inputPath: string): string {
+        const normalized = path.posix.normalize(inputPath.replace(/\\/g, "/"));
+        if (normalized === ".") {
+            return "";
+        }
+        return normalized.startsWith("./") ? normalized.substring(2) : normalized;
     }
 
     async start(): Promise<boolean> {
@@ -83,19 +104,22 @@ export class ProxyClient extends EventEmitter {
             let cwd = canonicalizePath(this.args.cwd || process.cwd());
             let cdir = crypto.createHash("sha256").update(cwd).digest("hex");
             cdir = cdir.length > 16 ? cdir.substring(0, 16) : cdir;
+            let sdir = crypto.createHash("sha256").update(this.args.name).digest("hex");
+            sdir = sdir.length > 16 ? sdir.substring(0, 16) : sdir;
             const cmd: ControlMessage = {
                 seq: this.nextSeq++,
                 method: "initialize",
                 params: {
                     token: token,
                     version: "1.0.3",
-                    remote_launch_uid: cdir,
+                    workspace_uid: cdir,
+                    session_uid: sdir,
                     port_wait_mode: "monitor",
                 },
             };
             await awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
             this.logDebug(`Proxy session initialized`);
-            await this.syncFiles(cwd);
+            this.cwd = cwd;
             return true;
         } catch (err) {
             this.logError(`Failed to initialize proxy session: ${err}`);
@@ -103,20 +127,111 @@ export class ProxyClient extends EventEmitter {
         }
     }
 
-    private async syncFiles(cwd: string) {
+    /**
+     * Sync files listed in hostConfig.syncFiles.
+     *
+     * Each entry has the shape:
+     *   { local: string, remote?: string }
+     *
+     * local:
+     * - A glob pattern (resolved from launch/attach configuration "cwd"), or
+     * - A direct file path (absolute or relative).
+     *
+     * remote:
+     * - Optional destination path on the remote side.
+     * - Always interpreted relative to the proxy session root directory on the server.
+     * - Must be a safe relative path (no absolute paths, no ".." traversal).
+     *
+     * Destination behavior:
+     * - If a matched local file is inside this.cwd:
+     *   - Preserve its path relative to this.cwd.
+     *   - If remote is provided, prepend remote as a base directory.
+     * - If a matched local file is outside this.cwd:
+     *   - If remote is provided and only one file is matched, remote is treated as the exact destination file path.
+     *   - If remote is provided and multiple files are matched, remote is treated as a directory and each basename is appended.
+     *   - If remote is omitted, fall back to the local basename at session root.
+     *
+     * Notes:
+     * - Paths sent to the server always use forward slashes for cross-platform consistency.
+     * - The server creates parent directories under the session root as needed.
+     * - There are limits on the number (20) and size (100 KB) of files that can be synced to prevent abuse and performance issues.
+     */
+    private async syncFiles() {
+        const cwd = this.cwd;
         const syncFiles = this.session.args.hostConfig?.syncFiles || [];
+        let counter = 0;
+        const maxFiles = 20; // Limit the number of files to sync to prevent abuse and performance issues
+        let hitMaxFiles = false;
+        let hadSyncFailures = false;
         for (const file of syncFiles) {
+            if (hitMaxFiles) {
+                break;
+            }
             const localPattern = file.local;
             if (!localPattern) {
                 continue;
             }
-            const remotePath = file.remote ? canonicalizePath(file.remote) : "";
+            const remotePath = file.remote ? canonicalizePath(file.remote, false) : "";
+            if (remotePath && (path.isAbsolute(remotePath) || this.isUnsafeRelativePath(remotePath))) {
+                this.logError(`Security violation: Remote path for syncing files must be a relative path. Skipping sync for pattern ${localPattern} with remote path ${remotePath}`);
+                hadSyncFailures = true;
+                continue;
+            }
             try {
-                const files = await this.findFiles(cwd, localPattern);
+                const directPath = path.isAbsolute(localPattern) ? localPattern : path.resolve(cwd, localPattern);
+                const files = fs.existsSync(directPath) ? [directPath] : await this.findFiles(cwd, localPattern);
+                const remoteMustBeDir = files.length > 1;
                 for (const f of files) {
+                    if (counter >= maxFiles) {
+                        this.logError(`Reached maximum number of files to sync (${maxFiles}). Skipping remaining files.`);
+                        hadSyncFailures = true;
+                        hitMaxFiles = true;
+                        break;
+                    }
+                    counter++;
                     try {
-                        const content = Buffer.from(fs.readFileSync(f)).toJSON().data as Array<number>;
-                        const rPath = remotePath ? remotePath + "/" + path.basename(f) : canonicalizePath(f);
+                        const localFilePath = path.isAbsolute(f) ? f : path.resolve(cwd, f);
+                        const stats = fs.statSync(localFilePath);
+                        if (stats.isDirectory()) {
+                            this.logError(`Path ${f} is a directory, skipping. Syncing directories is not supported yet`);
+                            hadSyncFailures = true;
+                            continue;
+                        }
+                        if (stats.size > 100 * 1024) {
+                            // 100 KB limit for syncing files, we don't want to accidentally try to sync huge files
+                            this.logError(`File ${f} is too large to sync (${stats.size} bytes), skipping`);
+                            hadSyncFailures = true;
+                            continue;
+                        }
+                        const content = Buffer.from(fs.readFileSync(localFilePath)).toJSON().data as Array<number>;
+
+                        const localRelToCwd = this.normalizeRelativePath(canonicalizePath(path.relative(cwd, localFilePath), false));
+                        const localIsUnderCwd = localRelToCwd.length > 0 && !this.isUnsafeRelativePath(localRelToCwd);
+                        const normalizedRemotePath = this.normalizeRelativePath(remotePath || "");
+                        let rPath = "";
+
+                        if (localIsUnderCwd) {
+                            const remoteBase = remoteMustBeDir && !normalizedRemotePath ? "." : normalizedRemotePath || ".";
+                            rPath = this.normalizeRelativePath(`${remoteBase}/${localRelToCwd}`);
+                        } else if (normalizedRemotePath) {
+                            // Local file is outside cwd: use explicit remote destination.
+                            // If matching multiple files, treat remote as directory.
+                            if (remoteMustBeDir) {
+                                rPath = this.normalizeRelativePath(`${normalizedRemotePath}/${path.basename(localFilePath)}`);
+                            } else {
+                                rPath = normalizedRemotePath;
+                            }
+                        } else {
+                            // Local file is outside cwd and no remote mapping provided.
+                            // Fall back to a safe filename at session-root.
+                            rPath = this.normalizeRelativePath(path.basename(localFilePath));
+                        }
+
+                        if (!rPath || path.isAbsolute(rPath) || this.isUnsafeRelativePath(rPath)) {
+                            this.logError(`Security violation or potential bug: Destination path for syncing files must be a relative path. Skipping sync for file ${f}`);
+                            hadSyncFailures = true;
+                            continue;
+                        }
                         const cmd: ControlMessage = {
                             seq: this.nextSeq++,
                             method: "syncFile",
@@ -125,16 +240,24 @@ export class ProxyClient extends EventEmitter {
                                 content: content,
                             },
                         };
+                        this.logDebug(`Syncing file ${f} to remote path ${rPath} with size ${content.length} bytes`);
                         await awaitWithTimeout(this.sendControlCommand(cmd), this.timeout).catch((err) => {
+                            hadSyncFailures = true;
                             this.logError(`Failed to sync file ${f} to ${remotePath}: ${err}`);
                         });
                     } catch (err) {
+                        hadSyncFailures = true;
                         this.logError(`Failed to read file for syncing: ${f}, error: ${err}`);
                     }
                 }
             } catch (err) {
+                hadSyncFailures = true;
                 this.logError(`Failed to find files for syncing with pattern ${localPattern}: ${err}`);
             }
+        }
+
+        if (hadSyncFailures) {
+            throw new Error("syncFiles failed");
         }
     }
 
@@ -295,8 +418,9 @@ export class ProxyClient extends EventEmitter {
         });
     }
 
-    launchServer(executable: string, args: string[], serverCwd: string, regexes: RegExp[]): Promise<void> {
+    async launchServer(executable: string, args: string[], serverCwd: string, regexes: RegExp[]): Promise<void> {
         this.startHeartbeat();
+        await this.syncFiles();
         const cmd: ControlMessage = {
             seq: this.nextSeq++,
             method: "startGdbServer",
@@ -443,13 +567,6 @@ export class ProxyClient extends EventEmitter {
         const stream_name = portReserved.stream_id_str;
         try {
             portReserved.status = isStarted ? "connected" : "ready";
-            /*
-            if (!portReserved.stream_id_str.startsWith("gdb")) {
-                // If this is not a gdb stream we open right away. For geb streams, if we open right away we will
-                // miss the initial handshake between the gdb-server and gdb. So, we wait until gdb connects to the stream
-                await this.startStream(stream_id);
-            }
-                */
             const remoteStream = new RemoteServer(this, portDef, portReserved);
             await remoteStream.initialize();
             this.clientStreams.set(stream_id, remoteStream);
@@ -554,11 +671,11 @@ export class RemoteServer {
                 const useStreamId = -1; // If this is the first connection, we can use the actual stream id, otherwise we have to wait for the proxy to assign a new stream id for this connection
                 if (this.socketsByStreamId.get(useStreamId)) {
                     // Is it possible that two new clients are connecting at the same time before the proxy has a chance to assign stream ids?
-                    // It is unlikely but we should handle it just in case. To handke it, we will need to buffer data from the server for unuqie
-                    // ids until the proxy assigns a stream id for the new connection. For now, we will just reject the second connection if it
-                    // happens before the first one is fully established. Data from the socket can be byffered by the RemoteStream object until
+                    // It is unlikely, but we should still handle it. To handle it fully, we would need to buffer data from the server for unique
+                    // ids until the proxy assigns a stream id for the new connection. For now, we reject the second connection if it
+                    // arrives before the first one is fully established. Data from the socket can be buffered by the RemoteStream object until
                     // the stream id is assigned, so we won't lose any data from the first connection.
-                    this.proxyManager.logError(`Internal Received new connection for stream ${this.pInfo.stream_id_str} but stream_id ${useStreamId} is already in use`);
+                    this.proxyManager.logError(`Internal: received new connection for stream ${this.pInfo.stream_id_str}, but stream_id ${useStreamId} is already in use`);
                     socket.end();
                     return;
                 }
@@ -712,7 +829,7 @@ export class RemoteStream {
             this.proxyManager.logDebug(`==> Received data from proxy for stream ${this.streamLocalName}: '${toStr}'`);
         }
         if (this.stream_id < 0) {
-            // Not sure how this can happen, but just in case, we buffer data from the server until the
+            // This should be rare, but if it happens, buffer data from the server until the
             // stream is connected. This should be rare or never happen because we only set stream_id
             // after the stream is connected, but we want to be safe and not lose any data from the server
             if (traceTraffic) {

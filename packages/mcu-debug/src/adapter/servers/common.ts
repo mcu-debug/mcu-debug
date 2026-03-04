@@ -1096,7 +1096,7 @@ export function getPathRelative(base: string, target: string) {
  * @param sourcePath - The path from the client (may be relative, absolute, file:// URI, UNC, or WSL path)
  * @returns A canonical absolute path suitable for use as a map key
  */
-export function canonicalizePath(sourcePath: string): string {
+export function canonicalizePath(sourcePath: string, doResolve: boolean = true): string {
     // Handle file:// URIs
     if (sourcePath.startsWith("file://")) {
         // Remove file:// prefix and decode URI components
@@ -1115,7 +1115,7 @@ export function canonicalizePath(sourcePath: string): string {
     }
 
     // Convert to absolute path and normalize
-    let canonical = path.resolve(sourcePath);
+    let canonical = doResolve || path.isAbsolute(sourcePath) ? path.resolve(sourcePath) : sourcePath;
 
     // On Windows, normalize separators and drive letters
     if (os.platform() === "win32") {

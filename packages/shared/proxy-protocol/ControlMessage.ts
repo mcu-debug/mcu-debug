@@ -18,7 +18,11 @@ export type ControlMessage = { seq: number } & (
               /**
                * Base directory unique-id of the remote launch dir for debugging
                */
-              remote_launch_uid: string;
+              workspace_uid: string;
+              /**
+               * Unique identifier for the session
+               */
+              session_uid: string;
               /**
                * Port wait mode for this session
                */
