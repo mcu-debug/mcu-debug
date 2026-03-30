@@ -11,9 +11,9 @@
     "build": "npm run build --workspaces",
     "compile": "npm run compile --workspace=packages/shared --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
     "version:bump-extensions": "node ./scripts/bump-extensions-version.js",
-    "build:types": "./scripts/generate-types.sh",
+    "build:types": "node scripts/run-sh.js scripts/generate-types.sh",
     "build:extensions": "npm run build --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
-    "package": "./scripts/package-extensions.sh",
+    "package": "node scripts/run-sh.js scripts/package-extensions.sh",
     "test": "npm run test --workspaces"
   },
   "devDependencies": {

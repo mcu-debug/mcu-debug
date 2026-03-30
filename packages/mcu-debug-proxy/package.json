@@ -41,6 +41,7 @@
   "main": "./dist/extension.js",
   "scripts": {
     "compile": "npm run check-types && node esbuild.js",
+    "build": "npm run package",
     "check-types": "tsc --noEmit",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",

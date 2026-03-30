@@ -13,6 +13,7 @@
   },
   "scripts": {
     "compile": "tsc -p tsconfig.json && node esbuild.js",
+    "build": "npm run compile",
     "watch": "node esbuild.js --watch"
   },
   "dependencies": {

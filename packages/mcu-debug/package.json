@@ -3559,18 +3559,19 @@
     }
   },
   "scripts": {
-    "copy-codicons": "mkdir -p resources/codicons && sh scripts/copy-codicons.sh",
+    "copy-codicons": "node scripts/copy-codicons.js",
     "generate-manifest": "node scripts/update-package-json.js",
     "update-commit-hash": "node scripts/commit-hash.js",
-    "build-rust-dev": "cd ../.. && ./scripts/build-binaries.sh dev",
+    "build-rust-dev": "node scripts/build-rust.js dev",
     "compile": "npm run build-rust-dev && npm run copy-codicons && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
+    "build": "npm run build-all",
     "check-types": "tsc-strict --noEmit",
     "test:unit": "node --import tsx --test src/test/**/*.test.ts",
     "watch": "npm run copy-codicons && npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc-strict --noEmit --watch --project tsconfig.json",
     "vscode:prepublish": "npm run build-all",
-    "build-rust-prod": "cd ../.. && ./scripts/build-binaries.sh prod",
+    "build-rust-prod": "node scripts/build-rust.js prod",
     "build-all": "npm run build-rust-prod && node scripts/generate-ignore-files.js && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js --production",
     "package": "vsce package --no-dependencies"
   },
