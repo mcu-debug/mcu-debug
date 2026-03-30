@@ -9,8 +9,7 @@
   "scripts": {
     "watch": "npm run watch --workspaces",
     "build": "npm run build --workspaces",
-    "compile": "./scripts/install-hooks.sh && npm run compile --workspace=packages/shared --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
-    "prepare": "./scripts/install-hooks.sh",
+    "compile": "npm run compile --workspace=packages/shared --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
     "version:bump-extensions": "node ./scripts/bump-extensions-version.js",
     "build:types": "./scripts/generate-types.sh",
     "build:extensions": "npm run build --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
