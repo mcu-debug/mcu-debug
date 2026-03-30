@@ -186,7 +186,20 @@ if [[ "$mode" == "prod" ]]; then
     echo "Install Docker or Podman, or remove/disable cross in this CI environment."
     exit 1
   fi
-  
+
+  # cross >=0.2.5 pre-installs the Linux x86_64 host toolchain before launching its
+  # Docker container (the container runs x86_64 Linux and needs that toolchain).
+  # On macOS, rustup refuses the install without --force-non-host because the
+  # toolchain can't execute on macOS — but it runs fine inside the Docker container.
+  # Pre-install it here so cross doesn't fail at startup.
+  if [[ "$(uname -s)" == "Darwin" ]] && has_cross && has_container_runtime; then
+    linux_host_tc="stable-x86_64-unknown-linux-gnu"
+    if ! rustup toolchain list 2>/dev/null | grep -q "^${linux_host_tc}"; then
+      echo "Pre-installing cross container toolchain (${linux_host_tc}) with --force-non-host..."
+      rustup toolchain add "$linux_host_tc" --profile minimal --force-non-host || true
+    fi
+  fi
+
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   echo "Generating TypeScript exports..."
   cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
@@ -207,6 +220,12 @@ if [[ "$mode" == "prod" ]]; then
   for entry in "${targets[@]}"; do
     IFS='|' read -r platform triple ext <<< "$entry"
     printf "\nBuilding target: %s (platform: %s)" "$triple" "$platform"
+
+    # Apple Darwin targets require the macOS SDK and can only be built on macOS.
+    if [[ "$triple" == *"-apple-darwin" ]] && [[ "$(uname -s)" != "Darwin" ]]; then
+      echo " — skipping (Apple Darwin targets require a macOS host)"
+      continue
+    fi
 
     builder="cargo"
     if [[ "$triple" != *"-apple-darwin" ]] && has_cross && has_container_runtime; then
