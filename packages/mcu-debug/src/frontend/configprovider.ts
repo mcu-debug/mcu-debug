@@ -138,7 +138,7 @@ async function sshCopyHelper(config: ConfigOptions): Promise<void> {
     }
 
     await new Promise<void>((resolve, reject) => {
-        const args = [sshHost, `mkdir -p ~/.mcu-debug/bin && cat > ${REMOTE_HELPER_PATH} && chmod +x ${REMOTE_HELPER_PATH}`];
+        const args = [sshHost, `mkdir -p ~/.mcu-debug/bin && rm -f ${REMOTE_HELPER_PATH} && cat > ${REMOTE_HELPER_PATH} && chmod +x ${REMOTE_HELPER_PATH}`];
         MCUDebugChannel.debugMessage(`Deploying helper binary ${localBinary} to ${sshHost}: ssh ${args.join(" ")}`);
         const proc = spawn("ssh", args);
 
