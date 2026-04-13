@@ -422,6 +422,26 @@ module.exports = {
                     'Example: "user@lab-server" or an alias defined in ~/.ssh/config.',
                 default: "mylogin@myserver",
             },
+            proxyPort: {
+                type: "number",
+                multipleOf: 1,
+                minimum: 1024,
+                maximum: 65535,
+                description:
+                    "Port the Probe Agent daemon is already listening on (on the probe host). " +
+                    "When set, the extension operates in daemon mode: it connects to the pre-running agent at this port " +
+                    "rather than launching a new one. The SSH tunnel is established from a local OS-assigned port to this port. " +
+                    "When omitted, the extension launches a new Probe Agent per debug session via SSH and reads the port from its Discovery JSON. " +
+                    "Set this when the Probe Agent is started manually or managed by a system service on the probe host.",
+            },
+            sshProxyServerPath: {
+                type: "string",
+                description:
+                    'Path to a pre-installed mcu-debug-helper binary on the remote host (e.g. "/usr/local/bin/mcu-debug-helper" or "~/bin/mcu-debug-helper"). ' +
+                    "When set, the extension skips the automatic binary deployment step entirely and uses this path to launch the Probe Agent. " +
+                    "Use this when macOS Gatekeeper, Windows SmartScreen, or lab policy prevents running a freshly-copied executable, " +
+                    "or when the binary has already been installed and granted the necessary permissions by other means.",
+            },
             syncFiles: {
                 type: "array",
                 description:

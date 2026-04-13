@@ -1,7 +1,9 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
-import { computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode } from "@mcu-debug/shared";
+import { computeProxyLaunchPolicy, findAvailablePortRange, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode } from "@mcu-debug/shared";
+import * as net from "net";
+import * as crypto from "crypto";
 import { STLinkServerController } from "../adapter/servers/stlink";
 import { GDBServerConsole } from "./server_console";
 import { parseAddress } from "./utils";
@@ -15,14 +17,405 @@ import {
     ConfigurationArguments,
     SWOConfiguration,
     awaitWithTimeout,
+    getAnyFreePort,
 } from "../adapter/servers/common";
 import { CDebugChainedSessionItem, CDebugSession } from "./cortex_debug_session";
 import * as path from "path";
-import { resolve } from "dns/promises";
+import { ChildProcess, spawn } from "child_process";
+import { MCUDebugChannel } from "../dbgmsgs";
+
+interface SshTunnelConfig {
+    sshHost: string;
+    sshPort: number;
+    localPort: number;
+    args: string[];
+}
+
+let sshTunnelProcess: ChildProcess | null = null;
+let sshTunnelConfig: SshTunnelConfig | null = null;
+function killSshTunnel() {
+    if (sshTunnelProcess) {
+        sshTunnelProcess.kill();
+        sshTunnelProcess = null;
+    }
+    sshTunnelConfig = null;
+}
+
+let sshAgentProcess: ChildProcess | null = null;
+function killSshAgent() {
+    if (sshAgentProcess) {
+        sshAgentProcess.kill();
+        sshAgentProcess = null;
+    }
+}
+
+const SSH_TUNNEL_TIMEOUT_MS = 15000;
+const SSH_TUNNEL_POLL_MS = 250;
+const SSH_RUN_TIMEOUT_MS = 15000;
+const SSH_DEPLOY_TIMEOUT_MS = 60000;
+const SSH_AGENT_LAUNCH_TIMEOUT_MS = 30000;
+const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mcu-debug-helper";
+
+let _extensionPath = "";
+
+// Runs a command on the remote host via SSH. Returns trimmed stdout on success,
+// rejects with a descriptive error on non-zero exit or timeout.
+async function sshRunHelper(config: ConfigOptions, command: string, timeoutMs = SSH_RUN_TIMEOUT_MS): Promise<string> {
+    const sshHost = config.hostConfig!.sshHost!;
+    return new Promise<string>((resolve, reject) => {
+        MCUDebugChannel.debugMessage(`Running SSH command on ${sshHost}: ${command}`);
+        const proc = spawn("ssh", [sshHost, command]);
+        let stdout = "";
+        let stderr = "";
+
+        proc.stdout?.on("data", (d: Buffer) => {
+            stdout += d.toString();
+        });
+        proc.stderr?.on("data", (d: Buffer) => {
+            stderr += d.toString();
+        });
+
+        const timer = setTimeout(() => {
+            proc.kill();
+            reject(new Error(`SSH command timed out after ${timeoutMs / 1000}s on ${sshHost}: ${command}`));
+        }, timeoutMs);
+
+        proc.on("exit", (code) => {
+            clearTimeout(timer);
+            if (code === 0) {
+                MCUDebugChannel.debugMessage(`SSH command succeeded on ${sshHost}: ${command}\n${stdout.trim()}`);
+                resolve(stdout.trim());
+            } else {
+                MCUDebugChannel.debugMessage(`SSH command failed (exit ${code}) on ${sshHost}: ${command}\n${stderr.trim()}`);
+                reject(new Error(`SSH command failed (exit ${code}) on ${sshHost}: ${command}\n${stderr.trim()}`));
+            }
+        });
+
+        proc.on("error", (err) => {
+            clearTimeout(timer);
+            MCUDebugChannel.debugMessage(`SSH process error on ${sshHost}: ${err.message}`);
+            reject(new Error(`SSH process error on ${sshHost}: ${err.message}`));
+        });
+    });
+}
+
+// Deploys the mcu-debug-helper binary to REMOTE_HELPER_PATH on the remote host.
+// Detects remote OS/arch via `uname -sm`, selects the matching local binary, and
+// streams it over SSH stdin — no scp required, so it works on all platforms.
+async function sshCopyHelper(config: ConfigOptions): Promise<void> {
+    const sshHost = config.hostConfig!.sshHost!;
+
+    // Detect remote OS + arch in one round trip. e.g. "Linux x86_64", "Linux aarch64"
+    const unameOut = await sshRunHelper(config, "uname -sm");
+    const archMap: Record<string, string> = {
+        "Linux x86_64": "linux-x64",
+        "Linux aarch64": "linux-arm64",
+        "Linux arm64": "linux-arm64",
+        "Darwin x86_64": "darwin-x64",
+        "Darwin arm64": "darwin-arm64",
+    };
+    const archDir = archMap[unameOut];
+    if (!archDir) {
+        throw new Error(`Unsupported remote OS/arch: "${unameOut}"`);
+    }
+
+    const localBinary = path.join(_extensionPath, "bin", archDir, "mcu-debug-helper");
+    if (!fs.existsSync(localBinary)) {
+        throw new Error(`Local helper binary not found for ${archDir}: ${localBinary}`);
+    }
+
+    await new Promise<void>((resolve, reject) => {
+        const args = [sshHost, `mkdir -p ~/.mcu-debug/bin && cat > ${REMOTE_HELPER_PATH} && chmod +x ${REMOTE_HELPER_PATH}`];
+        MCUDebugChannel.debugMessage(`Deploying helper binary ${localBinary} to ${sshHost}: ssh ${args.join(" ")}`);
+        const proc = spawn("ssh", args);
+
+        let stderr = "";
+        proc.stderr?.on("data", (d: Buffer) => {
+            stderr += d.toString();
+        });
+
+        const timer = setTimeout(() => {
+            proc.kill();
+            MCUDebugChannel.debugMessage(`Binary deploy to ${sshHost} timed out after ${SSH_DEPLOY_TIMEOUT_MS / 1000}s`);
+            reject(new Error(`Binary deploy to ${sshHost} timed out after ${SSH_DEPLOY_TIMEOUT_MS / 1000}s`));
+        }, SSH_DEPLOY_TIMEOUT_MS);
+
+        proc.on("exit", (code) => {
+            clearTimeout(timer);
+            if (code === 0) {
+                MCUDebugChannel.debugMessage(`Binary deploy to ${sshHost} succeeded`);
+                resolve();
+            } else {
+                MCUDebugChannel.debugMessage(`Binary deploy to ${sshHost} failed (exit ${code}): ${stderr.trim()}`);
+                reject(new Error(`Binary deploy to ${sshHost} failed (exit ${code}): ${stderr.trim()}`));
+            }
+        });
+
+        proc.on("error", (err) => {
+            clearTimeout(timer);
+            MCUDebugChannel.debugMessage(`SSH deploy process error on ${sshHost}: ${err.message}`);
+            reject(new Error(`SSH deploy process error on ${sshHost}: ${err.message}`));
+        });
+
+        const readStream = fs.createReadStream(localBinary);
+        readStream.on("error", (err) => {
+            clearTimeout(timer);
+            proc.kill();
+            MCUDebugChannel.debugMessage(`Failed to read local binary ${localBinary} on ${sshHost}: ${err.message}`);
+            reject(new Error(`Failed to read local binary ${localBinary} on ${sshHost}: ${err.message}`));
+        });
+        readStream.pipe(proc.stdin!);
+    });
+}
+
+interface RemoteProxyOutput {
+    status: string;
+    port: number;
+    pid: number;
+    token: string;
+}
+// Starts the proxy server on the remote host via SSH by running the deployed helper binary with appropriate arguments.
+// The token is generated here and passed as --token; the binary echoes it back in the Discovery JSON so we can verify
+// the right process responded. The SSH process stays alive (running the proxy) after emitting the single JSON line.
+async function startSshProxyServer(config: ConfigOptions): Promise<ProxyLaunchResults> {
+    const sshHost = config.hostConfig!.sshHost!;
+
+    // Kill any stale agent from a previous session
+    killSshAgent();
+
+    // Generate token before spawn — we pass it in, we don't trust the channel to invent it
+    const token = crypto.randomBytes(16).toString("hex");
+    const remoteHelperPath = config.hostConfig!.sshProxyServerPath || REMOTE_HELPER_PATH;
+    const remoteCmd = `${remoteHelperPath} proxy --port 0 --token ${token}`;
+
+    return new Promise<ProxyLaunchResults>((resolve, reject) => {
+        MCUDebugChannel.debugMessage(`Starting SSH proxy server on ${sshHost} with command: ssh ${sshHost} ${remoteCmd}`);
+        const proc = spawn("ssh", [sshHost, remoteCmd]);
+        let settled = false;
+        let stdoutBuf = "";
+
+        const fail = (msg: string) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            proc.kill();
+            sshAgentProcess = null;
+            reject(new Error(msg));
+        };
+
+        const timer = setTimeout(() => {
+            fail(`SSH proxy agent on ${sshHost} did not emit Discovery JSON within ${SSH_AGENT_LAUNCH_TIMEOUT_MS / 1000}s`);
+        }, SSH_AGENT_LAUNCH_TIMEOUT_MS);
+
+        proc.stdout?.on("data", (d: Buffer) => {
+            stdoutBuf += d.toString();
+            // Wait for a complete newline-terminated line
+            const nl = stdoutBuf.indexOf("\n");
+            if (nl === -1) {
+                return;
+            }
+            const line = stdoutBuf.slice(0, nl).trim();
+            stdoutBuf = stdoutBuf.slice(nl + 1);
+
+            let parsed: RemoteProxyOutput;
+            try {
+                parsed = JSON.parse(line);
+            } catch {
+                fail(`SSH proxy agent on ${sshHost} emitted non-JSON on stdout: ${line}`);
+                return;
+            }
+
+            if (!parsed.port || parsed.port <= 0) {
+                fail(`SSH proxy agent on ${sshHost} reported invalid port: ${parsed.port}`);
+                return;
+            }
+
+            // Verify the token echoed back matches what we sent — catches wires-crossed / stale-process scenarios
+            if (parsed.token && parsed.token !== token) {
+                fail(`SSH proxy agent on ${sshHost} echoed unexpected token — possible process mismatch`);
+                return;
+            }
+
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            sshAgentProcess = proc; // proc stays alive; store for lifecycle management
+
+            const policy = computeProxyLaunchPolicy("ssh");
+            resolve({
+                policy,
+                consoleMessages: [],
+                consoleErrors: [],
+                token,
+                serverPort: parsed.port,
+            });
+        });
+
+        proc.on("exit", (code) => {
+            if (!settled) {
+                fail(`SSH proxy agent on ${sshHost} exited prematurely (code ${code}). Check host, credentials, and that the binary is deployed`);
+            } else {
+                sshAgentProcess = null;
+                if (code !== 0 && code !== null) {
+                    vscode.window.showErrorMessage(`SSH proxy agent on ${sshHost} exited unexpectedly with code ${code}`);
+                }
+            }
+        });
+
+        proc.on("error", (err) => {
+            fail(`SSH proxy agent process error on ${sshHost}: ${err.message}`);
+        });
+    });
+}
+
+async function startSshTunnel(config: ConfigOptions): Promise<void> {
+    if (!config.hostConfig?.enabled || config.hostConfig?.pvtNetworkMode !== "ssh") {
+        return;
+    }
+    const sshHost = config.hostConfig.sshHost || config.hostConfig.pvtProxyHost;
+    if (!sshHost) {
+        throw new Error("SSH host not defined for SSH tunnel");
+    }
+    let sshPort = config.hostConfig.proxyPort || config.hostConfig.pvtProxyPort;
+    if (!sshPort) {
+        // Clear any existing token if port is not defined, to avoid confusion with stale tunnels. If we are going to be starting a
+        // tunnel, any existing token would be invalid anyway, so better to require a clean slate.
+        config.hostConfig.token = undefined;
+    }
+    if (sshTunnelProcess) {
+        if (sshTunnelConfig && sshTunnelConfig.sshHost === sshHost) {
+            config.hostConfig.pvtProxyToken = (proxyLaunchResults!.token as string) || config.hostConfig.token;
+            config.hostConfig.pvtProxyPort = sshTunnelConfig.localPort;
+            config.hostConfig.pvtProxyHost = "127.0.0.1";
+            return; // reuse existing tunnel
+        }
+        MCUDebugChannel.debugMessage(`Existing SSH tunnel process detected for ${sshTunnelConfig?.sshHost}. Terminating to start new tunnel to ${sshHost}`);
+        vscode.window.showWarningMessage(`An existing SSH tunnel process was detected. It will be terminated and replaced with a new tunnel to ${sshHost}.`);
+        killSshTunnel();
+    }
+
+    if (sshHost && !sshPort) {
+        if (!config.hostConfig!.sshProxyServerPath) {
+            try {
+                await sshCopyHelper(config);
+            } catch (error) {
+                MCUDebugChannel.debugMessage(`Failed to deploy SSH helper binary to ${sshHost}: ${error}`);
+                vscode.window.showErrorMessage(`Failed to deploy helper binary for SSH proxy: ${error}. Cannot start SSH tunnel.`);
+                return Promise.reject(error);
+            }
+        }
+        try {
+            const result = await startSshProxyServer(config);
+            proxyLaunchResults = result;
+            MCUDebugChannel.debugMessage(`SSH proxy server started on ${sshHost} with port ${result.serverPort}`);
+            sshPort = result && result.serverPort ? result.serverPort : undefined;
+        } catch (error) {
+            MCUDebugChannel.debugMessage(`Failed to start SSH proxy server on ${sshHost}: ${error}`);
+            vscode.window.showErrorMessage(`Failed to start SSH proxy server: ${error}. Cannot start SSH tunnel.`);
+            return Promise.reject(error);
+        }
+    }
+
+    if (!sshHost || !sshPort) {
+        throw new Error("SSH host or port not defined for SSH tunnel");
+    }
+
+    const localPort = await getAnyFreePort(56978);
+    const args = ["-N", "-L", `127.0.0.1:${localPort}:127.0.0.1:${sshPort}`, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshHost];
+    const cmdString = `ssh ${args.join(" ")}`;
+
+    return new Promise<void>((resolve, reject) => {
+        MCUDebugChannel.debugMessage(`Starting SSH tunnel with command: ${cmdString}`);
+        const proc = spawn("ssh", args);
+        let settled = false;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        let pollHandle: ReturnType<typeof setTimeout> | undefined;
+
+        const cleanup = () => {
+            clearTimeout(timeoutHandle);
+            clearTimeout(pollHandle);
+        };
+
+        const fail = (msg: string) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            cleanup();
+            proc.kill();
+            sshTunnelProcess = null;
+            MCUDebugChannel.debugMessage(`SSH tunnel failed to start for ${sshHost}: ${msg}`);
+            vscode.window.showErrorMessage(`Failed to start SSH tunnel: ${msg}`);
+            reject(new Error(msg));
+        };
+
+        const succeed = () => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            cleanup();
+            sshTunnelProcess = proc;
+            sshTunnelConfig = { sshHost, sshPort, localPort, args };
+            vscode.window.showInformationMessage(`SSH tunnel started: ${cmdString}`);
+            MCUDebugChannel.debugMessage(`SSH tunnel started for ${sshHost} on local port ${localPort}`);
+            resolve();
+        };
+
+        // If SSH exits before we've confirmed the tunnel is up, it failed
+        proc.on("exit", (code) => {
+            if (!settled) {
+                fail(`SSH process exited prematurely (code ${code}). Check host and credentials: ${sshHost}`);
+            } else {
+                if (code !== 0 && code !== null) {
+                    MCUDebugChannel.debugMessage(`SSH tunnel process for ${sshHost} exited with code ${code}`);
+                    vscode.window.showErrorMessage(`SSH tunnel to ${sshHost} exited with code ${code}`);
+                }
+                sshTunnelProcess = null;
+            }
+        });
+
+        proc.on("error", (err) => {
+            fail(`SSH tunnel process error (${cmdString}): ${err.message}`);
+        });
+
+        // Abort if the tunnel takes too long to come up
+        timeoutHandle = setTimeout(() => {
+            fail(`SSH tunnel timed out after ${SSH_TUNNEL_TIMEOUT_MS / 1000}s connecting to ${sshHost}`);
+        }, SSH_TUNNEL_TIMEOUT_MS);
+
+        // Poll by attempting a TCP connection to the local forwarded port.
+        // ECONNREFUSED means SSH hasn't bound the port yet (nothing held open — no interference).
+        // A successful connect means SSH is listening and the tunnel is up; close immediately.
+        // Note: if the remote proxy is not running, SSH still binds the local port, so this
+        // check passes regardless. Remote-not-running is detected later at protocol level.
+        const pollPort = () => {
+            const socket = new net.Socket();
+            socket.once("connect", () => {
+                socket.destroy();
+                succeed();
+            });
+            socket.once("error", () => {
+                // ECONNREFUSED: SSH hasn't bound the local port yet. On loopback this
+                // returns instantly — no real network path involved, so no hang risk.
+                socket.destroy();
+                if (!settled) {
+                    pollHandle = setTimeout(pollPort, SSH_TUNNEL_POLL_MS);
+                }
+            });
+            socket.connect(localPort, "127.0.0.1");
+        };
+        pollHandle = setTimeout(pollPort, SSH_TUNNEL_POLL_MS);
+    });
+}
 
 let currentPolicy: ProxyLaunchPolicy | null = null;
 let proxyLaunchResults: ProxyLaunchResults | null = null;
-export async function launchProxyServer(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
+export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
     try {
         const command = "mcu-debug-proxy.startProxyServer";
         const value = await vscode.commands.executeCommand<ProxyLaunchResults | null>(command, policy);
@@ -78,7 +471,9 @@ const OPENOCD_VALID_RTOS: string[] = [
 const JLINK_VALID_RTOS: string[] = ["Azure", "ChibiOS", "embOS", "FreeRTOS", "NuttX", "Zephyr"];
 
 export class CortexDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
-    constructor(private context: vscode.ExtensionContext) {}
+    constructor(private context: vscode.ExtensionContext) {
+        _extensionPath = context.extensionPath;
+    }
 
     private resolveWslGatewayHost(): string | undefined {
         try {
@@ -123,7 +518,12 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
         config.gdbServerConsolePort = GDBServerConsole.BackendPort;
         config.pvtAvoidPorts = CDebugSession.getAllUsedPorts();
 
-        await this.handleHostConfig(config);
+        try {
+            await this.handleHostConfig(config);
+        } catch (error) {
+            // All errors should already be surfaced in handleHostConfig, so we just return here to avoid cascading failures. The user can fix the issue and try again.
+            return undefined; // Errors already surfaced in handleHostConfig
+        }
 
         // Flatten the platform specific stuff as it is not done by VSCode at this point.
         switch (os.platform()) {
@@ -306,10 +706,26 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
     }
 
     private async handleHostConfig(config: ConfigOptions) {
-        if (config.hostConfig && config.hostConfig.enabled && config.hostConfig.type) {
+        if (config.hostConfig && config.hostConfig.enabled) {
+            if (!config.hostConfig.type || typeof config.hostConfig.type !== "string" || !["local", "ssh", "auto"].includes(config.hostConfig.type)) {
+                vscode.window.showWarningMessage(
+                    'hostConfig.type is required when hostConfig.enabled is true. Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).',
+                );
+                delete config.hostConfig;
+                return;
+            }
             const resolvedMode = this.resolveNetworkMode(config);
             config.hostConfig.pvtNetworkMode = resolvedMode;
-            if (resolvedMode) {
+            if (resolvedMode === "ssh" || (resolvedMode && resolvedMode.startsWith("auto-ssh"))) {
+                try {
+                    await startSshTunnel(config);
+                    config.hostConfig.pvtProxyBindHost = "127.0.0.1";
+                    config.hostConfig.pvtProxyPort = sshTunnelConfig?.localPort as number;
+                    config.hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
+                } catch (error) {
+                    throw error;
+                }
+            } else if (resolvedMode) {
                 const policy = computeProxyLaunchPolicy(resolvedMode);
                 let resolvedProxyHost = policy.proxyHostForDA;
 
@@ -326,7 +742,7 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 }
                 let current = await awaitWithTimeout(getCurrentProxyLaunchResults(policy), 10000);
                 if (!current || !currentPolicy || currentPolicy.bindHost !== policy.bindHost) {
-                    current = await awaitWithTimeout(launchProxyServer(policy), 10000);
+                    current = await awaitWithTimeout(launchProxyServerFromExtension(policy), 10000);
                     if (!current) {
                         throw new Error(
                             "Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated?. Please try again. Report this problem if it continues to happen",

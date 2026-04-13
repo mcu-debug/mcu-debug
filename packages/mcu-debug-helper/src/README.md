@@ -30,7 +30,7 @@ Always include `sessionId` and `helperVersion` in the initial handshake or in ev
 
 Example notification (SymbolTableReady):
 ```json
-{"jsonrpc":"2.0","method":"SymbolTableReady","params":{"sessionId":"abcd-1234","helperVersion":"0.1.0"}}
+{"jsonrpc":"2.0","method":"SymbolTableReady","params":{"sessionId":"abcd-1234","helperVersion":"0.1.1"}}
 ```
 
 ### Disassembly payloads (compact wire format)

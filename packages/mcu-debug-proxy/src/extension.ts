@@ -17,7 +17,7 @@ import * as fs from "fs";
 import { ChildProcess, spawn } from "node:child_process";
 import { computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults } from "@mcu-debug/shared";
 
-let childP: ChildProcess = null as any; // Placeholder for the actual child process that will run the proxy server
+let childP: ChildProcess | null = null; // Placeholder for the actual child process that will run the proxy server
 
 /**
  * Returns true if the binary at filePath is a native executable for the
@@ -84,8 +84,10 @@ const STARTUP_TIMEOUT_MS = 10_000;
 const WATCHDOG_WINDOW_MS = 60_000;
 const WATCHDOG_MAX_RESTARTS = 5;
 const WATCHDOG_BASE_DELAY_MS = 500;
+const HEARTBEAT_INTERVAL_MS = 5_000;
 let watchdogWindowStart = Date.now();
 let watchdogRestartCount = 0;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 function generateNonce(length: number = 16): string {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -152,9 +154,9 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
         let resolved = false;
         let ready = false;
         messages.push(`Starting proxy server with policy: ${JSON.stringify(proxyPolicy)}`);
-        const args = ["proxy", "--host", proxyPolicy!.bindHost, "--port", port.toString(), "--token", nonce];
+        const args = ["proxy", "--host", proxyPolicy!.bindHost, "--port", port.toString(), "--token", nonce, "--heartbeat"];
         const proxyProcess = spawn(proxyPath, args, {
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: ["pipe", "pipe", "pipe"],
         });
         proxyProcess.on("error", (err) => {
             errors.push(`Failed to start proxy server: ${err}`);
@@ -163,7 +165,11 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
         });
         proxyProcess.on("exit", (code, signal) => {
             messages.push(`Proxy server exited with code ${code} and signal ${signal}`);
-            childP = null as any;
+            childP = null;
+            if (heartbeatTimer) {
+                clearInterval(heartbeatTimer);
+                heartbeatTimer = null;
+            }
             if (!ready) {
                 dummyResolve();
             }
@@ -188,6 +194,12 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
         proxyProcess.on("spawn", () => {
             messages.push("Proxy server process spawned successfully");
             childP = proxyProcess;
+            // Heartbeat: write a newline to stdin periodically so the proxy can
+            // detect a frozen or dead extension even if the pipe stays half-open.
+            // The proxy also exits immediately on stdin EOF (VS Code killed).
+            heartbeatTimer = setInterval(() => {
+                childP?.stdin?.write("\n");
+            }, HEARTBEAT_INTERVAL_MS);
         });
         let stdoutData = "";
         proxyProcess.stdout?.on("data", (data) => {
@@ -222,7 +234,11 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
                     proxyProcess.kill();
                 }
                 proxyProcess.removeAllListeners();
-                childP = null as any;
+                childP = null;
+                if (heartbeatTimer) {
+                    clearInterval(heartbeatTimer);
+                    heartbeatTimer = null;
+                }
             }
         }, STARTUP_TIMEOUT_MS); // Wait for proxy server to become ready
     });
@@ -278,7 +294,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (policy) {
                 if (childP) {
                     childP.kill();
-                    childP = null as any;
+                    childP = null;
                 }
                 return startProxyServer(policy);
             }
@@ -294,8 +310,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
     exiting = true;
+    if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+    }
     if (childP) {
         childP.kill();
-        childP = null as any;
+        childP = null;
     }
 }

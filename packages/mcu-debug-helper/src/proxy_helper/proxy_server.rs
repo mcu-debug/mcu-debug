@@ -1364,6 +1364,7 @@ mod tests {
                 log_stderr: false,
                 log_dir: None,
                 no_token: false,
+                heartbeat: false,
             };
             let _ = crate::proxy_helper::run::run(args);
         });

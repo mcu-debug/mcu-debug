@@ -67,11 +67,68 @@ The probe and target hardware are on a **physically separate machine** — a lab
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+### One-time SSH key setup (Engineer Machine)
+
+Do this once on your machine. Skip if you already have an SSH key pair.
+
+```bash
+# Generate a new key pair (works on Linux, macOS, Windows WSL/Git Bash)
+ssh-keygen -t ed25519 -C "your-name@your-machine"
+# Accept the default location (~/.ssh/id_ed25519) and set a passphrase if desired.
+
+# Display your public key — you will paste this on the Lab Server below
+cat ~/.ssh/id_ed25519.pub
+```
+
+The **private key** (`~/.ssh/id_ed25519`) stays on your machine and is never shared.  
+The **public key** (`~/.ssh/id_ed25519.pub`) is what you install on the Lab Server.
+
+---
+
+### Lab Server one-time setup
+
+```bash
+# Install and start sshd (if not already running)
+sudo apt-get install -y openssh-server
+sudo mkdir -p /run/sshd
+sudo /usr/sbin/sshd   # NOTE: transient — must re-run after reboot/container restart
+
+# Install your engineer machine's public key
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo "<paste output of cat ~/.ssh/id_ed25519.pub from your machine>" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+
+# Firewall: on a real Linux server, ensure port 22 is open (or whatever port sshd uses).
+# On Docker: instead add  "appPort": ["2222:22"]  to devcontainer.json (no firewall needed).
+```
+
+### Engineer Machine one-time setup
+
+Add an entry to `~/.ssh/config` so you don't need to specify host/port/user each time:
+
+```
+# For Docker testing with port 2222:
+Host lab-docker
+  HostName 127.0.0.1
+  Port 2222
+  User vscode
+  IdentityFile ~/.ssh/id_ed25519
+
+# For a real lab server:
+Host lab-server
+  HostName <lab-server-ip-or-hostname>
+  Port 22
+  User <username>
+  IdentityFile ~/.ssh/id_ed25519
+```
+
+Verify: `ssh lab-docker` (or `ssh lab-server`) should drop you into a shell with no password prompt.
+
 The DA connects through the SSH tunnel to `127.0.0.1:<localPort>` — it is completely unaware it is talking across a continent. GDB uses `target remote 127.0.0.1:<ghost_port>` — same story. The Funnel Protocol carries all GDB RSP bytes through the single tunnel connection.
 
 This is the `type: "ssh"` case.
 
-**Latency:** GDB's RSP protocol is the same protocol that was used over serial modems in the late 1980s — it was designed for exactly this. Single-step and breakpoints are interactive, sub-second round-trips even on intercontinental links. High-bandwidth streaming (RTT, Live Watch) is naturally throttled or disabled in this scenario — the user accepts the tradeoff for the ability to debug hardware they cannot physically touch.
+**Latency:** GDB's RSP protocol is the same protocol that was used over serial modems in the late 1980s — it was designed for exactly this. Single-step and breakpoints are interactive, sub-second round-trips even on intercontinental links. High-bandwidth streaming (RTT, Live Watch) is naturally throttled or disabled in this scenario — this is the tradeoff for the ability to debug hardware they cannot physically touch.
 
 ---
 
@@ -177,8 +234,20 @@ Only two user-facing types. Everything else is an implementation detail.
         // Required only for type "ssh"
         "sshHost": "user@lab-server",   // or an alias from ~/.ssh/config
 
+        // Optional — daemon mode: port the Probe Agent is already listening on.
+        // When set, the extension connects to the pre-running agent instead of launching one.
+        // When omitted, the extension launches a new agent per debug session via SSH.
+        "proxyPort": 54321,
+
+        // Optional — per-session mode: path to a pre-installed mcu-debug-helper binary on
+        // the remote host. When set, the extension skips binary deployment entirely and
+        // uses this path to launch the Probe Agent. Use this when macOS Gatekeeper, Windows
+        // SmartScreen, or lab policy prevents running a freshly-copied executable.
+        "sshProxyServerPath": "/usr/local/bin/mcu-debug-helper",
+
         // Optional for both types: workspace files to copy to the probe host
-        // before gdb-server launch (e.g. OpenOCD .cfg files)
+        // before gdb-server launch (e.g. OpenOCD .cfg files). Use relative paths and you can reference
+        // to them in gdb-server config/options in a similar way
         "syncFiles": ["*.cfg", "board/*.cfg"],
 
         // Optional: override the token the extension would otherwise auto-manage.
@@ -215,10 +284,10 @@ The user never sees or sets this. The extension computes it and injects it as `p
 
 This is the LAB scenario (Topology B above). The Probe Agent runs on the **Lab Server** (the Probe Host), not on the Engineer Machine. VS Code has no remoting active — both the UI extension and the DA run on the Engineer Machine. The UI extension uses SSH to deploy, start, and tunnel to the Probe Agent on the lab server.
 
-### Per-session flow
+### Per-session flow (per-session mode)
 
 1. **Version check:** `ssh user@lab "mcu-debug-helper --version"` — is binary present and current?
-2. **Deploy if needed:** `scp mcu-debug-helper-<arch> user@lab:~/.mcu-debug/bin/mcu-debug-helper` — binary for the lab server's arch (`uname -m` on the lab server)
+2. **Deploy if needed:** Stream binary over SSH stdin: `ssh user@lab "mkdir -p ~/.mcu-debug/bin && cat > ~/.mcu-debug/bin/mcu-debug-helper && chmod +x ..."` — arch detected via `uname -sm` first. **Skipped entirely** when `sshProxyServerPath` is set in `hostConfig` (binary already installed and permissions already granted by the user).
 3. **Generate token:** Extension generates `token = crypto.randomBytes(16).toString('hex')`
 4. **Launch Probe Agent on lab server:** `ssh user@lab "~/.mcu-debug/bin/mcu-debug-helper proxy --port 0 --token <token>"` — token is an input, not an output
 5. **Parse Discovery JSON:** `{ "status": "ready", "port": 54321, "pid": 9876 }` — no token in output; extension already has it
@@ -229,6 +298,85 @@ This is the LAB scenario (Topology B above). The Probe Agent runs on the **Lab S
 10. **Cleanup:** Tear down SSH tunnel; Probe Agent exits (kills gdb-server if still running); staging dir cleaned up
 
 **Daemon alternative:** If the Probe Agent is already running on the lab server (manually or via a system service), skip steps 1–6. The UI extension reads `~/.mcu-debug/agent.token` from the lab server via `ssh cat` to get the token (or uses the `hostConfig.token` override if set), then connects directly to the known port. This is the preferred model for shared lab infrastructure.
+
+### Starting the Probe Agent manually (daemon mode)
+
+The Probe Agent binary (`mcu-debug-helper`) is not distributed separately — it ships inside the VS Code extension installation and can be found at:
+
+```
+~/.vscode/extensions/mcu-debug.mcu-debug-<version>/bin/mcu-debug-helper
+```
+
+Pick the appropriate subdirectory for the Lab Server's architecture (e.g. `linux-x64/`, `linux-arm64/`). Copy or symlink it to a convenient location such as `~/.mcu-debug/bin/mcu-debug-helper` — the extension does this automatically in per-session mode.
+
+**Minimal launch (auto-assigned port):**
+
+```bash
+mcu-debug-helper proxy --token my-secret-token
+```
+
+Prints a single line to stdout and then runs silently:
+
+```json
+{"status": "ready", "port": 54321, "pid": 9876, "token": "my-secret-token"}
+```
+
+Note the `port` value — you'll need it in `hostConfig.proxyPort` in `launch.json`.
+
+**Fixed port (easier for persistent lab machines):**
+
+```bash
+mcu-debug-helper proxy --port 54321 --token my-secret-token
+```
+
+**With logging (recommended for daemon mode):**
+
+```bash
+mcu-debug-helper proxy --port 54321 --token my-secret-token --log-dir ~/.mcu-debug/logs
+```
+
+Log files are always written when `--log-dir` is set. Add `--log-stderr` to also echo log lines to stderr (useful when running under a system service that captures stderr).
+
+**Listen on all interfaces** (required for non-SSH access; not needed when the extension always uses an SSH tunnel):
+
+```bash
+mcu-debug-helper proxy --host 0.0.0.0 --port 54321 --token my-secret-token
+```
+
+**Run as a background daemon** (simple backgrounding; use a system service for production):
+
+```bash
+nohup mcu-debug-helper proxy --port 54321 --token my-secret-token \
+    --log-dir ~/.mcu-debug/logs >> ~/.mcu-debug/logs/proxy.out 2>&1 &
+echo $! > ~/.mcu-debug/proxy.pid
+```
+
+**Corresponding `launch.json` `hostConfig`:**
+
+```jsonc
+// Per-session mode (extension deploys and launches the binary automatically)
+"hostConfig": {
+    "type": "ssh",
+    "sshHost": "lab-server",      // matches your ~/.ssh/config Host alias
+}
+
+// Per-session mode with pre-installed binary (skip deployment, avoids Gatekeeper/SmartScreen)
+"hostConfig": {
+    "type": "ssh",
+    "sshHost": "lab-server",
+    "sshProxyServerPath": "/usr/local/bin/mcu-debug-helper"  // binary already installed on the remote
+}
+
+// Daemon mode (proxy server started manually or as a service)
+"hostConfig": {
+    "type": "ssh",
+    "sshHost": "lab-server",      // matches your ~/.ssh/config Host alias
+    "proxyPort": 54321,           // port the daemon is listening on
+    "token": "my-secret-token"    // must match --token passed at launch
+}
+```
+
+> **Security note:** Do not put `token` in a committed `launch.json`. Use a VS Code user setting or a `.env`-style file excluded from source control, then reference it via a variable substitution or leave it out and rely on the automatic token-file mechanism.
 
 ### Why `ssh -L` needs no firewall changes
 
@@ -291,12 +439,11 @@ loop {
 
 The DA receives all connection info as private fields injected by the UI extension via the frontend (which has VS Code APIs). These are never set by the user:
 
-| Field                   | Set by   | Meaning                                                                                                                       |
-| ----------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `pvtProxyHost`          | Frontend | Resolved host string for DA to connect to                                                                                     |
-| `pvtProxyPort`          | Frontend | Proxy port (from Discovery JSON for extension-launched; configured port for daemon)                                           |
-| `pvtProxyToken`         | Frontend | Token — generated by extension (extension-launched), read from token file (daemon), or taken from `hostConfig.token` override |
-| `pvtSshTunnelLocalPort` | Frontend | Local port of the `-L` tunnel (`ssh` type only)                                                                               |
+| Field           | Set by   | Meaning                                                                                                                       |
+| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `pvtProxyHost`  | Frontend | Resolved host string for DA to connect to                                                                                     |
+| `pvtProxyPort`  | Frontend | Proxy port (from Discovery JSON for extension-launched; configured port for daemon) or being used as ssh local port           |
+| `pvtProxyToken` | Frontend | Token — generated by extension (extension-launched), read from token file (daemon), or taken from `hostConfig.token` override |
 
 ---
 

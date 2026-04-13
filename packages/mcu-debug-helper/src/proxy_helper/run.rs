@@ -28,9 +28,9 @@ use std::{
     net::{Ipv4Addr, TcpListener},
     panic,
     path::PathBuf,
-    sync::Once,
+    sync::{mpsc, Once},
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::proxy_helper::proxy_server::ProxyServer;
@@ -80,6 +80,13 @@ pub struct ProxyArgs {
     /// Directory for proxy-helper log files
     #[arg(long = "log-dir")]
     pub log_dir: Option<String>,
+
+    /// Enable stdin heartbeat watchdog. When set, the process exits if stdin
+    /// closes (parent died) or no byte is received within 15 seconds.
+    /// Pass this flag only when the parent will actively send heartbeats.
+    /// Do NOT pass it for SSH-launched or daemon instances.
+    #[arg(long = "heartbeat", default_value_t = false)]
+    pub heartbeat: bool,
 }
 
 fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
@@ -168,6 +175,35 @@ fn install_panic_hook() {
 pub fn run(args: ProxyArgs) -> Result<()> {
     let _log_handle = init_logging(&args);
     install_panic_hook();
+
+    // Stdin heartbeat watchdog — only when explicitly requested via --heartbeat.
+    // The extension that spawns us locally passes this flag and sends a '\n' every
+    // 5 s. SSH-launched and daemon instances must NOT pass it (no heartbeat sender).
+    if args.heartbeat {
+        let (tx, rx) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            use std::io::Read;
+            let stdin = std::io::stdin();
+            let mut buf = [0u8; 1];
+            loop {
+                match stdin.lock().read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        if tx.send(()).is_err() {
+                            break;
+                        }
+                    }
+                    _ => break, // EOF or error — tx drops, watcher sees Disconnected
+                }
+            }
+        });
+        thread::spawn(move || {
+            const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+            while rx.recv_timeout(HEARTBEAT_TIMEOUT).is_ok() {}
+            log::info!("Stdin closed or heartbeat timeout — parent gone, exiting");
+            std::process::exit(0);
+        });
+    }
+
     crate::common::debug::set_debug(args.debug);
     log::info!("Port wait mode: {:?}", args.port_wait_mode);
     log::info!(
@@ -195,11 +231,18 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         }
     };
 
-    // Print Discovery JSON to stdout: {"status": "ready", "port": <actual_port>, "pid": <pid>}
+    // Print Discovery JSON to stdout: {"status": "ready", "port": <actual_port>, "pid": <pid>} with an optional "token" field
+    // If --no-token is not set, the client will parse this to discover the port and token to use for connecting to the Probe Agent.
+    let out_token = if args.no_token {
+        String::new()
+    } else {
+        format!(", \"token\": \"{}\"", args.token)
+    };
     println!(
-        "{{\"status\": \"ready\", \"port\": {}, \"pid\": {}}}",
+        "{{\"status\": \"ready\", \"port\": {}, \"pid\": {}{}}}",
         listener.local_addr()?.port(),
-        std::process::id()
+        std::process::id(),
+        out_token
     );
     std::io::stdout().flush()?;
 
@@ -232,6 +275,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
                     log_stderr: args.log_stderr,
                     log_dir: args.log_dir.clone(),
                     no_token: args.no_token,
+                    heartbeat: false, // watchdog already running on main thread; no second instance
                 };
                 let handle = thread::spawn(move || {
                     let mut new_client = ProxyServer::new(args_clone, stream);
@@ -266,6 +310,7 @@ mod tests {
             log_stderr: false,
             log_dir: Some(temp.path().to_string_lossy().to_string()),
             no_token: false,
+            heartbeat: false,
         };
 
         let _log_handle = init_logging(&args);
