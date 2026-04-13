@@ -29,6 +29,19 @@ interface SshTunnelConfig {
     sshPort: number;
     localPort: number;
     args: string[];
+    fingerprint: string; // key over all config fields that affect what tunnel/agent is running
+}
+
+// Stable string over every config field that determines whether an existing SSH tunnel+agent can be reused.
+// Any change to these fields → cache miss → full restart.
+function sshCacheFingerprint(config: ConfigOptions): string {
+    const hc = config.hostConfig!;
+    return JSON.stringify({
+        sshHost: hc.sshHost ?? null,
+        proxyPort: hc.proxyPort ?? null, // null vs undefined → stable comparison
+        token: hc.token ?? null,
+        sshProxyServerPath: hc.sshProxyServerPath ?? null,
+    });
 }
 
 let sshTunnelProcess: ChildProcess | null = null;
@@ -209,8 +222,14 @@ async function startSshProxyServer(config: ConfigOptions): Promise<ProxyLaunchRe
             fail(`SSH proxy agent on ${sshHost} did not emit Discovery JSON within ${SSH_AGENT_LAUNCH_TIMEOUT_MS / 1000}s`);
         }, SSH_AGENT_LAUNCH_TIMEOUT_MS);
 
+        proc.stderr?.on("data", (d: Buffer) => {
+            const line = d.toString().trim();
+            MCUDebugChannel.debugMessage(`SSH proxy agent stderr on ${sshHost}: ${line}`);
+        });
+
         proc.stdout?.on("data", (d: Buffer) => {
             stdoutBuf += d.toString();
+            MCUDebugChannel.debugMessage(`SSH proxy agent stdout on ${sshHost}: ${d.toString().trim()}`);
             // Wait for a complete newline-terminated line
             const nl = stdoutBuf.indexOf("\n");
             if (nl === -1) {
@@ -286,15 +305,21 @@ async function startSshTunnel(config: ConfigOptions): Promise<void> {
         // tunnel, any existing token would be invalid anyway, so better to require a clean slate.
         config.hostConfig.token = undefined;
     }
+    const fingerprint = sshCacheFingerprint(config);
     if (sshTunnelProcess) {
-        if (sshTunnelConfig && sshTunnelConfig.sshHost === sshHost) {
+        const isDaemonMode = !!config.hostConfig.proxyPort;
+        const fingerprintMatch = sshTunnelConfig?.fingerprint === fingerprint;
+        const agentAlive = isDaemonMode || !!sshAgentProcess; // daemon has no extension-managed agent process
+        if (fingerprintMatch && agentAlive) {
             config.hostConfig.pvtProxyToken = (proxyLaunchResults!.token as string) || config.hostConfig.token;
-            config.hostConfig.pvtProxyPort = sshTunnelConfig.localPort;
+            config.hostConfig.pvtProxyPort = sshTunnelConfig!.localPort;
             config.hostConfig.pvtProxyHost = "127.0.0.1";
             return; // reuse existing tunnel
         }
-        MCUDebugChannel.debugMessage(`Existing SSH tunnel process detected for ${sshTunnelConfig?.sshHost}. Terminating to start new tunnel to ${sshHost}`);
-        vscode.window.showWarningMessage(`An existing SSH tunnel process was detected. It will be terminated and replaced with a new tunnel to ${sshHost}.`);
+        const reason = !fingerprintMatch ? `launch config changed (${sshTunnelConfig?.sshHost} → ${sshHost})` : `per-session agent process exited unexpectedly`;
+        MCUDebugChannel.debugMessage(`Existing SSH tunnel invalidated: ${reason}. Restarting from scratch.`);
+        vscode.window.showWarningMessage(`SSH tunnel restarting: ${reason}.`);
+        killSshAgent();
         killSshTunnel();
     }
 
@@ -360,7 +385,7 @@ async function startSshTunnel(config: ConfigOptions): Promise<void> {
             settled = true;
             cleanup();
             sshTunnelProcess = proc;
-            sshTunnelConfig = { sshHost, sshPort, localPort, args };
+            sshTunnelConfig = { sshHost, sshPort, localPort, args, fingerprint };
             vscode.window.showInformationMessage(`SSH tunnel started: ${cmdString}`);
             MCUDebugChannel.debugMessage(`SSH tunnel started for ${sshHost} on local port ${localPort}`);
             resolve();
