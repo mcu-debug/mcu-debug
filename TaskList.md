@@ -61,6 +61,11 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] Instruction breakpoints
 - [x] **Multi-core orchestration**
 - [ ] **Remote Gdb-server support. New design, new feature. Better support for containers, wsl, remote labs**
+  - [x] Docker devcontainers
+  - [x] ssh to any host (no VSCode needed)
+  - [?] ssh build into VSCode
+  - [ ] WSL mirrored mode
+  - [ ] WSL NAT mode
 
  Testing:
 
