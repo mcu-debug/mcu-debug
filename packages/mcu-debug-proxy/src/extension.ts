@@ -76,6 +76,104 @@ function binaryMatchesPlatform(filePath: string, platform: NodeJS.Platform, arch
 }
 let proxyPath: string = "path/to/proxy/server"; // Placeholder for the actual path to the proxy server script
 let proxyPolicy: ProxyLaunchPolicy | null = null;
+
+// ── SSH reverse tunnel (auto-ssh-remote) ──────────────────────────────────────
+// The DA runs on the remote SSH host; the Proxy Agent runs here on the Engineer
+// Machine. We establish an ssh -R tunnel so the DA can reach the Proxy Agent by
+// connecting to localhost:<remotePort> on the remote side.
+
+const SSH_REV_TUNNEL_TIMEOUT_MS = 15_000;
+
+interface SshRevTunnelConfig {
+    sshHost: string;
+    localProxyPort: number;
+    remotePort: number;
+}
+
+let sshRevTunnelProcess: ChildProcess | null = null;
+let sshRevTunnelConfig: SshRevTunnelConfig | null = null;
+
+function killSshReverseTunnel() {
+    if (sshRevTunnelProcess) {
+        sshRevTunnelProcess.kill();
+        sshRevTunnelProcess = null;
+    }
+    sshRevTunnelConfig = null;
+}
+
+// Establishes ssh -R localhost:0:127.0.0.1:<localProxyPort> -N <sshHost>.
+// OpenSSH prints "Allocated port XXXXX for remote forward" to stderr when the
+// OS assigns the port. That's the signal we've been waiting for.
+// The process stays alive for the duration of the VS Code session.
+function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise<number> {
+    // Reuse: same host + same local port + process still alive
+    if (sshRevTunnelProcess && sshRevTunnelConfig && sshRevTunnelConfig.sshHost === sshHost && sshRevTunnelConfig.localProxyPort === localProxyPort) {
+        return Promise.resolve(sshRevTunnelConfig.remotePort);
+    }
+    if (sshRevTunnelProcess) {
+        killSshReverseTunnel();
+    }
+
+    const args = ["-N", "-R", `localhost:0:127.0.0.1:${localProxyPort}`, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshHost];
+    const cmdString = `ssh ${args.join(" ")}`;
+
+    return new Promise<number>((resolve, reject) => {
+        let settled = false;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+        const fail = (msg: string) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timeoutHandle);
+            proc.kill();
+            sshRevTunnelProcess = null;
+            reject(new Error(msg));
+        };
+
+        const succeed = (remotePort: number) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timeoutHandle);
+            sshRevTunnelProcess = proc;
+            sshRevTunnelConfig = { sshHost, localProxyPort, remotePort };
+            resolve(remotePort);
+        };
+
+        const proc = spawn("ssh", args);
+
+        proc.on("error", (err) => {
+            fail(`SSH reverse tunnel process error (${cmdString}): ${err.message}`);
+        });
+
+        proc.on("exit", (code) => {
+            if (!settled) {
+                fail(`SSH reverse tunnel exited prematurely (code ${code}). Check host, credentials, and that AllowTcpForwarding is enabled on ${sshHost}`);
+            } else {
+                sshRevTunnelProcess = null;
+                sshRevTunnelConfig = null;
+            }
+        });
+
+        // OpenSSH prints "Allocated port XXXXX for remote forward to ..." to stderr
+        // at INFO level (the default) — no -v required.
+        let stderrBuf = "";
+        proc.stderr?.on("data", (d: Buffer) => {
+            stderrBuf += d.toString();
+            const match = stderrBuf.match(/Allocated port (\d+) for remote forward/);
+            if (match) {
+                succeed(parseInt(match[1], 10));
+            }
+        });
+
+        timeoutHandle = setTimeout(() => {
+            fail(`SSH reverse tunnel timed out after ${SSH_REV_TUNNEL_TIMEOUT_MS / 1000}s waiting for port allocation from ${sshHost}`);
+        }, SSH_REV_TUNNEL_TIMEOUT_MS);
+    });
+}
 let currentLaunchResults: ProxyLaunchResults | null = null;
 let exiting = false;
 
@@ -213,13 +311,22 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
                     resolved = true;
                     watchdogWindowStart = Date.now();
                     watchdogRestartCount = 0;
-                    resolve({
+                    const baseResults: ProxyLaunchResults = {
                         policy: proxyPolicy!,
                         consoleMessages: messages,
                         consoleErrors: errors,
                         serverPort: json.port,
                         token: nonce,
-                    });
+                    };
+                    if (proxyPolicy!.reverseTunnelSshHost) {
+                        // Start the reverse tunnel here — we already know the local port (json.port)
+                        // so there is no need for the workspace extension to make a second round-trip.
+                        startSshReverseTunnel(proxyPolicy!.reverseTunnelSshHost, json.port)
+                            .then((remotePort) => resolve({ ...baseResults, reverseTunnelPort: remotePort }))
+                            .catch((err) => reject(err));
+                    } else {
+                        resolve(baseResults);
+                    }
                 }
             } catch (e) {}
         });
@@ -299,6 +406,14 @@ export function activate(context: vscode.ExtensionContext) {
                 return startProxyServer(policy);
             }
         }),
+        // Establishes an SSH reverse tunnel so the DA (running on the remote SSH host in
+        // auto-ssh-remote mode) can connect back to the Proxy Agent on this machine.
+        // Returns the remote port number assigned by the SSH server, or rejects on failure.
+        // The tunnel is kept alive for the VS Code session and reused on subsequent launches
+        // as long as sshHost and localProxyPort are unchanged.
+        vscode.commands.registerCommand("mcu-debug-proxy.startReverseTunnel", (sshHost: string, localProxyPort: number) => {
+            return startSshReverseTunnel(sshHost, localProxyPort);
+        }),
     ];
     context.subscriptions.push(...disposables);
     return {
@@ -318,4 +433,5 @@ export function deactivate() {
         childP.kill();
         childP = null;
     }
+    killSshReverseTunnel();
 }

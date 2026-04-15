@@ -756,43 +756,58 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
             } else if (resolvedMode === "auto-ssh-remote") {
                 // Topology A — VS Code Remote SSH: the workspace extension (and DA) run on the remote SSH
                 // host, but the probe is on the Engineer Machine where the UI extension runs. The Proxy
-                // Agent is spawned locally by mcu-debug-proxy (same as other auto-* modes). The DA needs
-                // to reach the agent across the SSH boundary.
+                // Agent is spawned locally by mcu-debug-proxy (same as other auto-* modes).
                 //
-                // TODO: Raw TCP from the DA (remote) to 127.0.0.1:port (local Engineer Machine) does not
-                // cross the VS Code Remote SSH boundary automatically. Options:
-                //   1. Use vscode.env.openTunnel from the UI extension to make the proxy port forwarded
-                //      to the remote side (requires VS Code 1.73+ reverse tunnel support — not confirmed
-                //      available for UI→remote direction).
-                //   2. Have the proxy bind on 0.0.0.0 and pass pvtProxyHost = <engineer-machine-ip>, but
-                //      that IP is not easily discoverable and has security implications.
-                //   3. Require the user to set up a manual reverse SSH tunnel and document it.
-                // For now, fall through to the standard proxy launch. This works when VS Code Remote SSH
-                // happens to automatically forward the port (observed in some environments), but is not
-                // reliable. Track as a known limitation until a proper solution is chosen.
+                // The DA is on the remote side and cannot reach 127.0.0.1:<proxyPort> on the Engineer
+                // Machine directly. We solve this with an SSH reverse tunnel (-R):
+                //   ssh -R localhost:0:127.0.0.1:<localProxyPort> -N <sshHost>
+                // This asks the SSH server to bind a random port on its loopback; connections to that
+                // port are forwarded back to localhost:<localProxyPort> on the Engineer Machine.
+                // mcu-debug-proxy (UI extension) establishes the tunnel and returns the allocated remote
+                // port. The DA then connects to 127.0.0.1:<remotePort> on the remote host.
+                //
+                // Extract the SSH host alias. vscode.env.remoteAuthority is "ssh-remote+HOSTNAME"
+                // at runtime but is not in the stable public typings, so we access it untyped.
+                // Fall back to hostConfig.sshHost if the user provides it explicitly (useful if
+                // VS Code's internal API changes).
+                const rawAuthority: string | undefined = (vscode.env as any).remoteAuthority;
+                const sshHostForReverse = config.hostConfig.sshHost || rawAuthority?.replace(/^ssh-remote\+/, "");
+                if (!sshHostForReverse) {
+                    const msg = "auto-ssh-remote: could not determine SSH host from vscode.env.remoteAuthority. Please specify hostConfig.sshHost explicitly.";
+                    vscode.window.showErrorMessage(msg);
+                    throw new Error(msg);
+                }
+
                 const policy = computeProxyLaunchPolicy(resolvedMode);
-                let resolvedProxyHost = policy.proxyHostForDA;
+                // Tell the proxy extension to start the reverse tunnel as part of startProxyServer.
+                // It already knows the local port the moment the proxy is ready, so there is no
+                // need for a separate round-trip through the workspace extension.
+                policy.reverseTunnelSshHost = sshHostForReverse;
                 if (!config.hostConfig.pvtProxyBindHost) {
                     config.hostConfig.pvtProxyBindHost = policy.bindHost;
                 }
-                if (!config.hostConfig.pvtProxyHost) {
-                    config.hostConfig.pvtProxyHost = resolvedProxyHost;
-                }
+
+                // Ensure the proxy is running on the Engineer Machine (and the reverse tunnel is up)
                 let current = await awaitWithTimeout(getCurrentProxyLaunchResults(policy), 10000);
                 if (!current || !currentPolicy || currentPolicy.bindHost !== policy.bindHost) {
                     current = await awaitWithTimeout(launchProxyServerFromExtension(policy), 10000);
                     if (!current) {
-                        throw new Error(
-                            "Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated?. Please try again. Report this problem if it continues to happen",
-                        );
+                        throw new Error("Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated? Please try again.");
                     }
                 }
                 if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
                     vscode.window.showErrorMessage("mcu-debug-proxy did not return a valid port");
                     throw new Error("mcu-debug-proxy did not return a valid port");
                 }
-                config.hostConfig.pvtProxyPort = proxyLaunchResults!.serverPort as number;
-                config.hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
+                if (!proxyLaunchResults.reverseTunnelPort || proxyLaunchResults.reverseTunnelPort <= 0) {
+                    const msg = `SSH reverse tunnel to ${sshHostForReverse} did not return a valid remote port`;
+                    vscode.window.showErrorMessage(msg);
+                    throw new Error(msg);
+                }
+
+                config.hostConfig.pvtProxyHost = "127.0.0.1"; // DA connects to its loopback on the remote host
+                config.hostConfig.pvtProxyPort = proxyLaunchResults.reverseTunnelPort;
+                config.hostConfig.pvtProxyToken = proxyLaunchResults.token as string;
             } else if (resolvedMode) {
                 const policy = computeProxyLaunchPolicy(resolvedMode);
                 let resolvedProxyHost = policy.proxyHostForDA;

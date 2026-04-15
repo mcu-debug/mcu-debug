@@ -30,7 +30,8 @@
     "onDebugResolve:mcu-debug",
     "onStartupFinished",
     "onCommand:mcu-debug-proxy.getProxyResults",
-    "onCommand:mcu-debug-proxy.startProxyServer"
+    "onCommand:mcu-debug-proxy.startProxyServer",
+    "onCommand:mcu-debug-proxy.startReverseTunnel"
   ],
   "categories": [
     "Other"
