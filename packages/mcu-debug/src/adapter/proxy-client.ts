@@ -267,16 +267,41 @@ export class ProxyClient extends EventEmitter {
     async stop(): Promise<void> {
         this.endingSession = true;
         this.stopHeartbeat();
-        const cmd: ControlMessage = {
-            seq: this.nextSeq++,
-            method: "endSession",
-        };
-        try {
-            await awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
-        } catch (err) {
-            this.logError(`Failed to end proxy session: ${err}`);
+        if (this.socket) {
+            // Only send endSession if the socket is still connected — mirrors the non-proxy
+            // pattern of checking exitCode before killing the local gdb-server process.
+            // If the socket is already gone, the remote gdb-server has already exited.
+            const cmd: ControlMessage = {
+                seq: this.nextSeq++,
+                method: "endSession",
+            };
+            try {
+                await awaitWithTimeout(this.sendControlCommand(cmd), this.timeout);
+            } catch (err) {
+                this.logError(`Failed to end proxy session: ${err}`);
+            }
+            // Half-close our write side, then wait for the Rust proxy to close the
+            // connection from its side. The Rust proxy kills the gdb-server process
+            // asynchronously after sending the endSession response; if we immediately
+            // tear down the forwarding streams, the sudden stream closures race with
+            // (and can preempt) that kill. Waiting for the socket close event ensures
+            // the Rust side has finished cleanup before we destroy local streams.
+            // A 2-second fallback covers the case where Rust never closes the socket.
+            if (this.socket) {
+                const sock = this.socket;
+                await new Promise<void>((resolve) => {
+                    const timer = setTimeout(() => {
+                        sock.destroy();
+                        resolve();
+                    }, 2000);
+                    sock.once("close", () => {
+                        clearTimeout(timer);
+                        resolve();
+                    });
+                    sock.end();
+                });
+            }
         }
-        this.socket?.end();
         this.socket = null;
         for (const [stream_id, stream] of this.clientStreams) {
             stream.close();

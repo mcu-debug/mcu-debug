@@ -393,6 +393,15 @@ pub struct ProxyServer {
     monitor_stop_tx: Option<Sender<()>>,
 }
 
+impl Drop for ProxyServer {
+    /// Last-resort cleanup: kill the gdb-server process if it is still running
+    /// when the ProxyServer is dropped — covers panics, early returns, and any
+    /// path that bypasses the normal end_process() call.
+    fn drop(&mut self) {
+        self.end_process();
+    }
+}
+
 impl ProxyServer {
     pub fn new(args: ProxyArgs, stream: TcpStream) -> Self {
         let (event_tx, event_rx) = channel();
@@ -667,6 +676,12 @@ impl ProxyServer {
             }
             ControlRequest::EndSession => {
                 eprintln!("Received EndSession request, closing connection");
+                // Kill the gdb-server first (blocking wait) so it is already gone
+                // by the time the success response reaches the TypeScript side.
+                // The TS side then calls sock.end() and waits for our FIN ('close'
+                // event) before tearing down forwarding streams — so the ordering is:
+                //   kill → response → FIN → TS stream cleanup.
+                self.end_process();
                 ControlResponse::success(msg.seq, None)
                     .send(&mut self.stream)
                     .unwrap_or_else(|e| {
@@ -677,7 +692,6 @@ impl ProxyServer {
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to shutdown stream: {}", e);
                     });
-                self.end_process();
                 self.exit = true;
             }
             ControlRequest::Heartbeat => {

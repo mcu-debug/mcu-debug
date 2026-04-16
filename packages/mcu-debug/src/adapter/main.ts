@@ -9,7 +9,8 @@ process.on("uncaughtException", (err) => {
 });
 
 process.on("unhandledRejection", (reason: any, promise: Promise<any>) => {
-    const msg = ": Unhandled Rejection: reason: " + reason.toString() + " promise: " + promise.toString();
+    const detail = reason instanceof Error && reason.stack ? reason.stack : reason?.toString() ?? String(reason);
+    const msg = ": Unhandled Rejection: " + detail + " promise: " + promise.toString();
     console.error(msg);
     ServerConsoleLog(msg);
 });

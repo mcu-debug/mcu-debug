@@ -771,25 +771,6 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 // ("ssh-remote+HOSTNAME") — stable public API, no proposed API required.
                 // Fall back to hostConfig.sshHost if the user provides it explicitly.
                 const hostFromProxy = await vscode.commands.executeCommand<string | null>("mcu-debug-proxy.getRemoteSshHost");
-
-                // Cross-check: vscode.env.remoteAuthority is also "ssh-remote+HOSTNAME" as seen
-                // from the workspace extension process, but it is gated behind the 'resolvers'
-                // proposed API (checkProposedApiEnabled) and throws on stable VS Code builds that
-                // don't declare the proposal. Read it defensively and only use it to warn on a
-                // mismatch — never as the primary source.
-                try {
-                    const rawAuthority: string | undefined = (vscode.env as any).remoteAuthority;
-                    const hostFromAuthority = rawAuthority?.replace(/^ssh-remote\+/, "");
-                    if (hostFromAuthority && hostFromProxy && hostFromAuthority !== hostFromProxy) {
-                        console.warn(
-                            `[mcu-debug] auto-ssh-remote: SSH host from proxy ("${hostFromProxy}") ` +
-                            `differs from remoteAuthority ("${hostFromAuthority}"). Using proxy value.`,
-                        );
-                    }
-                } catch {
-                    // remoteAuthority requires the 'resolvers' proposed API; safe to ignore.
-                }
-
                 const sshHostForReverse = config.hostConfig.sshHost || hostFromProxy || undefined;
                 if (!sshHostForReverse) {
                     const msg = "auto-ssh-remote: could not determine SSH host from mcu-debug-proxy. Please specify hostConfig.sshHost explicitly.";
