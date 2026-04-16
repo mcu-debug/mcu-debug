@@ -414,6 +414,16 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("mcu-debug-proxy.startReverseTunnel", (sshHost: string, localProxyPort: number) => {
             return startSshReverseTunnel(sshHost, localProxyPort);
         }),
+        // Returns the SSH host alias for the current remote session, or null if not in a
+        // VS Code SSH Remote session. In a SSH Remote session, workspace folder URIs have
+        // authority "ssh-remote+HOSTNAME"; we strip the prefix to return the bare alias.
+        // This is stable public API (no proposed API required), making it safe to call from
+        // the workspace extension running on the remote host.
+        vscode.commands.registerCommand("mcu-debug-proxy.getRemoteSshHost", () => {
+            const authority = vscode.workspace.workspaceFolders?.[0]?.uri.authority ?? "";
+            const host = authority.replace(/^ssh-remote\+/, "");
+            return host || null;
+        }),
     ];
     context.subscriptions.push(...disposables);
     return {

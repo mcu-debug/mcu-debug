@@ -36,6 +36,12 @@ async function main() {
         logLevel: "warning",
         logOverride: { "direct-eval": "silent" },
         plugins: [esbuildProblemMatcherPlugin],
+        // @microsoft/applicationinsights-common was merged into applicationinsights-core-js
+        // in v3.4.0, but @vscode/extension-telemetry's compiled dist still references the old
+        // package name. Redirect it to the package that now contains those exports.
+        alias: {
+            "@microsoft/applicationinsights-common": "@microsoft/applicationinsights-core-js",
+        },
     };
 
     const ctxMain = await esbuild.context({
