@@ -495,6 +495,28 @@ const OPENOCD_VALID_RTOS: string[] = [
 ];
 const JLINK_VALID_RTOS: string[] = ["Azure", "ChibiOS", "embOS", "FreeRTOS", "NuttX", "Zephyr"];
 
+/** Attempt a TCP connection to host:port within timeoutMs. Returns true if the connection
+ *  succeeds (socket connected), false on any error or timeout. Used to pre-flight the
+ *  WSL NAT proxy path while we still have access to the VS Code UI. */
+function tcpReachable(host: string, port: number, timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        const socket = net.createConnection({ host, port });
+        const timer = setTimeout(() => {
+            socket.destroy();
+            resolve(false);
+        }, timeoutMs);
+        socket.once("connect", () => {
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once("error", () => {
+            clearTimeout(timer);
+            resolve(false);
+        });
+    });
+}
+
 export class CortexDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
     constructor(private context: vscode.ExtensionContext) {
         _extensionPath = context.extensionPath;
@@ -830,18 +852,17 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                     resolvedProxyHost = (await this.resolveWslGatewayHost()) || "127.0.0.1";
                 }
 
-                if (resolvedMode === "auto-wsl" && resolvedProxyHost !== "127.0.0.1") {
-                    // NAT mode: the Proxy Agent binds on 0.0.0.0 and Windows Firewall blocks
-                    // OS-assigned ports, so a fixed pre-opened port is mandatory. Mirrored mode
-                    // resolves to 127.0.0.1 above and does not need a firewall rule.
-                    if (!config.hostConfig.wslProxyPort || config.hostConfig.wslProxyPort <= 0) {
-                        const msg =
-                            "WSL NAT mode requires hostConfig.wslProxyPort to be set to a port you have opened in Windows Firewall. " +
-                            "Alternatively, enable WSL Mirrored networking in %USERPROFILE%\\.wslconfig to avoid the firewall requirement.";
-                        vscode.window.showErrorMessage(msg);
-                        throw new Error(msg);
+                const isWslNatMode = resolvedMode === "auto-wsl" && resolvedProxyHost !== "127.0.0.1";
+                if (isWslNatMode) {
+                    // NAT mode: the Proxy Agent binds on 0.0.0.0. Windows Firewall will block
+                    // OS-assigned ports UNLESS there is an application-level inbound rule for the
+                    // helper executable (Windows prompts automatically on first run — clicking
+                    // "Allow access" creates this rule). In that case any port works and
+                    // wslProxyPort is not needed. It is only required on machines where the
+                    // prompt was dismissed or group policy manages rules by port only.
+                    if (config.hostConfig.wslProxyPort && config.hostConfig.wslProxyPort > 0) {
+                        policy.fixedPort = config.hostConfig.wslProxyPort;
                     }
-                    policy.fixedPort = config.hostConfig.wslProxyPort;
                 }
 
                 if (!config.hostConfig.pvtProxyBindHost) {
@@ -863,6 +884,20 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
                     vscode.window.showErrorMessage("mcu-debug-proxy did not return a valid port");
                     throw new Error("mcu-debug-proxy did not return a valid port");
+                }
+                if (isWslNatMode) {
+                    // Probe reachability now, while we still have access to the VS Code UI.
+                    // The DA runs without UI and would silently time out on the same failure.
+                    const reachable = await tcpReachable(resolvedProxyHost, proxyLaunchResults.serverPort, 2000);
+                    if (!reachable) {
+                        const msg =
+                            `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
+                            "Windows Firewall may be blocking the connection. " +
+                            "Re-run the helper executable to trigger the Windows Security Alert, " +
+                            "or set hostConfig.wslProxyPort to a port you have opened in Windows Firewall.";
+                        vscode.window.showErrorMessage(msg);
+                        throw new Error(msg);
+                    }
                 }
                 config.hostConfig.pvtProxyPort = proxyLaunchResults!.serverPort as number;
                 config.hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;

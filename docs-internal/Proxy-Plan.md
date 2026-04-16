@@ -240,8 +240,10 @@ Only two user-facing types. Everything else is an implementation detail.
         "sshProxyPort": 54321,
 
         // Optional, type "auto" WSL NAT only. Fixed port for the Probe Agent to bind to on Windows.
-        // Windows Firewall blocks OS-assigned ports; set this to a port you have pre-opened.
-        // Not needed for WSL Mirrored mode. Ignored for all other auto sub-modes.
+        // Not normally needed: when the Probe Agent runs for the first time, Windows shows a Security
+        // Alert and clicking "Allow access" creates an application-level inbound rule that covers any
+        // port. Set this only if that prompt was dismissed/blocked, or group policy restricts rules to
+        // specific ports. Not needed for WSL Mirrored mode. Ignored for all other auto sub-modes.
         "wslProxyPort": 54320,
 
         // Optional — per-session mode: path to a pre-installed mcu-debug-helper binary on
@@ -271,39 +273,48 @@ Only two user-facing types. Everything else is an implementation detail.
 
 In the `auto` case the Probe Agent runs on the **Engineer Machine** (spawned by the UI extension). The DA runs inside a VS Code remote environment on the same physical machine. The UI extension reads `vscode.env.remoteName` to figure out how the DA's network namespace sees the Engineer Machine, and computes `pvtProxyHost`:
 
-| `vscode.env.remoteName`    | VS Code scenario            | Probe Agent host seen by DA              |
-| -------------------------- | --------------------------- | ---------------------------------------- |
-| `undefined`                | Plain local VS Code         | `127.0.0.1`                              |
-| `"wsl"` + mirrored network | WSL2 (Win11, mirrored mode) | `127.0.0.1`                              |
-| `"wsl"` + NAT network      | WSL2 (default NAT)          | Gateway IP from `/etc/resolv.conf`       |
-| `"dev-container"`          | Docker Dev Container        | `host.docker.internal`                   |
-| `"ssh-remote"`             | VS Code Remote SSH          | `127.0.0.1` (probe is on VS Code client) |
+| `vscode.env.remoteName`    | VS Code scenario            | Probe Agent host seen by DA                     |
+| -------------------------- | --------------------------- | ----------------------------------------------- |
+| `undefined`                | Plain local VS Code         | `127.0.0.1`                                     |
+| `"wsl"` + mirrored network | WSL2 (Win11, mirrored mode) | `127.0.0.1`                                     |
+| `"wsl"` + NAT network      | WSL2 (default NAT)          | `vEthernet (WSL)` adapter IP (via UI extension) |
+| `"dev-container"`          | Docker Dev Container        | `host.docker.internal`                          |
+| `"ssh-remote"`             | VS Code Remote SSH          | `127.0.0.1` (probe is on VS Code client)        |
 
 The user never sees or sets this. The extension computes it and injects it as `pvtProxyHost` into `ConfigurationArguments` before the DA starts.
 
-**WSL NAT note:** The Probe Agent on Windows must listen on `0.0.0.0` (not `127.0.0.1`) so the WSL guest can reach it via the gateway IP. Windows Firewall blocks inbound connections on OS-assigned ports by default. There are two ways to deal with this:
+**WSL NAT note:** The Probe Agent on Windows must listen on `0.0.0.0` (not `127.0.0.1`) so the WSL guest can reach it via the gateway IP. The gateway IP is resolved by the workspace extension asking the UI extension (which runs on Windows) for the IPv4 address of the `vEthernet (WSL)` adapter via `os.networkInterfaces()` — authoritative and not subject to DNS relay quirks. `/etc/resolv.conf` is used as a fallback.
 
-**Option A — Switch to WSL Mirrored mode (recommended, Windows 11 only)**
+Windows Firewall and the WSL NAT case work without any manual setup in the common case:
 
-WSL Mirrored networking makes the WSL guest share the Windows loopback, so the Probe Agent can bind to `127.0.0.1` and no firewall rule is needed. Enable it by adding the following to `%USERPROFILE%\.wslconfig`:
+**The typical path — zero friction**
+
+When the Probe Agent (`mcu-debug-helper.exe`) listens for the first time, Windows shows a Security Alert. Clicking **"Allow access"** creates an application-level inbound firewall rule that permits the executable on any port, for both Private and Public networks. No `wslProxyPort` is needed, and no manual firewall commands are required. The extension uses OS-assigned ports and everything works.
+
+You can verify the rule exists with:
+
+```powershell
+Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like "*mcu-debug*" }
+```
+
+**Option A — Switch to WSL Mirrored mode (Windows 11 only)**
+
+WSL Mirrored networking makes the WSL guest share the Windows loopback, so the Probe Agent binds to `127.0.0.1` and the gateway IP resolution path is bypassed entirely. Enable it by adding the following to `%USERPROFILE%\.wslconfig`:
 
 ```ini
 [wsl2]
 networkingMode=mirrored
 ```
 
-Then restart WSL (`wsl --shutdown`). VS Code will automatically detect mirrored mode and use `127.0.0.1` as the Probe Agent host. No `wslProxyPort` needed.
+Then restart WSL (`wsl --shutdown`). VS Code automatically detects mirrored mode and uses `127.0.0.1` as the Probe Agent host.
 
-**Option B — Fixed port with a firewall rule (WSL NAT, Windows 10 / older Windows 11)**
+**Option B — Fixed port with an explicit firewall rule (locked-down environments)**
 
-Set `hostConfig.wslProxyPort` to a fixed port (or the start of a range you intend to reserve) and open it in Windows Firewall once. The extension will pass `--port <N>` and `--host 0.0.0.0` to the Probe Agent so it binds to the exact port the firewall rule covers.
-
-Recommended: reserve a small block (e.g. 54320–54329) so you have room for multiple simultaneous VS Code sessions without needing additional firewall changes. Only one port per VS Code session is needed — the Proxy Agent handles any number of concurrent DA connections (including multi-core debug) on a single port.
+Only needed when the Windows Security Alert was dismissed/blocked, or group policy restricts inbound rules to specific ports. Set `hostConfig.wslProxyPort` to a fixed pre-opened port. The extension will pass `--port <N>` and `--host 0.0.0.0` to the Probe Agent.
 
 One-time firewall setup (run elevated in PowerShell on the Windows host):
 
 ```powershell
-# Open a block of 10 ports for the Probe Agent
 New-NetFirewallRule -Name "MCU Debug Proxy" -DisplayName "MCU Debug Proxy" `
     -Direction Inbound -Protocol TCP -LocalPort 54320-54329 -Action Allow
 ```
@@ -317,7 +328,7 @@ Corresponding `launch.json`:
 }
 ```
 
-The UI extension detects WSL NAT mode and will warn at session start if `wslProxyPort` is not set, reminding the user to either set a fixed port or switch to Mirrored mode.
+If NAT mode is detected and `wslProxyPort` is not set, the extension proceeds with an OS-assigned port and shows a non-blocking informational message explaining what to do if the connection fails.
 
 ---
 
