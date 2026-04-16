@@ -246,7 +246,7 @@ export class GdbMiThreadInfoList {
 // func="foo",args=[],file="hello.c",fullname="/home/foo/bar/hello.c",
 // line="13",arch="i386:x86_64"}
 export function parseStoppedThreadInfo(miRecord: any): GdbMiThreadInfoList {
-    const frame = miRecord.result?.frame;
+    const frame = miRecord?.result?.frame;
     if (frame) {
         frame.level = frame.level || "1"; // GDB MI does not return level in stopped info, so fake it
         frame.state = frame.state || "stopped";
@@ -267,7 +267,7 @@ export function parseStoppedThreadInfo(miRecord: any): GdbMiThreadInfoList {
 ]   */
     const threadsObj = {} as any;
     threadsObj["threads"] = [];
-    threadsObj["current-thread-id"] = miRecord.result?.["thread-id"] || "1";
+    threadsObj["current-thread-id"] = miRecord?.result?.["thread-id"] || "1";
     threadsObj["threads"].push({
         id: threadsObj["current-thread-id"],
         "target-id": `Thread ${threadsObj["current-thread-id"]}`,
