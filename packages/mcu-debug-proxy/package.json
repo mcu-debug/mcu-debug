@@ -1,7 +1,7 @@
 {
   "name": "mcu-debug-proxy",
   "publisher": "mcu-debug",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "preview": true,
   "description": "A proxy server for MCU Debug extension to handle debug sessions and provide additional features.",
   "keywords": [

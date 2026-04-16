@@ -297,6 +297,12 @@ You can verify the rule exists with:
 Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like "*mcu-debug*" }
 ```
 
+To remove the rule (e.g. to re-test the first-run Security Alert flow), run elevated in PowerShell:
+
+```powershell
+Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like "*mcu-debug-helper*" } | Get-NetFirewallRule | Remove-NetFirewallRule
+```
+
 **Option A — Switch to WSL Mirrored mode (Windows 11 only)**
 
 WSL Mirrored networking makes the WSL guest share the Windows loopback, so the Probe Agent binds to `127.0.0.1` and the gateway IP resolution path is bypassed entirely. Enable it by adding the following to `%USERPROFILE%\.wslconfig`:

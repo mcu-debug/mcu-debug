@@ -1,7 +1,7 @@
 {
   "name": "mcu-debug",
   "publisher": "mcu-debug",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "preview": true,
   "description": "A debugger and debug adapter for MCUs",
   "displayName": "MCU-Debug",
@@ -1240,7 +1240,7 @@
                     "multipleOf": 1,
                     "minimum": 1024,
                     "maximum": 65535,
-                    "description": "auto type, WSL NAT mode only. Fixed port for the Probe Agent to bind to on the Windows host. Windows Firewall blocks OS-assigned ports by default — set this to a port you have opened in Windows Firewall. The extension starts the Probe Agent with --port <N> --host 0.0.0.0 so the WSL guest can reach it via the gateway IP. Not needed for WSL Mirrored mode (Windows 11) where loopback is shared and no firewall rule is required. Ignored for all other auto sub-modes (local, Dev Container, Remote SSH)."
+                    "description": "auto type, WSL NAT mode only. Fixed port for the Probe Agent to bind to on the Windows host. Normally not needed: when the Probe Agent runs for the first time, Windows shows a Security Alert — clicking 'Allow access' creates an application-level inbound rule that permits the executable on any port. Set this only if that prompt was dismissed or blocked, or if group policy restricts inbound rules to specific ports. The extension starts the Probe Agent with --port <N> --host 0.0.0.0 so the WSL guest can reach it via the gateway IP. Not needed for WSL Mirrored mode (Windows 11) where loopback is shared. Ignored for all other auto sub-modes (local, Dev Container, Remote SSH)."
                   },
                   "sshProxyServerPath": {
                     "type": "string",
@@ -2696,7 +2696,7 @@
                     "multipleOf": 1,
                     "minimum": 1024,
                     "maximum": 65535,
-                    "description": "auto type, WSL NAT mode only. Fixed port for the Probe Agent to bind to on the Windows host. Windows Firewall blocks OS-assigned ports by default — set this to a port you have opened in Windows Firewall. The extension starts the Probe Agent with --port <N> --host 0.0.0.0 so the WSL guest can reach it via the gateway IP. Not needed for WSL Mirrored mode (Windows 11) where loopback is shared and no firewall rule is required. Ignored for all other auto sub-modes (local, Dev Container, Remote SSH)."
+                    "description": "auto type, WSL NAT mode only. Fixed port for the Probe Agent to bind to on the Windows host. Normally not needed: when the Probe Agent runs for the first time, Windows shows a Security Alert — clicking 'Allow access' creates an application-level inbound rule that permits the executable on any port. Set this only if that prompt was dismissed or blocked, or if group policy restricts inbound rules to specific ports. The extension starts the Probe Agent with --port <N> --host 0.0.0.0 so the WSL guest can reach it via the gateway IP. Not needed for WSL Mirrored mode (Windows 11) where loopback is shared. Ignored for all other auto sub-modes (local, Dev Container, Remote SSH)."
                   },
                   "sshProxyServerPath": {
                     "type": "string",

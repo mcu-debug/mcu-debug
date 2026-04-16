@@ -888,15 +888,34 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 if (isWslNatMode) {
                     // Probe reachability now, while we still have access to the VS Code UI.
                     // The DA runs without UI and would silently time out on the same failure.
-                    const reachable = await tcpReachable(resolvedProxyHost, proxyLaunchResults.serverPort, 2000);
+                    //
+                    // On first run, Windows Firewall shows a Security Alert the moment the
+                    // first inbound connection arrives from WSL. That probe fails immediately
+                    // (the packet is blocked). We show a modal so the user can alt-tab to
+                    // Windows, click "Allow access", alt-tab back, and click Retry — all
+                    // without restarting the debug session. On subsequent runs the first probe
+                    // succeeds and this modal is never shown.
+                    let reachable = await tcpReachable(resolvedProxyHost, proxyLaunchResults.serverPort, 2000);
                     if (!reachable) {
-                        const msg =
+                        const choice = await vscode.window.showErrorMessage(
                             `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
-                            "Windows Firewall may be blocking the connection. " +
-                            "Re-run the helper executable to trigger the Windows Security Alert, " +
-                            "or set hostConfig.wslProxyPort to a port you have opened in Windows Firewall.";
-                        vscode.window.showErrorMessage(msg);
-                        throw new Error(msg);
+                                "A Windows Security Alert may have appeared — switch to Windows, click \"Allow access\", " +
+                                "then click Retry.",
+                            { modal: true },
+                            "Retry",
+                        );
+                        if (choice !== "Retry") {
+                            throw new Error(`WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. Cancelled.`);
+                        }
+                        reachable = await tcpReachable(resolvedProxyHost, proxyLaunchResults.serverPort, 2000);
+                        if (!reachable) {
+                            const msg =
+                                `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
+                                "Windows Firewall is still blocking the connection. " +
+                                "Set hostConfig.wslProxyPort to a port you have opened in Windows Firewall.";
+                            vscode.window.showErrorMessage(msg);
+                            throw new Error(msg);
+                        }
                     }
                 }
                 config.hostConfig.pvtProxyPort = proxyLaunchResults!.serverPort as number;
