@@ -25,10 +25,13 @@ use serde::Serialize;
 use std::{
     backtrace::Backtrace,
     io::Write,
-    net::{Ipv4Addr, TcpListener},
+    net::{Ipv4Addr, TcpListener, TcpStream},
     panic,
     path::PathBuf,
-    sync::{mpsc, Once},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Once,
+    },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -176,11 +179,39 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     let _log_handle = init_logging(&args);
     install_panic_hook();
 
+    crate::common::debug::set_debug(args.debug);
+
+    // TODO: Maybe allow Ipv6 in the future, but for now we can just require IPv4 for simplicity
+    let host = match args.host.parse::<Ipv4Addr>() {
+        Ok(ip) => ip,
+        Err(e) => {
+            log::error!("Invalid host IP address: {}", args.host);
+            return Err(e.into());
+        }
+    };
+    let listener = match TcpListener::bind((host, args.port)) {
+        Ok(listener) => listener,
+        Err(e) => {
+            log::error!("Failed to bind to {}:{}", args.host, args.port);
+            return Err(e.into());
+        }
+    };
+    let local_port = listener.local_addr()?.port();
+
+    // Graceful-shutdown flag, shared with the heartbeat watcher thread (when --heartbeat is set).
+    // The main accept loop polls this after each accepted connection and breaks when set.
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
     // Stdin heartbeat watchdog — only when explicitly requested via --heartbeat.
     // The extension that spawns us locally passes this flag and sends a '\n' every
     // 5 s. SSH-launched and daemon instances must NOT pass it (no heartbeat sender).
+    // NOTE: Ctrl-C (SIGINT) on a manually-launched instance still terminates the
+    // process without running Drop, which can orphan openocd/gdb-server children.
+    // A future improvement: use the `ctrlc` crate to install a SIGINT handler that
+    // sets stop_flag + self-connects instead of using the default signal termination.
     if args.heartbeat {
         let (tx, rx) = mpsc::channel::<()>();
+        let stop_flag_watcher = stop_flag.clone();
         thread::spawn(move || {
             use std::io::Read;
             let stdin = std::io::stdin();
@@ -198,38 +229,33 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         });
         thread::spawn(move || {
             const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+            // Loop until the channel is closed (EOF on stdin) or times out (no heartbeat).
             while rx.recv_timeout(HEARTBEAT_TIMEOUT).is_ok() {}
-            log::info!("Stdin closed or heartbeat timeout — parent gone, exiting");
-            std::process::exit(0);
+            log::info!("Stdin closed or heartbeat timeout — initiating graceful shutdown");
+            // Signal the accept loop to stop after the next accepted connection.
+            stop_flag_watcher.store(true, Ordering::SeqCst);
+            // Unblock listener.incoming(): connect to ourselves so the blocked accept()
+            // returns a stream; the main thread then sees the flag and breaks cleanly,
+            // allowing all ProxyServer instances to drop and kill their child processes.
+            let addr = format!("127.0.0.1:{}", local_port);
+            if let Err(e) = TcpStream::connect(&addr) {
+                log::warn!(
+                    "Self-connect to {} failed: {} — accept loop may not unblock immediately",
+                    addr,
+                    e
+                );
+            }
         });
     }
 
-    crate::common::debug::set_debug(args.debug);
     log::info!("Port wait mode: {:?}", args.port_wait_mode);
     log::info!(
         "Proxy helper startup: pid={}, host={}, port={}, log_stderr={}",
         std::process::id(),
         args.host,
-        args.port,
+        local_port,
         args.log_stderr
     );
-    // 1. Bind TCP listener (port 0 for auto-assign)
-
-    // TODO: Maybe allow Ipv6 in the future, but for now we can just require IPv4 for simplicity
-    let host = match args.host.parse::<Ipv4Addr>() {
-        Ok(ip) => ip,
-        Err(e) => {
-            log::error!("Invalid host IP address: {}", args.host);
-            return Err(e.into());
-        }
-    };
-    let listener = match TcpListener::bind((host, args.port)) {
-        Ok(listener) => listener,
-        Err(e) => {
-            log::error!("Failed to bind to {}:{}", args.host, args.port);
-            return Err(e.into());
-        }
-    };
 
     // Print Discovery JSON to stdout: {"status": "ready", "port": <actual_port>, "pid": <pid>} with an optional "token" field
     // If --no-token is not set, the client will parse this to discover the port and token to use for connecting to the Probe Agent.
@@ -240,18 +266,13 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     };
     println!(
         "{{\"status\": \"ready\", \"port\": {}, \"pid\": {}{}}}",
-        listener.local_addr()?.port(),
+        local_port,
         std::process::id(),
         out_token
     );
     std::io::stdout().flush()?;
 
-    if args.port == 0 {
-        let local_port = listener.local_addr()?.port();
-        log::info!("Probe Agent auto-assigned to port {}", local_port);
-    } else {
-        log::info!("Probe Agent listening on port {}", args.port);
-    }
+    log::info!("Probe Agent listening on port {}", local_port);
 
     // For cleanup later
     let mut client_threads = Vec::new();
@@ -263,6 +284,12 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     // them with an error message). We don't need to know why we have multiple connections, we just
     // need to make sure we don't crash or do something weird if it happens.
     for stream in listener.incoming() {
+        // Graceful-shutdown check: the heartbeat watcher sets this flag then sends a
+        // self-connection to unblock accept(). When we see it, drop the stream and stop.
+        if stop_flag.load(Ordering::SeqCst) {
+            log::info!("Graceful shutdown requested — exiting accept loop");
+            break;
+        }
         match stream {
             Ok(stream) => {
                 // Spawn a new thread to handle each incoming connection
@@ -286,10 +313,29 @@ pub fn run(args: ProxyArgs) -> Result<()> {
                 client_threads.push(handle);
             }
             Err(e) => {
+                if stop_flag.load(Ordering::SeqCst) {
+                    // Expected error from the self-connect wakeup; ignore it.
+                    log::info!(
+                        "Graceful shutdown: ignoring accept error during shutdown: {}",
+                        e
+                    );
+                    break;
+                }
                 log::error!("Connection failed: {}", e);
             }
         }
     }
+
+    // Wait for all client handler threads so their ProxyServer instances are fully dropped
+    // (killing any still-running gdb-server/openocd children) before we return.
+    log::info!(
+        "Waiting for {} client thread(s) to finish",
+        client_threads.len()
+    );
+    for handle in client_threads {
+        handle.join().ok();
+    }
+    log::info!("All client threads finished — proxy exiting cleanly");
 
     Ok(())
 }

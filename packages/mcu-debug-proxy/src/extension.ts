@@ -77,6 +77,30 @@ function binaryMatchesPlatform(filePath: string, platform: NodeJS.Platform, arch
 let proxyPath: string = "path/to/proxy/server"; // Placeholder for the actual path to the proxy server script
 let proxyPolicy: ProxyLaunchPolicy | null = null;
 
+// ── Soft-kill helper ───────────────────────────────────────────────────────────
+// Closes stdin (sends EOF) so the Rust heartbeat watcher fires immediately and
+// initiates a graceful shutdown — running Drop on ProxyServer which kills child
+// processes (openocd, gdb-server, etc.) before the Rust process exits.
+// Falls back to SIGKILL after graceMs if the process has not exited on its own.
+// This is safe to call on any ChildProcess, even ones without --heartbeat.
+const SOFT_KILL_GRACE_MS = 3_000;
+
+function softKillProcess(proc: ChildProcess, graceMs = SOFT_KILL_GRACE_MS): void {
+    // Closing stdin delivers EOF to the Rust reader thread, which drops the tx,
+    // causing the watcher to see Disconnected and start graceful shutdown immediately.
+    try {
+        proc.stdin?.end();
+    } catch {
+        // ignore — stdin may already be closed
+    }
+    const timer = setTimeout(() => {
+        if (!proc.killed) {
+            proc.kill();
+        }
+    }, graceMs);
+    proc.once("exit", () => clearTimeout(timer));
+}
+
 // ── SSH reverse tunnel (auto-ssh-remote) ──────────────────────────────────────
 // The DA runs on the remote SSH host; the Proxy Agent runs here on the Engineer
 // Machine. We establish an ssh -R tunnel so the DA can reach the Proxy Agent by
@@ -248,7 +272,7 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
 
         const messages: string[] = [];
         const errors: string[] = [];
-        const port = 0; // Let the proxy server choose a free port
+        const port = proxyPolicy!.fixedPort ?? 0; // 0 → OS-assigned; non-zero → fixed port (WSL NAT firewall scenario)
         let resolved = false;
         let ready = false;
         messages.push(`Starting proxy server with policy: ${JSON.stringify(proxyPolicy)}`);
@@ -400,7 +424,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("mcu-debug-proxy.startProxyServer", (policy: ProxyLaunchPolicy) => {
             if (policy) {
                 if (childP) {
-                    childP.kill();
+                    softKillProcess(childP);
                     childP = null;
                 }
                 return startProxyServer(policy);
@@ -440,7 +464,7 @@ export function deactivate() {
         heartbeatTimer = null;
     }
     if (childP) {
-        childP.kill();
+        softKillProcess(childP);
         childP = null;
     }
     killSshReverseTunnel();

@@ -21,6 +21,10 @@ export interface ProxyLaunchPolicy {
     bindHost: string;
     proxyHostForDA: string;
     reason: string;
+    /** If set, the Proxy Agent is started with --port <fixedPort> instead of --port 0 (OS-assigned).
+     *  Required for WSL NAT mode where the user must pre-open a Windows Firewall port.
+     *  The extension passes this value from hostConfig.wslProxyPort. */
+    fixedPort?: number;
     /** If set, startProxyServer will also establish an SSH reverse tunnel to this host
      *  after the proxy is ready, and return the allocated remote port in ProxyLaunchResults.
      *  Used for auto-ssh-remote (Topology A) so the DA on the remote host can reach the

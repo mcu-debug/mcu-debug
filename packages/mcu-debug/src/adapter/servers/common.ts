@@ -279,7 +279,8 @@ export interface HostConfig {
     // User-facing fields (set in launch.json)
     type: "auto" | "ssh" | "local"; // "local" is internal/testing only, not exposed in package.json schema
     sshHost?: string; // Required when type === "ssh"
-    proxyPort?: number; // Port to use for ssh tunneling. It represents port being used by proxy server on remote server
+    sshProxyPort?: number; // SSH type, daemon mode: port the pre-running Probe Agent is listening on (connect-to-existing)
+    wslProxyPort?: number; // auto type, WSL NAT mode: fixed port for the agent to bind to (must be open in Windows Firewall)
     sshProxyServerPath?: string; // Path to a pre-installed mcu-debug-helper on the remote host. When set, skips binary deployment entirely.
     token?: string; // Override for daemon-mode token; auto-managed when absent (do not commit to source control)
     syncFiles?: { local: string; remote?: string }[]; // List of files to sync (host-local path glob patterns and optional remote path)

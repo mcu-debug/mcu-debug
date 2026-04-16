@@ -57,7 +57,7 @@ The probe and target hardware are on a **physically separate machine** — a lab
 │  Ghost ports on 127.0.0.1 (local ends of SSH -L tunnels)        │
 └─────────────────────────────────────────────────────────────────┘
          ▲  outbound SSH only — no inbound firewall rules needed
-         │  ssh -L 127.0.0.1:<localPort>:127.0.0.1:<proxyPort> user@lab
+         │  ssh -L 127.0.0.1:<localPort>:127.0.0.1:<sshProxyPort> user@lab
          ▼
 ┌──────── Lab Server (probe attached here) ────────────────────────┐
 │  Probe Agent (mcu-debug-helper proxy)  — started by extension    │
@@ -234,10 +234,15 @@ Only two user-facing types. Everything else is an implementation detail.
         // Required only for type "ssh"
         "sshHost": "user@lab-server",   // or an alias from ~/.ssh/config
 
-        // Optional — daemon mode: port the Probe Agent is already listening on.
-        // When set, the extension connects to the pre-running agent instead of launching one.
-        // When omitted, the extension launches a new agent per debug session via SSH.
-        "proxyPort": 54321,
+        // Optional, type "ssh" only — daemon mode. Port the Probe Agent is already listening on
+        // at the lab server. When set, the extension connects to the pre-running agent rather than
+        // launching a new one (daemon mode). When omitted, a new agent is launched per debug session.
+        "sshProxyPort": 54321,
+
+        // Optional, type "auto" WSL NAT only. Fixed port for the Probe Agent to bind to on Windows.
+        // Windows Firewall blocks OS-assigned ports; set this to a port you have pre-opened.
+        // Not needed for WSL Mirrored mode. Ignored for all other auto sub-modes.
+        "wslProxyPort": 54320,
 
         // Optional — per-session mode: path to a pre-installed mcu-debug-helper binary on
         // the remote host. When set, the extension skips binary deployment entirely and
@@ -276,7 +281,43 @@ In the `auto` case the Probe Agent runs on the **Engineer Machine** (spawned by 
 
 The user never sees or sets this. The extension computes it and injects it as `pvtProxyHost` into `ConfigurationArguments` before the DA starts.
 
-**WSL NAT note:** The Probe Agent on Windows must listen on `0.0.0.0` (not `127.0.0.1`) so the WSL guest can reach it via the gateway IP. Windows Firewall blocks this by default — the UI extension should detect this situation and offer to run the one-time firewall rule. WSL Mirrored mode (Windows 11) avoids this entirely; prefer it when available.
+**WSL NAT note:** The Probe Agent on Windows must listen on `0.0.0.0` (not `127.0.0.1`) so the WSL guest can reach it via the gateway IP. Windows Firewall blocks inbound connections on OS-assigned ports by default. There are two ways to deal with this:
+
+**Option A — Switch to WSL Mirrored mode (recommended, Windows 11 only)**
+
+WSL Mirrored networking makes the WSL guest share the Windows loopback, so the Probe Agent can bind to `127.0.0.1` and no firewall rule is needed. Enable it by adding the following to `%USERPROFILE%\.wslconfig`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+Then restart WSL (`wsl --shutdown`). VS Code will automatically detect mirrored mode and use `127.0.0.1` as the Probe Agent host. No `wslProxyPort` needed.
+
+**Option B — Fixed port with a firewall rule (WSL NAT, Windows 10 / older Windows 11)**
+
+Set `hostConfig.wslProxyPort` to a fixed port (or the start of a range you intend to reserve) and open it in Windows Firewall once. The extension will pass `--port <N>` and `--host 0.0.0.0` to the Probe Agent so it binds to the exact port the firewall rule covers.
+
+Recommended: reserve a small block (e.g. 54320–54329) so you have room for multiple simultaneous VS Code sessions without needing additional firewall changes. Only one port per VS Code session is needed — the Proxy Agent handles any number of concurrent DA connections (including multi-core debug) on a single port.
+
+One-time firewall setup (run elevated in PowerShell on the Windows host):
+
+```powershell
+# Open a block of 10 ports for the Probe Agent
+New-NetFirewallRule -Name "MCU Debug Proxy" -DisplayName "MCU Debug Proxy" `
+    -Direction Inbound -Protocol TCP -LocalPort 54320-54329 -Action Allow
+```
+
+Corresponding `launch.json`:
+
+```jsonc
+"hostConfig": {
+    "type": "auto",
+    "wslProxyPort": 54320   // fixed port within the range you opened
+}
+```
+
+The UI extension detects WSL NAT mode and will warn at session start if `wslProxyPort` is not set, reminding the user to either set a fixed port or switch to Mirrored mode.
 
 ---
 
@@ -321,7 +362,7 @@ Prints a single line to stdout and then runs silently:
 {"status": "ready", "port": 54321, "pid": 9876, "token": "my-secret-token"}
 ```
 
-Note the `port` value — you'll need it in `hostConfig.proxyPort` in `launch.json`.
+Note the `port` value — you'll need it in `hostConfig.sshProxyPort` in `launch.json`.
 
 **Fixed port (easier for persistent lab machines):**
 
@@ -371,7 +412,7 @@ echo $! > ~/.mcu-debug/proxy.pid
 "hostConfig": {
     "type": "ssh",
     "sshHost": "lab-server",      // matches your ~/.ssh/config Host alias
-    "proxyPort": 54321,           // port the daemon is listening on
+    "sshProxyPort": 54321,        // port the daemon is listening on
     "token": "my-secret-token"    // must match --token passed at launch
 }
 ```

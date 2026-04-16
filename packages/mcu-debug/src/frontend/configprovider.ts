@@ -38,7 +38,7 @@ function sshCacheFingerprint(config: ConfigOptions): string {
     const hc = config.hostConfig!;
     return JSON.stringify({
         sshHost: hc.sshHost ?? null,
-        proxyPort: hc.proxyPort ?? null, // null vs undefined → stable comparison
+        sshProxyPort: hc.sshProxyPort ?? null, // null vs undefined → stable comparison
         token: hc.token ?? null,
         sshProxyServerPath: hc.sshProxyServerPath ?? null,
     });
@@ -299,7 +299,7 @@ async function startSshTunnel(config: ConfigOptions): Promise<void> {
     if (!sshHost) {
         throw new Error("SSH host not defined for SSH tunnel");
     }
-    let sshPort = config.hostConfig.proxyPort || config.hostConfig.pvtProxyPort;
+    let sshPort = config.hostConfig.sshProxyPort || config.hostConfig.pvtProxyPort;
     if (!sshPort) {
         // Clear any existing token if port is not defined, to avoid confusion with stale tunnels. If we are going to be starting a
         // tunnel, any existing token would be invalid anyway, so better to require a clean slate.
@@ -307,7 +307,7 @@ async function startSshTunnel(config: ConfigOptions): Promise<void> {
     }
     const fingerprint = sshCacheFingerprint(config);
     if (sshTunnelProcess) {
-        const isDaemonMode = !!config.hostConfig.proxyPort;
+        const isDaemonMode = !!config.hostConfig.sshProxyPort;
         const fingerprintMatch = sshTunnelConfig?.fingerprint === fingerprint;
         const agentAlive = isDaemonMode || !!sshAgentProcess; // daemon has no extension-managed agent process
         if (fingerprintMatch && agentAlive) {
@@ -812,19 +812,33 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 const policy = computeProxyLaunchPolicy(resolvedMode);
                 let resolvedProxyHost = policy.proxyHostForDA;
 
-                if (!config.hostConfig.pvtProxyBindHost) {
-                    config.hostConfig.pvtProxyBindHost = policy.bindHost;
-                }
-
                 if (resolvedMode === "auto-wsl" && resolvedProxyHost === "<wsl-gateway-ip>") {
                     resolvedProxyHost = this.resolveWslGatewayHost() || "127.0.0.1";
+                }
+
+                if (resolvedMode === "auto-wsl" && resolvedProxyHost !== "127.0.0.1") {
+                    // NAT mode: the Proxy Agent binds on 0.0.0.0 and Windows Firewall blocks
+                    // OS-assigned ports, so a fixed pre-opened port is mandatory. Mirrored mode
+                    // resolves to 127.0.0.1 above and does not need a firewall rule.
+                    if (!config.hostConfig.wslProxyPort || config.hostConfig.wslProxyPort <= 0) {
+                        const msg =
+                            "WSL NAT mode requires hostConfig.wslProxyPort to be set to a port you have opened in Windows Firewall. " +
+                            "Alternatively, enable WSL Mirrored networking in %USERPROFILE%\\.wslconfig to avoid the firewall requirement.";
+                        vscode.window.showErrorMessage(msg);
+                        throw new Error(msg);
+                    }
+                    policy.fixedPort = config.hostConfig.wslProxyPort;
+                }
+
+                if (!config.hostConfig.pvtProxyBindHost) {
+                    config.hostConfig.pvtProxyBindHost = policy.bindHost;
                 }
 
                 if (!config.hostConfig.pvtProxyHost) {
                     config.hostConfig.pvtProxyHost = resolvedProxyHost;
                 }
                 let current = await awaitWithTimeout(getCurrentProxyLaunchResults(policy), 10000);
-                if (!current || !currentPolicy || currentPolicy.bindHost !== policy.bindHost) {
+                if (!current || !currentPolicy || currentPolicy.bindHost !== policy.bindHost || currentPolicy.fixedPort !== policy.fixedPort) {
                     current = await awaitWithTimeout(launchProxyServerFromExtension(policy), 10000);
                     if (!current) {
                         throw new Error(
