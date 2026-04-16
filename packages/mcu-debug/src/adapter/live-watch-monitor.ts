@@ -525,7 +525,7 @@ export class LiveWatchMonitor {
                 this.quitting = true;
                 try {
                     // Give GDB a chance to detach nicely, but don't wait forever
-                    await this.gdbInstance.sendCommand("-target-disconnect", 100);
+                    await this.gdbInstance.sendCommand("-target-detach", 100);
                 } catch (e) {
                     // Ignore errors
                 } finally {
