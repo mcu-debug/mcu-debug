@@ -500,7 +500,21 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
         _extensionPath = context.extensionPath;
     }
 
-    private resolveWslGatewayHost(): string | undefined {
+    private async resolveWslGatewayHost(): Promise<string | undefined> {
+        // Primary: ask the UI extension (mcu-debug-proxy) which runs on the Windows host.
+        // It reads os.networkInterfaces() directly and returns the IPv4 address of the
+        // WSL virtual ethernet adapter — authoritative, not subject to DNS relay quirks.
+        try {
+            const fromProxy = await vscode.commands.executeCommand<string | null>("mcu-debug-proxy.getWslHostIp");
+            if (fromProxy) {
+                return fromProxy;
+            }
+        } catch {
+            // mcu-debug-proxy not available or command failed — fall through to local fallback.
+        }
+        // Fallback: parse the nameserver from /etc/resolv.conf on the WSL guest side.
+        // Less reliable: on some configurations the nameserver is a Hyper-V DNS relay
+        // (168.63.x.x) rather than the WSL gateway IP. Kept as a safety net.
         try {
             const resolv = fs.readFileSync("/etc/resolv.conf", "utf8");
             const match = resolv.match(/^nameserver\s+(\S+)$/m);
@@ -813,7 +827,7 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 let resolvedProxyHost = policy.proxyHostForDA;
 
                 if (resolvedMode === "auto-wsl" && resolvedProxyHost === "<wsl-gateway-ip>") {
-                    resolvedProxyHost = this.resolveWslGatewayHost() || "127.0.0.1";
+                    resolvedProxyHost = (await this.resolveWslGatewayHost()) || "127.0.0.1";
                 }
 
                 if (resolvedMode === "auto-wsl" && resolvedProxyHost !== "127.0.0.1") {

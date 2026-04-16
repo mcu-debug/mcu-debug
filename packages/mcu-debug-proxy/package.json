@@ -32,7 +32,8 @@
     "onCommand:mcu-debug-proxy.getProxyResults",
     "onCommand:mcu-debug-proxy.startProxyServer",
     "onCommand:mcu-debug-proxy.startReverseTunnel",
-    "onCommand:mcu-debug-proxy.getRemoteSshHost"
+    "onCommand:mcu-debug-proxy.getRemoteSshHost",
+    "onCommand:mcu-debug-proxy.getWslHostIp"
   ],
   "categories": [
     "Other"

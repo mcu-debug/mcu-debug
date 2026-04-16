@@ -1228,12 +1228,19 @@
                     "description": "SSH host for type \"ssh\". Resolved via ~/.ssh/config, so host aliases, port, jump hosts, and keys are all handled there. Example: \"user@lab-server\" or an alias defined in ~/.ssh/config.",
                     "default": "mylogin@myserver"
                   },
-                  "proxyPort": {
+                  "sshProxyPort": {
                     "type": "number",
                     "multipleOf": 1,
                     "minimum": 1024,
                     "maximum": 65535,
-                    "description": "Port the Probe Agent daemon is already listening on (on the probe host). When set, the extension operates in daemon mode: it connects to the pre-running agent at this port rather than launching a new one. The SSH tunnel is established from a local OS-assigned port to this port. When omitted, the extension launches a new Probe Agent per debug session via SSH and reads the port from its Discovery JSON. Set this when the Probe Agent is started manually or managed by a system service on the probe host."
+                    "description": "SSH type only — daemon mode. Port the Probe Agent is already listening on at the lab server. When set, the extension connects to the pre-running agent at this port rather than launching a new one. The SSH -L tunnel is established from a local OS-assigned port to this port. When omitted, the extension launches a new Probe Agent per debug session via SSH and reads the port from its Discovery JSON. Set this when the Probe Agent is started manually or managed by a system service on the probe host."
+                  },
+                  "wslProxyPort": {
+                    "type": "number",
+                    "multipleOf": 1,
+                    "minimum": 1024,
+                    "maximum": 65535,
+                    "description": "auto type, WSL NAT mode only. Fixed port for the Probe Agent to bind to on the Windows host. Windows Firewall blocks OS-assigned ports by default — set this to a port you have opened in Windows Firewall. The extension starts the Probe Agent with --port <N> --host 0.0.0.0 so the WSL guest can reach it via the gateway IP. Not needed for WSL Mirrored mode (Windows 11) where loopback is shared and no firewall rule is required. Ignored for all other auto sub-modes (local, Dev Container, Remote SSH)."
                   },
                   "sshProxyServerPath": {
                     "type": "string",
@@ -2677,12 +2684,19 @@
                     "description": "SSH host for type \"ssh\". Resolved via ~/.ssh/config, so host aliases, port, jump hosts, and keys are all handled there. Example: \"user@lab-server\" or an alias defined in ~/.ssh/config.",
                     "default": "mylogin@myserver"
                   },
-                  "proxyPort": {
+                  "sshProxyPort": {
                     "type": "number",
                     "multipleOf": 1,
                     "minimum": 1024,
                     "maximum": 65535,
-                    "description": "Port the Probe Agent daemon is already listening on (on the probe host). When set, the extension operates in daemon mode: it connects to the pre-running agent at this port rather than launching a new one. The SSH tunnel is established from a local OS-assigned port to this port. When omitted, the extension launches a new Probe Agent per debug session via SSH and reads the port from its Discovery JSON. Set this when the Probe Agent is started manually or managed by a system service on the probe host."
+                    "description": "SSH type only — daemon mode. Port the Probe Agent is already listening on at the lab server. When set, the extension connects to the pre-running agent at this port rather than launching a new one. The SSH -L tunnel is established from a local OS-assigned port to this port. When omitted, the extension launches a new Probe Agent per debug session via SSH and reads the port from its Discovery JSON. Set this when the Probe Agent is started manually or managed by a system service on the probe host."
+                  },
+                  "wslProxyPort": {
+                    "type": "number",
+                    "multipleOf": 1,
+                    "minimum": 1024,
+                    "maximum": 65535,
+                    "description": "auto type, WSL NAT mode only. Fixed port for the Probe Agent to bind to on the Windows host. Windows Firewall blocks OS-assigned ports by default — set this to a port you have opened in Windows Firewall. The extension starts the Probe Agent with --port <N> --host 0.0.0.0 so the WSL guest can reach it via the gateway IP. Not needed for WSL Mirrored mode (Windows 11) where loopback is shared and no firewall rule is required. Ignored for all other auto sub-modes (local, Dev Container, Remote SSH)."
                   },
                   "sshProxyServerPath": {
                     "type": "string",
