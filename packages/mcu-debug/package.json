@@ -1274,6 +1274,86 @@
                   "type": "auto"
                 }
               },
+              "serialConfig": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Enable/Disable serial port bridging. When enabled, the extension creates TCP bridges to physical serial ports for easy access to serial output from the target device."
+                },
+                "ports": {
+                  "type": "array",
+                  "description": "List of serial port bridges to expose as TCP ports. Each entry maps a physical serial device to a TCP port that can be connected to for bidirectional communication.",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "path"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Serial device path. E.g. /dev/ttyUSB0, /dev/tty.usbserial-*, COM3."
+                      },
+                      "baud_rate": {
+                        "type": "number",
+                        "multipleOf": 1,
+                        "minimum": 300,
+                        "default": 115200,
+                        "description": "Baud rate in bits per second."
+                      },
+                      "data_bits": {
+                        "type": "number",
+                        "enum": [
+                          5,
+                          6,
+                          7,
+                          8
+                        ],
+                        "default": 8,
+                        "description": "Number of data bits per frame."
+                      },
+                      "stop_bits": {
+                        "type": "string",
+                        "enum": [
+                          "one",
+                          "one_point_five",
+                          "two"
+                        ],
+                        "default": "one",
+                        "description": "Number of stop bits."
+                      },
+                      "parity": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "odd",
+                          "even"
+                        ],
+                        "default": "none",
+                        "description": "Parity checking mode."
+                      },
+                      "flow_control": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "software",
+                          "hardware"
+                        ],
+                        "default": "none",
+                        "description": "Flow control mode. \"software\" = XON/XOFF, \"hardware\" = RTS/CTS."
+                      }
+                    }
+                  }
+                },
+                "default": {
+                  "enabled": true,
+                  "ports": [
+                    {
+                      "path": "/dev/ttyUSB0 (or COM3 on Windows)",
+                      "baud_rate": 115200
+                    }
+                  ]
+                }
+              },
               "rttConfig": {
                 "type": "object",
                 "description": "SEGGER's Real Time Trace (RTT) and supported by JLink, OpenOCD and perhaps others in the future",
@@ -2728,6 +2808,86 @@
                 "default": {
                   "enabled": true,
                   "type": "auto"
+                }
+              },
+              "serialConfig": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Enable/Disable serial port bridging. When enabled, the extension creates TCP bridges to physical serial ports for easy access to serial output from the target device."
+                },
+                "ports": {
+                  "type": "array",
+                  "description": "List of serial port bridges to expose as TCP ports. Each entry maps a physical serial device to a TCP port that can be connected to for bidirectional communication.",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "path"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Serial device path. E.g. /dev/ttyUSB0, /dev/tty.usbserial-*, COM3."
+                      },
+                      "baud_rate": {
+                        "type": "number",
+                        "multipleOf": 1,
+                        "minimum": 300,
+                        "default": 115200,
+                        "description": "Baud rate in bits per second."
+                      },
+                      "data_bits": {
+                        "type": "number",
+                        "enum": [
+                          5,
+                          6,
+                          7,
+                          8
+                        ],
+                        "default": 8,
+                        "description": "Number of data bits per frame."
+                      },
+                      "stop_bits": {
+                        "type": "string",
+                        "enum": [
+                          "one",
+                          "one_point_five",
+                          "two"
+                        ],
+                        "default": "one",
+                        "description": "Number of stop bits."
+                      },
+                      "parity": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "odd",
+                          "even"
+                        ],
+                        "default": "none",
+                        "description": "Parity checking mode."
+                      },
+                      "flow_control": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "software",
+                          "hardware"
+                        ],
+                        "default": "none",
+                        "description": "Flow control mode. \"software\" = XON/XOFF, \"hardware\" = RTS/CTS."
+                      }
+                    }
+                  }
+                },
+                "default": {
+                  "enabled": true,
+                  "ports": [
+                    {
+                      "path": "/dev/ttyUSB0 (or COM3 on Windows)",
+                      "baud_rate": 115200
+                    }
+                  ]
                 }
               },
               "rttConfig": {
