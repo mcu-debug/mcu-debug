@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import * as child_process from "child_process";
+
 export type ProxyHostType = "auto" | "ssh" | "local";
 
 export type ProxyNetworkMode = "local" | "ssh" | "auto-local" | "auto-wsl" | "auto-dev-container" | "auto-ssh-remote" | `auto-${string}`;
@@ -65,6 +67,17 @@ export function resolveProxyNetworkMode(hostType: ProxyHostType = "auto", remote
     return `auto-${remoteName}`;
 }
 
+export function getWSLNetworkingMode() {
+    try {
+        // This command is available in WSL 2.2.4+ 
+        const mode = child_process.execSync('wslinfo --networking-mode').toString().trim();
+        return mode; // Returns 'nat' or 'mirrored'
+    } catch (error) {
+        // Fallback for older WSL versions where wslinfo isn't available
+        return 'nat'; // Default mode in older versions
+    }
+}
+
 export function computeProxyLaunchPolicy(mode: ProxyNetworkMode): ProxyLaunchPolicy {
     if (mode === "local" || mode === "auto-local" || mode === "ssh" || mode === "auto-ssh-remote") {
         return {
@@ -85,10 +98,11 @@ export function computeProxyLaunchPolicy(mode: ProxyNetworkMode): ProxyLaunchPol
     }
 
     if (mode === "auto-wsl") {
+        const wslNetworkingMode = getWSLNetworkingMode();
         return {
             mode,
-            bindHost: "0.0.0.0",
-            proxyHostForDA: "<wsl-gateway-ip>",
+            bindHost: wslNetworkingMode === "nat" ? "0.0.0.0" : "127.0.0.1",
+            proxyHostForDA: wslNetworkingMode === "nat" ? "<wsl-gateway-ip>" : "127.0.0.1",
             reason: "WSL mode may require host bind outside loopback for NAT",
         };
     }

@@ -25,6 +25,7 @@ import { GDBServerConsole } from "./server_console";
 import { CDebugSession, CDebugChainedSessionItem } from "./cortex_debug_session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
+import { getWSLNetworkingMode } from "../../../shared/lib/proxy-network";
 
 interface SVDInfo {
     expression: RegExp;
@@ -831,7 +832,11 @@ export async function activate(context: vscode.ExtensionContext) {
         const packageJson = context.extension.packageJSON;
         const version = packageJson.version || "unknown";
         MCUDebugChannel.debugMessage(`Starting mcu-debug extension. Version = ${version}, Path = ${context.extensionPath}, PID=${process.pid}`);
-        MCUDebugChannel.debugMessage(`Workspace location type: ${vscode.env.remoteName ? vscode.env.remoteName : "local"}`);
+        let wsType = vscode.env.remoteName ?? "local";
+        if (wsType === "wsl") {
+            wsType += '-' + getWSLNetworkingMode();
+        }
+        MCUDebugChannel.debugMessage(`Workspace location type: ${wsType}`);
         MCUDebugChannel.debugMessage(`Extension startup workspace: ${vscode.workspace.name}, folders:\n  ${vscode.workspace.workspaceFolders?.map((f) => f.name).join(",\n  ")}`);
         MCUDebugChannel.debugMessage(`Workspace URI:\n  ${vscode.workspace.workspaceFolders?.map((f) => f.uri.toString()).join(",\n  ")}`);
     } catch (_e) {

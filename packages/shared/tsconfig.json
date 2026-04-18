@@ -2,7 +2,9 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
+    "types": ["node"],
     "declaration": true,
+    "rootDir": "src",
     "outDir": "lib",
     "strict": true,
     "esModuleInterop": true,

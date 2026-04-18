@@ -10,11 +10,7 @@
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug",
         "--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy",
-        "--remote",
-        "wsl+Ubuntu",
-        "//wsl.localhost/Ubuntu/home/hdm/src/mtb37-p6h/mtb-example-hal-hello-world.code-workspace"
-        // "--folder-uri=vscode-remote://wsl+Ubuntu/home/hdm/src/mtb37-p6h"
-        // "--file-uri=vscode-remote://wsl+Ubuntu/home/hdm/src/mtb37-p6h/mtb-example-hal-hello-world.code-workspace"
+        "/home/hdm/src/mtb37-p6h/mtb-example-hal-hello-world.code-workspace"
       ],
       "sourceMaps": true,
       "outFiles": ["${workspaceFolder}/packages/mcu-debug/dist/**/*.js", "${workspaceFolder}/packages/mcu-debug-proxy/dist/**/*.js", "${workspaceFolder}/packages/shared/lib/**/*.js"],

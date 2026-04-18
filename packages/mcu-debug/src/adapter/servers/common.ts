@@ -301,7 +301,7 @@ export class TcpPortDef {
         public name: string,
         public localPort: number,
         public remotePort: number,
-    ) {}
+    ) { }
 }
 
 export type TcpPortDefMap = { [name: string]: TcpPortDef };
@@ -842,10 +842,25 @@ export class HrTimer {
         return hrUs;
     }
 
+    public static toLocalISOString(date: Date): string {
+        const pad = (num: number) => String(num).padStart(2, '0');
+        const tzo = -date.getTimezoneOffset();
+        const dif = tzo >= 0 ? '+' : '-';
+
+        return date.getFullYear() +
+            '-' + pad(date.getMonth() + 1) +
+            '-' + pad(date.getDate()) +
+            'T' + pad(date.getHours()) +
+            ':' + pad(date.getMinutes()) +
+            ':' + pad(date.getSeconds()) +
+            dif + pad(Math.floor(Math.abs(tzo) / 60)) +
+            ':' + pad(Math.abs(tzo) % 60);
+    }
+
     public createDateTimestamp(): string {
         const hrUs = this.createPaddedMs(6);
         const date = new Date();
-        const ret = `[${HrTimer.toLocalIsoString(date)}, +${hrUs}ms]`;
+        const ret = `[${HrTimer.toLocalISOString(date)}, +${hrUs}ms]`;
         return ret;
     }
 
@@ -863,14 +878,6 @@ export class HrTimer {
             }
         }
         return HrTimer.tzStr;
-    }
-
-    public static toLocalIsoString(date: Date): string {
-        const tzStr = HrTimer.getGmtOffsetString(); // Get this first
-        const lDate = new Date(date);
-        lDate.setMinutes(lDate.getMinutes() - HrTimer.tzOffsetMins);
-        const ret = lDate.toISOString() + HrTimer.getGmtOffsetString();
-        return ret;
     }
 
     private toStringWithRes(res: number) {

@@ -60,15 +60,14 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] `New:` 64-bit support
   - [x] Instruction breakpoints
 - [x] **Multi-core orchestration**
-- [ ] **Remote Gdb-server support. New design, new feature. Better support for containers, wsl, remote labs**
+- [x] **Remote Gdb-server support. New design, new feature. Better support for containers, wsl, remote labs**
   - [x] Docker devcontainers
   - [x] ssh to any host (no VSCode needed)
   - [x] ssh built into VSCode (SSH - Remote)
-  - [ ] WSL mirrored mode
+  - [x] WSL mirrored mode
   - [x] WSL NAT mode
 
  Testing:
-
  - [ ] All of the above
  - [ ] Test with all gdb-servers
  - [ ] C++ Testing
