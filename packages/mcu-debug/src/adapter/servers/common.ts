@@ -2,6 +2,7 @@ import { Event } from "@vscode/debugadapter";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { EventEmitter } from "events";
 import { TcpPortScanner } from "@mcu-debug/shared";
+import type { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import * as childProcess from "child_process";
 import * as fs from "fs";
 import * as os from "os";
@@ -304,6 +305,11 @@ export class TcpPortDef {
     ) { }
 }
 
+export interface SerialConfig {
+    enabled: boolean;
+    ports: SerialParams[];
+}
+
 export type TcpPortDefMap = { [name: string]: TcpPortDef };
 export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArguments {
     name: string;
@@ -343,6 +349,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     rttConfig: RTTConfiguration;
     pvtRttConfig: RTTConfiguration;
     swoConfig: SWOConfiguration;
+    serialConfigs: SerialConfig[];
     liveWatch: LiveWatchConfig;
     hostConfig?: HostConfig;
     graphConfig: any[];

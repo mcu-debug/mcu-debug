@@ -17,9 +17,14 @@ use clap::{Parser, Subcommand};
 
 use mcu_debug_helper::da_helper::run::DaHelperArgs;
 use mcu_debug_helper::proxy_helper::run::ProxyArgs;
+use mcu_debug_helper::serial::run_serial::SerialArgs;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "MCU Debug Helper — ELF analysis and remote probe agent")]
+#[command(
+    author,
+    version,
+    about = "MCU Debug Helper — ELF analysis and remote probe agent"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -34,6 +39,10 @@ enum Commands {
     /// Probe Agent: remote gdb-server orchestration via the Funnel Protocol
     #[command(name = "proxy")]
     Proxy(ProxyArgs),
+
+    /// Serial communication helper
+    #[command(name = "serial")]
+    Serial(SerialArgs),
 }
 
 fn main() -> Result<()> {
@@ -42,5 +51,6 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::DaHelper(args) => mcu_debug_helper::da_helper::run::run(args),
         Commands::Proxy(args) => mcu_debug_helper::proxy_helper::run::run(args),
+        Commands::Serial(args) => mcu_debug_helper::serial::run_serial::run_serial(args),
     }
 }

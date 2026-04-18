@@ -1,4 +1,5 @@
 const { type } = require("node:os");
+const path = require("node:path");
 
 module.exports = {
     servertype: {
@@ -483,6 +484,80 @@ module.exports = {
         default: {
             enabled: true,
             type: "auto",
+        },
+    },
+    serialConfig: {
+        enabled: {
+            type: "boolean",
+            default: false,
+            description: "Enable/Disable serial port bridging. When enabled, the extension creates TCP bridges to physical serial ports for easy access to serial output from the target device.",
+        },
+        ports: {
+            type: "array",
+            description: "List of serial port bridges to expose as TCP ports. Each entry maps a physical serial device to a TCP port that can be connected to for bidirectional communication.",
+            items: {
+                type: "object",
+                required: ["path"],
+                properties: {
+                    path: {
+                        type: "string",
+                        description: "Serial device path. E.g. /dev/ttyUSB0, /dev/tty.usbserial-*, COM3.",
+                    },
+                    /*
+                    // User is not allowed to set the TCP port because it may conflict with other services. Instead,
+                    // the extension will automatically assign a free port and report it back on stdout when the
+                    // server starts.
+                    tcp_port: {
+                        type: "number",
+                        multipleOf: 1,
+                        minimum: 0,
+                        maximum: 65535,
+                        default: 0,
+                        description: "TCP port the bridge listens on. 0 = OS-assigned (reported back on stdout).",
+                    },
+                    */
+                    baud_rate: {
+                        type: "number",
+                        multipleOf: 1,
+                        minimum: 300,
+                        default: 115200,
+                        description: "Baud rate in bits per second.",
+                    },
+                    data_bits: {
+                        type: "number",
+                        enum: [5, 6, 7, 8],
+                        default: 8,
+                        description: "Number of data bits per frame.",
+                    },
+                    stop_bits: {
+                        type: "string",
+                        enum: ["one", "one_point_five", "two"],
+                        default: "one",
+                        description: "Number of stop bits.",
+                    },
+                    parity: {
+                        type: "string",
+                        enum: ["none", "odd", "even"],
+                        default: "none",
+                        description: "Parity checking mode.",
+                    },
+                    flow_control: {
+                        type: "string",
+                        enum: ["none", "software", "hardware"],
+                        default: "none",
+                        description: 'Flow control mode. "software" = XON/XOFF, "hardware" = RTS/CTS.',
+                    },
+                },
+            },
+        },
+        default: {
+            enabled: true,
+            ports: [
+                {
+                    path: "/dev/ttyUSB0 (or COM3 on Windows)",
+                    baud_rate: 115200,
+                },
+            ],
         },
     },
     rttConfig: {

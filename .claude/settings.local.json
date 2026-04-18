@@ -8,7 +8,8 @@
       "Bash(cargo run:*)",
       "Bash(cargo check:*)",
       "Bash(bash scripts/build-binaries.sh prod)",
-      "Bash(wait)"
+      "Bash(wait)",
+      "WebSearch"
     ]
   }
 }
