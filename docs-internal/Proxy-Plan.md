@@ -38,7 +38,6 @@ The engineer's source code and toolchain live inside WSL, a Dev Container, or on
 │  └─────────────────────────────────────────────────────────────┘
 └─────────────────────────────────────────────────────────────────┘
 ```
-
 The DA reaches the Probe Agent via `127.0.0.1` (for WSL Mirrored / local), `host.docker.internal` (Docker), or equivalent. No significant network boundary — both sides are on the same physical machine. This is the `type: "auto"` case.
 
 ---
@@ -66,7 +65,6 @@ The probe and target hardware are on a **physically separate machine** — a lab
 │  USB Probe ──────────────────────────────────► Target Hardware   │
 └──────────────────────────────────────────────────────────────────┘
 ```
-
 ### One-time SSH key setup (Engineer Machine)
 
 Do this once on your machine. Skip if you already have an SSH key pair.
@@ -122,7 +120,7 @@ Host lab-server
   IdentityFile ~/.ssh/id_ed25519
 ```
 
-Verify: `ssh lab-docker` (or `ssh lab-server`) should drop you into a shell with no password prompt.
+Verify: `ssh lab-docker` (or `ssh lab-server`) should drop you into a shell with no password prompt. `ssh -T lab-server` is a good way to test connectivity - it should succeed with no errors and no prompting for password.
 
 The DA connects through the SSH tunnel to `127.0.0.1:<localPort>` — it is completely unaware it is talking across a continent. GDB uses `target remote 127.0.0.1:<ghost_port>` — same story. The Funnel Protocol carries all GDB RSP bytes through the single tunnel connection.
 
@@ -190,29 +188,25 @@ Whoever starts the Probe Agent decides the token and passes it as `--token <valu
 
 ### Token modes
 
-| How agent is started                                | Token source                                                                              | Agent behavior                                                                                      |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Extension-launched (per-session or VS Code session) | Extension generates `crypto.randomBytes(16).toString('hex')`, passes as `--token <value>` | Validates token on every `initialize` from the DA                                                   |
-| Manually launched, explicit token                   | User passes `--token mytoken`                                                             | Validates token; ~~writes value to `~/.mcu-debug/agent.token` for the extension to read~~           |
-| ~~Manually launched, no flag                        | Agent generates a random token, writes to stdout as part of json output itself            | Validates token; ~~writes generated value to `~/.mcu-debug/agent.token` for the extension to read~~ |
-| Manually launched, `--no-token`                     | User explicitly opts out                                                                  | Skips token validation entirely; extension connects without a token                                 |
+| How agent is started                                | Token source                                                                              | Agent behavior                                                                                                       |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Extension-launched (per-session or VS Code session) | Extension generates `crypto.randomBytes(16).toString('hex')`, passes as `--token <value>` | Validates token on every `initialize` from the DA                                                                    |
+| Manually launched, explicit token                   | User passes `--token mytoken`                                                             | Validates token; person who started the daemon is responsible for communicating it to users via `hostConfig.token`   |
+| Manually launched, no `--token` flag                | Well-known default token (built into both agent and extension)                            | Validates token; extension uses the same default automatically — no configuration needed for zero-config shared labs |
+| Manually launched, `--no-token`                     | No token (planned for removal — no known use case once default token covers zero-config)  | Skips token validation entirely                                                                                      |
 
-Issue: Writing to ~/.mcu-debug/agent.token may not work because the home directories may be in different OS instances and may not be a shared directory. For all such instances the launch.json contains a token override.
-
-The **token file** (`~/.mcu-debug/agent.token`) is the handshake mechanism for daemon mode. The extension reads it via direct file read (`auto`) or `ssh cat ~/.mcu-debug/agent.token` (`ssh` type) after the agent is confirmed running. This requires no out-of-band communication and no user configuration in the common case.
 
 ### Token as a `hostConfig` override
 
-The `token` field in `hostConfig` follows the same override pattern as `serverpath`, `gdbPath`, etc. — the extension has a sensible automatic behavior (read the token file for daemon mode, generate one for extension-launched mode), and `token` lets the user override that when they have a reason to:
+The `token` field in `hostConfig` is only needed in daemon mode when the daemon was started with an explicit `--token` value. The extension has sensible automatic behavior for all other cases: it generates a random token for extension-launched mode, and uses the well-known default token when none is specified:
 
 ```jsonc
 // Most users never set this.
-// Useful when the daemon token is fixed by lab policy and
-// reading the token file via SSH is not practical.
+// Required only in daemon mode when the daemon was started with an explicit --token value.
 "hostConfig": {
     "type": "ssh",
     "sshHost": "user@lab-server",
-    "token": "mytoken"   // overrides auto-read from ~/.mcu-debug/agent.token
+    "token": "mytoken"  // Must match --token used when starting the daemon
 }
 ```
 
@@ -257,9 +251,9 @@ Only two user-facing types. Everything else is an implementation detail.
         // to them in gdb-server config/options in a similar way
         "syncFiles": ["*.cfg", "board/*.cfg"],
 
-        // Optional: override the token the extension would otherwise auto-manage.
-        // For daemon mode when the token file is not accessible or a fixed
-        // lab-policy token is preferred. Do NOT commit this to source control.
+        // Optional: only set in daemon mode when the daemon was started with an explicit --token.
+        // If omitted, the well-known default token is used automatically.
+        // Do NOT commit this to source control.
         "token": "mytoken"
     }
 }
@@ -312,7 +306,7 @@ WSL Mirrored networking makes the WSL guest share the Windows loopback, so the P
 networkingMode=mirrored
 ```
 
-Then restart WSL (`wsl --shutdown`). VS Code automatically detects mirrored mode and uses `127.0.0.1` as the Probe Agent host.
+Then restart WSL (`wsl --shutdown`). VS Code automatically detects mirrored mode and uses `127.0.0.1` as the Probe Agent host. To verify after restarting wsl Terminal, run `wslinfo --networking-mode`
 
 **Option B — Fixed port with an explicit firewall rule (locked-down environments)**
 
@@ -355,7 +349,7 @@ This is the LAB scenario (Topology B above). The Probe Agent runs on the **Lab S
 9. **Debug session runs** — GDB talks to `127.0.0.1:<ghost_port>` on Engineer Machine; tunnel carries bytes to gdb-server on Lab Server
 10. **Cleanup:** Tear down SSH tunnel; Probe Agent exits (kills gdb-server if still running); staging dir cleaned up
 
-**Daemon alternative:** If the Probe Agent is already running on the lab server (manually or via a system service), skip steps 1–6. The UI extension reads `~/.mcu-debug/agent.token` from the lab server via `ssh cat` to get the token (or uses the `hostConfig.token` override if set), then connects directly to the known port. This is the preferred model for shared lab infrastructure.
+**Daemon alternative:** If the Probe Agent is already running on the lab server (manually or via a system service), skip steps 1–6. The UI extension uses the token from `hostConfig.token` if set, or the well-known default token if not. It connects directly to `sshProxyPort` via an SSH `-L` tunnel. This is the preferred model for shared lab infrastructure.
 
 ### Starting the Probe Agent manually (daemon mode)
 
@@ -376,10 +370,10 @@ mcu-debug-helper proxy --token my-secret-token
 Prints a single line to stdout and then runs silently:
 
 ```json
-{"status": "ready", "port": 54321, "pid": 9876, "token": "my-secret-token"}
+{"status": "ready", "port": 54321, "pid": 9876}
 ```
 
-Note the `port` value — you'll need it in `hostConfig.sshProxyPort` in `launch.json`.
+Note the `port` value — you'll need it in `hostConfig.sshProxyPort` in `launch.json`. The token is not emitted — whoever started the daemon already knows it (or is using the default).
 
 **Fixed port (easier for persistent lab machines):**
 
@@ -434,7 +428,7 @@ echo $! > ~/.mcu-debug/proxy.pid
 }
 ```
 
-> **Security note:** Do not put `token` in a committed `launch.json`. Use a VS Code user setting or a `.env`-style file excluded from source control, then reference it via a variable substitution or leave it out and rely on the automatic token-file mechanism.
+> **Security note:** Do not put `token` in a committed `launch.json`. Use a VS Code user setting or a `.env`-style file excluded from source control, and reference it via variable substitution. If no `token` is set, the well-known default is used automatically — only set it when the daemon was started with an explicit `--token`.
 
 ### Why `ssh -L` needs no firewall changes
 
@@ -460,7 +454,7 @@ The Probe Agent always prints a single-line Discovery JSON to stdout immediately
 
 No token in the output — the launcher already knows the token because it supplied it as `--token`. The UI extension reads this from the child process stdout (or the SSH session stdout for `ssh` type) and stores `{port}` in memory. The token was already known before the agent started.
 
-For daemon mode (agent started without `--token` or with `--token <value>`), the agent writes the token to `~/.mcu-debug/agent.token` on the Probe Host. The extension retrieves it via direct file read (`auto`) or `ssh cat ~/.mcu-debug/agent.token` (`ssh` type) before the first connection.
+For daemon mode: if the agent was started with `--token <value>`, the user must set the matching `hostConfig.token` in `launch.json` — if they don't, the extension will use the default token and the `initialize` handshake will fail with a clear token-mismatch error. If no `--token` was passed, both sides use the well-known default and no configuration is needed.
 
 All subsequent debug sessions in the same VS Code session reuse the same endpoint (for `auto`).
 
@@ -497,11 +491,11 @@ loop {
 
 The DA receives all connection info as private fields injected by the UI extension via the frontend (which has VS Code APIs). These are never set by the user:
 
-| Field           | Set by   | Meaning                                                                                                                       |
-| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `pvtProxyHost`  | Frontend | Resolved host string for DA to connect to                                                                                     |
-| `pvtProxyPort`  | Frontend | Proxy port (from Discovery JSON for extension-launched; configured port for daemon) or being used as ssh local port           |
-| `pvtProxyToken` | Frontend | Token — generated by extension (extension-launched), read from token file (daemon), or taken from `hostConfig.token` override |
+| Field           | Set by   | Meaning                                                                                                                                                       |
+| --------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pvtProxyHost`  | Frontend | Resolved host string for DA to connect to                                                                                                                     |
+| `pvtProxyPort`  | Frontend | Proxy port (from Discovery JSON for extension-launched; configured port for daemon) or being used as ssh local port                                           |
+| `pvtProxyToken` | Frontend | Token — generated by extension (extension-launched), `hostConfig.token` if set (daemon with explicit token), or well-known default (daemon with no `--token`) |
 
 ---
 
