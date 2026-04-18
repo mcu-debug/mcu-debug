@@ -36,6 +36,7 @@ packages/*/out/
 packages/*/dist/
 packages/*/target/
 packages/*/node_modules/
+packages/shared/lib/
 packages/mcu-debug/bin/
 packages/mcu-debug-proxy/bin/
 

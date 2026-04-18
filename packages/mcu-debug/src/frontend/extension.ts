@@ -831,6 +831,9 @@ export async function activate(context: vscode.ExtensionContext) {
         const packageJson = context.extension.packageJSON;
         const version = packageJson.version || "unknown";
         MCUDebugChannel.debugMessage(`Starting mcu-debug extension. Version = ${version}, Path = ${context.extensionPath}, PID=${process.pid}`);
+        MCUDebugChannel.debugMessage(`Workspace location type: ${vscode.env.remoteName ? vscode.env.remoteName : "local"}`);
+        MCUDebugChannel.debugMessage(`Extension startup workspace: ${vscode.workspace.name}, folders:\n  ${vscode.workspace.workspaceFolders?.map((f) => f.name).join(",\n  ")}`);
+        MCUDebugChannel.debugMessage(`Workspace URI:\n  ${vscode.workspace.workspaceFolders?.map((f) => f.uri.toString()).join(",\n  ")}`);
     } catch (_e) {
         /* empty */
     }

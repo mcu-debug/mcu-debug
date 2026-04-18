@@ -5,13 +5,15 @@ const dependencies = Object.keys(pkg.dependencies || {});
 const peerDependencies = Object.keys(pkg.peerDependencies || {});
 const external = [...dependencies, ...peerDependencies];
 
+const production = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
 
 const commonOptions = {
     entryPoints: ["src/index.ts"],
     bundle: true,
-    minify: true,
+    minify: production,
     sourcemap: true,
+    sourcesContent: true,
     external,
     logLevel: "info",
 };
