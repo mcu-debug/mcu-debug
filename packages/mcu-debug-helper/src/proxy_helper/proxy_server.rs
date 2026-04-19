@@ -32,8 +32,12 @@ use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::serial::bridge::TcpBridge;
+use crate::serial::port::{PortHandle, SerialParams};
+use crate::serial::AvailablePort;
 
 pub const CURRENT_VERSION: &str = "1.0.3";
 static STREAM_MUTEX: Mutex<()> = Mutex::new(()); // Global mutex to synchronize access to the main stream for sending responses/events
@@ -234,6 +238,22 @@ pub enum ControlRequest {
         relative_path: String,
         content: Vec<u8>,
     },
+
+    /** Open (or reconfigure) a serial port and start a TCP bridge for `direct` transport */
+    #[serde(rename = "serial.open")]
+    SerialOpen { params: SerialParams },
+
+    /** Close a previously opened serial port and stop its TCP bridge */
+    #[serde(rename = "serial.close")]
+    SerialClose { path: String },
+
+    /** List all currently open serial ports and their current config */
+    #[serde(rename = "serial.listOpen")]
+    SerialListOpen,
+
+    /** List all serial ports visible on this machine */
+    #[serde(rename = "serial.listAvailable")]
+    SerialListAvailable,
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
@@ -272,6 +292,14 @@ pub enum StreamStatus {
     TimedOut,
 }
 
+/// One entry in a `serial.listOpen` response.
+#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
+pub struct SerialPortInfo {
+    pub params: SerialParams,
+    pub tcp_port: u16,
+}
+
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "proxy-protocol/")]
 pub enum ControlResponseData {
@@ -294,6 +322,22 @@ pub enum ControlResponseData {
     /** Heartbeat response: Acknowledgment of heartbeat */
     #[serde(rename = "heartbeat")]
     Heartbeat,
+
+    /** SerialOpen response: path and the TCP port the bridge is listening on */
+    #[serde(rename = "serial.open")]
+    SerialOpen { path: String, tcp_port: u16 },
+
+    /** SerialClose response: just an ack (success=true is sufficient) */
+    #[serde(rename = "serial.close")]
+    SerialClose,
+
+    /** SerialListOpen response: one entry per open port */
+    #[serde(rename = "serial.listOpen")]
+    SerialListOpen { ports: Vec<SerialPortInfo> },
+
+    /** SerialListAvailable response: available hardware ports */
+    #[serde(rename = "serial.listAvailable")]
+    SerialListAvailable { ports: Vec<AvailablePort> },
 }
 
 impl ControlResponse {
@@ -370,6 +414,12 @@ pub struct PortInfoListner {
     listener: Option<TcpListener>, // Will be Some if the port is currently allocated and connected
 }
 
+/// Registry of open serial ports for this proxy instance.
+/// Keyed by port path (e.g. `/dev/ttyUSB0` or `COM3`).
+/// Both `PortHandle` and its associated `TcpBridge` live here for the duration
+/// the port is open. Dropping the entry closes both.
+pub type SerialPortRegistry = Arc<Mutex<HashMap<String, (Arc<PortHandle>, TcpBridge)>>>;
+
 pub struct ProxyServer {
     args: ProxyArgs,
     stream: TcpStream,
@@ -391,6 +441,7 @@ pub struct ProxyServer {
 
     session_port_wait_mode: PortWaitMode,
     monitor_stop_tx: Option<Sender<()>>,
+    serial_registry: SerialPortRegistry,
 }
 
 impl Drop for ProxyServer {
@@ -403,7 +454,7 @@ impl Drop for ProxyServer {
 }
 
 impl ProxyServer {
-    pub fn new(args: ProxyArgs, stream: TcpStream) -> Self {
+    pub fn new(args: ProxyArgs, stream: TcpStream, serial_registry: SerialPortRegistry) -> Self {
         let (event_tx, event_rx) = channel();
         let session_port_wait_mode = args.port_wait_mode.clone();
 
@@ -420,6 +471,7 @@ impl ProxyServer {
             server_cwd: String::new(),
             session_port_wait_mode,
             monitor_stop_tx: None,
+            serial_registry,
         }
     }
 
@@ -733,6 +785,18 @@ impl ProxyServer {
             }
             ControlRequest::SyncFile { .. } => {
                 self.handle_sync_file(&msg);
+            }
+            ControlRequest::SerialOpen { params } => {
+                self.handle_serial_open(msg.seq, params);
+            }
+            ControlRequest::SerialClose { path } => {
+                self.handle_serial_close(msg.seq, &path.clone());
+            }
+            ControlRequest::SerialListOpen => {
+                self.handle_serial_list_open(msg.seq);
+            }
+            ControlRequest::SerialListAvailable => {
+                self.handle_serial_list_available(msg.seq);
             }
         }
     }
@@ -1154,6 +1218,99 @@ impl ProxyServer {
         Err(anyhow!("Timeout waiting for port {}", port))
     }
 
+    // ── Serial handlers ───────────────────────────────────────────────────────
+
+    /// `serial.open` — open a port (or reconfigure it if already open) and
+    /// start/continue a TCP bridge. Idempotent: safe to call twice with the
+    /// same or different params.
+    fn handle_serial_open(&mut self, seq: u64, params: SerialParams) {
+        let path = params.path.clone();
+        let bind_addr = "127.0.0.1".to_string();
+
+        let result: anyhow::Result<u16> = (|| {
+            let mut reg = self.serial_registry.lock().unwrap();
+            if let Some((handle, bridge)) = reg.get(&path) {
+                // Already open — reconfigure in place; bridge keeps the same tcp_port.
+                handle.reconfigure(&params)?;
+                Ok(bridge.tcp_port)
+            } else {
+                // New port — open handle, then start bridge on an OS-assigned port.
+                let handle = Arc::new(PortHandle::open(params)?);
+                let bridge = TcpBridge::start(&bind_addr, 0, Arc::clone(&handle))?;
+                let tcp_port = bridge.tcp_port;
+                reg.insert(path.clone(), (handle, bridge));
+                Ok(tcp_port)
+            }
+        })();
+
+        match result {
+            Ok(tcp_port) => {
+                let data = ControlResponseData::SerialOpen { path, tcp_port };
+                ControlResponse::success(seq, Some(data))
+                    .send(&mut self.stream)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to send serial.open response: {}", e);
+                    });
+            }
+            Err(e) => {
+                ControlResponse::error(seq, format!("serial.open failed: {e}"))
+                    .send(&mut self.stream)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to send serial.open error: {}", e);
+                    });
+            }
+        }
+    }
+
+    /// `serial.close` — close a previously opened serial port.
+    fn handle_serial_close(&mut self, seq: u64, path: &str) {
+        let removed = self.serial_registry.lock().unwrap().remove(path).is_some();
+        // Dropping the (PortHandle, TcpBridge) pair stops the bridge and closes the fd.
+        if removed {
+            ControlResponse::success(seq, Some(ControlResponseData::SerialClose))
+                .send(&mut self.stream)
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to send serial.close response: {}", e);
+                });
+        } else {
+            ControlResponse::error(seq, format!("serial.close: '{}' is not open", path))
+                .send(&mut self.stream)
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to send serial.close error: {}", e);
+                });
+        }
+    }
+
+    /// `serial.listOpen` — return current config + tcp_port for every open port.
+    fn handle_serial_list_open(&mut self, seq: u64) {
+        let reg = self.serial_registry.lock().unwrap();
+        let ports: Vec<SerialPortInfo> = reg
+            .values()
+            .map(|(handle, bridge)| SerialPortInfo {
+                params: handle.params.lock().unwrap().clone(),
+                tcp_port: bridge.tcp_port,
+            })
+            .collect();
+        drop(reg);
+        let data = ControlResponseData::SerialListOpen { ports };
+        ControlResponse::success(seq, Some(data))
+            .send(&mut self.stream)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to send serial.listOpen response: {}", e);
+            });
+    }
+
+    /// `serial.listAvailable` — enumerate physical ports on this machine.
+    fn handle_serial_list_available(&mut self, seq: u64) {
+        let ports: Vec<AvailablePort> = crate::serial::list_available();
+        let data = ControlResponseData::SerialListAvailable { ports };
+        ControlResponse::success(seq, Some(data))
+            .send(&mut self.stream)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to send serial.listAvailable response: {}", e);
+            });
+    }
+
     fn handle_sync_file(&mut self, msg: &ControlMessage) {
         if let ControlRequest::SyncFile {
             relative_path,
@@ -1264,6 +1421,7 @@ fn create_parent_dirs(file_path_str: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serial::port::{FlowControl, Parity, StopBits};
     use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
     use std::thread;
     use ts_rs::{Config, TS};
@@ -1283,6 +1441,13 @@ mod tests {
         PortReserved::export(&config).unwrap();
         PortSet::export(&config).unwrap();
         JsonValue::export(&config).unwrap();
+        SerialPortInfo::export(&config).unwrap();
+        // Serial types (exported to serial-helper/)
+        SerialParams::export(&config).unwrap();
+        StopBits::export(&config).unwrap();
+        Parity::export(&config).unwrap();
+        FlowControl::export(&config).unwrap();
+        AvailablePort::export(&config).unwrap();
     }
 
     static TEST_MUTEX: Mutex<()> = Mutex::new(()); // Don't really need a mutex for this simple test, but is there in case the tests get more complex in the future and need to synchronize access to the stream

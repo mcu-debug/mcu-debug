@@ -26,6 +26,8 @@ pub mod enumerate_windows;
 /// Uniform representation of an available serial port returned by all
 /// platform-specific enumerators. `description` is informational only —
 /// never used as an identity key. Port paths are the stable key.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "serial-helper/")]
 pub struct AvailablePort {
     pub path: String,
     pub description: String,

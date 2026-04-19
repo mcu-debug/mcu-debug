@@ -3,34 +3,20 @@ import type { FlowControl } from "./FlowControl";
 import type { Parity } from "./Parity";
 import type { StopBits } from "./StopBits";
 
+/**
+ * Parameters to open or reconfigure a serial port.
+ *
+ * All fields except `path` have defaults (115200 8N1 no flow control), so
+ * a `serial.open` request only needs to supply `path`. On `serial.listOpen`
+ * responses all fields are always present.
+ */
 export type SerialParams = {
-    /**
-     * Serial device path. Required. E.g. `/dev/ttyUSB0`, `/dev/tty.usbserial-*`, `COM3`.
-     */
     path: string;
-    /**
-     * TCP port the bridge listens on. 0 = OS-assigned (reported back on stdout). Default: 0.
-     */
-    tcp_port: number;
-    /**
-     * Baud rate in bits per second. Default: 115200.
-     */
     baud_rate: number;
-    /**
-     * Number of data bits per frame (5–8). Default: 8.
-     */
     data_bits: number;
-    /**
-     * Number of stop bits. "one" | "one_point_five" | "two". Default: "one".
-     */
     stop_bits: StopBits;
-    /**
-     * Parity checking. "none" | "odd" | "even". Default: "none".
-     */
     parity: Parity;
-    /**
-     * Flow control mode. "none" | "software" (XON/XOFF) | "hardware" (RTS/CTS). Default: "none".
-     */
     flow_control: FlowControl;
-    decoders: any;
+    tcp_port?: number;
+    decoders?: any;
 };

@@ -22,7 +22,7 @@ Critical path: **4 → 6 → 7 → 8 → 11**. Everything else can parallelize a
 
 ## Phase 3 — Rust helper: control channel
 
-- [ ] **8.** Extend proxy control-channel dispatcher with `serial.open`, `serial.close`, `serial.list_open`, `serial.list_available` handlers. Idempotent `serial.open` (reconfigure in place if already open).
+- [x] **8.** Extend proxy control-channel dispatcher with `serial.open`, `serial.close`, `serial.list_open`, `serial.list_available` handlers. Idempotent `serial.open` (reconfigure in place if already open).
 - [ ] **9.** Async event emission — `serial.event` with `port_error` / `port_closed` / `port_alive`. Reader-thread errors fire `port_error` then close the bridge. `port_alive` every ~30s per open port.
 - [ ] **10.** Funnel transport for serial — reuse existing funnel channel code path; route serial bytes through a new `channel_id` kind.
 

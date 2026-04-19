@@ -30,13 +30,13 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Once,
+        mpsc, Arc, Mutex, Once,
     },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::proxy_helper::proxy_server::ProxyServer;
+use crate::proxy_helper::proxy_server::{ProxyServer, SerialPortRegistry};
 
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "proxy-protocol/")]
@@ -277,6 +277,11 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     // For cleanup later
     let mut client_threads = Vec::new();
 
+    // Serial ports outlive individual ProxyServer connections — the registry lives
+    // here in the accept loop and is cloned (Arc) into each connection's ProxyServer.
+    let serial_registry: SerialPortRegistry =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+
     // Accept connection and run Funnel Protocol handler in a new thread
     // We generally don't have multiple clients when running inside a VSCode extension,
     // but we have a use case in multi-core debugging where each core needs its own proxy instance,
@@ -304,8 +309,9 @@ pub fn run(args: ProxyArgs) -> Result<()> {
                     no_token: args.no_token,
                     heartbeat: false, // watchdog already running on main thread; no second instance
                 };
+                let registry_clone = Arc::clone(&serial_registry);
                 let handle = thread::spawn(move || {
-                    let mut new_client = ProxyServer::new(args_clone, stream);
+                    let mut new_client = ProxyServer::new(args_clone, stream, registry_clone);
                     new_client.message_loop().unwrap_or_else(|e| {
                         log::error!("Error in client message loop: {}", e);
                     });

@@ -57,8 +57,9 @@ use crate::serial::ring::RingBuffer;
 // ── Serial parameter types ────────────────────────────────────────────────────
 
 /// Stop-bit count — mirrors `serialport::StopBits` but is JSON-serializable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "serial-helper/")]
 pub enum StopBits {
     One,
     /// Note: the `serialport` crate has no 1.5 stop bits; falls back to `One`.
@@ -67,8 +68,9 @@ pub enum StopBits {
 }
 
 /// Parity mode — mirrors `serialport::Parity` but is JSON-serializable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "serial-helper/")]
 pub enum Parity {
     None,
     Odd,
@@ -76,8 +78,9 @@ pub enum Parity {
 }
 
 /// Flow control mode — mirrors `serialport::FlowControl` but is JSON-serializable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "serial-helper/")]
 pub enum FlowControl {
     None,
     Software,
@@ -117,14 +120,40 @@ impl From<FlowControl> for serialport::FlowControl {
 // ── SerialParams ─────────────────────────────────────────────────────────────
 
 /// Parameters to open or reconfigure a serial port.
-#[derive(Debug, Clone)]
+///
+/// All fields except `path` have defaults (115200 8N1 no flow control), so
+/// a `serial.open` request only needs to supply `path`. On `serial.listOpen`
+/// responses all fields are always present.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "serial-helper/")]
 pub struct SerialParams {
     pub path: String,
+    #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
+    #[serde(default = "default_data_bits")]
     pub data_bits: u8,
+    #[serde(default = "default_stop_bits")]
     pub stop_bits: StopBits,
+    #[serde(default = "default_parity")]
     pub parity: Parity,
+    #[serde(default = "default_flow_control")]
     pub flow_control: FlowControl,
+}
+
+fn default_baud_rate() -> u32 {
+    115200
+}
+fn default_data_bits() -> u8 {
+    8
+}
+fn default_stop_bits() -> StopBits {
+    StopBits::One
+}
+fn default_parity() -> Parity {
+    Parity::None
+}
+fn default_flow_control() -> FlowControl {
+    FlowControl::None
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -189,6 +218,8 @@ struct Shared {
 /// releasing the serial file descriptor cleanly.
 pub struct PortHandle {
     pub path: String,
+    /// The parameters this port was last opened/reconfigured with.
+    pub params: Mutex<SerialParams>,
     /// Clone kept for in-place reconfigure. Shares the fd with the reader thread.
     config_port: Mutex<Box<dyn serialport::SerialPort>>,
     shared: Arc<Shared>,
@@ -228,7 +259,8 @@ impl PortHandle {
         );
 
         Ok(PortHandle {
-            path: params.path,
+            path: params.path.clone(),
+            params: Mutex::new(params.clone()),
             config_port: Mutex::new(config_port),
             shared,
             shutdown,
@@ -244,7 +276,9 @@ impl PortHandle {
     pub fn reconfigure(&self, params: &SerialParams) -> Result<()> {
         let mut port = self.config_port.lock().unwrap();
         apply_params(&mut port, params)
-            .with_context(|| format!("reconfigure failed for '{}'", self.path))
+            .with_context(|| format!("reconfigure failed for '{}'", self.path))?;
+        *self.params.lock().unwrap() = params.clone();
+        Ok(())
     }
 
     /// Allocate a fresh client ID. The caller passes this to [`attach_client`]
