@@ -16,9 +16,58 @@
 //! which wraps IOKit (always present, no extra dependencies).
 
 use super::AvailablePort;
+use serialport::SerialPortType;
 
 /// Enumerate available serial ports using the macOS IOKit APIs.
 pub fn list() -> Vec<AvailablePort> {
-    // TODO: implement (uart-implementation-plan.md Step 5)
-    Vec::new()
+    match serialport::available_ports() {
+        Err(_) => Vec::new(),
+        Ok(ports) => ports
+            .into_iter()
+            .map(|info| {
+                let (description, vid, pid) = match info.port_type {
+                    SerialPortType::UsbPort(usb) => {
+                        let desc = [usb.manufacturer.as_deref(), usb.product.as_deref()]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .trim()
+                            .to_string();
+                        (desc, Some(usb.vid), Some(usb.pid))
+                    }
+                    SerialPortType::BluetoothPort => ("Bluetooth".to_string(), None, None),
+                    SerialPortType::PciPort => ("PCI".to_string(), None, None),
+                    SerialPortType::Unknown => (String::new(), None, None),
+                };
+                AvailablePort {
+                    path: info.port_name,
+                    description,
+                    vid,
+                    pid,
+                }
+            })
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Visual smoke test — prints whatever IOKit reports on this machine.
+    /// Run with: cargo test enumerate_macos::tests::list_available_ports -- --nocapture
+    #[test]
+    fn list_available_ports() {
+        let ports = list();
+        println!("\n--- macOS serial ports ({} found) ---", ports.len());
+        for p in &ports {
+            println!(
+                "  path={:?}  desc={:?}  vid={:?}  pid={:?}",
+                p.path, p.description, p.vid, p.pid
+            );
+        }
+        // Not asserting anything specific — this is a hardware-dependent visual check.
+        println!("---");
+    }
 }

@@ -16,16 +16,131 @@
 //!
 //! Does **not** use libudev. Filters phantom `ttyS*` entries (driver-declared
 //! but no real hardware) by checking that the device chains back to a real bus
-//! (USB, PCI, platform). USB devices are annotated with VID/PID/manufacturer/
-//! product from sysfs ancestry.
+//! (USB, PCI, or platform). USB devices are annotated with VID/PID and
+//! manufacturer/product strings read from sysfs ancestry.
 //!
 //! See `uart-management.md §4` ("Linux sysfs walker algorithm") for the full
 //! algorithm description.
 
 use super::AvailablePort;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Walk `/sys/class/tty/`, filter phantoms, and return real serial ports.
 pub fn list() -> Vec<AvailablePort> {
-    // TODO: implement sysfs walk (uart-implementation-plan.md Step 5)
-    Vec::new()
+    let mut result = Vec::new();
+    let tty_dir = Path::new("/sys/class/tty");
+    let entries = match fs::read_dir(tty_dir) {
+        Ok(e) => e,
+        Err(_) => return result,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let tty_path = tty_dir.join(&name);
+
+        // 1. Every real tty device has a `device` symlink. Phantoms, consoles,
+        //    and pseudo-terminals do not.
+        let device_link = tty_path.join("device");
+        if !device_link.exists() {
+            continue;
+        }
+
+        // 2. Resolve the symlink and check that it chains back to a real bus.
+        let resolved = match fs::canonicalize(&device_link) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if !chains_to_real_bus(&resolved) {
+            continue;
+        }
+
+        // 3. Build AvailablePort — attempt USB ancestry for description/VID/PID.
+        let (description, vid, pid) = usb_info(&resolved)
+            .map(|(d, v, p)| (d, Some(v), Some(p)))
+            .unwrap_or_else(|| (driver_name(&resolved), None, None));
+
+        result.push(AvailablePort {
+            path: format!("/dev/{}", name_str),
+            description,
+            vid,
+            pid,
+        });
+    }
+    result
+}
+
+/// Return `true` if `device_path` (a resolved sysfs device node) chains back
+/// to a USB, PCI, or platform bus that implies real hardware.
+///
+/// The path typically looks like:
+///   `/sys/devices/pci0000:00/.../.../ttyUSB0`  (USB)
+///   `/sys/devices/platform/.../.../ttyAMA0`    (platform UART on SBC)
+///   `/sys/devices/pci.../.../.../ttyS0`         (real PCI UART)
+///
+/// Phantoms (serial8250 with no real resources) have a path that contains
+/// `serial8250` without any real bus prefix — we exclude those.
+fn chains_to_real_bus(device_path: &Path) -> bool {
+    let s = device_path.to_string_lossy();
+    // Reject pure serial8250 phantom entries (no USB/PCI ancestry).
+    if s.contains("serial8250") && !s.contains("/usb") && !s.contains("/pci") {
+        return false;
+    }
+    // Accept anything that resolves to a real bus subtree.
+    s.contains("/usb") || s.contains("/pci") || s.contains("/platform")
+}
+
+/// Walk up the sysfs ancestry from `device_path` to find a USB device node,
+/// then read VID, PID, manufacturer, and product from it.
+///
+/// Returns `(description, vid, pid)` if a USB ancestor is found, `None` otherwise.
+fn usb_info(device_path: &Path) -> Option<(String, u16, u16)> {
+    // Walk up the directory tree looking for `idVendor` / `idProduct` files,
+    // which appear at the USB device node (one level above the interface node).
+    let mut path: PathBuf = device_path.to_path_buf();
+    loop {
+        let vid_path = path.join("idVendor");
+        let pid_path = path.join("idProduct");
+        if vid_path.exists() && pid_path.exists() {
+            let vid = read_hex_u16(&vid_path)?;
+            let pid = read_hex_u16(&pid_path)?;
+            let manufacturer = read_trimmed(&path.join("manufacturer"));
+            let product = read_trimmed(&path.join("product"));
+            let description = [manufacturer.as_deref(), product.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim()
+                .to_string();
+            return Some((description, vid, pid));
+        }
+        // Move one level up; stop at the sysfs root.
+        if !path.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// Read the driver name from `<device>/driver` symlink as a fallback description
+/// for non-USB ports (PCI, platform).
+fn driver_name(device_path: &Path) -> String {
+    let driver_link = device_path.join("driver");
+    fs::read_link(&driver_link)
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
+
+fn read_hex_u16(path: &Path) -> Option<u16> {
+    let s = fs::read_to_string(path).ok()?;
+    u16::from_str_radix(s.trim(), 16).ok()
+}
+
+fn read_trimmed(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
