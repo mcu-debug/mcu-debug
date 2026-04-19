@@ -9,8 +9,8 @@ Critical path: **4 → 6 → 7 → 8 → 11**. Everything else can parallelize a
 ## Phase 1 — Rust helper: unify under `proxy`
 
 - [ ] **1.** Delete `serial` subcommand wiring. Remove the CLI arg and dispatch in `main.rs`. Keep `src/serial/run_serial.rs` on disk as a reference during rewrite; delete at end of Phase 2.
-- [ ] **2.** Add `serialport` crate with `default-features = false` to `packages/mcu-debug-helper/Cargo.toml`. Verify Linux build has no libudev dependency (`ldd` the binary, or `cargo tree -e no-dev | grep -i udev`).
-- [ ] **3.** Create `src/serial/` module skeleton: `mod.rs`, `port.rs`, `ring.rs`, `enumerate_linux.rs`, `enumerate_windows.rs`, `enumerate_macos.rs`. Empty stubs + `cfg(target_os)` gating.
+- [x] **2.** Add `serialport` crate with `default-features = false` to `packages/mcu-debug-helper/Cargo.toml`. Verify Linux build has no libudev dependency (`ldd` the binary, or `cargo tree -e no-dev | grep -i udev`).
+- [ ] **3.** Create `src/serial/` module skeleton: `mod.rs`, `port.rs`, `ring.rs`, `enumerate_linux.rs`, `enumerate_windows.rs`, `enumerate_macos.rs`. Empty stubs + `cfg(target_os)` gating. We can reuse some of the code in `run_serial.rs` but it needs to be refactored where appropriate.
 
 ## Phase 2 — Rust helper: serial port manager
 
