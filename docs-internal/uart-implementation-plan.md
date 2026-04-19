@@ -17,8 +17,8 @@ Critical path: **4 → 6 → 7 → 8 → 11**. Everything else can parallelize a
 - [x] **4.** Ring buffer (`ring.rs`) — bounded, thread-safe, `push(bytes)` + `snapshot()` for flush-on-connect. Unit tests for wrap behavior, snapshot correctness, concurrent push/snapshot.
 - [x] **5.** Port enumeration — Linux sysfs walker (phantom filter, USB VID/PID via ancestry walk), wrap `serialport::available_ports()` on Win/macOS. Return uniform `AvailablePort { path, description, vid, pid }`. Unit test on Linux against a fixture sysfs tree.
 - [x] **6.** Per-port handle (`port.rs`) — owns the serial fd, always-on reader thread, ring buffer, optional log-file writer. API: `open()`, `reconfigure()`, `attach_client(writer)` / `detach`, `close()`. In-place reconfigure via `serialport::reconfigure()`, client simply makes a new request and we do the right thing for that - reconfigure if an existing port we are already serving.
-- [ ] **7.** TCP bridge for `direct` transport — listener per port, on accept: flush ring snapshot first, then stream live. Explicitly **not** the old "open-inside-accept-loop" pattern.
-- [ ] **8b.** Delete `src/serial/run_serial.rs` once parity is reached.
+- [x] **7a.** TCP bridge for `direct` transport — listener per port, on accept: flush ring snapshot first, then stream live. Explicitly **not** the old "open-inside-accept-loop" pattern.
+- [x] **7b.** Delete `src/serial/run_serial.rs` once parity is reached and remove references to run_serial even in comments
 
 ## Phase 3 — Rust helper: control channel
 

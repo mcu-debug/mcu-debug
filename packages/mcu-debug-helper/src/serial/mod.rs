@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Kept as a reference during the refactor; see uart-implementation-plan.md §1.
-// Will be deleted at end of Phase 2 once feature parity is reached.
-pub mod run_serial;
-
+pub mod bridge;
 pub mod port;
 pub mod ring;
 

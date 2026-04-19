@@ -135,7 +135,6 @@ if [[ "$mode" == "dev" ]]; then
   echo "Generating TypeScript exports..."
   cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
   cargo test --lib proxy_server::tests::ensure_ts_exports --quiet 2>/dev/null || true
-  cargo test --lib serial::run_serial::tests::ensure_ts_exports --quiet 2>/dev/null || true
   format_ts_exports
 
   target=$(native_rust_target)
@@ -209,7 +208,6 @@ if [[ "$mode" == "prod" ]]; then
   echo "Generating TypeScript exports..."
   cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
   cargo test --lib proxy_server::tests::ensure_ts_exports --quiet 2>/dev/null || true
-  cargo test --lib serial::run_serial::tests::ensure_ts_exports --quiet 2>/dev/null || true
   format_ts_exports
 
   # platform|target_triple|exe_ext

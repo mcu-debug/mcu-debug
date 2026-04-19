@@ -53,17 +53,72 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 
 use crate::serial::ring::RingBuffer;
-use crate::serial::run_serial::{FlowControl, Parity, StopBits};
 
-// ── OpenParams ───────────────────────────────────────────────────────────────
+// ── Serial parameter types ────────────────────────────────────────────────────
+
+/// Stop-bit count — mirrors `serialport::StopBits` but is JSON-serializable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopBits {
+    One,
+    /// Note: the `serialport` crate has no 1.5 stop bits; falls back to `One`.
+    OnePointFive,
+    Two,
+}
+
+/// Parity mode — mirrors `serialport::Parity` but is JSON-serializable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Parity {
+    None,
+    Odd,
+    Even,
+}
+
+/// Flow control mode — mirrors `serialport::FlowControl` but is JSON-serializable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowControl {
+    None,
+    Software,
+    Hardware,
+}
+
+impl From<StopBits> for serialport::StopBits {
+    fn from(s: StopBits) -> Self {
+        match s {
+            StopBits::One => serialport::StopBits::One,
+            StopBits::OnePointFive => serialport::StopBits::One,
+            StopBits::Two => serialport::StopBits::Two,
+        }
+    }
+}
+
+impl From<Parity> for serialport::Parity {
+    fn from(p: Parity) -> Self {
+        match p {
+            Parity::None => serialport::Parity::None,
+            Parity::Odd => serialport::Parity::Odd,
+            Parity::Even => serialport::Parity::Even,
+        }
+    }
+}
+
+impl From<FlowControl> for serialport::FlowControl {
+    fn from(f: FlowControl) -> Self {
+        match f {
+            FlowControl::None => serialport::FlowControl::None,
+            FlowControl::Software => serialport::FlowControl::Software,
+            FlowControl::Hardware => serialport::FlowControl::Hardware,
+        }
+    }
+}
+
+// ── SerialParams ─────────────────────────────────────────────────────────────
 
 /// Parameters to open or reconfigure a serial port.
-///
-/// Reuses [`StopBits`], [`Parity`], and [`FlowControl`] from `run_serial`
-/// (they carry the `From` impls into `serialport` types). These will move to
-/// a shared location when `run_serial.rs` is deleted in Step 8b.
 #[derive(Debug, Clone)]
-pub struct OpenParams {
+pub struct SerialParams {
     pub path: String,
     pub baud_rate: u32,
     pub data_bits: u8,
@@ -85,7 +140,7 @@ fn data_bits_to_serial(n: u8) -> serialport::DataBits {
 
 /// Open a serial port with the given parameters and read timeout.
 fn open_port(
-    params: &OpenParams,
+    params: &SerialParams,
     read_timeout: Duration,
 ) -> Result<Box<dyn serialport::SerialPort>> {
     serialport::new(&params.path, params.baud_rate)
@@ -99,7 +154,7 @@ fn open_port(
 }
 
 /// Apply all reconfigurable settings to an already-open serial port.
-fn apply_params(port: &mut Box<dyn serialport::SerialPort>, params: &OpenParams) -> Result<()> {
+fn apply_params(port: &mut Box<dyn serialport::SerialPort>, params: &SerialParams) -> Result<()> {
     port.set_baud_rate(params.baud_rate)
         .context("set_baud_rate")?;
     port.set_data_bits(data_bits_to_serial(params.data_bits))
@@ -148,7 +203,7 @@ impl PortHandle {
     /// Returns `Err` if the device cannot be opened (not found, permission
     /// denied, bad params). The error is suitable for returning directly as a
     /// `serial.open` response error.
-    pub fn open(params: OpenParams) -> Result<Self> {
+    pub fn open(params: SerialParams) -> Result<Self> {
         // Short read timeout so the reader thread can notice the shutdown flag
         // promptly even when no serial data is arriving.
         let read_timeout = Duration::from_millis(100);
@@ -186,7 +241,7 @@ impl PortHandle {
     ///
     /// The new settings take effect on the reader thread's very next read because
     /// both `config_port` and the reader's clone share the same underlying fd.
-    pub fn reconfigure(&self, params: &OpenParams) -> Result<()> {
+    pub fn reconfigure(&self, params: &SerialParams) -> Result<()> {
         let mut port = self.config_port.lock().unwrap();
         apply_params(&mut port, params)
             .with_context(|| format!("reconfigure failed for '{}'", self.path))
@@ -200,8 +255,8 @@ impl PortHandle {
 
     /// Register `writer` to receive live serial bytes going forward.
     ///
-    /// Call [`snapshot`] first to get buffered history, write it to the
-    /// same destination, then call this to start receiving live data.
+    /// Call [`PortHandle::snapshot`] first to get buffered history, write it
+    /// to the same destination, then call this to start receiving live data.
     /// See the module-level note about the acceptable race window.
     pub fn attach_client(&self, id: u64, writer: Box<dyn Write + Send>) {
         self.shared.clients.lock().unwrap().insert(id, writer);
@@ -220,6 +275,18 @@ impl PortHandle {
     /// Call this before [`attach_client`] to implement late-attach catch-up.
     pub fn snapshot(&self) -> Vec<u8> {
         self.shared.ring.snapshot()
+    }
+
+    /// Write bytes from a TCP client into the serial port (TCP → serial direction).
+    ///
+    /// Uses `config_port`, which shares the fd with the reader thread's clone.
+    /// Multiple callers are safe because `config_port` is behind a `Mutex`.
+    pub fn write_to_port(&self, bytes: &[u8]) -> Result<()> {
+        self.config_port
+            .lock()
+            .unwrap()
+            .write_all(bytes)
+            .with_context(|| format!("write to serial port '{}' failed", self.path))
     }
 
     /// Stop the reader thread and release the serial device.
