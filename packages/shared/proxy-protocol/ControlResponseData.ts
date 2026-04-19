@@ -11,8 +11,27 @@ export type ControlResponseData =
     | { startGdbServer: { pid: number } }
     | { streamStatus: { stream_id: number; status: StreamStatus; msg_seq: number } }
     | "heartbeat"
-    | { "serial.open": { path: string; tcp_port: number } }
+    | {
+          "serial.open": {
+              path: string;
+              /**
+               * TCP port the direct bridge listens on (`transport == "direct"`).
+               */
+              tcp_port: number | null;
+              /**
+               * Funnel stream ID (`transport == "funnel"`).
+               */
+              channel_id: number | null;
+          };
+      }
     | "serial.close"
     | { "serial.listOpen": { ports: Array<SerialPortInfo> } }
     | { "serial.listAvailable": { ports: Array<AvailablePort> } }
-    | { "serial.isOpen": { open: boolean; tcp_port: number | null; params: SerialParams | null } };
+    | {
+          "serial.isOpen": {
+              open: boolean;
+              tcp_port: number | null;
+              channel_id: number | null;
+              params: SerialParams | null;
+          };
+      };

@@ -70,7 +70,7 @@ export type ControlRequest =
     | { method: "duplicateStream"; params: { stream_id: number } }
     | { method: "heartbeat" }
     | { method: "syncFile"; params: { relative_path: string; content: Array<number> } }
-    | { method: "serial.open"; params: { params: SerialParams } }
+    | { method: "serial.open"; params: SerialParams }
     | { method: "serial.close"; params: { path: string } }
     | { method: "serial.listOpen" }
     | { method: "serial.listAvailable" }

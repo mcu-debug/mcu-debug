@@ -274,14 +274,23 @@ If live updates become a real demand later, netlink uevent on Linux (no libudev)
 ### Responses (server → client)
 
 ```jsonc
-// Success
+// Success — direct transport
 {
   "id": 42,
   "result": {
     "path": "/dev/ttyUSB0",
     "transport": "direct",
-    "tcp_port": 54321                   // if transport == "direct"
-    // "channel_id": "ser-usb0-1"       // if transport == "funnel"
+    "tcp_port": 54321                   // client opens a new TCP connection to host:tcp_port
+  }
+}
+
+// Success — funnel transport
+{
+  "id": 42,
+  "result": {
+    "path": "/dev/ttyUSB0",
+    "transport": "funnel",
+    "channel_id": 4                     // u8 stream ID; client sends/receives on this ID within the existing Funnel connection
   }
 }
 
@@ -336,14 +345,48 @@ One event type for v1 — errors only. `port_closed` and `port_alive` are intent
 
 ## 5. Data Transport: Direct vs Funnel
 
-**Client must specify explicitly** in every `serial.open` request. Implicit detection is not possible — the server has no way to know what sits between itself and the end consumer (direct TCP? NAT? container? SSH tunnel?).
+**Client must specify `transport` explicitly in every `serial.open` request.** The server cannot infer it — it has no visibility into what sits between itself and the eventual consumer (direct network path? NAT? container network? SSH tunnel?).
 
-| Transport | Use case                                                                                     | Handle returned                                                                                     |
-| --------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `direct`  | Client can reach the server's listening host/port directly                                   | `tcp_port` — client connects to `host:tcp_port`                                                     |
-| `funnel`  | Client reaches the server only via an existing proxy connection (NAT, container, SSH tunnel) | `channel_id` — bytes tunnel through the proxy control connection using the existing funnel protocol |
+| Transport | When to use                                                                                                                                     | What the server returns                                                           |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `direct`  | Client can reach the proxy's listen host:port over TCP (same machine, WSL mirrored-mode, or SSH -L tunnel already set up by the UI extension)   | `tcp_port` — client opens a new TCP connection to `host:tcp_port`                 |
+| `funnel`  | Client reaches the proxy only via the existing control connection (WSL NAT-mode, Dev Container, LAB topology where SSH tunnel is the sole path) | `channel_id` — a stream ID in the existing Funnel Protocol multiplexed connection |
 
-The client library (Node/TS) presents both as the same `Stream` abstraction so the extension code is transport-agnostic after the initial `open` response.
+### How `direct` works (server side)
+
+The server allocates a `TcpBridge` (already implemented in Step 7a): binds a `TcpListener` on an OS-assigned port, accepts one connection, sends the ring snapshot, then forwards bytes bidirectionally between that TCP socket and the `PortHandle`. The response carries the `tcp_port`; the client opens a plain TCP socket to it.
+
+### How `funnel` works (server side)
+
+The existing Funnel Protocol multiplexes multiple logical streams over a single TCP connection using 5-byte framing `[stream_id u8 | payload_len u32-LE | payload]` (see [Proxy-Plan.md §Funnel Protocol](Proxy-Plan.md)). Stream IDs 0–2 are reserved (control/stdout/stderr); IDs 3+ are data channels.
+
+For a serial `funnel` open:
+1. Server allocates an unused stream ID from the dynamic range (same pool the existing `allocatePorts` + `startStream` path uses for GDB channels).
+2. Server registers a writer for that stream ID against the `PortHandle` (via `attach_client`) — bytes from the serial port are forwarded as Funnel frames with that stream ID on the existing control connection.
+3. Server also sets up the reverse path: bytes received on that stream ID from the client are written back to the serial port via `PortHandle::write_to_port`.
+4. Response carries `channel_id: u8` (the allocated stream ID). Client sends/receives on that stream ID within the existing connection — no new TCP socket needed.
+
+### How `funnel` works (proxy-client / TS side)
+
+The TS proxy-client already knows how to demultiplex the Funnel stream (it does this for GDB RSP today). For a serial channel:
+- It registers the `channel_id` as a new stream.
+- It exposes that stream as a Node.js `Duplex` / `Stream` — the same interface as a TCP socket.
+- The extension code consuming the serial data never knows a funnel is in play. It just gets a stream.
+
+This is explicitly the "transparent tube" property the Funnel Protocol was designed for.
+
+### Client library contract
+
+The TS client library presents both transports through a single `SerialStream` abstraction:
+
+```typescript
+// Both resolve to the same interface regardless of transport:
+const stream = await serialClient.open({ path: '/dev/ttyUSB0', transport: 'direct', ... });
+const stream = await serialClient.open({ path: '/dev/ttyUSB0', transport: 'funnel', ... });
+// stream.read / stream.write / stream.on('data') / stream.on('close') — same API either way
+```
+
+The extension code that drives the xterm.js tab, the log-file writer, and the AI tee all bind to this `SerialStream` interface and are fully transport-agnostic.
 
 ---
 

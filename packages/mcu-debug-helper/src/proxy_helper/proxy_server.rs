@@ -36,7 +36,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::serial::bridge::TcpBridge;
-use crate::serial::port::{PortErrorEvent, PortHandle, SerialErrorKind, SerialParams};
+use crate::serial::port::{
+    PortErrorEvent, PortHandle, SerialErrorKind, SerialParams, SerialTransport,
+};
 use crate::serial::AvailablePort;
 
 pub const CURRENT_VERSION: &str = "1.0.3";
@@ -242,9 +244,10 @@ pub enum ControlRequest {
         content: Vec<u8>,
     },
 
-    /** Open (or reconfigure) a serial port and start a TCP bridge for `direct` transport */
+    /** Open (or reconfigure) a serial port. The `transport` field in `SerialParams`
+     *  selects `direct` (TCP bridge) or `funnel` (multiplexed on this connection). */
     #[serde(rename = "serial.open")]
-    SerialOpen { params: SerialParams },
+    SerialOpen(SerialParams),
 
     /** Close a previously opened serial port and stop its TCP bridge */
     #[serde(rename = "serial.close")]
@@ -304,8 +307,14 @@ pub enum StreamStatus {
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "proxy-protocol/")]
 pub struct SerialPortInfo {
+    /// Current configuration (includes the `transport` field).
     pub params: SerialParams,
-    pub tcp_port: u16,
+    /// TCP port the direct bridge is listening on (`transport == "direct"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_port: Option<u16>,
+    /// Funnel stream ID assigned to this port (`transport == "funnel"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
@@ -331,9 +340,17 @@ pub enum ControlResponseData {
     #[serde(rename = "heartbeat")]
     Heartbeat,
 
-    /** SerialOpen response: path and the TCP port the bridge is listening on */
+    /** SerialOpen response: path and the transport-specific connection info */
     #[serde(rename = "serial.open")]
-    SerialOpen { path: String, tcp_port: u16 },
+    SerialOpen {
+        path: String,
+        /// TCP port the direct bridge listens on (`transport == "direct"`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tcp_port: Option<u16>,
+        /// Funnel stream ID (`transport == "funnel"`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        channel_id: Option<u8>,
+    },
 
     /** SerialClose response: just an ack (success=true is sufficient) */
     #[serde(rename = "serial.close")]
@@ -353,6 +370,8 @@ pub enum ControlResponseData {
         open: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         tcp_port: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        channel_id: Option<u8>,
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<SerialParams>,
     },
@@ -441,11 +460,38 @@ pub struct PortInfoListner {
     listener: Option<TcpListener>, // Will be Some if the port is currently allocated and connected
 }
 
+/// A [`Write`] implementation that frames serial bytes as Funnel protocol packets
+/// on the existing proxy control connection, enabling serial-port forwarding without
+/// a separate TCP listener or bridge.
+struct FunnelWriter {
+    stream_id: u8,
+    stream: TcpStream,
+}
+
+impl Write for FunnelWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        send_to_stream(self.stream_id, &mut self.stream, buf)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+/// How a serial port's data is exposed to the client.
+pub enum SerialPortBacking {
+    /// A separate TCP listener; client connects to the returned `tcp_port`.
+    Direct(TcpBridge),
+    /// Bytes are framed in the Funnel protocol on the existing control connection.
+    /// `stream_id` is the allocated dynamic stream ID (channel_id returned to client).
+    Funnel { stream_id: u8 },
+}
+
 /// Registry of open serial ports for this proxy instance.
 /// Keyed by port path (e.g. `/dev/ttyUSB0` or `COM3`).
-/// Both `PortHandle` and its associated `TcpBridge` live here for the duration
-/// the port is open. Dropping the entry closes both.
-pub type SerialPortRegistry = Arc<Mutex<HashMap<String, (Arc<PortHandle>, TcpBridge)>>>;
+/// Both `PortHandle` and its `SerialPortBacking` live here for the duration
+/// the port is open. Dropping the entry closes the port and its transport.
+pub type SerialPortRegistry = Arc<Mutex<HashMap<String, (Arc<PortHandle>, SerialPortBacking)>>>;
 
 pub struct ProxyServer {
     args: ProxyArgs,
@@ -469,6 +515,10 @@ pub struct ProxyServer {
     session_port_wait_mode: PortWaitMode,
     monitor_stop_tx: Option<Sender<()>>,
     serial_registry: SerialPortRegistry,
+    /// Stream-ID → (port_handle, client_id, path) for serial funnel channels.
+    /// Provides O(1) routing of inbound Funnel frames to the correct serial port
+    /// without acquiring the registry lock on every byte.
+    serial_funnel_write: HashMap<u8, (Arc<PortHandle>, u64, String)>,
 }
 
 impl Drop for ProxyServer {
@@ -499,6 +549,7 @@ impl ProxyServer {
             session_port_wait_mode,
             monitor_stop_tx: None,
             serial_registry,
+            serial_funnel_write: HashMap::new(),
         }
     }
 
@@ -596,31 +647,44 @@ impl ProxyServer {
                                     }
                                 }
                             } else {
-                                // Forward to the appropriate connected stream
-                                match self.streams.get_mut(&stream_id) {
-                                    Some(pinfo) => {
-                                        if let Some(stream) = &mut pinfo.stream {
-                                            if let Err(e) = stream.write_all(&msg) {
+                                // Non-zero stream ID: check serial funnel channels first.
+                                if let Some((handle, _, _)) =
+                                    self.serial_funnel_write.get(&stream_id)
+                                {
+                                    // Route incoming bytes from client to the serial port.
+                                    if let Err(e) = handle.write_to_port(&msg) {
+                                        eprintln!(
+                                            "Serial funnel write to port failed for stream {}: {}",
+                                            stream_id, e
+                                        );
+                                    }
+                                } else {
+                                    // Forward to the appropriate connected stream
+                                    match self.streams.get_mut(&stream_id) {
+                                        Some(pinfo) => {
+                                            if let Some(stream) = &mut pinfo.stream {
+                                                if let Err(e) = stream.write_all(&msg) {
+                                                    eprintln!(
+                                                        "Stream {} write failed: {}",
+                                                        stream_id, e
+                                                    );
+                                                    // TODO: remove the stream, notify the DA
+                                                }
+                                            } else {
                                                 eprintln!(
-                                                    "Stream {} write failed: {}",
-                                                    stream_id, e
+                                                    "Stream {} is not currently connected",
+                                                    stream_id
                                                 );
-                                                // TODO: remove the stream, notify the DA
                                             }
-                                        } else {
+                                        }
+                                        None => {
                                             eprintln!(
-                                                "Stream {} is not currently connected",
+                                                "Received message for unknown stream ID: {}",
                                                 stream_id
                                             );
                                         }
                                     }
-                                    None => {
-                                        eprintln!(
-                                            "Received message for unknown stream ID: {}",
-                                            stream_id
-                                        );
-                                    }
-                                }
+                                } // end serial_funnel_write else
                             }
                             all_bytes.drain(..msg_len);
                             content_length = None;
@@ -719,9 +783,13 @@ impl ProxyServer {
                     let _ = event.send(&mut self.stream);
                 }
                 ProxyEvent::SerialPortError(err) => {
-                    // Port died — remove from registry (drops the bridge and fd),
+                    // Port died — remove from registry (drops the backing and fd),
                     // then notify the client so it can update its UI.
-                    self.serial_registry.lock().unwrap().remove(&err.path);
+                    let removed = self.serial_registry.lock().unwrap().remove(&err.path);
+                    // If the port was using funnel transport, clean up the routing map.
+                    if let Some((_, SerialPortBacking::Funnel { stream_id })) = removed {
+                        self.serial_funnel_write.remove(&stream_id);
+                    }
                     let event = ProxyServerEvents::SerialPortError {
                         path: err.path,
                         kind: err.kind,
@@ -824,7 +892,7 @@ impl ProxyServer {
             ControlRequest::SyncFile { .. } => {
                 self.handle_sync_file(&msg);
             }
-            ControlRequest::SerialOpen { params } => {
+            ControlRequest::SerialOpen(params) => {
                 self.handle_serial_open(msg.seq, params);
             }
             ControlRequest::SerialClose { path } => {
@@ -1261,31 +1329,84 @@ impl ProxyServer {
 
     // ── Serial handlers ───────────────────────────────────────────────────────
 
-    /// `serial.open` — open a port (or reconfigure it if already open) and
-    /// start/continue a TCP bridge. Idempotent: safe to call twice with the
-    /// same or different params.
+    /// `serial.open` — open a port (or reconfigure it if already open) and start
+    /// a transport channel. Idempotent per transport type. Returns an error if the
+    /// port is already open with a *different* transport (close it first).
     fn handle_serial_open(&mut self, seq: u64, params: SerialParams) {
         let path = params.path.clone();
-        let bind_addr = "127.0.0.1".to_string();
 
-        let result: anyhow::Result<u16> = (|| {
+        // Phase 1 (under registry lock): decide what to do and capture a PortHandle.
+        // Direct-transport success is fully resolved here. Funnel returns a handle
+        // so phase 2 can allocate the channel outside the lock (it writes to self.stream).
+        enum Phase1Result {
+            DirectReady(u16),
+            FunnelHandle(Arc<PortHandle>),
+            Error(anyhow::Error),
+        }
+
+        let phase1: Phase1Result = (|| {
             let mut reg = self.serial_registry.lock().unwrap();
-            if let Some((handle, bridge)) = reg.get(&path) {
-                // Already open — reconfigure in place; bridge keeps the same tcp_port.
-                handle.reconfigure(&params)?;
-                Ok(bridge.tcp_port)
+            if let Some((handle, backing)) = reg.get(&path) {
+                // Port already open — check transport consistency.
+                match (&params.transport, backing) {
+                    (SerialTransport::Direct, SerialPortBacking::Direct(bridge)) => {
+                        if let Err(e) = handle.reconfigure(&params) {
+                            return Phase1Result::Error(e);
+                        }
+                        Phase1Result::DirectReady(bridge.tcp_port)
+                    }
+                    (SerialTransport::Funnel, SerialPortBacking::Funnel { .. }) => {
+                        if let Err(e) = handle.reconfigure(&params) {
+                            return Phase1Result::Error(e);
+                        }
+                        // Allocate a new funnel channel (e.g. client reconnect).
+                        Phase1Result::FunnelHandle(Arc::clone(handle))
+                    }
+                    _ => Phase1Result::Error(anyhow::anyhow!(
+                        "port '{}' is already open with a different transport; close it first",
+                        path
+                    )),
+                }
             } else {
-                // New port — open handle, then start bridge on an OS-assigned port.
-                let handle = Arc::new(PortHandle::open(params)?);
-                let bridge = TcpBridge::start(&bind_addr, 0, Arc::clone(&handle))?;
-                let tcp_port = bridge.tcp_port;
-                reg.insert(path.clone(), (handle, bridge));
-                Ok(tcp_port)
+                // New port — open the serial device.
+                let new_handle = match PortHandle::open(params.clone()) {
+                    Ok(h) => Arc::new(h),
+                    Err(e) => return Phase1Result::Error(e),
+                };
+                match params.transport {
+                    SerialTransport::Direct => {
+                        let bridge = match TcpBridge::start("127.0.0.1", 0, Arc::clone(&new_handle))
+                        {
+                            Ok(b) => b,
+                            Err(e) => return Phase1Result::Error(e),
+                        };
+                        let tcp_port = bridge.tcp_port;
+                        reg.insert(
+                            path.clone(),
+                            (new_handle, SerialPortBacking::Direct(bridge)),
+                        );
+                        Phase1Result::DirectReady(tcp_port)
+                    }
+                    SerialTransport::Funnel => {
+                        // Registry insertion happens in alloc_funnel_channel after
+                        // successful allocation, so there is no placeholder to clean up
+                        // on error.
+                        Phase1Result::FunnelHandle(new_handle)
+                    }
+                }
             }
         })();
 
-        // Subscribe this session to fatal port errors so the client is notified
-        // if the device is unplugged after a successful open.
+        // Phase 2: for funnel, allocate the channel outside the registry lock.
+        let result: anyhow::Result<(Option<u16>, Option<u8>)> = match phase1 {
+            Phase1Result::DirectReady(tcp_port) => Ok((Some(tcp_port), None)),
+            Phase1Result::FunnelHandle(handle) => self
+                .alloc_funnel_channel(&path, &handle)
+                .map(|cid| (None, Some(cid))),
+            Phase1Result::Error(e) => Err(e),
+        };
+
+        // Subscribe to fatal port errors (dead senders are pruned automatically).
         if result.is_ok() {
             let (err_tx, err_rx) = std::sync::mpsc::channel::<PortErrorEvent>();
             {
@@ -1298,15 +1419,19 @@ impl ProxyServer {
             std::thread::spawn(move || {
                 while let Ok(e) = err_rx.recv() {
                     if proxy_tx.send(ProxyEvent::SerialPortError(e)).is_err() {
-                        break; // ProxyServer session ended; stop bridging.
+                        break;
                     }
                 }
             });
         }
 
         match result {
-            Ok(tcp_port) => {
-                let data = ControlResponseData::SerialOpen { path, tcp_port };
+            Ok((tcp_port, channel_id)) => {
+                let data = ControlResponseData::SerialOpen {
+                    path,
+                    tcp_port,
+                    channel_id,
+                };
                 ControlResponse::success(seq, Some(data))
                     .send(&mut self.stream)
                     .unwrap_or_else(|e| {
@@ -1323,11 +1448,76 @@ impl ProxyServer {
         }
     }
 
+    /// Allocate a Funnel stream ID, send the ring snapshot for late-attach catch-up,
+    /// attach a [`FunnelWriter`] to the port handle, register the inbound routing
+    /// entry, and update (or insert) the registry backing.
+    ///
+    /// Caller **must not** hold the registry lock — this method takes the lock
+    /// itself to update the backing, and also writes to `self.stream`.
+    fn alloc_funnel_channel(&mut self, path: &str, handle: &Arc<PortHandle>) -> anyhow::Result<u8> {
+        let channel_id = self.next_stream_id;
+        self.next_stream_id += 1;
+
+        // Late-attach catch-up: send ring snapshot as funnel frames.
+        let snapshot = handle.snapshot();
+        if !snapshot.is_empty() {
+            send_to_stream(channel_id, &mut self.stream, &snapshot)
+                .map_err(|e| anyhow::anyhow!("funnel snapshot send failed: {e}"))?;
+        }
+
+        // Attach a FunnelWriter for the serial→client direction.
+        let client_id = handle.next_client_id();
+        let funnel_stream = self
+            .stream
+            .try_clone()
+            .map_err(|e| anyhow::anyhow!("failed to clone control stream for funnel: {e}"))?;
+        handle.attach_client(
+            client_id,
+            Box::new(FunnelWriter {
+                stream_id: channel_id,
+                stream: funnel_stream,
+            }),
+        );
+
+        // Register the client→serial routing entry for inbound funnel frames.
+        self.serial_funnel_write.insert(
+            channel_id,
+            (Arc::clone(handle), client_id, path.to_string()),
+        );
+
+        // Update (or insert) the registry entry with the confirmed stream_id.
+        self.serial_registry
+            .lock()
+            .unwrap()
+            .entry(path.to_string())
+            .and_modify(|(_, b)| {
+                *b = SerialPortBacking::Funnel {
+                    stream_id: channel_id,
+                }
+            })
+            .or_insert_with(|| {
+                (
+                    Arc::clone(handle),
+                    SerialPortBacking::Funnel {
+                        stream_id: channel_id,
+                    },
+                )
+            });
+
+        Ok(channel_id)
+    }
+
     /// `serial.close` — close a previously opened serial port.
     fn handle_serial_close(&mut self, seq: u64, path: &str) {
-        let removed = self.serial_registry.lock().unwrap().remove(path).is_some();
-        // Dropping the (PortHandle, TcpBridge) pair stops the bridge and closes the fd.
-        if removed {
+        let removed = self.serial_registry.lock().unwrap().remove(path);
+        if let Some((handle, backing)) = removed {
+            // If funnel transport, detach the client writer and remove the routing entry.
+            if let SerialPortBacking::Funnel { stream_id } = backing {
+                if let Some((_, client_id, _)) = self.serial_funnel_write.remove(&stream_id) {
+                    handle.detach_client(client_id);
+                }
+            }
+            // For Direct, TcpBridge::drop handles the TCP listener and attached clients.
             ControlResponse::success(seq, Some(ControlResponseData::SerialClose))
                 .send(&mut self.stream)
                 .unwrap_or_else(|e| {
@@ -1342,14 +1532,21 @@ impl ProxyServer {
         }
     }
 
-    /// `serial.listOpen` — return current config + tcp_port for every open port.
+    /// `serial.listOpen` — return current config + transport info for every open port.
     fn handle_serial_list_open(&mut self, seq: u64) {
         let reg = self.serial_registry.lock().unwrap();
         let ports: Vec<SerialPortInfo> = reg
             .values()
-            .map(|(handle, bridge)| SerialPortInfo {
-                params: handle.params.lock().unwrap().clone(),
-                tcp_port: bridge.tcp_port,
+            .map(|(handle, backing)| {
+                let (tcp_port, channel_id) = match backing {
+                    SerialPortBacking::Direct(bridge) => (Some(bridge.tcp_port), None),
+                    SerialPortBacking::Funnel { stream_id } => (None, Some(*stream_id)),
+                };
+                SerialPortInfo {
+                    params: handle.params.lock().unwrap().clone(),
+                    tcp_port,
+                    channel_id,
+                }
             })
             .collect();
         drop(reg);
@@ -1375,16 +1572,21 @@ impl ProxyServer {
     /// `serial.isOpen` — pull-based status probe for a single port.
     fn handle_serial_is_open(&mut self, seq: u64, path: &str) {
         let reg = self.serial_registry.lock().unwrap();
-        let (open, tcp_port, params) = if let Some((handle, bridge)) = reg.get(path) {
+        let (open, tcp_port, channel_id, params) = if let Some((handle, backing)) = reg.get(path) {
             let p = handle.params.lock().unwrap().clone();
-            (true, Some(bridge.tcp_port), Some(p))
+            let (tcp_port, channel_id) = match backing {
+                SerialPortBacking::Direct(bridge) => (Some(bridge.tcp_port), None),
+                SerialPortBacking::Funnel { stream_id } => (None, Some(*stream_id)),
+            };
+            (true, tcp_port, channel_id, Some(p))
         } else {
-            (false, None, None)
+            (false, None, None, None)
         };
         drop(reg);
         let data = ControlResponseData::SerialIsOpen {
             open,
             tcp_port,
+            channel_id,
             params,
         };
         ControlResponse::success(seq, Some(data))
@@ -1504,7 +1706,7 @@ fn create_parent_dirs(file_path_str: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serial::port::{FlowControl, Parity, SerialErrorKind, StopBits};
+    use crate::serial::port::{FlowControl, Parity, SerialErrorKind, SerialTransport, StopBits};
     use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
     use std::thread;
     use ts_rs::{Config, TS};
@@ -1530,6 +1732,7 @@ mod tests {
         StopBits::export(&config).unwrap();
         Parity::export(&config).unwrap();
         FlowControl::export(&config).unwrap();
+        SerialTransport::export(&config).unwrap();
         AvailablePort::export(&config).unwrap();
         SerialErrorKind::export(&config).unwrap();
     }

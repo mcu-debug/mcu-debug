@@ -149,6 +149,27 @@ impl From<FlowControl> for serialport::FlowControl {
     }
 }
 
+/// Transport channel the client uses to receive serial bytes.
+///
+/// Supplied in `serial.open` requests. Returned in `serial.listOpen` and
+/// `serial.isOpen` responses to describe how the port is currently connected.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "serial-helper/")]
+pub enum SerialTransport {
+    /// Server opens a TCP listener; client connects to the returned `tcp_port`.
+    Direct,
+    /// Bytes are framed in the Funnel protocol on the existing proxy control
+    /// connection; client demuxes the returned `channel_id` stream.
+    Funnel,
+}
+
+impl Default for SerialTransport {
+    fn default() -> Self {
+        SerialTransport::Direct
+    }
+}
+
 // ── SerialParams ─────────────────────────────────────────────────────────────
 
 /// Parameters to open or reconfigure a serial port.
@@ -170,6 +191,10 @@ pub struct SerialParams {
     pub parity: Parity,
     #[serde(default = "default_flow_control")]
     pub flow_control: FlowControl,
+    /// Transport used to open this port. Defaults to `direct` so that existing
+    /// callers that do not set this field get the original TCP-bridge behaviour.
+    #[serde(default)]
+    pub transport: SerialTransport,
 }
 
 fn default_baud_rate() -> u32 {

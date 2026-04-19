@@ -24,7 +24,12 @@ Critical path: **4 → 6 → 7 → 8 → 11**. Everything else can parallelize a
 
 - [x] **8.** Extend proxy control-channel dispatcher with `serial.open`, `serial.close`, `serial.list_open`, `serial.list_available` handlers. Idempotent `serial.open` (reconfigure in place if already open).
 - [x] **9.** Async event emission (revised). One async event only: `serial.portError` — emitted when the reader thread hits an unrecoverable I/O error (device unplugged, cable fault, etc.). The port is removed from the registry automatically; the TCP bridge closes. `port_closed` dropped (sync response to `serial.close` is sufficient). `port_alive` push dropped — replaced by a new pull-based `serial.isOpen` request (takes a `path`, returns `{ open, tcp_port?, params? }`). Client drives liveness via the existing heartbeat; `serial.isOpen` is for per-port status on demand.
-- [ ] **10.** Funnel transport for serial — reuse existing funnel channel code path; route serial bytes through a new `channel_id` kind.
+- [x] **10a.** Funnel transport for serial (`transport: "funnel"` in `serial.open`).
+  - **Server side (Rust):** When `serial.open` specifies `funnel`, allocate an unused stream ID from the dynamic range (reuse `reserve_free_ports` / stream-ID pool already used for GDB channels). Register a Funnel writer against the `PortHandle` via `attach_client` so serial bytes are forwarded as Funnel frames on the existing control connection. Wire the reverse path: incoming Funnel frames on that stream ID are forwarded to `PortHandle::write_to_port`. Return `{ channel_id }` in the response instead of `{ tcp_port }`. Add `channel_id: Option<u8>` to `ControlResponseData::SerialOpen`.
+  - **Server side — ring catch-up:** On funnel attach, send the ring snapshot as Funnel frames before handing off to live forwarding (mirrors what `TcpBridge` does on TCP accept).
+- [ ] **10b.** Haneld the TS side
+  - **TS proxy-client side:** Register the `channel_id` as a new demux stream in the existing Funnel frame dispatcher (already done for GDB RSP). Expose it as a `Duplex` stream — same interface as the `direct` TCP socket.
+  - **TS client library (`serial.ts`):** `SerialStream` abstraction that wraps either a TCP socket (`direct`) or the Funnel demux stream (`funnel`) behind a uniform `read`/`write`/`close`/event interface. Extension code that drives xterm.js, log file, and AI tee binds to `SerialStream` and is transport-agnostic.
 
 ## Phase 4 — TypeScript extension: client library
 

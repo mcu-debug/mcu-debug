@@ -4,4 +4,17 @@ import type { SerialParams } from "../serial-helper/SerialParams";
 /**
  * One entry in a `serial.listOpen` response.
  */
-export type SerialPortInfo = { params: SerialParams; tcp_port: number };
+export type SerialPortInfo = {
+    /**
+     * Current configuration (includes the `transport` field).
+     */
+    params: SerialParams;
+    /**
+     * TCP port the direct bridge is listening on (`transport == "direct"`).
+     */
+    tcp_port: number | null;
+    /**
+     * Funnel stream ID assigned to this port (`transport == "funnel"`).
+     */
+    channel_id: number | null;
+};
