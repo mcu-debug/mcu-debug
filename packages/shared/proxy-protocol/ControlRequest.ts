@@ -73,4 +73,5 @@ export type ControlRequest =
     | { method: "serial.open"; params: { params: SerialParams } }
     | { method: "serial.close"; params: { path: string } }
     | { method: "serial.listOpen" }
-    | { method: "serial.listAvailable" };
+    | { method: "serial.listAvailable" }
+    | { method: "serial.isOpen"; params: { path: string } };

@@ -43,6 +43,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::mpsc::Sender;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
@@ -53,6 +54,37 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 
 use crate::serial::ring::RingBuffer;
+
+// ── Serial error types ───────────────────────────────────────────────────────
+
+/// Classification of a post-open fatal serial error.
+///
+/// Sent as part of a `serial.portError` async event. Client code branches on
+/// this value; `msg` in [`PortErrorEvent`] is human-readable only.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "serial-helper/")]
+pub enum SerialErrorKind {
+    /// Device was physically removed (USB-serial unplugged, cable pulled).
+    Disconnected,
+    /// Generic I/O failure (hardware error, cable issue).
+    IoError,
+    /// Permission revoked after open (unusual, but possible).
+    PermissionLost,
+    /// Configured read timeout exceeded in a context where it is fatal.
+    Timeout,
+}
+
+/// Payload carried by the reader-thread error channel to interested [`ProxyServer`] sessions.
+///
+/// One of these is sent when the reader thread exits due to an unrecoverable error.
+/// [`ProxyServer`] converts it into a `serial.portError` async event on the control stream.
+#[derive(Debug, Clone)]
+pub struct PortErrorEvent {
+    pub path: String,
+    pub kind: SerialErrorKind,
+    pub msg: String,
+}
 
 // ── Serial parameter types ────────────────────────────────────────────────────
 
@@ -226,6 +258,10 @@ pub struct PortHandle {
     shutdown: Arc<AtomicBool>,
     reader_thread: Mutex<Option<JoinHandle<()>>>,
     next_id: AtomicU64,
+    /// Subscribers notified when the reader thread hits a fatal error.
+    /// Each `ProxyServer` session that opens this port registers a sender here.
+    /// Dead senders (closed receiver) are pruned automatically on the next error.
+    error_subs: Arc<Mutex<Vec<Sender<PortErrorEvent>>>>,
 }
 
 impl PortHandle {
@@ -250,12 +286,14 @@ impl PortHandle {
             clients: Mutex::new(HashMap::new()),
         });
         let shutdown = Arc::new(AtomicBool::new(false));
+        let error_subs: Arc<Mutex<Vec<Sender<PortErrorEvent>>>> = Arc::new(Mutex::new(Vec::new()));
 
         let reader_thread = Self::spawn_reader(
             params.path.clone(),
             reader_port,
             Arc::clone(&shared),
             Arc::clone(&shutdown),
+            Arc::clone(&error_subs),
         );
 
         Ok(PortHandle {
@@ -266,6 +304,7 @@ impl PortHandle {
             shutdown,
             reader_thread: Mutex::new(Some(reader_thread)),
             next_id: AtomicU64::new(1),
+            error_subs,
         })
     }
 
@@ -323,6 +362,15 @@ impl PortHandle {
             .with_context(|| format!("write to serial port '{}' failed", self.path))
     }
 
+    /// Register a sender to receive fatal port errors from the reader thread.
+    ///
+    /// Each [`ProxyServer`] session that opens or adopts this port calls this
+    /// once. When the reader thread hits an unrecoverable error it sends a
+    /// [`PortErrorEvent`] to all registered subscribers and prunes dead ones.
+    pub fn subscribe_errors(&self, tx: Sender<PortErrorEvent>) {
+        self.error_subs.lock().unwrap().push(tx);
+    }
+
     /// Stop the reader thread and release the serial device.
     ///
     /// This is also called automatically on [`Drop`]. Calling `close` explicitly
@@ -342,6 +390,7 @@ impl PortHandle {
         mut reader_port: Box<dyn serialport::SerialPort>,
         shared: Arc<Shared>,
         shutdown: Arc<AtomicBool>,
+        error_subs: Arc<Mutex<Vec<Sender<PortErrorEvent>>>>,
     ) -> JoinHandle<()> {
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
@@ -351,8 +400,16 @@ impl PortHandle {
                 }
                 match reader_port.read(&mut buf) {
                     Ok(0) => {
-                        // EOF — unusual for a serial port; treat as unrecoverable.
+                        // EOF — unusual for a serial port; treat as device removed.
                         log::warn!("[{path}] serial port returned EOF");
+                        notify_error(
+                            &error_subs,
+                            PortErrorEvent {
+                                path: path.clone(),
+                                kind: SerialErrorKind::Disconnected,
+                                msg: "EOF on serial port (device disconnected?)".to_string(),
+                            },
+                        );
                         break;
                     }
                     Ok(n) => {
@@ -376,7 +433,14 @@ impl PortHandle {
                     }
                     Err(e) => {
                         log::warn!("[{path}] serial read error: {e}");
-                        // TODO Step 9: emit `serial.event` port_error to control channel.
+                        notify_error(
+                            &error_subs,
+                            PortErrorEvent {
+                                path: path.clone(),
+                                kind: classify_io_error(&e),
+                                msg: e.to_string(),
+                            },
+                        );
                         break;
                     }
                 }
@@ -385,6 +449,27 @@ impl PortHandle {
             // reader_port drops here → one fd reference released.
         })
     }
+}
+
+// ── reader-thread helpers ────────────────────────────────────────────────────
+
+/// Classify a `std::io::Error` from a serial read into a [`SerialErrorKind`].
+fn classify_io_error(e: &std::io::Error) -> SerialErrorKind {
+    match e.kind() {
+        std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::NotConnected
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted => SerialErrorKind::Disconnected,
+        std::io::ErrorKind::PermissionDenied => SerialErrorKind::PermissionLost,
+        std::io::ErrorKind::TimedOut => SerialErrorKind::Timeout,
+        _ => SerialErrorKind::IoError,
+    }
+}
+
+/// Send `event` to all registered subscribers, pruning any whose channel has closed.
+fn notify_error(subs: &Mutex<Vec<Sender<PortErrorEvent>>>, event: PortErrorEvent) {
+    let mut guard = subs.lock().unwrap();
+    guard.retain(|tx| tx.send(event.clone()).is_ok());
 }
 
 impl Drop for PortHandle {

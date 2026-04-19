@@ -74,4 +74,5 @@ export type ControlMessage = { seq: number } & (
     | { method: "serial.close"; params: { path: string } }
     | { method: "serial.listOpen" }
     | { method: "serial.listAvailable" }
+    | { method: "serial.isOpen"; params: { path: string } }
 );

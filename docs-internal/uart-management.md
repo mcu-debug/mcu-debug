@@ -29,10 +29,10 @@ Without (2), (1) only moves the data-loss point: bytes arrive while no client is
 
 UARTs are **workspace-scoped**, not debug-session-scoped. They can be opened, observed, and reconfigured at any time — including when no debug session is running. A debug session may *reference* pre-configured UARTs (auto-open them on start), but does not *own* them.
 
-| Service type | Lifecycle | Examples |
-|---|---|---|
-| Long-lived services | VS Code session (heartbeat-gated) | **Serial ports / UARTs** |
-| Session-scoped services | Per debug session | gdb-server sessions, RTT, SWO |
+| Service type            | Lifecycle                         | Examples                      |
+| ----------------------- | --------------------------------- | ----------------------------- |
+| Long-lived services     | VS Code session (heartbeat-gated) | **Serial ports / UARTs**      |
+| Session-scoped services | Per debug session                 | gdb-server sessions, RTT, SWO |
 
 Both are managed by the **same** `mcu-debug-helper proxy` server. There is no separate `serial` subcommand — it does not exist and is not being introduced. The proxy is a proxy for debug sessions *and* serial ports. One binary, one subcommand, two service types.
 
@@ -154,6 +154,12 @@ Everything serial-related is additional messages on the **existing per-session c
 // Enumerate available serial ports on the host (path-level, no libudev).
 // Used by the UI to populate the "pick a port" dropdown when adding a new UART.
 { "id": 45, "method": "serial.list_available" }
+
+// Query whether a specific port is currently open and get its status.
+// Pull-based alternative to a server-push liveness event — the client asks,
+// the server answers. Doubles as a liveness probe: if the response comes back,
+// the server is alive. Consistent with the existing client-driven heartbeat model.
+{ "id": 46, "method": "serial.isOpen", "params": { "path": "/dev/ttyUSB0" } }
 ```
 
 ### Response for `serial.list_available`
@@ -173,11 +179,11 @@ Everything serial-related is additional messages on the **existing per-session c
 
 Enumeration method, by platform. No libudev anywhere.
 
-| Platform | Method | Description field |
-|---|---|---|
-| Windows | `serialport::available_ports()` — wraps SetupDi Win32 APIs (always present) | Friendly name + VID/PID |
-| macOS   | `serialport::available_ports()` — wraps IOKit (always present) | Manufacturer + product + VID/PID |
-| Linux   | Custom sysfs walker (see below) — no libudev | Manufacturer + product where readable |
+| Platform | Method                                                                      | Description field                     |
+| -------- | --------------------------------------------------------------------------- | ------------------------------------- |
+| Windows  | `serialport::available_ports()` — wraps SetupDi Win32 APIs (always present) | Friendly name + VID/PID               |
+| macOS    | `serialport::available_ports()` — wraps IOKit (always present)              | Manufacturer + product + VID/PID      |
+| Linux    | Custom sysfs walker (see below) — no libudev                                | Manufacturer + product where readable |
 
 ### Why Linux needs special handling
 
@@ -286,44 +292,45 @@ If live updates become a real demand later, netlink uevent on Linux (no libudev)
 }
 ```
 
-### Async notifications (server → client, no request id)
-
-Same mechanism as existing async error reporting. Two event types for v1; stable `kind` strings for error classification.
+### Response for `serial.isOpen`
 
 ```jsonc
-// Post-open fatal error — TCP/funnel stream will close immediately after this event.
 {
-  "method": "serial.event",
+  "id": 46,
+  "result": {
+    "open": true,
+    "tcp_port": 54321,                  // omitted if open == false
+    "params": { "path": "/dev/ttyUSB0", "baud_rate": 115200, ... }  // omitted if open == false
+  }
+}
+```
+
+### Async notifications (server → client, no request id)
+
+One event type for v1 — errors only. `port_closed` and `port_alive` are intentionally omitted:
+
+- **`port_closed`** is not needed: `serial.close` is a synchronous RPC; the success response is the notification. Emitting a second async event for a client-initiated close is redundant noise.
+- **`port_alive` push** is not needed: the existing heartbeat mechanism (`\n` every 5s on stdin, 15s watchdog on the server) already covers both liveness and connection keep-alive from the client side. The new `serial.isOpen` request lets the client pull per-port status on demand.
+
+```jsonc
+// Post-open fatal error — the port's TCP bridge closes immediately after this event.
+// Server removes the port from its registry; a future serial.open can re-open it.
+{
+  "event": "serial.portError",
   "params": {
-    "type": "port_error",
     "path": "/dev/ttyUSB0",
     "kind": "disconnected",             // | "io_error" | "permission_lost" | "timeout"
     "msg": "Device removed"
   }
-}
-
-// Clean close (e.g. requested, or reconfigure in progress — informational)
-{
-  "method": "serial.event",
-  "params": {
-    "type": "port_closed",
-    "path": "/dev/ttyUSB0",
-    "reason": "requested"               // | "program_shutdown" | ...
-  }
-}
-
-// Optional periodic liveness — one per port, every ~30s. Insurance against silent server crash.
-{
-  "method": "serial.event",
-  "params": { "type": "port_alive", "path": "/dev/ttyUSB0" }
 }
 ```
 
 ### Protocol rules
 
 - Client branches on `kind`, never parses `msg` — messages are for humans.
-- New event types are additive; clients ignore unknown `type`.
-- `port_error` is always followed by TCP/funnel stream close (client can correlate by `path`).
+- New event types are additive; clients ignore unknown events.
+- After `serial.portError`, the server closes the TCP bridge from its end — the client receives a TCP EOF on its data connection and does not need to close it explicitly. The client should update UI state (show `[ERROR]`, write to output channel, etc.) when the `serial.portError` event arrives or when it detects the TCP disconnect, whichever comes first.
+- Port status is **pull-only** (via `serial.isOpen`) except for fatal errors, which are pushed. This keeps the server simple and the client in control of polling frequency.
 
 ---
 
@@ -331,10 +338,10 @@ Same mechanism as existing async error reporting. Two event types for v1; stable
 
 **Client must specify explicitly** in every `serial.open` request. Implicit detection is not possible — the server has no way to know what sits between itself and the end consumer (direct TCP? NAT? container? SSH tunnel?).
 
-| Transport | Use case | Handle returned |
-|---|---|---|
-| `direct` | Client can reach the server's listening host/port directly | `tcp_port` — client connects to `host:tcp_port` |
-| `funnel` | Client reaches the server only via an existing proxy connection (NAT, container, SSH tunnel) | `channel_id` — bytes tunnel through the proxy control connection using the existing funnel protocol |
+| Transport | Use case                                                                                     | Handle returned                                                                                     |
+| --------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `direct`  | Client can reach the server's listening host/port directly                                   | `tcp_port` — client connects to `host:tcp_port`                                                     |
+| `funnel`  | Client reaches the server only via an existing proxy connection (NAT, container, SSH tunnel) | `channel_id` — bytes tunnel through the proxy control connection using the existing funnel protocol |
 
 The client library (Node/TS) presents both as the same `Stream` abstraction so the extension code is transport-agnostic after the initial `open` response.
 
@@ -369,21 +376,21 @@ Two categories, both via the control channel.
 
 Returned in the `serial.open` response's `error` field.
 
-| `code` | Meaning |
-|---|---|
-| `port_not_found` | Device path does not exist |
+| `code`              | Meaning                                                                    |
+| ------------------- | -------------------------------------------------------------------------- |
+| `port_not_found`    | Device path does not exist                                                 |
 | `permission_denied` | `/dev/ttyUSB0` exists but user can't open it (Linux `dialout` group, etc.) |
-| `port_busy` | Another process has it open |
-| `invalid_params` | Baud/parity/etc. rejected |
+| `port_busy`         | Another process has it open                                                |
+| `invalid_params`    | Baud/parity/etc. rejected                                                  |
 
 At most one pre-open error per port per session is expected.
 
 ### Post-open errors
 
-Emitted as `serial.event` with `type: "port_error"`. TCP/funnel stream closes immediately after. Client correlates by `path`:
+Emitted as a `serial.portError` async event on the control channel. The server simultaneously closes the TCP bridge from its end (dropping the client connection), so the client may observe either the event or the TCP EOF first — whichever arrives first triggers the same UI update. Client correlates by `path`:
 
-- TCP stream closes
-- `serial.event` arrives with matching `path` within ~100ms
+- Server closes TCP bridge → client receives EOF on its data connection
+- `serial.portError` event arrives on the control channel with matching `path`
 - Client displays the error (see §8)
 
 Stable `kind` values:
@@ -393,7 +400,7 @@ Stable `kind` values:
 - `permission_lost` — permission revoked mid-session (rare)
 - `timeout` — configured timeout exceeded
 
-If TCP stream closes with no corresponding event within the correlation window: log generically and investigate (likely a bug).
+Note: the server fires the event and drops the bridge as a unit; there is no window where the bridge is open but an error has been declared.
 
 ---
 
@@ -409,12 +416,12 @@ All MCU-specific output lives in a **single consolidated panel**: `MCU DEBUG`. C
 
 One panel, tabs for everything:
 
-| Tab type | Lifecycle | Created by |
-|---|---|---|
-| UART tabs | VS Code session (workspace-scoped) | `+` action in the panel, or `launch.json` auto-open |
-| RTT channel tabs | Debug session (reused across sessions — see below) | Debug session start |
-| SWO tab | Debug session | Debug session start |
-| Glass Cockpit tab | Debug session | Debug session start |
+| Tab type          | Lifecycle                                          | Created by                                          |
+| ----------------- | -------------------------------------------------- | --------------------------------------------------- |
+| UART tabs         | VS Code session (workspace-scoped)                 | `+` action in the panel, or `launch.json` auto-open |
+| RTT channel tabs  | Debug session (reused across sessions — see below) | Debug session start                                 |
+| SWO tab           | Debug session                                      | Debug session start                                 |
+| Glass Cockpit tab | Debug session                                      | Debug session start                                 |
 
 Tab ordering groups by lifecycle: UARTs first (persistent), then RTT/SWO/Cockpit (session-scoped). Visual differentiation (icon, color cue) can signal which tabs survive session end.
 
@@ -440,26 +447,24 @@ The Glass Cockpit tab itself is the multi-source mux view with the three-region 
 
 ### Where errors go
 
-| Surface | What goes there | Rationale |
-|---|---|---|
-| **Inline in the terminal** (write to xterm) | Post-open errors, clean closes visible to the user | The engineer is already looking here; the error appears exactly where the data stopped |
-| **VS Code output channel** | All `port_error` events; unexpected `port_closed` reasons | Forensic trail, searchable, persistent |
-| **Terminal rename via `onDidChangeName`** | Error-state indicator (e.g. `UART:ttyUSB0 [ERROR]`) | Persistent visual cue without status-bar clutter |
-| **Status bar** | *Nothing* | Deliberately avoided — status bar is already over-subscribed |
-| **Toast notifications** | *Nothing routine* | Avoided for normal port events |
+| Surface                                     | What goes there                                           | Rationale                                                                              |
+| ------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **Inline in the terminal** (write to xterm) | Post-open errors, clean closes visible to the user        | The engineer is already looking here; the error appears exactly where the data stopped |
+| **VS Code output channel**                  | All `port_error` events; unexpected `port_closed` reasons | Forensic trail, searchable, persistent                                                 |
+| **Terminal rename via `onDidChangeName`**   | Error-state indicator (e.g. `UART:ttyUSB0 [ERROR]`)       | Persistent visual cue without status-bar clutter                                       |
+| **Status bar**                              | *Nothing*                                                 | Deliberately avoided — status bar is already over-subscribed                           |
+| **Toast notifications**                     | *Nothing routine*                                         | Avoided for normal port events                                                         |
 
 Pre-open errors are surfaced inline wherever the open was initiated (launch feedback, panel message), not in the output channel.
 
 ### Output channel filtering
 
 **Goes to the output channel:**
-- `port_error` — always
-- `port_closed` with `reason` other than `"requested"`
+- `serial.portError` — always
 
 **Does NOT go to the output channel:**
 - Serial data bytes (these are on the TCP/funnel stream, never the control channel)
-- `port_alive` heartbeats — too noisy
-- `port_closed` with `reason == "requested"` — expected and uninteresting
+- `serial.isOpen` responses — pull-based status, not notable
 - Routine request/response traffic
 
 Rule: **errors and unexpected state changes only.**
@@ -539,11 +544,11 @@ Inline-defined UARTs are promoted to workspace state on first encounter. Use the
 
 Each source uses its most natural identifier:
 
-| Source | Default tag | With label override |
-|---|---|---|
-| RTT | `[RTT#0]`, `[RTT#1]` | `[RTT:Console]` |
-| UART | `[UART:ttyUSB0]`, `[UART:COM3]` | `[UART:DebugUART]` |
-| SWO | `[SWO]` | — |
+| Source | Default tag                     | With label override |
+| ------ | ------------------------------- | ------------------- |
+| RTT    | `[RTT#0]`, `[RTT#1]`            | `[RTT:Console]`     |
+| UART   | `[UART:ttyUSB0]`, `[UART:COM3]` | `[UART:DebugUART]`  |
+| SWO    | `[SWO]`                         | —                   |
 
 Existing collision-resolution logic handles rare cases (e.g. macOS `/dev/cu.X` vs `/dev/tty.X` sharing a basename).
 
@@ -570,18 +575,18 @@ This is a genuine differentiator — worth calling out in user docs when ready.
 
 Explicit non-goals, with reasons:
 
-| Non-goal | Reason |
-|---|---|
-| **libudev-based enumeration** | Path-level enumeration (sysfs / registry / `/dev` walk) covers 90% of the need without pulling libudev. VID/PID and rich USB metadata are deferred. Keeps the helper binary dependency-free. |
-| **Server-side fan-out to multiple clients** | Client-side fan-out is simpler, reuses existing RTT/SWO code, and keeps the server dumb. Write arbitration would also become a design problem. |
-| **`serial.reconfigure` as a distinct request** | Idempotent `serial.open` handles reconfiguration by design. Eliminates a state machine on the client side. |
-| **Rejecting param mismatches** | Users iterate on baud/parity while debugging. Forcing explicit close/reopen is customer-hostile. Reconfigure in place. |
-| **Mid-stream framing of the TCP bridge** | The bridge stays transparent (raw bytes). Errors travel on the side channel; the stream simply closes. Clean separation. |
-| **Activity bar entry** | Activity bar is over-subscribed. A single consolidated panel in the panel area is a better home. |
-| **Live port-list updates (WM_DEVICECHANGE, IOKit, netlink uevent)** | Manual refresh covers the common case. Live updates are polish, not core. Add if users demand it. |
-| **Status-bar error indicators** | Status bar is over-subscribed across extensions. Terminal rename + inline writes are cleaner. |
-| **Toast notifications for routine port events** | Noise. Only truly exceptional situations should interrupt the engineer. |
-| **Competing with general-purpose serial monitors** | MS Serial Monitor is a polished generic tool. Our differentiation is serial-integrated-with-debug, plus remote port access. Different audience, different value. |
+| Non-goal                                                            | Reason                                                                                                                                                                                       |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **libudev-based enumeration**                                       | Path-level enumeration (sysfs / registry / `/dev` walk) covers 90% of the need without pulling libudev. VID/PID and rich USB metadata are deferred. Keeps the helper binary dependency-free. |
+| **Server-side fan-out to multiple clients**                         | Client-side fan-out is simpler, reuses existing RTT/SWO code, and keeps the server dumb. Write arbitration would also become a design problem.                                               |
+| **`serial.reconfigure` as a distinct request**                      | Idempotent `serial.open` handles reconfiguration by design. Eliminates a state machine on the client side.                                                                                   |
+| **Rejecting param mismatches**                                      | Users iterate on baud/parity while debugging. Forcing explicit close/reopen is customer-hostile. Reconfigure in place.                                                                       |
+| **Mid-stream framing of the TCP bridge**                            | The bridge stays transparent (raw bytes). Errors travel on the side channel; the stream simply closes. Clean separation.                                                                     |
+| **Activity bar entry**                                              | Activity bar is over-subscribed. A single consolidated panel in the panel area is a better home.                                                                                             |
+| **Live port-list updates (WM_DEVICECHANGE, IOKit, netlink uevent)** | Manual refresh covers the common case. Live updates are polish, not core. Add if users demand it.                                                                                            |
+| **Status-bar error indicators**                                     | Status bar is over-subscribed across extensions. Terminal rename + inline writes are cleaner.                                                                                                |
+| **Toast notifications for routine port events**                     | Noise. Only truly exceptional situations should interrupt the engineer.                                                                                                                      |
+| **Competing with general-purpose serial monitors**                  | MS Serial Monitor is a polished generic tool. Our differentiation is serial-integrated-with-debug, plus remote port access. Different audience, different value.                             |
 
 ---
 

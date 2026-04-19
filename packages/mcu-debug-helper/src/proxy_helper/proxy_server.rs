@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::serial::bridge::TcpBridge;
-use crate::serial::port::{PortHandle, SerialParams};
+use crate::serial::port::{PortErrorEvent, PortHandle, SerialErrorKind, SerialParams};
 use crate::serial::AvailablePort;
 
 pub const CURRENT_VERSION: &str = "1.0.3";
@@ -117,6 +117,9 @@ pub enum ProxyEvent {
     StreamData { stream_id: u8, data: Vec<u8> },
     /// A forwarded stream closed.
     StreamClosed { stream_id: u8 },
+    /// A serial port's reader thread hit a fatal error.
+    /// The port should be removed from the registry and the client notified.
+    SerialPortError(PortErrorEvent),
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
@@ -254,6 +257,11 @@ pub enum ControlRequest {
     /** List all serial ports visible on this machine */
     #[serde(rename = "serial.listAvailable")]
     SerialListAvailable,
+
+    /** Query whether a specific serial port is currently open on the server.
+     *  Pull-based status probe — consistent with the client-driven heartbeat model. */
+    #[serde(rename = "serial.isOpen")]
+    SerialIsOpen { path: String },
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
@@ -338,6 +346,16 @@ pub enum ControlResponseData {
     /** SerialListAvailable response: available hardware ports */
     #[serde(rename = "serial.listAvailable")]
     SerialListAvailable { ports: Vec<AvailablePort> },
+
+    /** SerialIsOpen response: current open status of a specific port */
+    #[serde(rename = "serial.isOpen")]
+    SerialIsOpen {
+        open: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tcp_port: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        params: Option<SerialParams>,
+    },
 }
 
 impl ControlResponse {
@@ -392,6 +410,15 @@ pub enum ProxyServerEvents {
     /** Stream has timed out while waiting for connection */
     #[serde(rename = "streamTimedOut")]
     StreamTimedOut { stream_id: u8 },
+    /** A serial port encountered a fatal post-open error.
+     *  The TCP bridge for this port closes immediately after this event.
+     *  The server removes the port from its registry; call `serial.open` to re-open. */
+    #[serde(rename = "serial.portError")]
+    SerialPortError {
+        path: String,
+        kind: SerialErrorKind,
+        msg: String,
+    },
 }
 
 impl ProxyServerEvents {
@@ -691,6 +718,17 @@ impl ProxyServer {
                     let event = ProxyServerEvents::StreamClosed { stream_id };
                     let _ = event.send(&mut self.stream);
                 }
+                ProxyEvent::SerialPortError(err) => {
+                    // Port died — remove from registry (drops the bridge and fd),
+                    // then notify the client so it can update its UI.
+                    self.serial_registry.lock().unwrap().remove(&err.path);
+                    let event = ProxyServerEvents::SerialPortError {
+                        path: err.path,
+                        kind: err.kind,
+                        msg: err.msg,
+                    };
+                    let _ = event.send(&mut self.stream);
+                }
             }
         }
         self.end_process();
@@ -797,6 +835,9 @@ impl ProxyServer {
             }
             ControlRequest::SerialListAvailable => {
                 self.handle_serial_list_available(msg.seq);
+            }
+            ControlRequest::SerialIsOpen { path } => {
+                self.handle_serial_is_open(msg.seq, &path.clone());
             }
         }
     }
@@ -1243,6 +1284,26 @@ impl ProxyServer {
             }
         })();
 
+        // Subscribe this session to fatal port errors so the client is notified
+        // if the device is unplugged after a successful open.
+        if result.is_ok() {
+            let (err_tx, err_rx) = std::sync::mpsc::channel::<PortErrorEvent>();
+            {
+                let reg = self.serial_registry.lock().unwrap();
+                if let Some((handle, _)) = reg.get(&path) {
+                    handle.subscribe_errors(err_tx);
+                }
+            }
+            let proxy_tx = self.event_tx.clone();
+            std::thread::spawn(move || {
+                while let Ok(e) = err_rx.recv() {
+                    if proxy_tx.send(ProxyEvent::SerialPortError(e)).is_err() {
+                        break; // ProxyServer session ended; stop bridging.
+                    }
+                }
+            });
+        }
+
         match result {
             Ok(tcp_port) => {
                 let data = ControlResponseData::SerialOpen { path, tcp_port };
@@ -1308,6 +1369,28 @@ impl ProxyServer {
             .send(&mut self.stream)
             .unwrap_or_else(|e| {
                 eprintln!("Failed to send serial.listAvailable response: {}", e);
+            });
+    }
+
+    /// `serial.isOpen` — pull-based status probe for a single port.
+    fn handle_serial_is_open(&mut self, seq: u64, path: &str) {
+        let reg = self.serial_registry.lock().unwrap();
+        let (open, tcp_port, params) = if let Some((handle, bridge)) = reg.get(path) {
+            let p = handle.params.lock().unwrap().clone();
+            (true, Some(bridge.tcp_port), Some(p))
+        } else {
+            (false, None, None)
+        };
+        drop(reg);
+        let data = ControlResponseData::SerialIsOpen {
+            open,
+            tcp_port,
+            params,
+        };
+        ControlResponse::success(seq, Some(data))
+            .send(&mut self.stream)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to send serial.isOpen response: {}", e);
             });
     }
 
@@ -1421,7 +1504,7 @@ fn create_parent_dirs(file_path_str: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serial::port::{FlowControl, Parity, StopBits};
+    use crate::serial::port::{FlowControl, Parity, SerialErrorKind, StopBits};
     use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
     use std::thread;
     use ts_rs::{Config, TS};
@@ -1448,6 +1531,7 @@ mod tests {
         Parity::export(&config).unwrap();
         FlowControl::export(&config).unwrap();
         AvailablePort::export(&config).unwrap();
+        SerialErrorKind::export(&config).unwrap();
     }
 
     static TEST_MUTEX: Mutex<()> = Mutex::new(()); // Don't really need a mutex for this simple test, but is there in case the tests get more complex in the future and need to synchronize access to the stream

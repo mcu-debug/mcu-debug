@@ -23,7 +23,7 @@ Critical path: **4 → 6 → 7 → 8 → 11**. Everything else can parallelize a
 ## Phase 3 — Rust helper: control channel
 
 - [x] **8.** Extend proxy control-channel dispatcher with `serial.open`, `serial.close`, `serial.list_open`, `serial.list_available` handlers. Idempotent `serial.open` (reconfigure in place if already open).
-- [ ] **9.** Async event emission — `serial.event` with `port_error` / `port_closed` / `port_alive`. Reader-thread errors fire `port_error` then close the bridge. `port_alive` every ~30s per open port.
+- [x] **9.** Async event emission (revised). One async event only: `serial.portError` — emitted when the reader thread hits an unrecoverable I/O error (device unplugged, cable fault, etc.). The port is removed from the registry automatically; the TCP bridge closes. `port_closed` dropped (sync response to `serial.close` is sufficient). `port_alive` push dropped — replaced by a new pull-based `serial.isOpen` request (takes a `path`, returns `{ open, tcp_port?, params? }`). Client drives liveness via the existing heartbeat; `serial.isOpen` is for per-port status on demand.
 - [ ] **10.** Funnel transport for serial — reuse existing funnel channel code path; route serial bytes through a new `channel_id` kind.
 
 ## Phase 4 — TypeScript extension: client library
