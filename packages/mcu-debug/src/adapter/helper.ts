@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { existsSync, statSync, chmodSync, openSync, readSync, closeSync } from "fs";
+import * as fs from "fs";
 import { spawn, ChildProcess } from "child_process";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
 import { GDBDebugSession } from "./gdb-session";
-import { SymbolFile, validateELFHeader } from "./servers/common";
+import { getHelperExecutable, SymbolFile, validateELFHeader } from "./servers/common";
 import type { DisasmResponse } from "@mcu-debug/shared/dasm-helper/DisasmResponse";
 import type { GlobalsResponse } from "@mcu-debug/shared/dasm-helper/GlobalsResponse";
 import type { StaticsResponse } from "@mcu-debug/shared/dasm-helper/StaticsResponse";
@@ -26,66 +26,6 @@ import { getObjdumpPath } from "./symbols";
 import { DebugProtocol } from "@vscode/debugprotocol";
 
 type HelperResponse = DisasmResponse | GlobalsResponse | StaticsResponse | SymbolLookupResponse;
-
-/**
- * Reads the first 20 bytes of a binary and returns true if it is a native
- * executable for the given platform and CPU architecture.  This prevents
- * accidentally running a macOS arm64 dev build inside a Linux x64 container
- * (or any similar mismatch) when the unqualified bin/<name> shortcut exists.
- *
- * Formats handled:
- *   ELF    (Linux)   – magic 7f 45 4c 46, e_machine at bytes 18-19 (LE)
- *   Mach-O (macOS)  – magic cf fa ed fe (64-bit LE), cputype at bytes 4-7
- *   PE     (Windows) – magic 4d 5a (MZ), any PE binary is treated as win32
- */
-function binaryMatchesPlatform(filePath: string, platform: NodeJS.Platform, arch: string): boolean {
-    try {
-        const fd = openSync(filePath, "r");
-        const buf = Buffer.alloc(20);
-        readSync(fd, buf, 0, 20, 0);
-        closeSync(fd);
-
-        // ELF (Linux)
-        if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) {
-            if (platform !== "linux") {
-                return false;
-            }
-            const machine = buf.readUInt16LE(18); // e_machine field
-            if (arch === "x64") {
-                return machine === 0x003e;
-            } // EM_X86_64
-            if (arch === "arm64") {
-                return machine === 0x00b7;
-            } // EM_AARCH64
-            return false;
-        }
-
-        // Mach-O 64-bit little-endian (macOS)
-        if (buf[0] === 0xcf && buf[1] === 0xfa && buf[2] === 0xed && buf[3] === 0xfe) {
-            if (platform !== "darwin") {
-                return false;
-            }
-            const cputype = buf.readUInt32LE(4);
-            if (arch === "x64") {
-                return cputype === 0x01000007;
-            } // CPU_TYPE_X86_64
-            if (arch === "arm64") {
-                return cputype === 0x0100000c;
-            } // CPU_TYPE_ARM64
-            return false;
-        }
-
-        // PE (Windows) — MZ header
-        if (buf[0] === 0x4d && buf[1] === 0x5a) {
-            return platform === "win32";
-        }
-
-        return false; // Unrecognised format — treat as incompatible
-    } catch {
-        return false;
-    }
-}
-
 interface PendingRequest {
     resolve: (value: HelperResponse) => void;
     reject: (reason?: any) => void;
@@ -237,40 +177,20 @@ export class DebugHelper {
         }
     }
 
-    private getHelperExecutable() {
+    private getHelperExe() {
         const extPath = this.session.args.extensionPath;
-        const platform = process.platform;
-        const arch = process.arch;
-        let helperName = "mcu-debug-helper";
-        if (platform === "win32") {
-            helperName += ".exe";
-        }
-        const devPath = `${extPath}/bin/${helperName}`;
-        if (existsSync(devPath) && process.env.PROD_MCU_DEBUG_HELPER !== "1") {
-            if (binaryMatchesPlatform(devPath, platform, arch)) {
-                return devPath;
-            }
-            // Binary exists but is for a different platform/arch (e.g. a macOS arm64
-            // dev build present while running inside a Linux x64 container, or under WSL).
-            // Fall through to the platform-specific subdirectory.
-        }
-        const helperPath = `${extPath}/bin/${platform}-${arch}/${helperName}`;
-        if (existsSync(helperPath)) {
-            return helperPath;
-        } else {
-            throw new Error(`mcu-debug-helper executable not found for platform ${platform} and architecture ${arch} at path ${helperPath}`);
-        }
+        return getHelperExecutable(extPath);
     }
 
     public getHelperExecPath() {
-        let helperPath = this.getHelperExecutable();
+        let helperPath = this.getHelperExe();
         try {
             // Quick defensive check before spawning
             if (process.platform !== "win32") {
-                const stats = statSync(helperPath);
+                const stats = fs.statSync(helperPath);
                 if (!(stats.mode & 0o100)) {
                     // Check if the owner-execute bit is missing
-                    chmodSync(helperPath, 0o755);
+                    fs.chmodSync(helperPath, 0o755);
                 }
             }
         } catch (error) {

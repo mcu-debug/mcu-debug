@@ -3,14 +3,14 @@ import * as fs from "fs";
 import { RTTConsoleDecoderOpts, TerminalInputMode, TextEncoding, BinaryEncoding, HrTimer } from "../adapter/servers/common";
 import { IPtyTerminalOptions, magentaWrite, PtyTerminal } from "./pty";
 import { decoders as DECODER_MAP } from "./swo/decoders/utils";
-import { SocketRTTSource } from "./swo/sources/socket";
+import { SocketIOSource, SocketRTTSource, SocketUARTSource } from "./swo/sources/socket";
 import { RESET } from "./ansi-helpers";
 
-export class RTTTerminal {
+export class IOTerminal {
     protected ptyTerm: PtyTerminal | null = null;
     protected ptyOptions: IPtyTerminalOptions;
     protected binaryFormatter: BinaryFormatter | null = null;
-    private source: SocketRTTSource | null = null;
+    private source: SocketIOSource | null = null;
     public inUse = true;
     protected logFd: number = -1;
     private startOfNewLine = true;
@@ -22,7 +22,7 @@ export class RTTTerminal {
     constructor(
         protected context: vscode.ExtensionContext,
         public options: RTTConsoleDecoderOpts,
-        src: SocketRTTSource,
+        src: SocketIOSource,
     ) {
         this.ptyOptions = this.createTermOptions(null);
         this.createTerminal();
@@ -30,7 +30,7 @@ export class RTTTerminal {
         this.connectToSource(src);
     }
 
-    private connectToSource(src: SocketRTTSource) {
+    private connectToSource(src: SocketIOSource) {
         this.hrTimer = new HrTimer();
         this.binaryFormatter = new BinaryFormatter(this.ptyTerm!, this.options.encoding, this.options.scale);
         src.once("disconnected", () => {
@@ -176,7 +176,7 @@ export class RTTTerminal {
 
     protected createTermOptions(existing: string | null): IPtyTerminalOptions {
         const ret: IPtyTerminalOptions = {
-            name: RTTTerminal.createTermName(this.options, existing),
+            name: IOTerminal.createTermName(this.source, this.options, existing),
             prompt: this.createPrompt(),
             inputMode: this.options.inputmode || TerminalInputMode.COOKED,
         };
@@ -190,11 +190,13 @@ export class RTTTerminal {
     }
 
     protected createPrompt(): string {
-        return this.options.noprompt ? "" : this.options.prompt || `RTT:${this.options.port}> `;
+        const defaultPrompt = this.source?.createPromptLabel() || "";
+        return this.options.noprompt ? "" : this.options.prompt || `${defaultPrompt}> `;
     }
 
-    protected static createTermName(options: RTTConsoleDecoderOpts, existing: string | null): string {
+    protected static createTermName(source: SocketIOSource | null, options: RTTConsoleDecoderOpts, existing: string | null): string {
         const suffix = options.type === "binary" ? `enc:${getBinaryEncoding(options.encoding)}` : options.type;
+        const defaultName = source?.createTerminalName() || "???";
         const orig = options.label || `RTT Ch:${options.port} ${suffix}`;
         let ret = orig;
         let count = 1;
@@ -248,12 +250,12 @@ export class RTTTerminal {
     // If all goes well, this will reset the terminal options. Label for the VSCode terminal has to match
     // since there no way to rename it. If successful, tt will reset the Terminal options and mark it as
     // used (inUse = true) as well
-    public tryReuse(options: RTTConsoleDecoderOpts, src: SocketRTTSource): boolean {
+    public tryReuse(options: RTTConsoleDecoderOpts, src: SocketIOSource): boolean {
         if (!this.ptyTerm || !this.ptyTerm.terminal) {
             return false;
         }
         this.sanitizeEncodings(this.options);
-        const newTermName = RTTTerminal.createTermName(options, this.ptyOptions.name);
+        const newTermName = IOTerminal.createTermName(this.source, options, this.ptyOptions.name);
         if (newTermName === this.ptyOptions.name) {
             this.inUse = true;
             if (!this.options.noclear || this.options.type !== options.type) {

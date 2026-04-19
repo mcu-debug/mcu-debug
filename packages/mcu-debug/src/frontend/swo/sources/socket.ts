@@ -7,6 +7,7 @@ import { TextDecoder } from "util";
 import { setFlagsFromString } from "v8";
 import { MCUDebugChannel } from "../../../dbgmsgs";
 import { WaitForPort, WaitForPortArgs, ReturnObject, Decoder, DecoderSpec } from "@mcu-debug/shared";
+import path from "path";
 const TimerInterval = 250;
 export class SocketSWOSource extends EventEmitter implements SWORTTSource {
     protected client: net.Socket | null = null;
@@ -18,7 +19,7 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
 
     constructor(
         public tcpPort: string,
-        private decoderSpec: DecoderSpec,
+        private decoderSpec?: DecoderSpec,
     ) {
         super();
     }
@@ -113,7 +114,7 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
         });
     }
 
-    // Default wait time is about 5 minutes
+    // Deprecated: Default wait time is about 5 minutes
     public startx(timeout = SocketTimout): Promise<void> {
         let retry = true;
         const start = Date.now();
@@ -210,11 +211,10 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
     }
 }
 
-export class SocketRTTSource extends SocketSWOSource {
+export class SocketIOSource extends SocketSWOSource {
     constructor(
         tcpPort: string,
-        public readonly channel: number,
-        decoderSpec: DecoderSpec,
+        decoderSpec?: DecoderSpec,
     ) {
         super(tcpPort, decoderSpec);
     }
@@ -222,15 +222,59 @@ export class SocketRTTSource extends SocketSWOSource {
     public write(data: string) {
         this.client!.write(data);
     }
+
+    public createPromptLabel(): string {
+        return ">";
+    }
+    public createTerminalName(): string {
+        return this.tcpPort;
+    }
+}
+
+export class SocketRTTSource extends SocketIOSource {
+    constructor(
+        public readonly channel: number,
+        tcpPort: string,
+        decoderSpec: DecoderSpec,
+    ) {
+        super(tcpPort, decoderSpec);
+    }
+
+    public createPromptLabel(): string {
+        return "RTT:" + this.channel.toString();
+    }
+
+    public createTerminalName(): string {
+        return "RTT CH:" + this.channel.toString();
+    }
+}
+
+export class SocketUARTSource extends SocketIOSource {
+    constructor(
+        public readonly fsPath: string,
+        tcpPort: string,
+    ) {
+        super(tcpPort);
+    }
+
+    public createPromptLabel(): string {
+        const baseName = path.basename(this.fsPath);
+        return "UART:" + baseName;
+    }
+
+    public createTerminalName(): string {
+        const baseName = path.basename(this.fsPath);
+        return "UART:" + baseName;
+    }
 }
 
 export class JLinkSocketRTTSource extends SocketRTTSource {
     constructor(
+        channel: number,
         tcpPort: string,
-        public readonly channel: number,
         decoderSpec: DecoderSpec,
     ) {
-        super(tcpPort, channel, decoderSpec);
+        super(channel, tcpPort, decoderSpec);
 
         // When the TCP connection to the RTT port is established, send config commands
         // within 100ms to configure the RTT channel.  See

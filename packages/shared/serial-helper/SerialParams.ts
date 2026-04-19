@@ -32,4 +32,5 @@ export type SerialParams = {
      * Flow control mode. "none" | "software" (XON/XOFF) | "hardware" (RTS/CTS). Default: "none".
      */
     flow_control: FlowControl;
+    decoders: any;
 };

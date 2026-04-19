@@ -349,7 +349,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     rttConfig: RTTConfiguration;
     pvtRttConfig: RTTConfiguration;
     swoConfig: SWOConfiguration;
-    serialConfigs: SerialConfig[];
+    serialConfig?: SerialConfig;
     liveWatch: LiveWatchConfig;
     hostConfig?: HostConfig;
     graphConfig: any[];
@@ -1191,4 +1191,97 @@ export function awaitWithTimeout<T>(p: Promise<T>, timeout: number): Promise<T> 
 
     // Race the original promise against the timeout promise
     return Promise.race([p, timeoutPromise]);
+}
+
+/**
+ * Reads the first 20 bytes of a binary and returns true if it is a native
+ * executable for the given platform and CPU architecture.  This prevents
+ * accidentally running a macOS arm64 dev build inside a Linux x64 container
+ * (or any similar mismatch) when the unqualified bin/<name> shortcut exists.
+ *
+ * Formats handled:
+ *   ELF    (Linux)   – magic 7f 45 4c 46, e_machine at bytes 18-19 (LE)
+ *   Mach-O (macOS)  – magic cf fa ed fe (64-bit LE), cputype at bytes 4-7
+ *   PE     (Windows) – magic 4d 5a (MZ), any PE binary is treated as win32
+ */
+export function binaryMatchesPlatform(filePath: string, platform: NodeJS.Platform, arch: string): boolean {
+    try {
+        const fd = fs.openSync(filePath, "r");
+        const buf = Buffer.alloc(20);
+        fs.readSync(fd, buf, 0, 20, 0);
+        fs.closeSync(fd);
+
+        // ELF (Linux)
+        if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) {
+            if (platform !== "linux") {
+                return false;
+            }
+            const machine = buf.readUInt16LE(18); // e_machine field
+            if (arch === "x64") {
+                return machine === 0x003e;
+            } // EM_X86_64
+            if (arch === "arm64") {
+                return machine === 0x00b7;
+            } // EM_AARCH64
+            return false;
+        }
+
+        // Mach-O 64-bit little-endian (macOS)
+        if (buf[0] === 0xcf && buf[1] === 0xfa && buf[2] === 0xed && buf[3] === 0xfe) {
+            if (platform !== "darwin") {
+                return false;
+            }
+            const cputype = buf.readUInt32LE(4);
+            if (arch === "x64") {
+                return cputype === 0x01000007;
+            } // CPU_TYPE_X86_64
+            if (arch === "arm64") {
+                return cputype === 0x0100000c;
+            } // CPU_TYPE_ARM64
+            return false;
+        }
+
+        // PE (Windows) — MZ header
+        if (buf[0] === 0x4d && buf[1] === 0x5a) {
+            return platform === "win32";
+        }
+
+        return false; // Unrecognised format — treat as incompatible
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Returns the path to the mcu-debug-helper executable for the current platform and architecture. Will throw if not found.
+ * 
+ * @param extPath - VSCode extension path
+ * @returns path to the exeutable (can be a debug version if it matches current platform and architecture)
+ * 
+ * env.PROD_MCU_DEBUG_HELPER can be set to "1" to disable the check for a dev build and always use the
+ * unqualified bin/mcu-debug-helper (if it exists)
+ */
+export function getHelperExecutable(extPath: string): string {
+    // const extPath = this.session.args.extensionPath;
+    const platform = process.platform;
+    const arch = process.arch;
+    let helperName = "mcu-debug-helper";
+    if (platform === "win32") {
+        helperName += ".exe";
+    }
+    const devPath = `${extPath}/bin/${helperName}`;
+    if (fs.existsSync(devPath) && process.env.PROD_MCU_DEBUG_HELPER !== "1") {
+        if (binaryMatchesPlatform(devPath, platform, arch)) {
+            return devPath;
+        }
+        // Binary exists but is for a different platform/arch (e.g. a macOS arm64
+        // dev build present while running inside a Linux x64 container, or under WSL).
+        // Fall through to the platform-specific subdirectory.
+    }
+    const helperPath = `${extPath}/bin/${platform}-${arch}/${helperName}`;
+    if (fs.existsSync(helperPath)) {
+        return helperPath;
+    } else {
+        throw new Error(`mcu-debug-helper executable not found for platform ${platform} and architecture ${arch} at path ${helperPath}`);
+    }
 }

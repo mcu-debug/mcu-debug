@@ -22,6 +22,8 @@ SHARED_DIR="$ROOT_DIR/packages/shared"
 # Run prettier on the ts-rs generated TypeScript files.
 # ts-rs --format is intentionally avoided; it uses a different formatter.
 function format_ts_exports() {
+  # Add missing "decoders" field to SerialParams export for now, until ts-rs supports it natively:
+  sed -i '' 's/};/ decoders: any};/g' "$SHARED_DIR/serial-helper/SerialParams.ts" # 2>/dev/null || true
   if [[ -x "$PRETTIER" ]]; then
     echo "Formatting generated TypeScript exports..."
     # Use a narrower print width than the project default (200) so that

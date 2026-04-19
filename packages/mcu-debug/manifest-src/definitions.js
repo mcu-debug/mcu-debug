@@ -547,6 +547,67 @@ module.exports = {
                         default: "none",
                         description: 'Flow control mode. "software" = XON/XOFF, "hardware" = RTS/CTS.',
                     },
+                    decoders: {
+                        description: "UART Decoder Configuration",
+                        items: {
+                            anyOf: [
+                                {
+                                    properties: {
+                                        label: { description: "A label for UART Console", type: "string" },
+                                        type: {
+                                            enum: ["console", "binary"],
+                                            default: "console",
+                                            description: "'console' with text input/output, 'binary' is for converting byte stream to other data types",
+                                            type: "string",
+                                        },
+                                        prompt: { description: "Prompt to use for UART Console", type: "string", default: "" },
+                                        noprompt: { description: "Don't use a prompt for UART Console", type: "boolean", default: false },
+                                        noclear: { description: "append to screen/logfile when another connection is made", type: "boolean", default: false },
+                                        logfile: { description: "log all raw data (input and output) to specified file", type: "string", default: "" },
+                                        timestamp: { description: "Add timestamps while printing for 'console' type.", type: "boolean", default: false },
+                                        encoding: {
+                                            type: "string",
+                                            description: "How binary data bytes are converted into a number.",
+                                            default: "unsigned",
+                                            enum: ["unsigned", "signed", "Q16.16", "float"],
+                                        },
+                                        iencoding: { type: "string", description: "How keyboard input is encoded.", default: "utf8", enum: ["ascii", "utf8", "ucs2", "utf16le"] },
+                                        scale: { default: 1, description: "Binary only: This setting will scale the raw value.", type: "number" },
+                                        inputmode: { type: "string", description: "Experimental: 'disabled' means no stdin.", default: "cooked", enum: ["cooked", "raw", "rawecho", "disabled"] },
+                                    },
+                                    required: ["type"],
+                                    type: "object",
+                                },
+                                {
+                                    properties: {
+                                        encoding: {
+                                            default: "unsigned",
+                                            description: "This property is only used for binary and graph output formats.",
+                                            enum: ["unsigned", "signed", "Q16.16", "float"],
+                                            type: "string",
+                                        },
+                                        graphId: { description: "The identifier to use for this data in graph configurations.", type: "string" },
+                                        port: { description: "RTT Channel Number", maximum: 15, minimum: 0, type: "number" },
+                                        scale: { default: 1, description: "This setting will scale the raw value.", type: "number" },
+                                        type: { enum: ["graph"], type: "string" },
+                                    },
+                                    required: ["port", "graphId"],
+                                    type: "object",
+                                },
+                                {
+                                    properties: {
+                                        config: { additionalProperties: true, type: "object" },
+                                        decoder: { description: "Path to a javascript module to implement the decoding functionality.", type: "string" },
+                                        ports: { description: "RTT Channel Numbers", type: "array", items: { type: "number", maximum: 15, minimum: 0 } },
+                                        type: { enum: ["advanced"], type: "string" },
+                                    },
+                                    required: ["ports", "decoder"],
+                                    type: "object",
+                                },
+                            ],
+                        },
+                        type: "array",
+                    },
                 },
             },
         },

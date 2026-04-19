@@ -3,13 +3,14 @@ import * as vscode from "vscode";
 import { ConfigurationArguments, ChainedConfig } from "../adapter/servers/common";
 import { RTTCore, SWOCore } from "./swo/core";
 import { SWORTTSource } from "./swo/sources/common";
-import { SocketRTTSource } from "./swo/sources/socket";
+import { SocketRTTSource, SocketUARTSource } from "./swo/sources/socket";
 
 export class CDebugSession {
     public swo: SWOCore | null = null;
     public rtt: RTTCore | null = null;
     public swoSource: SWORTTSource | null = null;
     public rttPortMap: { [channel: number]: SocketRTTSource } = {};
+    public rttUARTMap: { [path: string]: SocketUARTSource } = {};
     // Status can be 'none' before the session actually starts but this object
     // may have been created before that actually happens due to SWO, RTT, chained
     // launches, etc

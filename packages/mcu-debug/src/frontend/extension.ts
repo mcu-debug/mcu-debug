@@ -4,28 +4,33 @@
 
 import * as vscode from "vscode";
 import * as path from "path";
+import * as os from "os";
+import * as fs from "fs";
+import * as tmp from "tmp";
 
 import { MCUDebugChannel } from "../dbgmsgs";
 import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
 import { EditableTreeViewProvider } from "./webview_tree/editable-tree";
 
 import { RTTCore, SWOCore } from "./swo/core";
-import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ChainedConfig } from "../adapter/servers/common";
+import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ChainedConfig, SerialConfig, getHelperExecutable } from "../adapter/servers/common";
 import { Reporting } from "../analytics/reporting";
 
 import { CortexDebugConfigurationProvider } from "./configprovider";
-import { JLinkSocketRTTSource, SocketRTTSource, SocketSWOSource, PeMicroSocketSource } from "./swo/sources/socket";
+import { JLinkSocketRTTSource, SocketRTTSource, SocketSWOSource, PeMicroSocketSource, SocketUARTSource, SocketIOSource } from "./swo/sources/socket";
 import { FifoSWOSource } from "./swo/sources/fifo";
 import { FileSWOSource } from "./swo/sources/file";
 import { SerialSWOSource } from "./swo/sources/serial";
 import { UsbSWOSource } from "./swo/sources/usb";
 import { SymbolInformation, SymbolScope } from "../adapter/symbols";
-import { RTTTerminal } from "./rtt_terminal";
+import { IOTerminal } from "./bidir_terminal";
 import { GDBServerConsole } from "./server_console";
 import { CDebugSession, CDebugChainedSessionItem } from "./cortex_debug_session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "../../../shared/lib/proxy-network";
+import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
+import { spawnSync } from "child_process";
 
 interface SVDInfo {
     expression: RegExp;
@@ -37,11 +42,11 @@ class ServerStartedPromise {
         public readonly promise: Promise<vscode.DebugSessionCustomEvent>,
         public readonly resolve: any,
         public readonly reject: any,
-    ) {}
+    ) { }
 }
 
 export class MCUDebugExtension {
-    private rttTerminals: RTTTerminal[] = [];
+    private rttTerminals: IOTerminal[] = [];
 
     private gdbServerConsole: GDBServerConsole | null = null;
 
@@ -52,7 +57,7 @@ export class MCUDebugExtension {
     private functionSymbols: SymbolInformation[] = [];
     private serverStartedEvent: ServerStartedPromise | null = null;
 
-    constructor(private context: vscode.ExtensionContext) {}
+    constructor(private context: vscode.ExtensionContext) { }
 
     public async initialize() {
         const context: vscode.ExtensionContext = this.context;
@@ -187,7 +192,7 @@ export class MCUDebugExtension {
     private examineMemory() {
         const cmd = "mcu-debug.memory-view.addMemoryView";
         vscode.commands.executeCommand(cmd).then(
-            () => {},
+            () => { },
             (e) => {
                 const installExt = "Install MemoryView Extension";
                 vscode.window
@@ -299,6 +304,28 @@ export class MCUDebugExtension {
         );
     }
 
+    private receivedUARTConfigureEvent(e: vscode.DebugSessionCustomEvent) {
+        const mySession = CDebugSession.FindSession(e.session);
+        if (!mySession) {
+            return;
+        }
+        const serialConfig = e.body.serialConfig as SerialConfig | undefined;
+        if (serialConfig && serialConfig.enabled && serialConfig.ports && serialConfig.ports.length > 0) {
+            for (const portConfig of serialConfig.ports) {
+                if (portConfig.tcp_port && portConfig.tcp_port > 0) {
+                    const src = new SocketUARTSource(portConfig.path, `127.0.0.1:${portConfig.tcp_port}`);
+                    mySession.rttUARTMap[portConfig.path] = src;
+                    src.start().then(() => {
+                        // Handle successful start if needed
+                        this.allocateTerminal(portConfig.decoders?.console, src);
+                    }).catch((error) => {
+                        console.error(`Failed to start UART source for port ${portConfig.path}: ${error}`);
+                    });
+                }
+            }
+        }
+    }
+
     private debugSessionTerminated(session: vscode.DebugSession) {
         if (session.type !== "mcu-debug") {
             return;
@@ -347,6 +374,9 @@ export class MCUDebugExtension {
                 break;
             case "rtt-configure":
                 this.receivedRTTConfigureEvent(e);
+                break;
+            case "uart-configure":
+                this.receivedUARTConfigureEvent(e);
                 break;
             case "record-event":
                 this.receivedEvent(e);
@@ -524,7 +554,7 @@ export class MCUDebugExtension {
                 // vscode.debug.stopDebugging(s.session);
                 ServerConsoleLog(`Sending custom-stop-debugging to ${s.session.name} PID=${process.pid}`);
                 s.session.customRequest("custom-stop-debugging", e.body.info).then(
-                    () => {},
+                    () => { },
                     (reason) => {
                         vscode.window.showErrorMessage(`mcu-debug: Bug? session.customRequest('set-stop-debugging-type', ... failed ${reason}\n`);
                     },
@@ -545,8 +575,8 @@ export class MCUDebugExtension {
                 }
                 if (s.config.pvtMyConfigFromParent.lifecycleManagedByParent) {
                     s.session.customRequest("reset-device", type).then(
-                        () => {},
-                        (reason) => {},
+                        () => { },
+                        (reason) => { },
                     );
                 }
             }, false);
@@ -711,9 +741,9 @@ export class MCUDebugExtension {
                 decoderSpec = undefined;
             }
             if (mySession.config.servertype === "jlink") {
-                src = new JLinkSocketRTTSource(tcpPort, channel, decoderSpec);
+                src = new JLinkSocketRTTSource(channel, tcpPort, decoderSpec);
             } else {
-                src = new SocketRTTSource(tcpPort, channel, decoderSpec);
+                src = new SocketRTTSource(channel, tcpPort, decoderSpec);
             }
             mySession.rttPortMap[channel] = src; // Yes, we put this in the list even if start() can fail
             resolve(src); // Yes, it is okay to resolve it even though the connection isn't made yet
@@ -740,6 +770,23 @@ export class MCUDebugExtension {
         });
     }
 
+    private allocateTerminal(decoder: RTTConsoleDecoderOpts, src: SocketIOSource) {
+        for (const terminal of this.rttTerminals) {
+            const success = !terminal.inUse && terminal.tryReuse(decoder, src);
+            if (success) {
+                if (vscode.debug.activeDebugConsole) {
+                    vscode.debug.activeDebugConsole.appendLine(`Reusing RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);
+                }
+                return;
+            }
+        }
+        const newTerminal = new IOTerminal(this.context, decoder, src);
+        this.rttTerminals.push(newTerminal);
+        if (vscode.debug.activeDebugConsole) {
+            vscode.debug.activeDebugConsole.appendLine(`Created RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);
+        }
+    }
+
     private rttCreateTerninal(e: vscode.DebugSessionCustomEvent, decoder: RTTConsoleDecoderOpts) {
         this.createRTTSource(e, decoder.tcpPort, decoder.port).then((src: SocketRTTSource) => {
             for (const terminal of this.rttTerminals) {
@@ -751,7 +798,7 @@ export class MCUDebugExtension {
                     return;
                 }
             }
-            const newTerminal = new RTTTerminal(this.context, decoder, src);
+            const newTerminal = new IOTerminal(this.context, decoder, src);
             this.rttTerminals.push(newTerminal);
             if (vscode.debug.activeDebugConsole) {
                 vscode.debug.activeDebugConsole.appendLine(`Created RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);
@@ -847,4 +894,4 @@ export async function activate(context: vscode.ExtensionContext) {
     return ret;
 }
 
-export async function deactivate() {}
+export async function deactivate() { }
