@@ -11,6 +11,7 @@ import * as tmp from "tmp";
 import { MCUDebugChannel } from "../dbgmsgs";
 import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
 import { EditableTreeViewProvider } from "./webview_tree/editable-tree";
+import { SerialPortManager } from "./serial";
 
 import { RTTCore, SWOCore } from "./swo/core";
 import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ChainedConfig, SerialConfig, getHelperExecutable } from "../adapter/servers/common";
@@ -56,8 +57,11 @@ export class MCUDebugExtension {
     private SVDDirectory: SVDInfo[] = [];
     private functionSymbols: SymbolInformation[] = [];
     private serverStartedEvent: ServerStartedPromise | null = null;
+    private serialPortManager: SerialPortManager;
 
-    constructor(private context: vscode.ExtensionContext) { }
+    constructor(private context: vscode.ExtensionContext) {
+        this.serialPortManager = new SerialPortManager(this.context);
+    }
 
     public async initialize() {
         const context: vscode.ExtensionContext = this.context;
@@ -80,6 +84,8 @@ export class MCUDebugExtension {
             vscode.commands.registerCommand("mcu-debug.examineMemory", this.examineMemory.bind(this)),
 
             vscode.commands.registerCommand("mcu-debug.resetDevice", this.resetDevice.bind(this)),
+
+            vscode.commands.registerCommand("mcu-debug.listAvailableSerialPorts", (noDisplay?: boolean) => this.serialPortManager.listAvailablePortsCmd(noDisplay)),
 
             vscode.commands.registerCommand("mcu-debug.liveWatch.addExpr", this.addLiveWatchExpr.bind(this)),
             vscode.commands.registerCommand("mcu-debug.liveWatch.removeExpr", this.removeLiveWatchExpr.bind(this)),
@@ -306,23 +312,14 @@ export class MCUDebugExtension {
 
     private receivedUARTConfigureEvent(e: vscode.DebugSessionCustomEvent) {
         const mySession = CDebugSession.FindSession(e.session);
+        const args = e.body as ConfigurationArguments;
         if (!mySession) {
             return;
         }
-        const serialConfig = e.body.serialConfig as SerialConfig | undefined;
-        if (serialConfig && serialConfig.enabled && serialConfig.ports && serialConfig.ports.length > 0) {
-            for (const portConfig of serialConfig.ports) {
-                if (portConfig.tcp_port && portConfig.tcp_port > 0) {
-                    const src = new SocketUARTSource(portConfig.path, `127.0.0.1:${portConfig.tcp_port}`);
-                    mySession.rttUARTMap[portConfig.path] = src;
-                    src.start().then(() => {
-                        // Handle successful start if needed
-                        this.allocateTerminal(portConfig.decoders?.console, src);
-                    }).catch((error) => {
-                        console.error(`Failed to start UART source for port ${portConfig.path}: ${error}`);
-                    });
-                }
-            }
+        try {
+            this.serialPortManager.createSerialPorts(args);
+        } catch (error) {
+            // Errors already handled in SerialPortManager, but you can log them here if desired
         }
     }
 

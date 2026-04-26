@@ -4,10 +4,7 @@ import * as path from "path";
 import { GDBDebugSession } from "./gdb-session";
 import { GDBServerSession, getEnvFromConfig } from "./server-session";
 import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, awaitWithTimeout } from "./servers/common";
-import { existsSync } from "fs";
-import { DebugHelper } from "./helper";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
-import { ChildProcess, spawn } from "child_process";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { PortReserved } from "@mcu-debug/shared/proxy-protocol/PortReserved";
 import { PortSet } from "@mcu-debug/shared/proxy-protocol/PortSet";
@@ -27,7 +24,7 @@ export class PortReservedInfo {
         public stream_id: number,
         public stream_id_str: string,
         public status: StreamStatus = "starting",
-    ) {}
+    ) { }
 }
 
 export class ProxyClient extends EventEmitter {
@@ -36,7 +33,6 @@ export class ProxyClient extends EventEmitter {
     private timeout = 20 * 1000; // 20 seconds
     private nextSeq: number = 1;
     private args: ConfigurationArguments;
-    private proxyProcess: ChildProcess | null = null;
     private socket: net.Socket | null = null;
     private clientStreams: Map<number, RemoteServer> = new Map();
     private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -307,10 +303,6 @@ export class ProxyClient extends EventEmitter {
             stream.close();
         }
         this.clientStreams.clear();
-        if (this.proxyProcess) {
-            this.proxyProcess.kill();
-            this.proxyProcess = null;
-        }
     }
 
     private connectToProxy(host: string, port: number): Promise<boolean> {
@@ -438,10 +430,10 @@ export class ProxyClient extends EventEmitter {
                 // Wait for the full message to arrive
                 break;
             }
-            const payload = this.msgBuffer.slice(5, 5 + length);
+            const payload = this.msgBuffer.subarray(5, 5 + length);
             await this.msgPromise;
             this.handleProxyMessage(stream_id, payload);
-            this.msgBuffer = this.msgBuffer.slice(5 + length);
+            this.msgBuffer = this.msgBuffer.subarray(5 + length);
         }
         this.proxyBufferBusy = false;
     }
@@ -631,7 +623,7 @@ export class RemoteServer {
         private proxyManager: ProxyClient,
         public portDef: TcpPortDef,
         public pInfo: PortReservedInfo,
-    ) {}
+    ) { }
 
     public async initialize() {
         const cleanupSocket = (socket: net.Socket) => {

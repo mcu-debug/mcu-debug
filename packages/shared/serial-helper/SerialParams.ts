@@ -23,6 +23,6 @@ export type SerialParams = {
      * callers that do not set this field get the original TCP-bridge behaviour.
      */
     transport: SerialTransport;
-    tcp_port?: number;
-    decoders?: any;
+    log_file?: string;
+    input_mode?: string;
 };

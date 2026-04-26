@@ -214,7 +214,7 @@ export class PtyTerminal extends EventEmitter {
 
     private handleReturn(chr: string) {
         if (this.options.inputMode === TerminalInputMode.COOKED) {
-            this.emit("data", this.curLine + os.EOL);
+            this.emit("data", this.curLine + "\r\n");
         } else {
             this.emit("data", chr);
         }

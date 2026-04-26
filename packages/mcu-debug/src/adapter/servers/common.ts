@@ -69,6 +69,16 @@ export class SWOConfigureEvent extends Event implements DebugProtocol.Event {
     }
 }
 
+export class UARTConfigureEvent extends Event implements DebugProtocol.Event {
+    public event: string = "uart-configure";
+    public body: ConfigurationArguments
+
+    constructor(params: ConfigurationArguments) {
+        super("uart-configure");
+        this.body = params;
+    }
+}
+
 export interface RTTConfigureBody {
     type: string; // Currently, only 'socket' is supported
     decoder: RTTCommonDecoderOpts;
@@ -1280,6 +1290,18 @@ export function getHelperExecutable(extPath: string): string {
     }
     const helperPath = `${extPath}/bin/${platform}-${arch}/${helperName}`;
     if (fs.existsSync(helperPath)) {
+        try {
+            // Quick defensive check before returning
+            if (process.platform !== "win32") {
+                const stats = fs.statSync(helperPath);
+                if (!(stats.mode & 0o100)) {
+                    // Check if the owner-execute bit is missing
+                    fs.chmodSync(helperPath, 0o755);
+                }
+            }
+        } catch (e) {
+            // If we fail to set permissions, we can still try to execute it. It might work if the file already has execute permissions or if the OS doesn't enforce them (e.g. Windows).
+        }
         return helperPath;
     } else {
         throw new Error(`mcu-debug-helper executable not found for platform ${platform} and architecture ${arch} at path ${helperPath}`);

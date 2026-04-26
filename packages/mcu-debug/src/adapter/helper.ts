@@ -177,27 +177,9 @@ export class DebugHelper {
         }
     }
 
-    private getHelperExe() {
+    public getHelperExecPath() {
         const extPath = this.session.args.extensionPath;
         return getHelperExecutable(extPath);
-    }
-
-    public getHelperExecPath() {
-        let helperPath = this.getHelperExe();
-        try {
-            // Quick defensive check before spawning
-            if (process.platform !== "win32") {
-                const stats = fs.statSync(helperPath);
-                if (!(stats.mode & 0o100)) {
-                    // Check if the owner-execute bit is missing
-                    fs.chmodSync(helperPath, 0o755);
-                }
-            }
-        } catch (error) {
-            this.session.handleMsg(Stderr, `Error finding helper executable: ${error}`);
-            throw error;
-        }
-        return helperPath;
     }
 
     private handleHelperStdout(message: Buffer | string) {

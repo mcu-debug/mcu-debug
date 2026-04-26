@@ -530,11 +530,23 @@ This doubles as the "tee to file" backbone referenced in the AI architecture ([A
 
 ## 10. Configuration Sources
 
-UART config lives in **two places**, with distinct roles:
+UART config has **two coequal sources**. Neither is "primary"; they compose.
 
-### Workspace state (primary source of truth)
+| Source | Edited via | Persistence | Role |
+|---|---|---|---|
+| **Workspace state** | `MCU DEBUG` panel UI (`+`, per-tab settings) | `context.workspaceState` (Memento) | User's current UARTs for this workspace; survives across VS Code restarts |
+| **`launch.json`** | Hand-edited JSON (or IDE) | File, checked into VCS | Debug-config-specific UARTs + overrides; also the SSOT for CLI/AI modes where no workspace state exists |
 
-Created and edited via the **MCU UARTs** panel UI (`+` to add, per-tab settings). Persisted via `context.workspaceState` (VS Code `Memento` API). Full schema per UART:
+### Why both
+
+- **Workspace state** is the natural home for "I plugged in a board, picked a port, set my baud." It persists without requiring users to touch JSON.
+- **`launch.json`** is the natural home for "this debug config needs these UARTs at these settings, reproducibly, checked in with the code." It also travels to environments that have no workspace state — the CLI variant ([AI-Angle.md §9](AI-Angle.md)), AI-driven sessions, CI.
+
+Forcing either one to be the only source creates friction for the other audience.
+
+### Workspace-state schema
+
+Created and edited via the panel UI. Full schema per UART:
 
 ```jsonc
 {
@@ -548,40 +560,49 @@ Created and edited via the **MCU UARTs** panel UI (`+` to add, per-tab settings)
   "logFile": "logs/uart.log",        // optional; shared with RTT/SWO logging
   "logTimestamps": true,
   "ringBufferBytes": 1048576,        // default 1 MB
-  "autoOpenOnStartup": true,         // reopen on VS Code restart
-  "preDecoder": null                 // future, for binary protocols
+  "autoOpenOnStartup": true          // reopen on VS Code restart
 }
 ```
 
-### `launch.json` (debug-session references)
+### `launch.json` schema
 
-Debug configs reference UARTs by label — they don't redefine them. Keeps the debug config small and avoids duplication.
+First-class configuration — not a legacy/migration path. A debug config declares the UARTs it wants, with only `path` required; everything else is optional and layered on top of any matching UI entry:
 
 ```jsonc
 "uartConfig": {
   "enabled": true,                   // master toggle — keep config when disabled
-  "autoOpen": ["DebugUART", "Telemetry"]   // labels of workspace-configured UARTs to ensure open
-}
-```
-
-On debug session start: the extension iterates `autoOpen` and ensures each listed UART is open (idempotent — already-open UARTs are no-op).
-
-On debug session end: nothing happens to UARTs. They were workspace-scoped before, during, and after.
-
-### Legacy inline definition (supported, discouraged)
-
-For users migrating from older versions or wanting `launch.json` as sole source, inline UART definitions are accepted:
-
-```jsonc
-"uartConfig": {
-  "enabled": true,
-  "uarts": [                         // inline — merged into workspace state on first load
-    { "label": "DebugUART", "port": "/dev/ttyUSB0", "baud": 115200 }
+  "uarts": [
+    {
+      "path": "COM3",                // required — identifies the port
+      "label": "DebugUART",          // optional — overrides default tag
+      "params": {                    // optional — any fields present override UI
+        "baud": 115200,
+        "parity": "none",
+        "stopBits": 1,
+        "dataBits": 8
+      },
+      "logFile": "logs/debug.log",   // optional
+      "logTimestamps": true          // optional
+    }
   ]
 }
 ```
 
-Inline-defined UARTs are promoted to workspace state on first encounter. Use the UI to manage them thereafter.
+### Precedence and merge rules
+
+When a debug session starts, for each `launch.json` UART entry:
+
+1. **Look up the path in workspace state.** If found, use that config as the base.
+2. **Overlay launch.json fields.** Any field explicitly present in `launch.json` overrides the UI value. Fields absent from `launch.json` inherit from UI.
+3. **No UI entry?** Use `launch.json` as-is, filling missing fields with defaults (115200, 8N1, none).
+4. **Ensure the port is open.** Idempotent — if already open with different params, reconfigure in place (existing `serial.open` semantics).
+5. **Ensure a tab exists.** If no tab is showing this port, create one. If one already exists, leave it.
+
+Effective config (merge result) applies for the debug session's duration. When the session ends, UARTs remain open under their original UI config — launch.json overrides are not persisted back to workspace state. Reconfigure-on-next-session is cheap and predictable.
+
+### No decoder pipeline for UART
+
+UART is a flat text stream, unlike RTT's typed multi-channel binary data. Logging, timestamps, and label overrides live directly in the panel UI — no `decoders: [...]` field, no session-vs-workspace decoder lifecycle to reconcile. Users with binary protocols over UART (MAVLink, SLCAN, custom TLV) can post-process the log file; pre-decoding can be revisited if demand shows up.
 
 ### Default mux tags
 
@@ -595,9 +616,9 @@ Each source uses its most natural identifier:
 
 Existing collision-resolution logic handles rare cases (e.g. macOS `/dev/cu.X` vs `/dev/tty.X` sharing a basename).
 
-### SSOT benefit
+### CLI / AI mode
 
-`launch.json` is the Single Source of Truth. The same config drives both the VS Code extension and the CLI variant ([AI-Angle.md §9](AI-Angle.md)). Adding UART here lights up both surfaces simultaneously.
+No workspace state exists outside VS Code, so in the CLI variant `launch.json` is the sole config source. The merge rules above degenerate cleanly: step 1 finds nothing, steps 2–3 apply defaults, steps 4–5 open the port and (if a TUI is attached) create a tab. Same `launch.json`, same behavior as the extension would produce against an empty workspace.
 
 ---
 
