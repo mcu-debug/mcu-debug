@@ -880,8 +880,12 @@ export async function activate(context: vscode.ExtensionContext) {
             wsType += '-' + getWSLNetworkingMode();
         }
         MCUDebugChannel.debugMessage(`Workspace location type: ${wsType}`);
-        MCUDebugChannel.debugMessage(`Extension startup workspace: ${vscode.workspace.name}, folders:\n  ${vscode.workspace.workspaceFolders?.map((f) => f.name).join(",\n  ")}`);
-        MCUDebugChannel.debugMessage(`Workspace URI:\n  ${vscode.workspace.workspaceFolders?.map((f) => f.uri.toString()).join(",\n  ")}`);
+        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+            MCUDebugChannel.debugMessage(`Extension startup workspace: ${vscode.workspace.name}, folders:\n  ${vscode.workspace.workspaceFolders?.map((f) => f.name).join(",\n  ")}`);
+            MCUDebugChannel.debugMessage(`Workspace URI:\n  ${vscode.workspace.workspaceFolders?.map((f) => f.uri.toString()).join(",\n  ")}`);
+        } else {
+            MCUDebugChannel.debugMessage("Extension startup: No workspace");
+        }
     } catch (_e) {
         /* empty */
     }

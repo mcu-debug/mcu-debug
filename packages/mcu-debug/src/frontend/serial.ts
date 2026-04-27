@@ -267,6 +267,12 @@ export class SerialPortManager {
                         const ports = msg.params?.ports;
                         if (Array.isArray(ports)) {
                             this.availablePorts = ports as AvailablePort[];
+                            //
+                            // Uncommenting the following line cause the OUTPUT channel to erase everything before this line and
+                            // the channel completely stops working for any further output. Tried to debug with AI for hours and we
+                            // could not figure out why. The line itself is harmless and works fine in other places, but for some
+                            // reason it causes the channel to break when used here.
+                            //
                             // this.logInfo(`Received serial.availableChanged: revision=${msg.params?.revision}, ports=${ports.length}`);
                             this.resolvePendingAvailableSnapshots();
                         }
