@@ -18,3 +18,4 @@
 pub mod port_monitor;
 pub mod proxy_server;
 pub mod run;
+pub mod serial_available;

@@ -29,6 +29,7 @@ tempfile = "3.26.0"
 log = "0.4"
 flexi_logger = "0.29"
 serialport = { version = "4.9.0", default-features = false }
+notify = "8.2.0"
 
 [profile.release]
 strip = "symbols"

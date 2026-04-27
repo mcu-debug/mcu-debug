@@ -30,8 +30,7 @@ import { CDebugSession, CDebugChainedSessionItem } from "./cortex_debug_session"
 import { ServerConsoleLog } from "../adapter/server-console-log";
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "../../../shared/lib/proxy-network";
-import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
-import { spawnSync } from "child_process";
+
 
 interface SVDInfo {
     expression: RegExp;

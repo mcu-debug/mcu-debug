@@ -80,6 +80,10 @@ const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mcu-debug-helper";
 
 let _extensionPath = "";
 
+export function setExtensionPath(extPath: string) {
+    _extensionPath = extPath;
+}
+
 // Runs a command on the remote host via SSH. Returns trimmed stdout on success,
 // rejects with a descriptive error on non-zero exit or timeout.
 async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs = SSH_RUN_TIMEOUT_MS): Promise<string> {
@@ -525,11 +529,8 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
         // We need to spawn the proxy server on the local machine, but the DA will connect to it via the loopback interface,
         // so no network setup is needed. We can set the mode and return immediately.
         const extPath = _extensionPath;
-        const helperPath = getHelperExecutable(extPath);
-        hostConfig.pvtNetworkMode = "local";
-        hostConfig.pvtProxyHost = "127.0.0.1";
+        const helperPath = getHelperExecutable(extPath);// set after we get the free port
         const token = crypto.randomBytes(16).toString("hex");
-        hostConfig.pvtProxyToken = token;
         let settled = false;
         let timeout: NodeJS.Timeout | undefined;
         const cleanup = () => {
@@ -541,12 +542,35 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
                 localProxyProcess.kill();
                 localProxyProcess = null;
             }
+            proxyLaunchResults = null;
+            currentHostConfig = null;
         }
-        getAnyFreePort(66778).then((port) => {
-            localProxyProcess = spawn(helperPath, ["proxy", "--port", port.toString(), "--token", token]);
+        if (localProxyProcess) {
+            cleanup();
+        }
+        getAnyFreePort(35900).then((port) => {
+            hostConfig.pvtNetworkMode = "local";
+            hostConfig.pvtProxyHost = "127.0.0.1";
+            hostConfig.pvtProxyPort = port;
+            hostConfig.pvtProxyToken = token;
+            const args = ["proxy", "--port", port.toString(), "--token", token];
+            MCUDebugChannel.debugMessage(`Starting local proxy with command: ${helperPath} ${args.join(" ")}`);
+            localProxyProcess = spawn(helperPath, args, {
+                stdio: ["pipe", "pipe", "pipe"],
+            });
             localProxyProcess.stdout?.on("data", (data: Buffer) => {
                 const line = data.toString().trim();
                 MCUDebugChannel.debugMessage(`Local proxy stdout: ${line}`);
+                hostConfig.pvtProxyPort = port;
+                proxyLaunchResults = {
+                    policy: computeProxyLaunchPolicy('local'),
+                    consoleMessages: [],
+                    consoleErrors: [],
+                    serverPort: port,
+                    token: token,
+                };
+                settled = true;
+                resolve();
             });
             localProxyProcess.stderr?.on("data", (data: Buffer) => {
                 const line = data.toString().trim();
@@ -566,21 +590,19 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
             });
             localProxyProcess.on("spawn", () => {
                 MCUDebugChannel.debugMessage(`Local proxy process started on port ${port}`);
-                hostConfig.pvtProxyPort = port;
-                settled = true;
-                resolve();
             });
             timeout = setTimeout(() => {
                 if (!settled) {
+                    cleanup();
                     reject(new Error("Local proxy process failed to start within timeout"));
                 }
                 timeout = undefined;
-                cleanup();
-            }, 2000);
+            }, 10000);
         }).catch((err) => {
             reject(new Error(`Failed to get free port for local proxy: ${err.message}`));
         });
     });
+    return promise
 }
 
 export async function handleHostConfig(hostConfig: HostConfig | undefined, delConfig: () => void): Promise<void> {
@@ -663,6 +685,18 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             hostConfig.pvtProxyPort = proxyLaunchResults.reverseTunnelPort;
             hostConfig.pvtProxyToken = proxyLaunchResults.token as string;
             currentHostConfig = { ...hostConfig };
+        } else if (resolvedMode === "local") {
+            // This is allowed only in two circumstances:
+            // 1) the user explicitly sets type: "local" -- and this is meant for testing. Not production
+            // 2) for serial ports that are locallly accessible and there is no existing hostConfig alread existing
+            try {
+                await handleLocalHostConfig(hostConfig);
+                currentHostConfig = { ...hostConfig };
+            } catch (error) {
+                MCUDebugChannel.debugMessage(`Failed to start local proxy server: ${error}`);
+                vscode.window.showErrorMessage(`Failed to start local proxy server: ${error}. Cannot use local proxy configuration.`);
+                throw error;
+            }
         } else if (resolvedMode) {
             const policy = computeProxyLaunchPolicy(resolvedMode);
             let resolvedProxyHost = policy.proxyHostForDA;
@@ -740,18 +774,6 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             hostConfig.pvtProxyPort = proxyLaunchResults!.serverPort as number;
             hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
             currentHostConfig = { ...hostConfig };
-        } else if (resolvedMode === "local") {
-            // This is allowed only in two circumstances:
-            // 1) the user explicitly sets type: "local" -- and this is meant for testing. Not production
-            // 2) for serial ports that are locallly accessible and there is no existing hostConfig alread existing
-            try {
-                await handleLocalHostConfig(hostConfig);
-                currentHostConfig = { ...hostConfig };
-            } catch (error) {
-                MCUDebugChannel.debugMessage(`Failed to start local proxy server: ${error}`);
-                vscode.window.showErrorMessage(`Failed to start local proxy server: ${error}. Cannot use local proxy configuration.`);
-                throw error;
-            }
         } else {
             vscode.window.showWarningMessage(
                 `Unknown hostConfig.type "${hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`,

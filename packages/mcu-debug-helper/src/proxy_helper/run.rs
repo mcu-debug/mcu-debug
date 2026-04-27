@@ -37,6 +37,9 @@ use std::{
 };
 
 use crate::proxy_helper::proxy_server::{ProxyServer, SerialPortRegistry};
+use crate::proxy_helper::serial_available::{
+    start_serial_available_watcher, SerialAvailabilityHub,
+};
 
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "proxy-protocol/")]
@@ -250,11 +253,12 @@ pub fn run(args: ProxyArgs) -> Result<()> {
 
     log::info!("Port wait mode: {:?}", args.port_wait_mode);
     log::info!(
-        "Proxy helper startup: pid={}, host={}, port={}, log_stderr={}",
+        "Proxy helper startup: pid={}, host={}, port={}, log_stderr={}, stdin_watchdog={}",
         std::process::id(),
         args.host,
         local_port,
-        args.log_stderr
+        args.log_stderr,
+        args.heartbeat
     );
 
     // Print Discovery JSON to stdout: {"status": "ready", "port": <actual_port>, "pid": <pid>} with an optional "token" field
@@ -281,6 +285,9 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     // here in the accept loop and is cloned (Arc) into each connection's ProxyServer.
     let serial_registry: SerialPortRegistry =
         Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let serial_available_hub = Arc::new(SerialAvailabilityHub::new());
+    let serial_available_watcher_stop =
+        start_serial_available_watcher(Arc::clone(&serial_available_hub));
 
     // Accept connection and run Funnel Protocol handler in a new thread
     // We generally don't have multiple clients when running inside a VSCode extension,
@@ -310,8 +317,14 @@ pub fn run(args: ProxyArgs) -> Result<()> {
                     heartbeat: false, // watchdog already running on main thread; no second instance
                 };
                 let registry_clone = Arc::clone(&serial_registry);
+                let serial_available_hub_clone = Arc::clone(&serial_available_hub);
                 let handle = thread::spawn(move || {
-                    let mut new_client = ProxyServer::new(args_clone, stream, registry_clone);
+                    let mut new_client = ProxyServer::new(
+                        args_clone,
+                        stream,
+                        registry_clone,
+                        serial_available_hub_clone,
+                    );
                     new_client.message_loop().unwrap_or_else(|e| {
                         log::error!("Error in client message loop: {}", e);
                     });
@@ -341,6 +354,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     for handle in client_threads {
         handle.join().ok();
     }
+    let _ = serial_available_watcher_stop.send(());
     log::info!("All client threads finished — proxy exiting cleanly");
 
     Ok(())

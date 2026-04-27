@@ -4,6 +4,7 @@ use crate::serial::port::{
 };
 use crate::serial::AvailablePort;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use ts_rs::{Config, TS};

@@ -141,13 +141,13 @@ impl ProxyServer {
             if err {
                 err_msg = format!("Initialization failed, closing connection: {}", err_msg);
                 eprintln!("{}", err_msg);
-                self.stream
+                self.writer
                     .shutdown(std::net::Shutdown::Both)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to shutdown stream: {}", e);
                     });
                 ControlResponse::error(msg.seq, err_msg)
-                    .send(&mut self.stream)
+                    .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send error response: {}", e);
                     });
@@ -163,9 +163,10 @@ impl ProxyServer {
                     server_cwd: dir,
                 };
                 ControlResponse::success(msg.seq, Some(data))
-                    .send(&mut self.stream)
+                    .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send success response: {}", e);
+                        self.exit = true;
                     });
             }
         } else {
@@ -174,7 +175,7 @@ impl ProxyServer {
                 msg.request
             );
             ControlResponse::error(msg.seq, "Internal error: wrong handler".to_string())
-                .send(&mut self.stream)
+                .send(&self.writer)
                 .ok();
         }
     }
@@ -207,7 +208,7 @@ impl ProxyServer {
                                 port_set.start_port
                             ),
                         )
-                        .send(&mut self.stream)
+                        .send(&self.writer)
                         .ok();
                         return;
                     }
@@ -232,9 +233,10 @@ impl ProxyServer {
             }
             let data = ControlResponseData::AllocatePorts { ports: ret_vec };
             ControlResponse::success(msg.seq, Some(data))
-                .send(&mut self.stream)
+                .send(&self.writer)
                 .unwrap_or_else(|e| {
                     eprintln!("Failed to send success response: {}", e);
+                    self.exit = true;
                 });
         } else {
             eprintln!(
@@ -242,7 +244,7 @@ impl ProxyServer {
                 msg.request
             );
             ControlResponse::error(msg.seq, "Internal error: wrong handler".to_string())
-                .send(&mut self.stream)
+                .send(&self.writer)
                 .ok();
         }
     }
@@ -277,7 +279,7 @@ impl ProxyServer {
                 Err(e) => {
                     eprintln!("Failed to launch gdb-server: {}", e);
                     ControlResponse::error(msg.seq, format!("Failed to launch gdb-server: {}", e))
-                        .send(&mut self.stream)
+                        .send(&self.writer)
                         .ok();
                     self.exit = true;
                     return;
@@ -310,10 +312,12 @@ impl ProxyServer {
                     self.stop_port_monitor();
                     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
                     self.monitor_stop_tx = Some(stop_tx);
-                    if let Err(e) = wait_for_ports(ports, self.event_tx.clone(), stop_rx) {
-                        eprintln!("Failed to start port monitor: {}", e);
-                        self.monitor_stop_tx = None;
-                    }
+                    let event_tx = self.event_tx.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = wait_for_ports(ports, event_tx, stop_rx) {
+                            eprintln!("Port monitor exited with error: {}", e);
+                        }
+                    });
                 }
             }
 
@@ -321,9 +325,10 @@ impl ProxyServer {
                 pid: self.process.as_ref().unwrap().id(),
             };
             ControlResponse::success(msg.seq, Some(data))
-                .send(&mut self.stream)
+                .send(&self.writer)
                 .unwrap_or_else(|e| {
                     eprintln!("Failed to send success response: {}", e);
+                    self.exit = true;
                 });
         } else {
             eprintln!(
@@ -331,7 +336,7 @@ impl ProxyServer {
                 msg.request
             );
             ControlResponse::error(msg.seq, "Internal error: wrong handler".to_string())
-                .send(&mut self.stream)
+                .send(&self.writer)
                 .ok();
         }
     }
@@ -510,9 +515,10 @@ impl ProxyServer {
                 );
                 eprintln!("{}", err_msg);
                 ControlResponse::error(msg.seq, err_msg)
-                    .send(&mut self.stream)
+                    .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send error response: {}", e);
+                        self.exit = true;
                     });
                 return;
             }
@@ -527,9 +533,10 @@ impl ProxyServer {
             match fs::write(full_path.clone(), content) {
                 Ok(_) => {
                     ControlResponse::success(msg.seq, None)
-                        .send(&mut self.stream)
+                        .send(&self.writer)
                         .unwrap_or_else(|e| {
                             eprintln!("Failed to send success response: {}", e);
+                            self.exit = true;
                         });
                 }
                 Err(e) => {
@@ -541,9 +548,10 @@ impl ProxyServer {
                     );
                     eprintln!("{}", err_msg);
                     ControlResponse::error(msg.seq, err_msg)
-                        .send(&mut self.stream)
+                        .send(&self.writer)
                         .unwrap_or_else(|e| {
                             eprintln!("Failed to send error response: {}", e);
+                            self.exit = true;
                         });
                 }
             }
@@ -553,7 +561,7 @@ impl ProxyServer {
                 msg.request
             );
             ControlResponse::error(msg.seq, "Internal error: wrong handler".to_string())
-                .send(&mut self.stream)
+                .send(&self.writer)
                 .ok();
         }
     }

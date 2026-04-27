@@ -17,7 +17,6 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::net::TcpStream;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -34,16 +33,28 @@ use super::*;
 /// forwarding without a separate TCP listener or bridge.
 pub struct FunnelWriter {
     pub(super) stream_id: u8,
-    pub(super) stream: TcpStream,
+    pub(super) event_tx: mpsc::Sender<ProxyEvent>,
 }
 
 impl Write for FunnelWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        send_to_stream(self.stream_id, &mut self.stream, buf)?;
+        // Queue serial bytes to the main proxy event loop so all outbound
+        // framing and socket writes happen in one place.
+        self.event_tx
+            .send(ProxyEvent::StreamData {
+                stream_id: self.stream_id,
+                data: buf.to_vec(),
+            })
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "proxy event loop closed while writing funnel data",
+                )
+            })?;
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.stream.flush()
+        Ok(())
     }
 }
 
@@ -168,16 +179,18 @@ impl ProxyServer {
                     channel_id,
                 };
                 ControlResponse::success(seq, Some(data))
-                    .send(&mut self.stream)
+                    .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send serial.open response: {}", e);
+                        self.exit = true;
                     });
             }
             Err(e) => {
                 ControlResponse::error(seq, format!("serial.open failed: {e}"))
-                    .send(&mut self.stream)
+                    .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send serial.open error: {}", e);
+                        self.exit = true;
                     });
             }
         }
@@ -196,21 +209,18 @@ impl ProxyServer {
         // Late-attach catch-up: send ring snapshot as funnel frames.
         let snapshot = handle.snapshot();
         if !snapshot.is_empty() {
-            send_to_stream(channel_id, &mut self.stream, &snapshot)
+            self.writer
+                .write_frame(channel_id, &snapshot)
                 .map_err(|e| anyhow::anyhow!("funnel snapshot send failed: {e}"))?;
         }
 
         // Attach a FunnelWriter for the serial→client direction.
         let client_id = handle.next_client_id();
-        let funnel_stream = self
-            .stream
-            .try_clone()
-            .map_err(|e| anyhow::anyhow!("failed to clone control stream for funnel: {e}"))?;
         handle.attach_client(
             client_id,
             Box::new(FunnelWriter {
                 stream_id: channel_id,
-                stream: funnel_stream,
+                event_tx: self.event_tx.clone(),
             }),
         );
 
@@ -254,15 +264,17 @@ impl ProxyServer {
             }
             // For Direct, TcpBridge::drop handles the TCP listener and attached clients.
             ControlResponse::success(seq, Some(ControlResponseData::SerialClose))
-                .send(&mut self.stream)
+                .send(&self.writer)
                 .unwrap_or_else(|e| {
                     eprintln!("Failed to send serial.close response: {}", e);
+                    self.exit = true;
                 });
         } else {
             ControlResponse::error(seq, format!("serial.close: '{}' is not open", path))
-                .send(&mut self.stream)
+                .send(&self.writer)
                 .unwrap_or_else(|e| {
                     eprintln!("Failed to send serial.close error: {}", e);
+                    self.exit = true;
                 });
         }
     }
@@ -287,9 +299,10 @@ impl ProxyServer {
         drop(reg);
         let data = ControlResponseData::SerialListOpen { ports };
         ControlResponse::success(seq, Some(data))
-            .send(&mut self.stream)
+            .send(&self.writer)
             .unwrap_or_else(|e| {
                 eprintln!("Failed to send serial.listOpen response: {}", e);
+                self.exit = true;
             });
     }
 
@@ -298,9 +311,10 @@ impl ProxyServer {
         let ports: Vec<AvailablePort> = crate::serial::list_available();
         let data = ControlResponseData::SerialListAvailable { ports };
         ControlResponse::success(seq, Some(data))
-            .send(&mut self.stream)
+            .send(&self.writer)
             .unwrap_or_else(|e| {
                 eprintln!("Failed to send serial.listAvailable response: {}", e);
+                self.exit = true;
             });
     }
 
@@ -325,9 +339,59 @@ impl ProxyServer {
             params,
         };
         ControlResponse::success(seq, Some(data))
-            .send(&mut self.stream)
+            .send(&self.writer)
             .unwrap_or_else(|e| {
                 eprintln!("Failed to send serial.isOpen response: {}", e);
+                self.exit = true;
+            });
+    }
+
+    /// `serial.subscribeAvailable` — subscribe this connection to debounced
+    /// full-snapshot available-port updates.
+    pub(super) fn handle_serial_subscribe_available(&mut self, seq: u64) {
+        self.unsubscribe_serial_available();
+        let (sub_id, revision, ports) = self.serial_available_hub.subscribe(self.event_tx.clone());
+        self.serial_available_sub_id = Some(sub_id);
+        eprintln!(
+            "serial.subscribeAvailable registered: sub_id={}, thread={:?}",
+            sub_id,
+            std::thread::current().id()
+        );
+
+        ControlResponse::success(
+            seq,
+            Some(ControlResponseData::SerialSubscribeAvailable { revision }),
+        )
+        .send(&self.writer)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to send serial.subscribeAvailable response: {}", e);
+            self.exit = true;
+        });
+
+        let port_count = ports.len();
+        let event = ProxyServerEvents::SerialAvailableChanged { revision, ports };
+        if let Err(e) = event.send(&self.writer) {
+            eprintln!(
+                "Failed to send initial serial.availableChanged event (revision {}, ports {}): {}",
+                revision, port_count, e
+            );
+        } else {
+            eprintln!(
+                "Sent initial serial.availableChanged event (revision {}, ports {})",
+                revision, port_count
+            );
+        }
+    }
+
+    /// `serial.unsubscribeAvailable` — stop available-port snapshot updates for
+    /// this connection.
+    pub(super) fn handle_serial_unsubscribe_available(&mut self, seq: u64) {
+        self.unsubscribe_serial_available();
+        ControlResponse::success(seq, Some(ControlResponseData::SerialUnsubscribeAvailable))
+            .send(&self.writer)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to send serial.unsubscribeAvailable response: {}", e);
+                self.exit = true;
             });
     }
 }

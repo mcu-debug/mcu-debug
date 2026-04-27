@@ -5,12 +5,14 @@ import * as path from "path";
 import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { AvailablePort } from "@mcu-debug/shared/serial-helper/AvailablePort";
 import { SerialPortInfo } from "@mcu-debug/shared/proxy-protocol/SerialPortInfo";
+import { SerialErrorKind } from "@mcu-debug/shared/serial-helper/SerialErrorKind";
 import { awaitWithTimeout, ConfigurationArguments, HostConfig, SerialConfig, TerminalInputMode } from "../adapter/servers/common";
 import { IPtyTerminalOptions, PtyTerminal } from "./pty";
 import { EventEmitter } from "stream";
 import { MCUDebugChannel } from "../dbgmsgs";
 import { getProxyForSerialPorts } from "./proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
+import { setExtensionPath } from "./proxy";
 
 const PROXY_TIMOUT = 5000;
 
@@ -41,9 +43,11 @@ export class SerialPortManager {
     private serialPortViews: Map<string, SerialPortView> = new Map();
     private serialPortConfigs: Map<string, SerialParams> = new Map();
     private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+    private pendingAvailableSnapshotResolvers: Array<() => void> = [];
 
     constructor(private context: vscode.ExtensionContext) {
         SerialPortManager.instance = this;
+        setExtensionPath(context.extensionPath);
     }
 
     public logInfo(message: string) {
@@ -81,11 +85,20 @@ export class SerialPortManager {
         return new Promise((resolve) => {
             this.logInfo(`Attempting to connect to proxy on ${host}:${port}...`);
             const socket = new net.Socket();
-            socket.once("connect", () => {
+            socket.on("data", (data: Buffer) => {
+                this.handleProxyData(data);
+            });
+            socket.on("close", () => {
+                this.logInfo("Proxy connection closed");
+                this.stopHeartbeat();
+                this.destroySocket()
+            });
+            socket.once("connect", async () => {
                 this.logInfo(`Successfully connected to proxy on ${host}:${port}`);
                 this.socket = socket;
                 this.proxyInfo = { host: host, port: port, token };
-                this.startHeartbeat
+                await this.subscribeToSerialAvailability();
+                this.startHeartbeat();
                 resolve(true);
             });
             socket.once("error", (e) => {
@@ -101,15 +114,49 @@ export class SerialPortManager {
             socket.setTimeout(1000);
             */
             socket.connect(port, host);
-            socket.on("data", (data: Buffer) => {
-                this.handleProxyData(data);
-            });
-            socket.on("close", () => {
-                this.logInfo("Proxy connection closed");
-                this.stopHeartbeat();
-                this.destroySocket
-            });
         });
+    }
+
+    private resolvePendingAvailableSnapshots() {
+        if (this.pendingAvailableSnapshotResolvers.length === 0) {
+            return;
+        }
+        const resolvers = this.pendingAvailableSnapshotResolvers.splice(0);
+        for (const resolve of resolvers) {
+            resolve();
+        }
+    }
+
+    private async waitForAvailableSnapshot(timeoutMs: number = PROXY_TIMOUT): Promise<void> {
+        if (this.availablePorts.length > 0) {
+            return;
+        }
+        await new Promise<void>((resolve) => {
+            let resolved = false;
+            const onSnapshot = () => {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                clearTimeout(timer);
+                resolve();
+            };
+            const timer = setTimeout(onSnapshot, timeoutMs);
+            this.pendingAvailableSnapshotResolvers.push(onSnapshot);
+        });
+    }
+
+    private async subscribeToSerialAvailability(): Promise<void> {
+        const controlMsg: ControlMessage = {
+            seq: this.nextSeq++,
+            method: "serial.subscribeAvailable",
+        };
+        try {
+            await awaitWithTimeout(this.sendControlCommand(controlMsg), PROXY_TIMOUT);
+            await this.waitForAvailableSnapshot(PROXY_TIMOUT);
+        } catch (err) {
+            this.logInfo(`serial.subscribeAvailable failed or timed out; falling back to on-demand list: ${err}`);
+        }
     }
 
     private startHeartbeat() {
@@ -124,6 +171,10 @@ export class SerialPortManager {
             this.sendControlCommand(cmd).catch((err) => {
                 this.logError(`Heartbeat failed: ${err}`);
             });
+            // Slow-poll fallback: refresh available ports in case a subscription event was missed.
+            // this.getSerialPrortsList(true).then(ports => {
+            //     console.log(`Heartbeat serial ports refresh: ${ports?.length} ports currently available`);
+            // }).catch(() => { });
         }, 30_000);
     }
 
@@ -201,7 +252,6 @@ export class SerialPortManager {
                 return;
             }
             const payloadStr = payload.toString("utf-8");
-            MCUDebugChannel.debugMessage(`Received message from proxy: ${payloadStr}`);
             const msg = JSON.parse(payloadStr);
             if (msg.event) {
                 const event = msg.event;
@@ -213,17 +263,26 @@ export class SerialPortManager {
                         this.handlePortError(msg.params.path, errKind, errMsg);
                         break;
                     }
+                    case "serial.availableChanged": {
+                        const ports = msg.params?.ports;
+                        if (Array.isArray(ports)) {
+                            this.availablePorts = ports as AvailablePort[];
+                            // this.logInfo(`Received serial.availableChanged: revision=${msg.params?.revision}, ports=${ports.length}`);
+                            this.resolvePendingAvailableSnapshots();
+                        }
+                        break;
+                    }
                     default:
                         this.logError(`Received unknown event from proxy: ${event}`);
                 }
             } else if (msg.seq && this.pendingPromises.has(msg.seq)) {
                 const { resolve, reject } = this.pendingPromises.get(msg.seq)!;
                 this.pendingPromises.delete(msg.seq);
-                this.logInfo(`Received response for seq ${msg.seq}: ${JSON.stringify(msg)}`);
+                this.logInfo(`Received response for seq ${msg.seq}: ${msg.success ? "ok" : `error: ${msg.message}`}`);
                 if (msg.success) {
                     resolve(msg.data);
                 } else {
-                    reject(new Error(msg.error || "Unknown error from proxy"));
+                    reject(new Error(msg.message || "Unknown error from proxy"));
                 }
             } else {
                 this.logError(`Received response with unknown seq: ${msg.seq}`);
@@ -233,9 +292,9 @@ export class SerialPortManager {
         }
     }
 
-    private handlePortError(portPath: string, kind: string, msg: string) {
+    private handlePortError(portPath: string, kind: SerialErrorKind, msg: string) {
         const view = this.serialPortViews.get(portPath);
-        if (kind === "disconnect" && view) {
+        if (kind === "disconnected" && view) {
             // The helper may already have torn down serial state; drop manager-side state and recreate.
             view.notifyDisconnected(msg);
             this.removeSerialPortView(portPath, true, true);
@@ -261,6 +320,13 @@ export class SerialPortManager {
         if (!reconnectConfig) {
             return;
         }
+        const lCasePath = portPath.toLowerCase();
+        const isAvailable = this.availablePorts.some((p) => p.path.toLowerCase() === lCasePath);
+        if (!isAvailable) {
+            // Port is not in the available list yet; reschedule and wait for it to reappear.
+            this.scheduleReconnect(portPath, 3000);
+            return;
+        }
         try {
             const result = await this.openSerialPort({ ...reconnectConfig }, true);
             if (result) {
@@ -273,12 +339,11 @@ export class SerialPortManager {
                 if (actualPath !== configPath) {
                     this.serialPortConfigs.delete(configPath);
                 }
-                this.createOrUpdateViewWithSerialInfo(result, reconnectViewConfig);
+                this.createOrUpdateViewWithSerialInfo(result, reconnectViewConfig, false);
                 const view = this.serialPortViews.get(actualPath);
                 if (!view) {
                     return;
                 }
-                view.notifyReconnected();
                 return;
             }
         } catch {
@@ -357,7 +422,7 @@ export class SerialPortManager {
             this.logError(`Failed to connect to proxy for serial ports. Serial ports will not be available.`);
             return [];
         }
-        const ports = await this.getSerialPrortsList();
+        const ports = this.getCurrentSerialPorts();
         if (noDisplay) {
             return ports;
         }
@@ -395,8 +460,9 @@ export class SerialPortManager {
                 devs.push(port.path);
             }
             if (!found && !silent) {
-                this.logError(`Serial port ${serialParams.path} not found in available ports list ${JSON.stringify(devs, null, 2)}. Cannot open serial port.`);
-                return null;
+                // It is not an error if a port is not found in the available list because the list may be stale.
+                // The open command will ultimately determine if the port can be opened or not. But it is useful to log this information for debugging purposes.
+                this.logInfo(`Serial port ${serialParams.path} not found in available ports list ${JSON.stringify(devs, null, 2)}. Cannot open serial port.`);
             }
             serialParams.transport = this.isFunnelTransport ? "funnel" : "direct";   // Default to proxy transport for remote workspaces and direct transport for local workspaces. The proxy will handle the transport details on its side.
             const controlMsg: ControlMessage = {
@@ -504,19 +570,16 @@ export class SerialPortManager {
             this.logError(`Failed to connect to proxy for serial ports. Serial ports will not be available.`);
             return;
         }
-        if (!this.availablePorts || this.availablePorts.length === 0) {
-            await awaitWithTimeout(this.getSerialPrortsList(), PROXY_TIMOUT);
-        }
+        this.availablePorts = this.getCurrentSerialPorts();
         const serialConfig = args.serialConfig;
         for (const portConfig of serialConfig.ports) {
             try {
-
                 const pInfo = await this.openSerialPort(portConfig) as SerialPortInfo | null;
                 if (!pInfo) {
                     this.logError(`Failed to open serial port ${portConfig.path}`);
                     continue;
                 }
-                this.createOrUpdateViewWithSerialInfo(pInfo, portConfig);
+                this.createOrUpdateViewWithSerialInfo(pInfo, portConfig, true);
             } catch (e: any) {
                 this.logError(`Failed to open serial port ${portConfig.path}: ${e.message}`);
             }
@@ -530,7 +593,7 @@ export class SerialPortManager {
      * @param log_file - Path to the log file
      * @param input_mode - Input mode for the serial port
      */
-    private createOrUpdateViewWithSerialInfo(pInfo: SerialPortInfo, portConfig: SerialParams) {
+    private createOrUpdateViewWithSerialInfo(pInfo: SerialPortInfo, portConfig: SerialParams, isNew: boolean = false) {
         const log_file = portConfig.log_file;
         const input_mode = portConfig.input_mode;
         const actualPath = pInfo.params?.path || portConfig.path;
@@ -546,17 +609,22 @@ export class SerialPortManager {
             }
         }
         const tcpPort = pInfo.tcp_port || server?.getPort() || 0;
-        const existing = this.serialPortViews.get(actualPath);
-        if (existing) {
-            existing.setTcpPort(tcpPort);
-            existing.setLogFile(log_file);
-            existing.setInputMode(input_mode);
+        let view = this.serialPortViews.get(actualPath);
+        if (view) {
+            view.setTcpPort(tcpPort);
+            view.setLogFile(log_file ?? undefined);
+            view.setInputMode(input_mode ?? undefined);
         } else {
-            const view = new SerialPortView(actualPath, { ...portConfig, path: actualPath }, tcpPort);
+            view = new SerialPortView(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
             this.serialPortViews.set(actualPath, view);
             view.on("close", () => {
                 this.removeSerialPortView(actualPath);
             });
+        }
+        if (isNew) {
+            view.notifyConnected(`Serial port ${actualPath} opened successfully on initial launch`);
+        } else {
+            view.notifyReconnected();
         }
     }
 
@@ -608,7 +676,7 @@ class SerialPortView extends EventEmitter {
     private socket: net.Socket | null = null;
     private logFileStream: fs.WriteStream | null = null;
 
-    constructor(private device: string, public serialConfig: SerialParams, private tcpPort: number = 0) {
+    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
         super();
         const baseName = path.basename(this.device);
         this.options = {
@@ -618,7 +686,9 @@ class SerialPortView extends EventEmitter {
         };
         this.terminal = PtyTerminal.findExisting(this.options.name);
         if (this.terminal) {
-            this.terminal.clearTerminalBuffer();
+            if (doClear) {
+                this.terminal.clearTerminalBuffer();
+            }
             this.terminal.resetOptions(this.options);
             this.terminal.removeAllListeners();
         } else {
@@ -646,6 +716,11 @@ class SerialPortView extends EventEmitter {
         if (this.serialConfig.log_file) {
             this.setLogFile(this.serialConfig.log_file);
         }
+    }
+
+
+    public notifyConnected(reason: string) {
+        this.terminal.write(`\r\n\x1b[32m[Serial connected] ${reason}\x1b[0m\r\n`);
     }
 
     public notifyDisconnected(reason: string) {

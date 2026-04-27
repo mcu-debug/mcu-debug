@@ -34,4 +34,6 @@ export type ControlResponseData =
               channel_id: number | null;
               params: SerialParams | null;
           };
-      };
+      }
+    | { "serial.subscribeAvailable": { revision: number } }
+    | "serial.unsubscribeAvailable";

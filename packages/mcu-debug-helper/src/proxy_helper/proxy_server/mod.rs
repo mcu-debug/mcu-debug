@@ -16,6 +16,7 @@
 //! and shared utilities used by the child modules.
 
 use crate::proxy_helper::run::{PortWaitMode, ProxyArgs};
+use crate::proxy_helper::serial_available::SerialAvailabilityHub;
 use crate::serial::port::PortHandle;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -44,29 +45,76 @@ pub use serial::{FunnelWriter, SerialPortBacking, SerialPortRegistry};
 #[cfg(test)]
 mod tests;
 
-// ── Global send mutex ─────────────────────────────────────────────────────────
-
-/// Global mutex to serialise all writes to the control TcpStream so that
-/// concurrent threads (port waiters, stdout/stderr forwarders, serial funnel
-/// writers) do not interleave Funnel frames.
-static STREAM_MUTEX: Mutex<()> = Mutex::new(());
-
 pub const CURRENT_VERSION: &str = "1.0.3";
 
-// ── Low-level framing utility ─────────────────────────────────────────────────
+// ── FrameWriter ───────────────────────────────────────────────────────────────
 
-/// Write `bytes` as a single Funnel-protocol frame with the given `stream_id`.
-/// Uses [`STREAM_MUTEX`] to guarantee that frames from concurrent writers are
-/// never interleaved on the wire.
-pub fn send_to_stream(stream_id: u8, stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
-    let _lock = STREAM_MUTEX.lock().expect("failed to acquire stream lock");
-    let mut header = Vec::with_capacity(5);
-    header.push(stream_id);
-    header.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    stream.write_all(&header)?;
-    stream.write_all(bytes)?;
-    stream.flush()?;
-    Ok(())
+/// Locked writer for the Funnel-protocol client socket.
+///
+/// All writes to the client `TcpStream` go through this type. The internal
+/// `Mutex` ensures that the 5-byte header and the payload are written
+/// atomically, regardless of which thread is writing.
+///
+/// `FrameWriter` is cheaply `Clone`able (it clones the `Arc`, not the socket).
+/// Pass a clone to any background thread that needs to write; the same lock
+/// will be acquired on every call, preventing interleaving.
+#[derive(Clone)]
+pub struct FrameWriter {
+    stream: Arc<Mutex<TcpStream>>,
+}
+
+impl FrameWriter {
+    pub fn new(stream: TcpStream) -> Self {
+        // Bound how long a write can block the message loop.  If the client is
+        // not consuming data (e.g. a stalled VS Code window), writes to the
+        // OS send buffer would otherwise block indefinitely and starve
+        // `event_rx.recv()`.  Five seconds is generous for a loopback or
+        // LAN connection; treat a timeout as a broken connection.
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        Self {
+            stream: Arc::new(Mutex::new(stream)),
+        }
+    }
+
+    /// Write `bytes` as a single Funnel-protocol frame with the given `stream_id`.
+    /// Acquires the internal lock for the duration so header + payload are atomic.
+    pub fn write_frame(&self, stream_id: u8, bytes: &[u8]) -> io::Result<()> {
+        let mut s = self.stream.lock().unwrap_or_else(|e| e.into_inner());
+        let mut header = Vec::with_capacity(5);
+        header.push(stream_id);
+        header.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        s.write_all(&header)?;
+        s.write_all(bytes)?;
+        s.flush()?;
+        Ok(())
+    }
+
+    /// Clone the raw `TcpStream` for use as a **read-only** reader in a
+    /// background thread. The clone does not go through the write lock because
+    /// reads and writes use separate OS-level operations on the same fd.
+    pub fn try_clone_stream(&self) -> io::Result<TcpStream> {
+        self.stream
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_clone()
+    }
+
+    /// Shut down the underlying socket.
+    pub fn shutdown(&self, how: std::net::Shutdown) -> io::Result<()> {
+        self.stream
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shutdown(how)
+    }
+
+    /// Return `true` if the peer is still connected (non-blocking 0-byte peek).
+    pub fn is_connected(&self) -> bool {
+        let s = self.stream.lock().unwrap_or_else(|e| e.into_inner());
+        let mut buf = [0u8; 0];
+        matches!(s.peek(&mut buf), Ok(_))
+    }
 }
 
 // ── Stream bookkeeping ────────────────────────────────────────────────────────
@@ -89,7 +137,7 @@ pub struct PortInfoListner {
 
 pub struct ProxyServer {
     args: ProxyArgs,
-    stream: TcpStream,
+    writer: FrameWriter,
     process: Option<Child>,
     /// Per-stream TCP connections to the gdb-server.
     streams: HashMap<u8, PortInfo>,
@@ -108,6 +156,8 @@ pub struct ProxyServer {
     /// Stream-ID → (port_handle, client_id, path) for inbound funnel frames.
     /// Provides O(1) routing without acquiring the registry lock on every byte.
     serial_funnel_write: HashMap<u8, (Arc<PortHandle>, u64, String)>,
+    serial_available_hub: Arc<SerialAvailabilityHub>,
+    serial_available_sub_id: Option<u64>,
 }
 
 impl Drop for ProxyServer {
@@ -115,17 +165,23 @@ impl Drop for ProxyServer {
     /// `ProxyServer` is dropped — covers panics, early returns, and any path that
     /// bypasses the normal `end_process()` call.
     fn drop(&mut self) {
+        self.unsubscribe_serial_available();
         self.end_process();
     }
 }
 
 impl ProxyServer {
-    pub fn new(args: ProxyArgs, stream: TcpStream, serial_registry: SerialPortRegistry) -> Self {
+    pub fn new(
+        args: ProxyArgs,
+        stream: TcpStream,
+        serial_registry: SerialPortRegistry,
+        serial_available_hub: Arc<SerialAvailabilityHub>,
+    ) -> Self {
         let (event_tx, event_rx) = channel();
         let session_port_wait_mode = args.port_wait_mode.clone();
         Self {
             args,
-            stream,
+            writer: FrameWriter::new(stream),
             process: None,
             streams: HashMap::new(),
             exit: false,
@@ -138,6 +194,14 @@ impl ProxyServer {
             monitor_stop_tx: None,
             serial_registry,
             serial_funnel_write: HashMap::new(),
+            serial_available_hub,
+            serial_available_sub_id: None,
+        }
+    }
+
+    pub(super) fn unsubscribe_serial_available(&mut self) {
+        if let Some(sub_id) = self.serial_available_sub_id.take() {
+            self.serial_available_hub.unsubscribe(sub_id);
         }
     }
 
@@ -161,7 +225,7 @@ impl ProxyServer {
         // loop can block on event_rx.recv() and wake up instantly for *any* event
         // (incoming data, port connection, forwarded stream data) without ever blocking
         // on a stream read in the main thread.
-        let control_stream = self.stream.try_clone()?;
+        let control_stream = self.writer.try_clone_stream()?;
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
             let mut reader = control_stream;
@@ -192,6 +256,18 @@ impl ProxyServer {
         let mut content_length: Option<u32> = None;
         let mut stream_id = 0u8;
         let mut all_bytes: Vec<u8> = Vec::new();
+
+        // Macro to write to the client socket from within the event loop.
+        // Breaks out of the loop on any error (broken pipe, timed-out write, …)
+        // so we stop silently dropping frames when the client is gone.
+        macro_rules! send_or_break {
+            ($expr:expr) => {
+                if let Err(e) = $expr {
+                    eprintln!("Client socket write failed, closing session: {}", e);
+                    break;
+                }
+            };
+        }
 
         loop {
             let event = match self.event_rx.recv() {
@@ -288,6 +364,11 @@ impl ProxyServer {
                     msg_seq,
                 } => {
                     eprintln!("Port {} (stream {}) connected!", port, stream_id);
+                    // Same write-timeout policy as the client socket: bound how
+                    // long a stalled gdb-server can hold up the message loop.
+                    stream
+                        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                        .ok();
                     if let Some(pinfo) = self.streams.get_mut(&stream_id) {
                         pinfo.stream = Some(stream);
                     } else {
@@ -313,14 +394,12 @@ impl ProxyServer {
                             status: StreamStatus::Connected,
                             msg_seq,
                         };
-                        ControlResponse::success(msg_seq, Some(data))
-                            .send(&mut self.stream)
-                            .unwrap_or_else(|e| {
-                                eprintln!("Failed to send success response: {}", e);
-                            });
+                        send_or_break!(
+                            ControlResponse::success(msg_seq, Some(data)).send(&self.writer)
+                        );
                     } else {
                         let event = ProxyServerEvents::StreamStarted { stream_id, port };
-                        let _ = event.send(&mut self.stream);
+                        send_or_break!(event.send(&self.writer));
                     }
                 }
                 ProxyEvent::PortReady { stream_id, port } => {
@@ -337,7 +416,7 @@ impl ProxyServer {
                         },
                     );
                     let event = ProxyServerEvents::StreamReady { stream_id, port };
-                    let _ = event.send(&mut self.stream);
+                    send_or_break!(event.send(&self.writer));
                 }
                 ProxyEvent::PortFailed {
                     stream_id,
@@ -353,24 +432,24 @@ impl ProxyServer {
                                 port, stream_id, error
                             ),
                         )
-                        .send(&mut self.stream)
+                        .send(&self.writer)
                         .unwrap_or_else(|e| {
                             eprintln!("Failed to send error response: {}", e);
                         });
                     } else {
                         let event = ProxyServerEvents::StreamTimedOut { stream_id };
                         eprintln!("Port {} failed: {} for stream {}", port, error, stream_id);
-                        let _ = event.send(&mut self.stream);
+                        send_or_break!(event.send(&self.writer));
                     }
                 }
                 ProxyEvent::StreamData { stream_id, data } => {
-                    send_to_stream(stream_id, &mut self.stream, &data).ok();
+                    send_or_break!(self.writer.write_frame(stream_id, &data));
                 }
                 ProxyEvent::StreamClosed { stream_id } => {
                     eprintln!("Stream {} closed", stream_id);
                     self.streams.remove(&stream_id);
                     let event = ProxyServerEvents::StreamClosed { stream_id };
-                    let _ = event.send(&mut self.stream);
+                    send_or_break!(event.send(&self.writer));
                 }
                 ProxyEvent::SerialPortError(err) => {
                     // Port died — remove from registry (drops the backing and fd),
@@ -384,10 +463,28 @@ impl ProxyServer {
                         kind: err.kind,
                         msg: err.msg,
                     };
-                    let _ = event.send(&mut self.stream);
+                    send_or_break!(event.send(&self.writer));
+                }
+                ProxyEvent::SerialAvailableChanged { revision, ports } => {
+                    let port_count = ports.len();
+                    let sub_id = self.serial_available_sub_id;
+                    eprintln!(
+                        "Dequeued serial.availableChanged proxy event (revision {}, ports {}, sub_id={:?}, thread={:?})",
+                        revision,
+                        port_count,
+                        sub_id,
+                        std::thread::current().id()
+                    );
+                    let event = ProxyServerEvents::SerialAvailableChanged { revision, ports };
+                    send_or_break!(event.send(&self.writer));
+                    eprintln!(
+                        "Sent serial.availableChanged event (revision {}, ports {})",
+                        revision, port_count
+                    );
                 }
             }
         }
+        self.unsubscribe_serial_available();
         self.end_process();
         Ok(())
     }
@@ -398,9 +495,10 @@ impl ProxyServer {
                 msg.seq,
                 "Received control message with seq=0, which is reserved for server events. Ignoring.".to_string(),
             )
-            .send(&mut self.stream)
+            .send(&self.writer)
             .unwrap_or_else(|e| {
                 eprintln!("Failed to send error response for invalid seq: {}", e);
+                self.exit = true;
             });
             return;
         }
@@ -432,11 +530,11 @@ impl ProxyServer {
                 // by the time the success response reaches the TypeScript side.
                 self.end_process();
                 ControlResponse::success(msg.seq, None)
-                    .send(&mut self.stream)
+                    .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send success response: {}", e);
                     });
-                self.stream
+                self.writer
                     .shutdown(std::net::Shutdown::Both)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to shutdown stream: {}", e);
@@ -445,9 +543,10 @@ impl ProxyServer {
             }
             ControlRequest::Heartbeat => {
                 ControlResponse::success(msg.seq, Some(ControlResponseData::Heartbeat))
-                    .send(&mut self.stream)
+                    .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send heartbeat response: {}", e);
+                        self.exit = true;
                     });
             }
             ControlRequest::StreamStatus { .. } => {
@@ -474,9 +573,10 @@ impl ProxyServer {
                     msg_seq: msg.seq,
                 };
                 ControlResponse::success(msg.seq, Some(data))
-                    .send(&mut self.stream)
+                    .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send StreamStatus response: {}", e);
+                        self.exit = true;
                     });
             }
             ControlRequest::SyncFile { .. } => {
@@ -497,14 +597,12 @@ impl ProxyServer {
             ControlRequest::SerialIsOpen { path } => {
                 self.handle_serial_is_open(msg.seq, &path.clone());
             }
+            ControlRequest::SerialSubscribeAvailable => {
+                self.handle_serial_subscribe_available(msg.seq);
+            }
+            ControlRequest::SerialUnsubscribeAvailable => {
+                self.handle_serial_unsubscribe_available(msg.seq);
+            }
         }
     }
-}
-
-// ── Misc public utilities ─────────────────────────────────────────────────────
-
-/// Check whether a `TcpStream` peer is still connected by peeking 0 bytes.
-pub fn is_connected(stream: &TcpStream) -> bool {
-    let mut buf = [0u8; 0];
-    matches!(stream.peek(&mut buf), Ok(_))
 }

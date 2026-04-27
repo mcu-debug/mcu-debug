@@ -195,6 +195,13 @@ pub struct SerialParams {
     /// callers that do not set this field get the original TCP-bridge behaviour.
     #[serde(default)]
     pub transport: SerialTransport,
+    /// Optional frontend-only serial logging path. Kept in schema so generated
+    /// TypeScript stays in sync with UI usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_file: Option<String>,
+    /// Optional frontend-only terminal input mode hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_mode: Option<String>,
 }
 
 fn default_baud_rate() -> u32 {

@@ -67,6 +67,11 @@ pub enum ProxyEvent {
     /// A serial port's reader thread hit a fatal error.
     /// The port should be removed from the registry and the client notified.
     SerialPortError(PortErrorEvent),
+    /// Full-snapshot update of available serial ports.
+    SerialAvailableChanged {
+        revision: u64,
+        ports: Vec<AvailablePort>,
+    },
 }
 
 // ── Misc shared types ─────────────────────────────────────────────────────────
@@ -212,6 +217,14 @@ pub enum ControlRequest {
     /// Pull-based status probe — consistent with the client-driven heartbeat model.
     #[serde(rename = "serial.isOpen")]
     SerialIsOpen { path: String },
+
+    /// Subscribe this connection to debounced available-port snapshots.
+    #[serde(rename = "serial.subscribeAvailable")]
+    SerialSubscribeAvailable,
+
+    /// Unsubscribe this connection from available-port snapshots.
+    #[serde(rename = "serial.unsubscribeAvailable")]
+    SerialUnsubscribeAvailable,
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
@@ -315,6 +328,12 @@ pub enum ControlResponseData {
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<SerialParams>,
     },
+
+    #[serde(rename = "serial.subscribeAvailable")]
+    SerialSubscribeAvailable { revision: u64 },
+
+    #[serde(rename = "serial.unsubscribeAvailable")]
+    SerialUnsubscribeAvailable,
 }
 
 impl ControlResponse {
@@ -336,10 +355,10 @@ impl ControlResponse {
         }
     }
 
-    pub fn send(&self, stream: &mut TcpStream) -> io::Result<()> {
+    pub fn send(&self, writer: &super::FrameWriter) -> io::Result<()> {
         eprintln!("Sending response: {:?}", self);
         let response_bytes = serde_json::to_vec(self)?;
-        super::send_to_stream(StreamId::Control.to_u8(), stream, &response_bytes)?;
+        writer.write_frame(StreamId::Control.to_u8(), &response_bytes)?;
         Ok(())
     }
 }
@@ -381,11 +400,18 @@ pub enum ProxyServerEvents {
         kind: SerialErrorKind,
         msg: String,
     },
+
+    /// Debounced full snapshot of currently available serial ports.
+    #[serde(rename = "serial.availableChanged")]
+    SerialAvailableChanged {
+        revision: u64,
+        ports: Vec<AvailablePort>,
+    },
 }
 
 impl ProxyServerEvents {
-    pub fn send(&self, stream: &mut TcpStream) -> io::Result<()> {
+    pub fn send(&self, writer: &super::FrameWriter) -> io::Result<()> {
         let event_bytes = serde_json::to_vec(self)?;
-        super::send_to_stream(StreamId::Control.to_u8(), stream, &event_bytes)
+        writer.write_frame(StreamId::Control.to_u8(), &event_bytes)
     }
 }

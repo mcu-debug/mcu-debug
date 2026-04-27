@@ -19,11 +19,15 @@ mode="${1:-dev}"
 PRETTIER="$ROOT_DIR/node_modules/.bin/prettier"
 SHARED_DIR="$ROOT_DIR/packages/shared"
 
+function ensure_ts_exports() {
+  echo "Generating TypeScript exports..."
+  cargo test --lib da_helper::helper_requests::tests::ensure_ts_exports --quiet
+  cargo test --lib proxy_helper::proxy_server::tests::ensure_ts_exports --quiet
+}
+
 # Run prettier on the ts-rs generated TypeScript files.
 # ts-rs --format is intentionally avoided; it uses a different formatter.
 function format_ts_exports() {
-  # Add missing "decoders" field to SerialParams export for now, until ts-rs supports it natively:
-  sed -i '' 's/};/ log_file?:string, input_mode?:string,};/g' "$SHARED_DIR/serial-helper/SerialParams.ts" # 2>/dev/null || true
   if [[ -x "$PRETTIER" ]]; then
     echo "Formatting generated TypeScript exports..."
     # Use a narrower print width than the project default (200) so that
@@ -130,11 +134,9 @@ function sync_proxy_binaries() {
 if [[ "$mode" == "dev" ]]; then
   echo "Dev build: building for host platform (debug)"
   cd "$RUST_DIR"
-  
+
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
-  echo "Generating TypeScript exports..."
-  cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
-  cargo test --lib proxy_server::tests::ensure_ts_exports --quiet 2>/dev/null || true
+  ensure_ts_exports
   format_ts_exports
 
   target=$(native_rust_target)
@@ -205,9 +207,7 @@ if [[ "$mode" == "prod" ]]; then
   fi
 
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
-  echo "Generating TypeScript exports..."
-  cargo test --lib helper_requests::tests::ensure_ts_exports --quiet 2>/dev/null || true
-  cargo test --lib proxy_server::tests::ensure_ts_exports --quiet 2>/dev/null || true
+  ensure_ts_exports
   format_ts_exports
 
   # platform|target_triple|exe_ext

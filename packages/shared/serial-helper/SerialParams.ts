@@ -23,6 +23,13 @@ export type SerialParams = {
      * callers that do not set this field get the original TCP-bridge behaviour.
      */
     transport: SerialTransport;
-    log_file?: string;
-    input_mode?: string;
+    /**
+     * Optional frontend-only serial logging path. Kept in schema so generated
+     * TypeScript stays in sync with UI usage.
+     */
+    log_file?: string | null;
+    /**
+     * Optional frontend-only terminal input mode hint.
+     */
+    input_mode?: string | null;
 };
