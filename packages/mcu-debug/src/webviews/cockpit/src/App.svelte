@@ -118,12 +118,6 @@
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Derived active tab
-    // -------------------------------------------------------------------------
-
-    const activeTab = $derived(tabs.find((t) => t.tabId === activeTabId) ?? null);
-
     // Keep activeTabId valid when tabs list changes
     $effect(() => {
         activateFirst();
@@ -134,12 +128,16 @@
     <TabBar {tabs} {activeTabId} onSelect={selectTab} onClose={closeTab} />
 
     <div class="content">
-        {#if activeTab}
-            {#if activeTab.kind === "cockpit"}
-                <GlassCockpit tabId={activeTab.tabId} aiRequestText={activeTab.aiRequestText} bufferLines={activeTab.bufferLines} />
-            {:else}
-                <SourceTab tabId={activeTab.tabId} direction={activeTab.direction ?? "rx"} bufferLines={activeTab.bufferLines} />
-            {/if}
+        {#if tabs.length > 0}
+            {#each tabs as tab (tab.tabId)}
+                <div class="tab-pane" class:active={tab.tabId === activeTabId}>
+                    {#if tab.kind === "cockpit"}
+                        <GlassCockpit tabId={tab.tabId} aiRequestText={tab.aiRequestText} bufferLines={tab.bufferLines} active={tab.tabId === activeTabId} />
+                    {:else}
+                        <SourceTab tabId={tab.tabId} direction={tab.direction ?? "rx"} bufferLines={tab.bufferLines} active={tab.tabId === activeTabId} />
+                    {/if}
+                </div>
+            {/each}
         {:else}
             <div class="empty">No tabs open. Add a UART with + or start a debug session.</div>
         {/if}
@@ -164,9 +162,20 @@
     }
 
     .content {
+        position: relative;
         flex: 1;
         overflow: hidden;
         min-height: 0;
+    }
+
+    .tab-pane {
+        display: none;
+        width: 100%;
+        height: 100%;
+    }
+
+    .tab-pane.active {
+        display: block;
     }
 
     .empty {

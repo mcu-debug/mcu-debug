@@ -50,8 +50,8 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         webviewView.webview.onDidReceiveMessage((msg: FromUi) => this._handleFromUi(msg));
 
         // When the view is hidden (user switches panel tabs), VS Code destroys the webview.
-        // Mark mounted terminals as unavailable immediately so send() queues data instead of
-        // posting to a dead webview. Data is replayed when the active tab's terminal remounts.
+        // Mark all terminals as unavailable immediately so send() queues data instead of
+        // posting to a dead webview. Data is replayed when the webview's terminals remount.
         webviewView.onDidChangeVisibility(() => {
             for (const tab of this._tabs.values()) {
                 tab._onTerminalMountStateChanged(webviewView.visible);
@@ -144,9 +144,6 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         }
         if (msg.type === "active-tab-changed") {
             this._activeTabId = msg.tabId;
-            for (const tab of this._tabs.values()) {
-                tab._onTerminalMountStateChanged(this.isParentPanelVisible() && this._activeTabId === tab.tabId);
-            }
             return;
         }
         if (msg.type === "terminal-ready") {

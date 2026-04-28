@@ -1,23 +1,29 @@
 <script lang="ts">
-    import Terminal from './Terminal.svelte';
-    import AiRequest from './AiRequest.svelte';
-    import InputBar from './InputBar.svelte';
-    import { postToExtension } from './vscode';
+    import Terminal from "./Terminal.svelte";
+    import AiRequest from "./AiRequest.svelte";
+    import InputBar from "./InputBar.svelte";
+    import { postToExtension } from "./vscode";
 
-    const { tabId, aiRequestText, bufferLines }: {
+    const {
+        tabId,
+        aiRequestText,
+        bufferLines,
+        active,
+    }: {
         tabId: string;
         aiRequestText: string;
         bufferLines: number;
+        active: boolean;
     } = $props();
 
     function handleUserInput(text: string) {
-        postToExtension({ type: 'user-input', tabId, text });
+        postToExtension({ type: "user-input", tabId, text });
     }
 </script>
 
 <div class="cockpit">
     <div class="terminal-region">
-        <Terminal {tabId} {bufferLines} />
+        <Terminal {tabId} {bufferLines} {active} />
     </div>
 
     {#if aiRequestText}

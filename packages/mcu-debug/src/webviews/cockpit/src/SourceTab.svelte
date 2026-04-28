@@ -1,24 +1,30 @@
 <script lang="ts">
-    import Terminal from './Terminal.svelte';
-    import InputBar from './InputBar.svelte';
-    import { postToExtension } from './vscode';
+    import Terminal from "./Terminal.svelte";
+    import InputBar from "./InputBar.svelte";
+    import { postToExtension } from "./vscode";
 
-    const { tabId, direction = 'rx', bufferLines }: {
+    const {
+        tabId,
+        direction = "rx",
+        bufferLines,
+        active,
+    }: {
         tabId: string;
-        direction?: 'rx' | 'tx' | 'both';
+        direction?: "rx" | "tx" | "both";
         bufferLines: number;
+        active: boolean;
     } = $props();
 
-    const showInput = $derived(direction === 'tx' || direction === 'both');
+    const showInput = $derived(direction === "tx" || direction === "both");
 
     function handleUserInput(text: string) {
-        postToExtension({ type: 'user-input', tabId, text });
+        postToExtension({ type: "user-input", tabId, text });
     }
 </script>
 
 <div class="source-tab">
     <div class="terminal-region">
-        <Terminal {tabId} {bufferLines} />
+        <Terminal {tabId} {bufferLines} {active} />
     </div>
 
     {#if showInput}

@@ -7,7 +7,7 @@
     import { postToExtension } from "./vscode";
     import "@xterm/xterm/css/xterm.css";
 
-    const { tabId, bufferLines }: { tabId: string; bufferLines: number } = $props();
+    const { tabId, bufferLines, active }: { tabId: string; bufferLines: number; active: boolean } = $props();
 
     const FLUSH_INTERVAL_MS = 500;
     const MAX_BUFFER_BYTES = 32_000;
@@ -19,6 +19,13 @@
     let earlyBuffer = ""; // pre-mount stream buffer (before xterm.js exists)
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let resizeObserver: ResizeObserver;
+
+    function fitTerminal() {
+        if (!fitAddon) return;
+        if (container.clientWidth > 0 && container.clientHeight > 0) {
+            fitAddon.fit();
+        }
+    }
 
     function flush() {
         if (!term) return;
@@ -111,13 +118,8 @@
         term.loadAddon(new WebLinksAddon());
         term.open(container);
 
-        const tryFit = () => {
-            if (container.clientWidth > 0 && container.clientHeight > 0) {
-                fitAddon.fit();
-            }
-        };
-        requestAnimationFrame(tryFit);
-        resizeObserver = new ResizeObserver(tryFit);
+        requestAnimationFrame(fitTerminal);
+        resizeObserver = new ResizeObserver(fitTerminal);
         resizeObserver.observe(container);
 
         // Flush data that arrived before xterm.js was ready
@@ -140,6 +142,12 @@
         if (flushTimer !== null) clearTimeout(flushTimer);
         resizeObserver?.disconnect();
         window.removeEventListener("message", messageHandler);
+    });
+
+    $effect(() => {
+        if (active) {
+            requestAnimationFrame(fitTerminal);
+        }
     });
 </script>
 

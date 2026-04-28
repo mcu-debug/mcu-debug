@@ -21,13 +21,12 @@ export abstract class ManagedTab {
     private _state: TabState = { kind: "active" };
     private _label: string;
 
-    // For tabs that buffer data before the webview is ready. This is needed as VSCode will clear the terminal
-    // when not visible/removed from the Panel. We need to restore everythig when we become visible again.
-    private _backingStore: string[] = [];
-    // Max number of lines to keep in the backing store. This is a safety valve to prevent unbounded memory growth
-    // if the webview is never ready or falls behind. The webview should be consuming data at a reasonable rate, so
-    // this should not be hit in normal use.
-    private readonly _maxBufferSize = 10_000;
+    // For tabs that buffer data before the webview is ready. This is still needed for the
+    // first terminal mount and when VS Code deallocates the entire cockpit webview.
+    private _backingStore = "";
+    // Max number of characters to retain for terminal restore. This caps memory usage while
+    // keeping the buffer logic cheap and preserves newline boundaries when trimming.
+    private readonly _maxBufferChars = 1024 * 1024;
 
     // Stream data is held here until the mounted xterm.js instance confirms that
     // its message listener and terminal object are ready.
@@ -69,7 +68,7 @@ export abstract class ManagedTab {
     _onTerminalReady(): void {
         this._terminalReady = true;
         if (this._canPostLiveData()) {
-            const text = this._backingStore.join("");
+            const text = this._backingStore;
             if (text.length > 0) {
                 this._post({ type: "restore", tabId: this.tabId, text });
             }
@@ -83,8 +82,6 @@ export abstract class ManagedTab {
     _onTerminalMountStateChanged(mounted: boolean): void {
         if (!mounted) {
             this._terminalReady = false;
-        } else if (this._panel?.isTabActive(this.tabId) ?? false) {
-            this._onTerminalReady();
         }
     }
 
@@ -104,47 +101,31 @@ export abstract class ManagedTab {
     // -------------------------------------------------------------------------
 
     /** Write a text chunk to the tab's xterm.js terminal. */
-    private _lastLineEndedWithNewline = true;
     protected send(text: string): void {
         if (text.length === 0) {
             return;
         }
-        this.addToBackingStore(text);
+        this._appendToBackingStore(text);
         if (this._canPostLiveData()) {
             this._post({ type: "stream", tabId: this.tabId, text });
         }
     }
 
-    private addToBackingStore(text: string) {
-        const lines = text.split("\n");
-        const endsWithNewline = text.endsWith("\n");
-        if (!this._lastLineEndedWithNewline) {
-            // The previous chunk ended mid-line, so the first line of this chunk is a continuation. Don't add a new line to the backing store for it.
-            lines[0] = (this._backingStore.pop() ?? "") + lines[0];
+    private _appendToBackingStore(text: string): void {
+        this._backingStore += text;
+        if (this._backingStore.length <= this._maxBufferChars) {
+            return;
         }
-        if (endsWithNewline && lines[lines.length - 1] === "") {
-            // If the text ends with a newline, split() adds an extra empty string at the end of the array. Remove it to avoid adding an extra blank line to the backing store.
-            lines.pop();
-        }
-        for (let i = 0; i < lines.length - 1; i++) {
-            this._backingStore.push(lines[i] + "\n");
-        }
-        if (endsWithNewline) {
-            this._backingStore.push(lines[lines.length - 1] + "\n");
-        } else {
-            this._backingStore.push(lines[lines.length - 1]);
-        }
-        this._lastLineEndedWithNewline = endsWithNewline;
-        // Trim the backing store if it exceeds the max buffer size. This ensures we don't keep unbounded history if the webview is never ready or falls behind. The webview should be consuming data at a reasonable rate, so this should not be hit in normal use.
-        if (this._backingStore.length > this._maxBufferSize) {
-            this._backingStore.splice(0, this._backingStore.length - this._maxBufferSize);
-        }
+
+        const overflow = this._backingStore.length - this._maxBufferChars;
+        const trimAtNewline = this._backingStore.indexOf("\n", overflow);
+        const trimIndex = trimAtNewline >= 0 ? trimAtNewline + 1 : overflow;
+        this._backingStore = this._backingStore.slice(trimIndex);
     }
 
     /** Clear the tab's terminal. */
     protected clear(): void {
-        this._backingStore = [];
-        this._lastLineEndedWithNewline = true;
+        this._backingStore = "";
         this._post({ type: "clear", tabId: this.tabId });
     }
 
@@ -166,8 +147,7 @@ export abstract class ManagedTab {
 
     private _canPostLiveData(): boolean {
         return this._terminalReady
-            && (this._panel?.isParentPanelVisible() ?? false)
-            && (this._panel?.isTabActive(this.tabId) ?? false);
+            && (this._panel?.isParentPanelVisible() ?? false);
     }
 
     // -------------------------------------------------------------------------
