@@ -9,7 +9,12 @@
       "Bash(cargo check:*)",
       "Bash(bash scripts/build-binaries.sh prod)",
       "Bash(wait)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(npm --version)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(node esbuild.js)",
+      "Bash(npx tsc-strict *)"
     ]
   }
 }

@@ -1,0 +1,13 @@
+{
+    "extends": "@tsconfig/svelte/tsconfig.json",
+    "compilerOptions": {
+        "strict": true,
+        "target": "ESNext",
+        "moduleResolution": "bundler",
+        "types": ["vite/client"],
+        "paths": {
+            "@mcu-debug/shared": ["../../../../shared/src/cockpit-protocol.ts"]
+        }
+    },
+    "include": ["src/**/*.ts", "src/**/*.svelte"]
+}

@@ -1,0 +1,25 @@
+{
+    "name": "cockpit-webview",
+    "private": true,
+    "version": "0.0.1",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview",
+        "typecheck": "svelte-check --tsconfig ./tsconfig.json"
+    },
+    "dependencies": {
+        "@xterm/addon-fit": "^0.10.0",
+        "@xterm/addon-web-links": "^0.11.0",
+        "@xterm/xterm": "^5.5.0"
+    },
+    "devDependencies": {
+        "@sveltejs/vite-plugin-svelte": "^5.0.3",
+        "@tsconfig/svelte": "^5.0.4",
+        "svelte": "^5.19.0",
+        "svelte-check": "^4.1.4",
+        "typescript": "^5.7.3",
+        "vite": "^6.2.0"
+    }
+}

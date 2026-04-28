@@ -361,6 +361,11 @@
     ],
     "commands": [
       {
+        "command": "mcu-debug.cockpit.addUart",
+        "title": "Add UART",
+        "icon": "$(add)"
+      },
+      {
         "command": "mcu-debug.resetDevice",
         "title": "Reset device",
         "icon": {
@@ -3738,6 +3743,11 @@
       ],
       "view/title": [
         {
+          "command": "mcu-debug.cockpit.addUart",
+          "when": "view == mcu-debug.cockpit",
+          "group": "navigation"
+        },
+        {
           "command": "mcu-debug.liveWatch.addExpr",
           "when": "view == mcu-debug.liveWatch",
           "group": "navigation"
@@ -3781,6 +3791,15 @@
         }
       ]
     },
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "mcu-debug-panel",
+          "title": "MCU DEBUG",
+          "icon": "images/mcu-debug-panel.svg"
+        }
+      ]
+    },
     "views": {
       "debug": [
         {
@@ -3791,6 +3810,13 @@
           "contextualTitle": "Live Watch",
           "when": "debugType == mcu-debug"
         }
+      ],
+      "mcu-debug-panel": [
+        {
+          "type": "webview",
+          "id": "mcu-debug.cockpit",
+          "name": "MCU DEBUG"
+        }
       ]
     }
   },
@@ -3799,7 +3825,8 @@
     "generate-manifest": "node scripts/update-package-json.js",
     "update-commit-hash": "node scripts/commit-hash.js",
     "build-rust-dev": "node scripts/build-rust.js dev",
-    "compile": "npm run build-rust-dev && npm run copy-codicons && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
+    "build-cockpit": "npm --prefix src/webviews/cockpit run build",
+    "compile": "npm run build-rust-dev && npm run copy-codicons && npm run build-cockpit && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
     "build": "npm run build-all",
     "check-types": "tsc-strict --noEmit",
     "test:unit": "node --import tsx --test src/test/**/*.test.ts",
@@ -3808,7 +3835,7 @@
     "watch:tsc": "tsc-strict --noEmit --watch --project tsconfig.json",
     "vscode:prepublish": "npm run build-all",
     "build-rust-prod": "node scripts/build-rust.js prod",
-    "build-all": "npm run build-rust-prod && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js --production",
+    "build-all": "npm run build-rust-prod && npm run generate-manifest && npm run update-commit-hash && npm run build-cockpit && npm run check-types && node esbuild.js --production",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {

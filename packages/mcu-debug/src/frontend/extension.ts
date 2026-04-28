@@ -11,6 +11,7 @@ import * as tmp from "tmp";
 import { MCUDebugChannel } from "../dbgmsgs";
 import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
 import { EditableTreeViewProvider } from "./webview_tree/editable-tree";
+import { CockpitPanel } from "./views/CockpitPanel";
 import { SerialPortManager } from "./serial";
 
 import { RTTCore, SWOCore } from "./swo/core";
@@ -52,6 +53,7 @@ export class MCUDebugExtension {
 
     private liveWatchProvider!: LiveWatchTreeProvider;
     private liveWatchWebview!: EditableTreeViewProvider;
+    public cockpitPanel!: CockpitPanel;
 
     private SVDDirectory: SVDInfo[] = [];
     private functionSymbols: SymbolInformation[] = [];
@@ -66,6 +68,15 @@ export class MCUDebugExtension {
         const context: vscode.ExtensionContext = this.context;
         const config = vscode.workspace.getConfiguration("mcu-debug");
         await this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
+
+        this.cockpitPanel = new CockpitPanel(context.extensionUri);
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider(CockpitPanel.viewId, this.cockpitPanel),
+            vscode.commands.registerCommand("mcu-debug.cockpit.addUart", () => {
+                // TODO: show port picker and call this.cockpitPanel.addTab(new UartManagedTab(...))
+                vscode.window.showInformationMessage("Add UART — not yet implemented");
+            }),
+        );
 
         this.liveWatchProvider = new LiveWatchTreeProvider(this.context);
         this.liveWatchWebview = new EditableTreeViewProvider(this.context.extensionUri, this.liveWatchProvider);
