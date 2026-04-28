@@ -872,16 +872,16 @@ class SerialPortTab extends ManagedTab {
     }
 
     public notifyConnected(reason: string) {
-        this.send(`\r\n\x1b[32m[Serial connected] ${reason}\x1b[0m\r\n`);
+        this.send(`\r\n\x1b[32m[${this.device} connected] ${reason}\x1b[0m\r\n`);
     }
 
     public notifyDisconnected(reason: string) {
         this.destroySocket();
-        this.send(`\r\n\x1b[33m[Serial disconnected: ${reason} — retrying...]\x1b[0m\r\n`);
+        this.send(`\r\n\x1b[33m[${this.device} disconnected: ${reason} — retrying...]\x1b[0m\r\n`);
     }
 
     public notifyReconnected() {
-        this.send(`\r\n\x1b[32m[Serial reconnected]\x1b[0m\r\n`);
+        this.send(`\r\n\x1b[32m[${this.device} reconnected]\x1b[0m\r\n`);
     }
 
     setTcpPort(port: number) {

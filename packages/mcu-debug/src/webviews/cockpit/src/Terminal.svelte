@@ -19,6 +19,10 @@
     let earlyBuffer = ""; // pre-mount stream buffer (before xterm.js exists)
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let resizeObserver: ResizeObserver;
+    let dataListener: { dispose(): void } | undefined;
+    let terminalTextarea: HTMLTextAreaElement | undefined;
+
+    const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
     function readCssVar(styles: CSSStyleDeclaration, name: string, fallback: string): string {
         return styles.getPropertyValue(name).trim() || fallback;
@@ -29,6 +33,107 @@
         if (container.clientWidth > 0 && container.clientHeight > 0) {
             fitAddon.fit();
         }
+    }
+
+    function submitUserInput(text: string) {
+        if (!text) return;
+        postToExtension({ type: "user-input", tabId, text });
+    }
+
+    function isTerminalFocused(): boolean {
+        return !!term && document.activeElement === term.textarea;
+    }
+
+    function hasSelection(): boolean {
+        return (term?.getSelection() ?? "").length > 0;
+    }
+
+    async function writeSelectionToClipboard(clearSelection: boolean): Promise<boolean> {
+        const text = term?.getSelection() ?? "";
+        if (!text) return false;
+        try {
+            await navigator.clipboard.writeText(text);
+            if (clearSelection) {
+                term?.clearSelection();
+            }
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    async function pasteFromClipboard(): Promise<boolean> {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) {
+                submitUserInput(text);
+            }
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function handleClipboardCopy(event: ClipboardEvent) {
+        if (!active || !hasSelection() || !event.clipboardData) return;
+        event.clipboardData.setData("text/plain", term!.getSelection());
+        event.preventDefault();
+    }
+
+    function handleClipboardCut(event: ClipboardEvent) {
+        if (!active || !hasSelection() || !event.clipboardData) return;
+        event.clipboardData.setData("text/plain", term!.getSelection());
+        term?.clearSelection();
+        event.preventDefault();
+    }
+
+    function handleClipboardPaste(event: ClipboardEvent) {
+        if (!active || !isTerminalFocused()) return;
+        const text = event.clipboardData?.getData("text/plain") ?? "";
+        if (!text) return;
+        event.preventDefault();
+        submitUserInput(text);
+    }
+
+    function handleTerminalKeyEvent(event: KeyboardEvent): boolean {
+        if (!active) return true;
+
+        const lowerKey = event.key.toLowerCase();
+        const primaryModifier = isMac ? event.metaKey : event.ctrlKey;
+        const terminalCopyShortcut = !isMac && event.ctrlKey && event.shiftKey && lowerKey === "c";
+        const terminalPasteShortcut = !isMac && event.ctrlKey && event.shiftKey && lowerKey === "v";
+
+        if (primaryModifier && !event.altKey && !event.shiftKey && lowerKey === "a") {
+            term?.selectAll();
+            event.preventDefault();
+            return false;
+        }
+
+        if ((primaryModifier && !event.altKey && !event.shiftKey && lowerKey === "c") || terminalCopyShortcut) {
+            if (!hasSelection()) {
+                return true;
+            }
+            event.preventDefault();
+            void writeSelectionToClipboard(false);
+            return false;
+        }
+
+        if (primaryModifier && !event.altKey && !event.shiftKey && lowerKey === "x") {
+            if (!hasSelection()) {
+                return true;
+            }
+            event.preventDefault();
+            void writeSelectionToClipboard(true);
+            return false;
+        }
+
+        if ((primaryModifier && !event.altKey && !event.shiftKey && lowerKey === "v") || terminalPasteShortcut) {
+            event.preventDefault();
+            void pasteFromClipboard();
+            return false;
+        }
+
+        return true;
     }
 
     function flush() {
@@ -137,6 +242,13 @@
         term.loadAddon(fitAddon);
         term.loadAddon(new WebLinksAddon());
         term.open(container);
+        term.attachCustomKeyEventHandler(handleTerminalKeyEvent);
+        dataListener = term.onData((text) => submitUserInput(text));
+
+        terminalTextarea = term.textarea ?? undefined;
+        terminalTextarea?.addEventListener("copy", handleClipboardCopy);
+        terminalTextarea?.addEventListener("cut", handleClipboardCut);
+        terminalTextarea?.addEventListener("paste", handleClipboardPaste);
 
         requestAnimationFrame(fitTerminal);
         resizeObserver = new ResizeObserver(fitTerminal);
@@ -153,6 +265,12 @@
 
         return () => {
             flush();
+            dataListener?.dispose();
+            dataListener = undefined;
+            terminalTextarea?.removeEventListener("copy", handleClipboardCopy);
+            terminalTextarea?.removeEventListener("cut", handleClipboardCut);
+            terminalTextarea?.removeEventListener("paste", handleClipboardPaste);
+            terminalTextarea = undefined;
             term!.dispose();
             term = undefined;
         };
