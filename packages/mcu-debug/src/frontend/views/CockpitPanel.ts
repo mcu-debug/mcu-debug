@@ -16,12 +16,17 @@ import { ManagedTab, type CockpitPanelSink } from "./ManagedTab";
  * existing tabs so the webview rebuilds its state correctly.
  */
 export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSink {
+    public static instance: CockpitPanel | undefined;
     public static readonly viewId = "mcu-debug.cockpit";
 
     private _view: vscode.WebviewView | undefined;
+    private _webviewReady = false;
+    private _activeTabId: string | null = null;
     private readonly _tabs = new Map<string, ManagedTab>();
 
-    constructor(private readonly _extensionUri: vscode.Uri) {}
+    constructor(private readonly _extensionUri: vscode.Uri) {
+        CockpitPanel.instance = this;
+    }
 
     // -------------------------------------------------------------------------
     // vscode.WebviewViewProvider
@@ -33,6 +38,7 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         _token: vscode.CancellationToken,
     ): void {
         this._view = webviewView;
+        this._webviewReady = false;
 
         webviewView.webview.options = {
             enableScripts: true,
@@ -43,10 +49,23 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
 
         webviewView.webview.onDidReceiveMessage((msg: FromUi) => this._handleFromUi(msg));
 
-        // Replay existing tabs — resolveWebviewView can be called multiple times
-        for (const tab of this._tabs.values()) {
-            webviewView.webview.postMessage({ type: "tab-add", tab: tab.descriptor });
-        }
+        // When the view is hidden (user switches panel tabs), VS Code destroys the webview.
+        // Mark mounted terminals as unavailable immediately so send() queues data instead of
+        // posting to a dead webview. Data is replayed when the active tab's terminal remounts.
+        webviewView.onDidChangeVisibility(() => {
+            for (const tab of this._tabs.values()) {
+                tab._onTerminalMountStateChanged(webviewView.visible);
+            }
+        });
+        webviewView.onDidDispose(() => {
+            this._view = undefined;
+            this._webviewReady = false;
+            for (const tab of this._tabs.values()) {
+                tab._onTerminalMountStateChanged(false);
+            }
+        });
+
+        // Tabs are replayed when the webview sends { type: 'ready' } — see _handleFromUi.
     }
 
     // -------------------------------------------------------------------------
@@ -55,6 +74,14 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
 
     postToWebview(msg: object): void {
         this._view?.webview.postMessage(msg);
+    }
+
+    isParentPanelVisible(): boolean {
+        return this._view?.visible ?? false;
+    }
+
+    isTabActive(tabId: string): boolean {
+        return this._activeTabId === tabId;
     }
 
     // -------------------------------------------------------------------------
@@ -71,7 +98,10 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         }
         this._tabs.set(tab.tabId, tab);
         tab._attach(this);
-        this.postToWebview({ type: "tab-add", tab: tab.descriptor });
+        if (this._webviewReady) {
+            this.postToWebview({ type: "tab-add", tab: tab.descriptor });
+        }
+        // else: tab is in _tabs and will be sent when the webview fires 'ready'
     }
 
     /**
@@ -81,6 +111,18 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
      */
     removeTab(tabId: string): void {
         this._tabs.delete(tabId);
+        if (this._activeTabId === tabId) {
+            this._activeTabId = null;
+        }
+    }
+
+    findTabByLabel(label: string): ManagedTab | undefined {
+        for (const tab of this._tabs.values()) {
+            if (tab.label === label) {
+                return tab;
+            }
+        }
+        return undefined;
     }
 
     get tabCount(): number {
@@ -92,6 +134,25 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
     // -------------------------------------------------------------------------
 
     private _handleFromUi(msg: FromUi): void {
+        if (msg.type === "ready") {
+            this._webviewReady = true;
+            for (const tab of this._tabs.values()) {
+                tab._resetTerminalReady();
+                this._view?.webview.postMessage({ type: "tab-add", tab: tab.descriptor });
+            }
+            return;
+        }
+        if (msg.type === "active-tab-changed") {
+            this._activeTabId = msg.tabId;
+            for (const tab of this._tabs.values()) {
+                tab._onTerminalMountStateChanged(this.isParentPanelVisible() && this._activeTabId === tab.tabId);
+            }
+            return;
+        }
+        if (msg.type === "terminal-ready") {
+            this._tabs.get(msg.tabId)?._onTerminalReady();
+            return;
+        }
         const tab = this._tabs.get(msg.tabId);
         if (!tab) {
             return;

@@ -13,6 +13,9 @@ import { MCUDebugChannel } from "../dbgmsgs";
 import { getProxyForSerialPorts } from "./proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { setExtensionPath } from "./proxy";
+import { ManagedTab } from "./views/ManagedTab";
+import { CockpitPanel } from "./views/CockpitPanel";
+import { TabKind } from "@mcu-debug/shared/lib/cockpit-protocol";
 
 const PROXY_TIMOUT = 5000;
 
@@ -40,7 +43,7 @@ export class SerialPortManager {
     private pendingPromises: Map<number, { resolve: (value: any) => void; reject: (reason?: any) => void }> = new Map();
     private availablePorts: AvailablePort[] = [];
     private openPorts: SerialPortInfo[] = [];
-    private serialPortViews: Map<string, SerialPortView> = new Map();
+    private serialPortViews: Map<string, SerialPortTab> = new Map();
     private serialPortConfigs: Map<string, SerialParams> = new Map();
     private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
     private pendingAvailableSnapshotResolvers: Array<() => void> = [];
@@ -303,10 +306,10 @@ export class SerialPortManager {
         if (kind === "disconnected" && view) {
             // The helper may already have torn down serial state; drop manager-side state and recreate.
             view.notifyDisconnected(msg);
-            this.removeSerialPortView(portPath, true, true);
+            this.removeSerialPortTab(portPath, true, true);
             this.scheduleReconnect(portPath);
         } else {
-            this.removeSerialPortView(portPath);
+            this.removeSerialPortTab(portPath);
         }
     }
 
@@ -621,10 +624,10 @@ export class SerialPortManager {
             view.setLogFile(log_file ?? undefined);
             view.setInputMode(input_mode ?? undefined);
         } else {
-            view = new SerialPortView(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
+            view = SerialPortTab.createOrGetTab(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
             this.serialPortViews.set(actualPath, view);
-            view.on("close", () => {
-                this.removeSerialPortView(actualPath);
+            view.emitter.on("close", () => {
+                this.removeSerialPortTab(actualPath);
             });
         }
         if (isNew) {
@@ -634,11 +637,11 @@ export class SerialPortManager {
         }
     }
 
-    public getSerialPortView(path: string): SerialPortView | null {
+    public getSerialPortTab(path: string): SerialPortTab | null {
         return this.serialPortViews.get(path) || null;
     }
 
-    public removeSerialPortView(path: string, skipSerialClose: boolean = false, keepConfig: boolean = false) {
+    public removeSerialPortTab(path: string, skipSerialClose: boolean = false, keepConfig: boolean = false) {
         const timer = this.reconnectTimers.get(path);
         if (timer) {
             clearTimeout(timer);
@@ -808,6 +811,150 @@ class SerialPortView extends EventEmitter {
     }
 }
 
+const allUUids = new Set<string>();
+function getUUid(baseName: string): string {
+    let uuid = "";
+    do {
+        uuid = `${baseName}-${Math.random().toString(16).substring(2, 10)}`;
+    } while (allUUids.has(uuid));
+    allUUids.add(uuid);
+    return uuid;
+}
+class SerialPortTab extends ManagedTab {
+    public emitter = new EventEmitter();
+    private socket: net.Socket | null = null;
+    private logFileStream: fs.WriteStream | null = null;
+    readonly kind: TabKind = "uart";
+    readonly direction = "both";
+
+    static createOrGetTab(device: string, serialConfig: SerialParams, doClear: boolean = false, tcpPort: number = 0): SerialPortTab {
+        const baseName = path.basename(device);
+        const existing = CockpitPanel.instance?.findTabByLabel(baseName) as unknown as SerialPortTab | null;
+        if (existing) {
+            // If a tab with the same name already exists, we will reuse it for the new serial port. This allows us to preserve the terminal buffer and other state in the tab, which can be useful for debugging purposes. We will just clear the buffer and reset the options to match the new serial port configuration.
+            if (doClear) {
+                existing.clear();
+            }
+            existing.setState({ kind: "active" });
+            return existing;
+        } else {
+            return new SerialPortTab(device, serialConfig, doClear, tcpPort);
+        }
+    }
+
+    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
+        const baseName = path.basename(device);
+        super(`serial-${getUUid('serial')}`, baseName);
+        if (this.tcpPort) {
+            this.restartSocket();
+        }
+        if (this.serialConfig.log_file) {
+            this.setLogFile(this.serialConfig.log_file);
+        }
+        CockpitPanel.instance?.addTab(this);
+    }
+
+    onUserInput(text: string) {
+        // This method is called when the user types something in the Input area
+        text += "\r\n";   // Add a newline to the end of the input to simulate pressing Enter
+        if (this.socket) {
+            this.socket.write(text);
+        }
+        if (this.logFileStream) {
+            this.logFileStream.write(text);
+        }
+    }
+
+    onUserClose(): void {
+        MCUDebugChannel.debugMessage(`Terminal for serial port ${this.device} closed`);
+        this.destroySocket();
+        this.emitter.emit("close");
+    }
+
+    public notifyConnected(reason: string) {
+        this.send(`\r\n\x1b[32m[Serial connected] ${reason}\x1b[0m\r\n`);
+    }
+
+    public notifyDisconnected(reason: string) {
+        this.destroySocket();
+        this.send(`\r\n\x1b[33m[Serial disconnected: ${reason} — retrying...]\x1b[0m\r\n`);
+    }
+
+    public notifyReconnected() {
+        this.send(`\r\n\x1b[32m[Serial reconnected]\x1b[0m\r\n`);
+    }
+
+    setTcpPort(port: number) {
+        if (this.tcpPort === port && this.socket && !this.socket.destroyed) {
+            return;
+        }
+        this.tcpPort = port;
+        this.restartSocket();
+    }
+
+    private destroySocket() {
+        if (this.socket) {
+            this.socket.destroy();
+            this.socket = null;
+        }
+    }
+
+    private destroyLogFile() {
+        if (this.serialConfig.log_file) {
+            this.logFileStream?.end(() => {
+                MCUDebugChannel.debugMessage(`Closed log file stream for ${this.serialConfig.log_file}`);
+            });
+            this.logFileStream = null;
+        }
+    }
+
+    public setLogFile(log_file: string | undefined) {
+        if (this.serialConfig.log_file === log_file) {
+            return;
+        }
+        this.serialConfig.log_file = log_file || "";
+        this.destroyLogFile();
+        if (log_file) {
+            this.logFileStream = fs.createWriteStream(log_file, { flags: "a" });
+            if (!this.logFileStream) {
+                MCUDebugChannel.debugMessage(`Failed to create log file stream for ${log_file}`);
+                vscode.window.showErrorMessage(`Failed to create log file stream for ${log_file}`);
+            }
+        }
+    }
+
+    public setInputMode(input_mode: string | undefined) {
+        const mode = input_mode === "raw" ? TerminalInputMode.RAW : TerminalInputMode.COOKED;
+        // TODO: We need to reset the set the terminal options
+    }
+
+    restartSocket() {
+        this.destroySocket();
+        // The helper will create a TCP server for this serial port and report the port number back to us. Once we have the port number, we can connect to it.
+        const socket = new net.Socket();
+        socket.connect(this.tcpPort, "127.0.0.1");
+        socket.on("connect", () => {
+            MCUDebugChannel.debugMessage(`Connected to serial port ${this.device} at 127.0.0.1:${this.tcpPort}`);
+            this.socket = socket;
+        });
+        socket.on("data", (data) => {
+            this.send(data.toString());
+            if (this.logFileStream) {
+                this.logFileStream.write(data);
+            }
+        });
+        socket.on("error", (err) => {
+            MCUDebugChannel.debugMessage(`Error on serial port ${this.device} connection: ${err.message}`);
+            this.destroySocket();
+            this.notifyDisconnected(err.message);
+        });
+        socket.on("close", () => {
+            MCUDebugChannel.debugMessage(`Connection to serial port ${this.device} closed`);
+            this.destroySocket();
+            this.notifyDisconnected("Connection closed");
+        });
+    }
+}
 
 /**
  * Represents an active connection to a serial port on the proxy side, including the TCP server that the proxy helper creates for it and the socket

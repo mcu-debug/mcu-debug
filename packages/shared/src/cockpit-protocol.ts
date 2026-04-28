@@ -44,8 +44,10 @@ export type ToUi =
     | { type: 'tab-set-state'; tabId: string; state: TabState }
     | { type: 'tab-set-label'; tabId: string; label: string }
 
-    // --- Content: streamed mux output, routed to a specific tab's terminal ---
+    // --- Content: terminal output, routed to a specific tab's terminal ---
+    | { type: 'restore'; tabId: string; text: string }
     | { type: 'stream'; tabId: string; text: string }
+    | { type: 'clear'; tabId: string }
 
     // --- Content: Glass Cockpit tab only ---
     | { type: 'ai-request'; tabId: string; text: string }
@@ -59,6 +61,12 @@ export type ToUi =
 // ---------------------------------------------------------------------------
 
 export type FromUi =
+    /** Webview JS has mounted and is ready to receive messages. Extension replays all tabs. */
+    | { type: 'ready' }
+    /** UI selected a different tab; only the active tab's terminal is mounted. */
+    | { type: 'active-tab-changed'; tabId: string | null }
+    /** xterm.js for a specific tab has mounted and is ready to receive stream data. */
+    | { type: 'terminal-ready'; tabId: string }
     /** Engineer typed a line in any tab's input bar. */
     | { type: 'user-input'; tabId: string; text: string }
     /** User clicked × on a tab. Extension handles actual teardown. */
