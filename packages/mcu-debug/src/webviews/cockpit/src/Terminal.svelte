@@ -20,6 +20,10 @@
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let resizeObserver: ResizeObserver;
 
+    function readCssVar(styles: CSSStyleDeclaration, name: string, fallback: string): string {
+        return styles.getPropertyValue(name).trim() || fallback;
+    }
+
     function fitTerminal() {
         if (!fitAddon) return;
         if (container.clientWidth > 0 && container.clientHeight > 0) {
@@ -96,8 +100,7 @@
 
     onMount(() => {
         const cs = getComputedStyle(document.body);
-        const fontFamily =
-            cs.getPropertyValue("--vscode-terminal-font-family").trim() || cs.getPropertyValue("--vscode-editor-font-family").trim() || "Menlo, Monaco, Consolas, 'Courier New', monospace";
+        const fontFamily = readCssVar(cs, "--vscode-terminal-font-family", "Menlo, Monaco, Consolas, 'Courier New', monospace");
         const fontSizeRaw = cs.getPropertyValue("--vscode-terminal-font-size").trim() || cs.getPropertyValue("--vscode-editor-font-size").trim();
         const fontSize = fontSizeRaw ? parseFloat(fontSizeRaw) : 13;
 
@@ -105,9 +108,26 @@
             scrollback: 10_000,
             convertEol: true,
             theme: {
-                background: cs.getPropertyValue("--vscode-terminal-background").trim() || "#1e1e1e",
-                foreground: cs.getPropertyValue("--vscode-terminal-foreground").trim() || "#cccccc",
-                cursor: cs.getPropertyValue("--vscode-terminalCursor-foreground").trim() || "#aeafad",
+                background: readCssVar(cs, "--vscode-terminal-background", "#1e1e1e"),
+                foreground: readCssVar(cs, "--vscode-terminal-foreground", "#cccccc"),
+                cursor: readCssVar(cs, "--vscode-terminalCursor-foreground", "#aeafad"),
+                cursorAccent: readCssVar(cs, "--vscode-terminal-background", "#1e1e1e"),
+                black: readCssVar(cs, "--vscode-terminal-ansiBlack", "#000000"),
+                red: readCssVar(cs, "--vscode-terminal-ansiRed", "#cd3131"),
+                green: readCssVar(cs, "--vscode-terminal-ansiGreen", "#0dbc79"),
+                yellow: readCssVar(cs, "--vscode-terminal-ansiYellow", "#e5e510"),
+                blue: readCssVar(cs, "--vscode-terminal-ansiBlue", "#2472c8"),
+                magenta: readCssVar(cs, "--vscode-terminal-ansiMagenta", "#bc3fbc"),
+                cyan: readCssVar(cs, "--vscode-terminal-ansiCyan", "#11a8cd"),
+                white: readCssVar(cs, "--vscode-terminal-ansiWhite", "#e5e5e5"),
+                brightBlack: readCssVar(cs, "--vscode-terminal-ansiBrightBlack", "#666666"),
+                brightRed: readCssVar(cs, "--vscode-terminal-ansiBrightRed", "#f14c4c"),
+                brightGreen: readCssVar(cs, "--vscode-terminal-ansiBrightGreen", "#23d18b"),
+                brightYellow: readCssVar(cs, "--vscode-terminal-ansiBrightYellow", "#f5f543"),
+                brightBlue: readCssVar(cs, "--vscode-terminal-ansiBrightBlue", "#3b8eea"),
+                brightMagenta: readCssVar(cs, "--vscode-terminal-ansiBrightMagenta", "#d670d6"),
+                brightCyan: readCssVar(cs, "--vscode-terminal-ansiBrightCyan", "#29b8db"),
+                brightWhite: readCssVar(cs, "--vscode-terminal-ansiBrightWhite", "#e5e5e5"),
             },
             fontFamily,
             fontSize,
@@ -168,6 +188,7 @@
     .xterm-container {
         width: 100%;
         height: 100%;
+        font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
     }
 
     .buffer-badge {
