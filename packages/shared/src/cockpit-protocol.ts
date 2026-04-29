@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 export type TabKind = 'uart' | 'rtt' | 'swo' | 'cockpit';
+export type TabInputMode = 'raw' | 'cooked';
 
 /**
  * Visual/operational state of a tab. The extension drives all transitions.
@@ -32,7 +33,11 @@ export interface TabDescriptor {
     /** For uart/rtt: whether the input bar is shown. Absent for swo/cockpit (cockpit always has input). */
     direction?: 'rx' | 'tx' | 'both';
     state: TabState;
+    placeholderText: string;
+    inputMode?: TabInputMode;
 }
+
+export type TabDescriptorPatch = Partial<Pick<TabDescriptor, 'direction' | 'placeholderText' | 'inputMode'>>;
 
 // ---------------------------------------------------------------------------
 // Orchestrator → UI
@@ -43,6 +48,7 @@ export type ToUi =
     | { type: 'tab-add'; tab: TabDescriptor }
     | { type: 'tab-set-state'; tabId: string; state: TabState }
     | { type: 'tab-set-label'; tabId: string; label: string }
+    | { type: 'tab-update'; tabId: string; patch: TabDescriptorPatch }
 
     // --- Content: terminal output, routed to a specific tab's terminal ---
     | { type: 'restore'; tabId: string; text: string }

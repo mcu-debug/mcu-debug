@@ -835,6 +835,9 @@ class SerialPortTab extends ManagedTab {
             if (doClear) {
                 existing.clear();
             }
+            existing.serialConfig = serialConfig;
+            existing.setLogFile(serialConfig.log_file ?? undefined);
+            existing.setInputMode(serialConfig.input_mode ?? undefined);
             existing.setState({ kind: "active" });
             return existing;
         } else {
@@ -844,7 +847,12 @@ class SerialPortTab extends ManagedTab {
 
     constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
         const baseName = path.basename(device);
-        super(`serial-${getUUid('serial')}`, baseName);
+        super(
+            `serial-${getUUid('serial')}`,
+            baseName,
+            "Enter input for serial port " + device,
+            serialConfig.input_mode === "raw" ? "raw" : "cooked",
+        );
         if (this.tcpPort) {
             this.restartSocket();
         }
@@ -855,14 +863,21 @@ class SerialPortTab extends ManagedTab {
     }
 
     onUserInput(text: string) {
-        // This method is called when the user types something in the Input area
-        text += "\r\n";   // Add a newline to the end of the input to simulate pressing Enter
+        const outgoing = this.inputMode === "raw" ? text : `${text}\r\n`;
+        if (!outgoing) {
+            return;
+        }
         if (this.socket) {
-            this.socket.write(text);
+            this.socket.write(outgoing);
+            this.echoInput(this.inputMode === "raw" ? this._rawEchoText(outgoing) : outgoing);
         }
         if (this.logFileStream) {
-            this.logFileStream.write(text);
+            this.logFileStream.write(outgoing);
         }
+    }
+
+    private _rawEchoText(text: string): string {
+        return text.replace(/\r(?!\n)/g, "\r\n");
     }
 
     onUserClose(): void {
@@ -925,7 +940,10 @@ class SerialPortTab extends ManagedTab {
 
     public setInputMode(input_mode: string | undefined) {
         const mode = input_mode === "raw" ? TerminalInputMode.RAW : TerminalInputMode.COOKED;
-        // TODO: We need to reset the set the terminal options
+        if (this.inputMode === (mode === TerminalInputMode.RAW ? "raw" : "cooked")) {
+            return;
+        }
+        super.setInputMode(mode === TerminalInputMode.RAW ? "raw" : "cooked");
     }
 
     restartSocket() {

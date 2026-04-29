@@ -3,17 +3,22 @@
     import AiRequest from "./AiRequest.svelte";
     import InputBar from "./InputBar.svelte";
     import { postToExtension } from "./vscode";
+    import type { TabInputMode } from "@mcu-debug/shared";
 
     const {
         tabId,
         aiRequestText,
         bufferLines,
         active,
+        placeholderText,
+        inputMode = "cooked",
     }: {
         tabId: string;
         aiRequestText: string;
         bufferLines: number;
         active: boolean;
+        placeholderText: string;
+        inputMode?: TabInputMode;
     } = $props();
 
     function handleUserInput(text: string) {
@@ -23,14 +28,14 @@
 
 <div class="cockpit">
     <div class="terminal-region">
-        <Terminal {tabId} {bufferLines} {active} />
+        <Terminal {tabId} {bufferLines} {active} allowKeyboardInput={false} />
     </div>
 
     {#if aiRequestText}
         <AiRequest text={aiRequestText} />
     {/if}
 
-    <InputBar onSubmit={handleUserInput} />
+    <InputBar onSubmit={handleUserInput} {placeholderText} {inputMode} />
 </div>
 
 <style>

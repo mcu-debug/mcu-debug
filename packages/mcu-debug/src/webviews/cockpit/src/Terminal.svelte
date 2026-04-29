@@ -7,7 +7,17 @@
     import { postToExtension } from "./vscode";
     import "@xterm/xterm/css/xterm.css";
 
-    const { tabId, bufferLines, active }: { tabId: string; bufferLines: number; active: boolean } = $props();
+    const {
+        tabId,
+        bufferLines,
+        active,
+        allowKeyboardInput = true,
+    }: {
+        tabId: string;
+        bufferLines: number;
+        active: boolean;
+        allowKeyboardInput?: boolean;
+    } = $props();
 
     const FLUSH_INTERVAL_MS = 500;
     const MAX_BUFFER_BYTES = 32_000;
@@ -63,6 +73,9 @@
     }
 
     async function pasteFromClipboard(): Promise<boolean> {
+        if (!allowKeyboardInput) {
+            return false;
+        }
         try {
             const text = await navigator.clipboard.readText();
             if (text) {
@@ -88,7 +101,7 @@
     }
 
     function handleClipboardPaste(event: ClipboardEvent) {
-        if (!active || !isTerminalFocused()) return;
+        if (!allowKeyboardInput || !active || !isTerminalFocused()) return;
         const text = event.clipboardData?.getData("text/plain") ?? "";
         if (!text) return;
         event.preventDefault();
@@ -128,6 +141,9 @@
         }
 
         if ((primaryModifier && !event.altKey && !event.shiftKey && lowerKey === "v") || terminalPasteShortcut) {
+            if (!allowKeyboardInput) {
+                return true;
+            }
             event.preventDefault();
             void pasteFromClipboard();
             return false;
@@ -243,7 +259,9 @@
         term.loadAddon(new WebLinksAddon());
         term.open(container);
         term.attachCustomKeyEventHandler(handleTerminalKeyEvent);
-        dataListener = term.onData((text) => submitUserInput(text));
+        if (allowKeyboardInput) {
+            dataListener = term.onData((text) => submitUserInput(text));
+        }
 
         terminalTextarea = term.textarea ?? undefined;
         terminalTextarea?.addEventListener("copy", handleClipboardCopy);

@@ -2,10 +2,10 @@
 
 This repository contains multiple components with different licensing terms:
 
-1. MCU-Debug VS Code Extension (TypeScript/DAP Layer): 
+1. MCU-Debug VS Code Extension (TypeScript): 
    Licensed under the MIT License. See LICENSE-MIT.
 
-2. MCU-Debug Helper (Rust Symbol/Disasm Server): 
+2. MCU-Debug Helper (Rust Symbol/Disasm Server/MCU-Debug-Proxy Extension/MCU-Debug DAP Layer): 
    Licensed under the Apache License, Version 2.0. See LICENSE-APACHE.
 
 Individual source files may contain specific copyright and license headers. 

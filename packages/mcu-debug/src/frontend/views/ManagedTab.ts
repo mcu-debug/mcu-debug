@@ -1,4 +1,4 @@
-import type { TabDescriptor, TabKind, TabState, ToUi, FromUi } from "@mcu-debug/shared";
+import type { TabDescriptor, TabInputMode, TabKind, TabState, ToUi, FromUi } from "@mcu-debug/shared";
 
 /**
  * Base class for a tab hosted in the MCU DEBUG panel (CockpitPanel).
@@ -35,12 +35,21 @@ export abstract class ManagedTab {
     constructor(
         readonly tabId: string,
         label: string,
+        placeholderText: string,
+        inputMode: TabInputMode = "cooked",
     ) {
         this._label = label;
+        this._placeholderText = placeholderText;
+        this._inputMode = inputMode;
     }
+
+    private _placeholderText: string;
+    private _inputMode: TabInputMode;
 
     get label(): string { return this._label; }
     get state(): TabState { return this._state; }
+    get placeholderText(): string { return this._placeholderText; }
+    get inputMode(): TabInputMode { return this._inputMode; }
 
     get descriptor(): TabDescriptor {
         return {
@@ -49,6 +58,8 @@ export abstract class ManagedTab {
             label: this._label,
             direction: this.direction,
             state: this._state,
+            placeholderText: this.placeholderText,
+            inputMode: this.inputMode,
         };
     }
 
@@ -139,6 +150,20 @@ export abstract class ManagedTab {
     protected setLabel(label: string): void {
         this._label = label;
         this._post({ type: "tab-set-label", tabId: this.tabId, label });
+    }
+
+    protected setPlaceholderText(placeholderText: string): void {
+        this._placeholderText = placeholderText;
+        this._post({ type: "tab-update", tabId: this.tabId, patch: { placeholderText } });
+    }
+
+    protected setInputMode(inputMode: TabInputMode): void {
+        this._inputMode = inputMode;
+        this._post({ type: "tab-update", tabId: this.tabId, patch: { inputMode } });
+    }
+
+    protected echoInput(text: string): void {
+        this.send(text);
     }
 
     private _post(msg: ToUi): void {

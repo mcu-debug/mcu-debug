@@ -53,6 +53,11 @@
                 if (tab) tab.label = msg.label;
                 break;
             }
+            case "tab-update": {
+                const tab = findTab(msg.tabId);
+                if (tab) Object.assign(tab, msg.patch);
+                break;
+            }
             case "clear": {
                 // Terminal.svelte listens to window 'message' directly per tabId —
                 // we re-dispatch as-is; terminals filter by their own tabId.
@@ -132,9 +137,23 @@
             {#each tabs as tab (tab.tabId)}
                 <div class="tab-pane" class:active={tab.tabId === activeTabId}>
                     {#if tab.kind === "cockpit"}
-                        <GlassCockpit tabId={tab.tabId} aiRequestText={tab.aiRequestText} bufferLines={tab.bufferLines} active={tab.tabId === activeTabId} />
+                        <GlassCockpit
+                            tabId={tab.tabId}
+                            aiRequestText={tab.aiRequestText}
+                            bufferLines={tab.bufferLines}
+                            active={tab.tabId === activeTabId}
+                            placeholderText={tab.placeholderText}
+                            inputMode={tab.inputMode ?? "cooked"}
+                        />
                     {:else}
-                        <SourceTab tabId={tab.tabId} direction={tab.direction ?? "rx"} bufferLines={tab.bufferLines} active={tab.tabId === activeTabId} />
+                        <SourceTab
+                            tabId={tab.tabId}
+                            direction={tab.direction ?? "rx"}
+                            bufferLines={tab.bufferLines}
+                            active={tab.tabId === activeTabId}
+                            placeholderText={tab.placeholderText}
+                            inputMode={tab.inputMode ?? "cooked"}
+                        />
                     {/if}
                 </div>
             {/each}
