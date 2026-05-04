@@ -591,7 +591,7 @@ pub fn run(args: DaHelperArgs) -> Result<()> {
     }
 
     // Notify DA that symbol table is ready
-    let notify = protocol::symbol_table_ready_notification("local-session", "0.1.1");
+    let notify = protocol::symbol_table_ready_notification("local-session", env!("CARGO_PKG_VERSION"));
     transport
         .write_message(&notify)
         .map_err(|e| anyhow::anyhow!("{}", e))?;

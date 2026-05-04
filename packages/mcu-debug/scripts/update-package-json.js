@@ -3,19 +3,6 @@ const path = require("path");
 const definitions = require("../manifest-src/definitions");
 
 const PACKAGE_JSON_PATH = path.join(__dirname, "../package.json");
-const PROXY_PACKAGE_JSON_PATH = path.join(__dirname, "../../mcu-debug-proxy/package.json");
-
-function enforceVersionSync(pkg) {
-    const proxyPkg = JSON.parse(fs.readFileSync(PROXY_PACKAGE_JSON_PATH, "utf8"));
-    if (pkg.version !== proxyPkg.version) {
-        throw new Error(
-            `Version mismatch detected:\n` +
-                `  packages/mcu-debug/package.json: ${pkg.version}\n` +
-                `  packages/mcu-debug-proxy/package.json: ${proxyPkg.version}\n` +
-                `Keep extension versions synchronized before running update-package-json.js.`,
-        );
-    }
-}
 
 function createPlatformProps(name, description) {
     const props = {};
@@ -225,8 +212,6 @@ function generateDebuggers() {
 
 function updatePackageJson() {
     const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, "utf8"));
-
-    enforceVersionSync(pkg);
 
     // Keep packaging scripts non-recursive.
     // `vsce package` always runs `vscode:prepublish`; if that script calls `npm run package`,

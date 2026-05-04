@@ -88,12 +88,40 @@ This debugger has a **push/subscription model for variable values** that is not 
 
 ## Package Structure
 
-```
+```text
 packages/
-  mcu-debug/          # VS Code extension (TypeScript) — DAP server + UI
-  mcu-debug-helper/   # Rust binary — da_helper + proxy_helper subcommands
-  mcu-debug-proxy/    # Proxy-related extension packaging
-  shared/             # Shared TypeScript types and protocol definitions
+  mcu-debug/            # VS Code extension (TypeScript) — DAP server + UI
+  mcu-debug-helper/     # Rust binary — da_helper + proxy_helper subcommands
+  mcu-debug-proxy/      # Proxy-related extension packaging
+  shared/               # Shared TypeScript types and protocol definitions
+  shared/proxy-protocol # GENERATED files by ts_rs. DO NOT EDIT
+  shared/serial-helper  # GENERATED files by ts_rs. DO NOT EDIT
+  shared/dasm-helper    # GENERATED files by ts_rs. DO NOT EDIT
 ```
 
+Some directories in the `packages/shared` dir. are generated files and the script `scripts/build-binaries.sh` contains the code to generate and prettify them
+
 The `mcu-debug-helper` binary is pre-built and checked in under `packages/mcu-debug/bin/` and `packages/mcu-debug-proxy/bin` for each platform. It is also built locally via the `Build Helper` task.
+
+## Building
+
+| What                   | command                          |
+| ---------------------- | -------------------------------- |
+| Rust only build (dev)  | ./scripts/build-binaries.sh dev  |
+| Compile all (dev)      | npm run compile                  |
+| Rust only build (prod) | ./scripts/build-binaries.sh prod |
+| Compile all (prod)     | npm run package                  |
+
+prod - production builds builds all OSes and archictures (optimized and stripped)
+dev  - development builds builds just the current OS+arch for
+
+**How to apply:** When Rust structs change, regenerate the generated TS files with:
+
+```bash
+  cd packages/mcu-debug-helper && cargo test --lib da_helper::helper_requests::tests::ensure_ts_exports --quiet
+  cd packages/mcu-debug-helper && cargo test --lib proxy_helper::proxy_server::tests::ensure_ts_exports --quiet
+```
+
+Or do a full dev build: `./scripts/build-binaries.sh dev` -- this is fast in most cases
+
+See if the expected files in the `packages/shared/{proxy-protocol,serial-helper,dasm-helper)` dirs have newer timestamps

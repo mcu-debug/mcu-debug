@@ -9,7 +9,8 @@
 			"runtimeExecutable": "${execPath}",
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug",
-				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy"
+				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy",
+				"/Users/hdm/mtw37/Dual-CPU_Empty_PSOC6_App/Dual-CPU_Empty_PSOC6_App.code-workspace"
 			],
 			"sourceMaps": true,
 			"outFiles": [

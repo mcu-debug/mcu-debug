@@ -174,13 +174,25 @@ impl Default for SerialTransport {
 
 /// Parameters to open or reconfigure a serial port.
 ///
-/// All fields except `path` have defaults (115200 8N1 no flow control), so
-/// a `serial.open` request only needs to supply `path`. On `serial.listOpen`
-/// responses all fields are always present.
+/// Specify the device via `path` (direct path or glob), `serial` (USB serial
+/// number), or `vid`/`pid` (USB vendor/product IDs in hex, e.g. `"0x0483"`).
+/// `serial` is the most stable identifier in lab environments with multiple
+/// boards. All baud/framing fields default to 115200 8N1 no flow control.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "serial-helper/")]
 pub struct SerialParams {
-    pub path: String,
+    /// Direct device path or glob (e.g. `/dev/ttyUSB0`, `/dev/tty.usbserial-*`, `COM3`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// USB serial number. Stable across reconnects and reboots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    /// USB vendor ID in hex (e.g. `"0x0483"`). Used with `pid` when `serial` is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vid: Option<String>,
+    /// USB product ID in hex (e.g. `"0x374b"`). Used with `vid` when `serial` is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<String>,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
     #[serde(default = "default_data_bits")]
@@ -233,17 +245,18 @@ fn data_bits_to_serial(n: u8) -> serialport::DataBits {
 
 /// Open a serial port with the given parameters and read timeout.
 fn open_port(
+    path: &str,
     params: &SerialParams,
     read_timeout: Duration,
 ) -> Result<Box<dyn serialport::SerialPort>> {
-    serialport::new(&params.path, params.baud_rate)
+    serialport::new(path, params.baud_rate)
         .data_bits(data_bits_to_serial(params.data_bits))
         .stop_bits(params.stop_bits.into())
         .parity(params.parity.into())
         .flow_control(params.flow_control.into())
         .timeout(read_timeout)
         .open()
-        .with_context(|| format!("failed to open serial port '{}'", params.path))
+        .with_context(|| format!("failed to open serial port '{}'", path))
 }
 
 /// Apply all reconfigurable settings to an already-open serial port.
@@ -299,19 +312,22 @@ pub struct PortHandle {
 impl PortHandle {
     /// Open the serial device and start the always-on reader thread.
     ///
+    /// `path` must be a resolved, concrete device path (no glob). Call
+    /// [`crate::serial::resolve_port`] first to turn selector fields into a path.
+    ///
     /// Returns `Err` if the device cannot be opened (not found, permission
     /// denied, bad params). The error is suitable for returning directly as a
     /// `serial.open` response error.
-    pub fn open(params: SerialParams) -> Result<Self> {
+    pub fn open(path: String, params: SerialParams) -> Result<Self> {
         // Short read timeout so the reader thread can notice the shutdown flag
         // promptly even when no serial data is arriving.
         let read_timeout = Duration::from_millis(100);
 
         // Open twice: reader_port goes to the thread; config_port stays here.
-        let reader_port = open_port(&params, read_timeout)?;
+        let reader_port = open_port(&path, &params, read_timeout)?;
         let config_port = reader_port
             .try_clone()
-            .with_context(|| format!("failed to clone serial port '{}'", params.path))?;
+            .with_context(|| format!("failed to clone serial port '{}'", path))?;
 
         let shared = Arc::new(Shared {
             ring: RingBuffer::new(),
@@ -321,7 +337,7 @@ impl PortHandle {
         let error_subs: Arc<Mutex<Vec<Sender<PortErrorEvent>>>> = Arc::new(Mutex::new(Vec::new()));
 
         let reader_thread = Self::spawn_reader(
-            params.path.clone(),
+            path.clone(),
             reader_port,
             Arc::clone(&shared),
             Arc::clone(&shutdown),
@@ -329,8 +345,8 @@ impl PortHandle {
         );
 
         Ok(PortHandle {
-            path: params.path.clone(),
-            params: Mutex::new(params.clone()),
+            path: path.clone(),
+            params: Mutex::new(params),
             config_port: Mutex::new(config_port),
             shared,
             shutdown,

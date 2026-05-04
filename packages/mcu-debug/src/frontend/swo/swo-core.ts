@@ -2,8 +2,8 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 
-import { SWOConsoleProcessor } from "./decoders/console";
-import { SWOBinaryProcessor } from "./decoders/binary";
+import { SWOConsoleProcessor } from "./decoders/swo-console";
+import { SWOBinaryProcessor } from "./decoders/swo-binary";
 import { SWORTTGraphProcessor } from "./decoders/graph";
 import { SWORTTDecoder } from "./decoders/common";
 import { SWORTTSource } from "./sources/common";
@@ -433,7 +433,7 @@ export class SWOCore extends SWORTTCoreBase {
         }
     }
 
-    private overflow() {}
+    private overflow() { }
 
     private lostSynchronization() {
         this.processors.forEach((p) => p.lostSynchronization());
@@ -524,7 +524,7 @@ class RTTDecoder extends EventEmitter {
         }
     }
 
-    public dispose() {}
+    public dispose() { }
 }
 
 export class RTTCore extends SWORTTCoreBase {

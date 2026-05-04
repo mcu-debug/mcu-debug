@@ -55,16 +55,17 @@ pub fn list() -> Vec<AvailablePort> {
             continue;
         }
 
-        // 3. Build AvailablePort — attempt USB ancestry for description/VID/PID.
-        let (description, vid, pid) = usb_info(&resolved)
-            .map(|(d, v, p)| (d, Some(v), Some(p)))
-            .unwrap_or_else(|| (driver_name(&resolved), None, None));
+        // 3. Build AvailablePort — attempt USB ancestry for description/VID/PID/serial.
+        let (description, vid, pid, serial) = usb_info(&resolved)
+            .map(|(d, v, p, s)| (d, Some(v), Some(p), s))
+            .unwrap_or_else(|| (driver_name(&resolved), None, None, None));
 
         result.push(AvailablePort {
             path: format!("/dev/{}", name_str),
             description,
             vid,
             pid,
+            serial,
         });
     }
     result
@@ -91,10 +92,10 @@ fn chains_to_real_bus(device_path: &Path) -> bool {
 }
 
 /// Walk up the sysfs ancestry from `device_path` to find a USB device node,
-/// then read VID, PID, manufacturer, and product from it.
+/// then read VID, PID, manufacturer, product, and serial number from it.
 ///
-/// Returns `(description, vid, pid)` if a USB ancestor is found, `None` otherwise.
-fn usb_info(device_path: &Path) -> Option<(String, u16, u16)> {
+/// Returns `(description, vid, pid, serial)` if a USB ancestor is found, `None` otherwise.
+fn usb_info(device_path: &Path) -> Option<(String, u16, u16, Option<String>)> {
     // Walk up the directory tree looking for `idVendor` / `idProduct` files,
     // which appear at the USB device node (one level above the interface node).
     let mut path: PathBuf = device_path.to_path_buf();
@@ -106,6 +107,7 @@ fn usb_info(device_path: &Path) -> Option<(String, u16, u16)> {
             let pid = read_hex_u16(&pid_path)?;
             let manufacturer = read_trimmed(&path.join("manufacturer"));
             let product = read_trimmed(&path.join("product"));
+            let serial = read_trimmed(&path.join("serial"));
             let description = [manufacturer.as_deref(), product.as_deref()]
                 .into_iter()
                 .flatten()
@@ -113,7 +115,7 @@ fn usb_info(device_path: &Path) -> Option<(String, u16, u16)> {
                 .join(" ")
                 .trim()
                 .to_string();
-            return Some((description, vid, pid));
+            return Some((description, vid, pid, serial));
         }
         // Move one level up; stop at the sysfs root.
         if !path.pop() {

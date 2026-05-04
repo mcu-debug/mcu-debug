@@ -1,3 +1,5 @@
+import { ManagedTab } from "./views/ManagedTab";
+
 /* eslint-disable @stylistic/no-multi-spaces */
 export const ESC = "\x1b"; // ASCII escape character
 export const CSI = ESC + "["; // control sequence introducer
@@ -13,4 +15,16 @@ export function greenFormat(msg: string) {
 
 export function magentaFormat(msg: string) {
     return BR_MAGENTA_FG + msg + RESET;
+}
+
+export function magentaWrite(msg: string, pty: ManagedTab) {
+    if (pty) {
+        pty.send(magentaFormat(msg));
+    }
+}
+
+export function greenWrite(msg: string, pty: ManagedTab) {
+    if (pty) {
+        pty.send(greenFormat(msg));
+    }
 }

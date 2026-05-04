@@ -1,7 +1,7 @@
 import { assert } from "console";
 import * as vscode from "vscode";
 import { ConfigurationArguments, ChainedConfig } from "../adapter/servers/common";
-import { RTTCore, SWOCore } from "./swo/core";
+import { RTTCore, SWOCore } from "./swo/swo-core";
 import { SWORTTSource } from "./swo/sources/common";
 import { SocketRTTSource, SocketUARTSource } from "./swo/sources/socket";
 

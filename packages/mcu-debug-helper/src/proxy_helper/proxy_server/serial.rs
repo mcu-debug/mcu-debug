@@ -79,7 +79,23 @@ impl ProxyServer {
     /// a transport channel. Idempotent per transport type. Returns an error if the
     /// port is already open with a *different* transport (close it first).
     pub(super) fn handle_serial_open(&mut self, seq: u64, params: SerialParams) {
-        let path = params.path.clone();
+        let path = match crate::serial::resolve_port(
+            params.path.as_deref(),
+            params.serial.as_deref(),
+            params.vid.as_deref(),
+            params.pid.as_deref(),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                ControlResponse::error(seq, format!("serial.open failed: {e}"))
+                    .send(&self.writer)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to send serial.open error: {e}");
+                        self.exit = true;
+                    });
+                return;
+            }
+        };
 
         // Phase 1 (under registry lock): decide what to do and capture a PortHandle.
         // Direct-transport success is fully resolved here. Funnel returns a handle
@@ -115,7 +131,7 @@ impl ProxyServer {
                 }
             } else {
                 // New port — open the serial device.
-                let new_handle = match PortHandle::open(params.clone()) {
+                let new_handle = match PortHandle::open(path.clone(), params.clone()) {
                     Ok(h) => Arc::new(h),
                     Err(e) => return Phase1Result::Error(e),
                 };

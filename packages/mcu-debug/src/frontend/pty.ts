@@ -3,6 +3,7 @@ import * as os from "os";
 import * as vscode from "vscode";
 import { ResettableTimeout, TerminalInputMode } from "../adapter/servers/common";
 import { BR_MAGENTA_FG, CSI, RESET } from "./ansi-helpers";
+import { ManagedTab } from "./views/ManagedTab";
 
 const KEYS = {
     enter: "\r",
@@ -15,11 +16,6 @@ export interface IPtyTerminalOptions {
     inputMode: TerminalInputMode;
 }
 
-export function magentaWrite(msg: string, pty: PtyTerminal) {
-    if (pty) {
-        pty.write(BR_MAGENTA_FG + msg + RESET);
-    }
-}
 const controlChars: { [key: string]: number } = {};
 const zero = "@".charCodeAt(0);
 for (let ix = zero; ix <= "Z".charCodeAt(0); ix++) {

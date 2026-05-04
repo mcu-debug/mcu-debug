@@ -497,11 +497,22 @@ module.exports = {
             description: "List of serial port bridges to expose as TCP ports. Each entry maps a physical serial device to a TCP port that can be connected to for bidirectional communication.",
             items: {
                 type: "object",
-                required: ["path"],
                 properties: {
                     path: {
                         type: "string",
-                        description: "Serial device path. E.g. /dev/ttyUSB0, /dev/tty.usbserial-*, COM3.",
+                        description: "Serial device path or glob. E.g. /dev/ttyUSB0, /dev/tty.usbserial-*, COM3, /dev/serial/by-id/usb-*. Optional if serial or vid/pid are specified.",
+                    },
+                    serial: {
+                        type: "string",
+                        description: "USB serial number. Stable across reconnects and reboots — preferred in lab environments with multiple boards of the same type.",
+                    },
+                    vid: {
+                        type: "string",
+                        description: "USB vendor ID in hex (e.g. \"0x0483\"). Used with pid to identify the device type when serial is unavailable.",
+                    },
+                    pid: {
+                        type: "string",
+                        description: "USB product ID in hex (e.g. \"0x374b\"). Used with vid to identify the device type when serial is unavailable.",
                     },
                     baud_rate: {
                         type: "number",

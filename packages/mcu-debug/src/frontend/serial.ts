@@ -1,3 +1,18 @@
+// Copyright (c) 2026 MCU-Debug Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+
 import * as fs from "fs";
 import * as net from "net";
 import * as vscode from "vscode";
@@ -7,13 +22,12 @@ import { AvailablePort } from "@mcu-debug/shared/serial-helper/AvailablePort";
 import { SerialPortInfo } from "@mcu-debug/shared/proxy-protocol/SerialPortInfo";
 import { SerialErrorKind } from "@mcu-debug/shared/serial-helper/SerialErrorKind";
 import { awaitWithTimeout, ConfigurationArguments, HostConfig, SerialConfig, TerminalInputMode } from "../adapter/servers/common";
-import { IPtyTerminalOptions, PtyTerminal } from "./pty";
 import { EventEmitter } from "stream";
 import { MCUDebugChannel } from "../dbgmsgs";
 import { getProxyForSerialPorts } from "./proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { setExtensionPath } from "./proxy";
-import { ManagedTab } from "./views/ManagedTab";
+import { getUUid, ManagedTab } from "./views/ManagedTab";
 import { CockpitPanel } from "./views/CockpitPanel";
 import { TabKind } from "@mcu-debug/shared/lib/cockpit-protocol";
 
@@ -43,7 +57,7 @@ export class SerialPortManager {
     private pendingPromises: Map<number, { resolve: (value: any) => void; reject: (reason?: any) => void }> = new Map();
     private availablePorts: AvailablePort[] = [];
     private openPorts: SerialPortInfo[] = [];
-    private serialPortViews: Map<string, SerialPortTab> = new Map();
+    private serialPortViews: Map<string, SerialPortView> = new Map();
     private serialPortConfigs: Map<string, SerialParams> = new Map();
     private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
     private pendingAvailableSnapshotResolvers: Array<() => void> = [];
@@ -59,6 +73,25 @@ export class SerialPortManager {
     public logError(message: string) {
         MCUDebugChannel.debugMessage(`ERROR: ${message}`);
         vscode.window.showErrorMessage(message);
+    }
+
+    /** Human-readable description of a port selector for log messages. */
+    private static portSel(p: SerialParams): string {
+        if (p.path) { return p.path; }
+        if (p.serial) { return `serial=${p.serial}`; }
+        if (p.vid || p.pid) { return `vid=${p.vid ?? '?'} pid=${p.pid ?? '?'}`; }
+        return '(no selector)';
+    }
+
+    /**
+     * Extract the resolved device path from a SerialPortInfo.
+     *
+     * `serial.open` responses have shape { path, tcp_port, channel_id } at the
+     * top level, while `serial.listOpen` entries have { params.path, ... }.
+     * Both shapes live in openPorts[], so we check both.
+     */
+    private static resolvedPath(info: SerialPortInfo): string | undefined {
+        return (info as any).path || info.params?.path || undefined;
     }
 
     private destroySocket() {
@@ -340,13 +373,13 @@ export class SerialPortManager {
             const result = await this.openSerialPort({ ...reconnectConfig }, true);
             if (result) {
                 const configPath = reconnectConfig.path;
-                const actualPath = result.params?.path || configPath;
+                const actualPath: string = SerialPortManager.resolvedPath(result) || configPath || '';
                 const reconnectViewConfig: SerialParams = {
                     ...reconnectConfig,
                     path: actualPath,
                 };
                 if (actualPath !== configPath) {
-                    this.serialPortConfigs.delete(configPath);
+                    this.serialPortConfigs.delete(configPath ?? '');
                 }
                 this.createOrUpdateViewWithSerialInfo(result, reconnectViewConfig, false);
                 const view = this.serialPortViews.get(actualPath);
@@ -387,7 +420,7 @@ export class SerialPortManager {
 
     public getSerialPortInfo(path: string): SerialPortInfo | null {
         for (const port of this.openPorts) {
-            if (port.params.path === path) {
+            if (SerialPortManager.resolvedPath(port) === path) {
                 return port;
             }
         }
@@ -457,22 +490,6 @@ export class SerialPortManager {
 
     public async openSerialPort(serialParams: SerialParams, silent: boolean = false): Promise<SerialPortInfo | null> {
         try {
-            const lCasePath = serialParams.path.toLowerCase();
-            let found = false;
-            const devs: string[] = [];
-            for (const port of this.availablePorts) {
-                if (port.path.toLowerCase() === lCasePath) {
-                    serialParams.path = port.path;   // Use the exact casing from the available ports list to avoid issues on case-sensitive platforms
-                    found = true;
-                    break;
-                }
-                devs.push(port.path);
-            }
-            if (!found && !silent) {
-                // It is not an error if a port is not found in the available list because the list may be stale.
-                // The open command will ultimately determine if the port can be opened or not. But it is useful to log this information for debugging purposes.
-                this.logInfo(`Serial port ${serialParams.path} not found in available ports list ${JSON.stringify(devs, null, 2)}. Cannot open serial port.`);
-            }
             serialParams.transport = this.isFunnelTransport ? "funnel" : "direct";   // Default to proxy transport for remote workspaces and direct transport for local workspaces. The proxy will handle the transport details on its side.
             const controlMsg: ControlMessage = {
                 seq: this.nextSeq++,
@@ -484,11 +501,11 @@ export class SerialPortManager {
             if (!openInfo) {
                 return null;
             }
-            const openPath = openInfo.params?.path;
+            const openPath = SerialPortManager.resolvedPath(openInfo);
             if (openPath) {
                 let updated = false;
                 for (let ix = 0; ix < this.openPorts.length; ix++) {
-                    if (this.openPorts[ix].params?.path === openPath) {
+                    if (SerialPortManager.resolvedPath(this.openPorts[ix]) === openPath) {
                         this.openPorts[ix] = openInfo;
                         updated = true;
                         break;
@@ -501,7 +518,8 @@ export class SerialPortManager {
             return openInfo;
         } catch (err) {
             if (!silent) {
-                this.logError(`Failed to open serial port ${serialParams.path}: ${err}`);
+                const sel = SerialPortManager.portSel(serialParams);
+                this.logError(`Failed to open serial port ${sel}: ${err}`);
             }
             return null;
         }
@@ -520,8 +538,8 @@ export class SerialPortManager {
         const ports: SerialParams[] = [];
         if (serialConfig?.enabled && ports && ports.length > 0) {
             for (const portConfig of ports) {
-                if (!portConfig.path) {
-                    this.logError(`Invalid serial port configuration: ${JSON.stringify(portConfig)}. Each port must have a path. This port configuration will be ignored.`);
+                if (!portConfig.path && !portConfig.serial && !portConfig.vid && !portConfig.pid) {
+                    this.logError(`Invalid serial port configuration: ${JSON.stringify(portConfig)}. Each port must have at least one of path/serial/vid/pid. This port configuration will be ignored.`);
                 } else {
                     ports.push(portConfig);
                 }
@@ -585,12 +603,14 @@ export class SerialPortManager {
             try {
                 const pInfo = await this.openSerialPort(portConfig) as SerialPortInfo | null;
                 if (!pInfo) {
-                    this.logError(`Failed to open serial port ${portConfig.path}`);
+                    const sel = SerialPortManager.portSel(portConfig);
+                    this.logError(`Failed to open serial port ${sel}`);
                     continue;
                 }
                 this.createOrUpdateViewWithSerialInfo(pInfo, portConfig, true);
             } catch (e: any) {
-                this.logError(`Failed to open serial port ${portConfig.path}: ${e.message}`);
+                const sel = portConfig.path ?? portConfig.serial ?? `vid=${portConfig.vid} pid=${portConfig.pid}`;
+                this.logError(`Failed to open serial port ${sel}: ${e.message}`);
             }
         }
     }
@@ -605,7 +625,7 @@ export class SerialPortManager {
     private createOrUpdateViewWithSerialInfo(pInfo: SerialPortInfo, portConfig: SerialParams, isNew: boolean = false) {
         const log_file = portConfig.log_file;
         const input_mode = portConfig.input_mode;
-        const actualPath = pInfo.params?.path || portConfig.path;
+        const actualPath: string = SerialPortManager.resolvedPath(pInfo) || portConfig.path || '';
         this.serialPortConfigs.set(actualPath, { ...portConfig, path: actualPath });
         let server: ProxySerialTcpServer | undefined;
         if (pInfo.channel_id) {
@@ -624,7 +644,7 @@ export class SerialPortManager {
             view.setLogFile(log_file ?? undefined);
             view.setInputMode(input_mode ?? undefined);
         } else {
-            view = SerialPortTab.createOrGetTab(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
+            view = SerialPortView.createOrGetTab(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
             this.serialPortViews.set(actualPath, view);
             view.emitter.on("close", () => {
                 this.removeSerialPortTab(actualPath);
@@ -637,7 +657,7 @@ export class SerialPortManager {
         }
     }
 
-    public getSerialPortTab(path: string): SerialPortTab | null {
+    public getSerialPortTab(path: string): SerialPortView | null {
         return this.serialPortViews.get(path) || null;
     }
 
@@ -667,7 +687,7 @@ export class SerialPortManager {
                     this.logError(`Failed to close serial port ${path}: ${err}`);
                 });
             }
-            this.openPorts = this.openPorts.filter((p) => p.params.path !== path);
+            this.openPorts = this.openPorts.filter((p) => SerialPortManager.resolvedPath(p) !== path);
             for (const [stream_id, server] of this.clientStreams.entries()) {
                 if (server.getPort() === portInfo?.tcp_port) {
                     server.dataFromServer(Buffer.from(""), stream_id);   // Send an empty message to trigger any cleanup on the server side
@@ -679,157 +699,16 @@ export class SerialPortManager {
     }
 }
 
-class SerialPortView extends EventEmitter {
-    private terminal: PtyTerminal;
-    private options: IPtyTerminalOptions;
-    private socket: net.Socket | null = null;
-    private logFileStream: fs.WriteStream | null = null;
-
-    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
-        super();
-        const baseName = path.basename(this.device);
-        this.options = {
-            name: `Serial: ${baseName}`,
-            prompt: `${baseName}> `,
-            inputMode: serialConfig.input_mode === "raw" ? TerminalInputMode.RAW : TerminalInputMode.COOKED,
-        };
-        this.terminal = PtyTerminal.findExisting(this.options.name);
-        if (this.terminal) {
-            if (doClear) {
-                this.terminal.clearTerminalBuffer();
-            }
-            this.terminal.resetOptions(this.options);
-            this.terminal.removeAllListeners();
-        } else {
-            this.terminal = new PtyTerminal(this.options);
-        }
-        this.terminal.on("data", (data) => {
-            if (this.socket) {
-                this.socket.write(data);
-            }
-            if (this.logFileStream) {
-                this.logFileStream.write(data);
-            }
-        });
-        this.terminal.on("error", (err) => {
-            MCUDebugChannel.debugMessage(`Error on terminal for serial port ${this.device}: ${err.message}`);
-        });
-        this.terminal.on("close", () => {
-            MCUDebugChannel.debugMessage(`Terminal for serial port ${this.device} closed`);
-            this.destroySocket();
-            this.emit("close");
-        });
-        if (this.tcpPort) {
-            this.restartSocket();
-        }
-        if (this.serialConfig.log_file) {
-            this.setLogFile(this.serialConfig.log_file);
-        }
-    }
-
-
-    public notifyConnected(reason: string) {
-        this.terminal.write(`\r\n\x1b[32m[Serial connected] ${reason}\x1b[0m\r\n`);
-    }
-
-    public notifyDisconnected(reason: string) {
-        this.destroySocket();
-        this.terminal.write(`\r\n\x1b[33m[Serial disconnected: ${reason} — retrying...]\x1b[0m\r\n`);
-    }
-
-    public notifyReconnected() {
-        this.terminal.write(`\r\n\x1b[32m[Serial reconnected]\x1b[0m\r\n`);
-    }
-
-    setTcpPort(port: number) {
-        if (this.tcpPort === port && this.socket && !this.socket.destroyed) {
-            return;
-        }
-        this.tcpPort = port;
-        this.restartSocket();
-    }
-
-    private destroySocket() {
-        if (this.socket) {
-            this.socket.destroy();
-            this.socket = null;
-        }
-    }
-
-    private destroyLogFile() {
-        if (this.serialConfig.log_file) {
-            this.logFileStream?.end(() => {
-                MCUDebugChannel.debugMessage(`Closed log file stream for ${this.serialConfig.log_file}`);
-            });
-            this.logFileStream = null;
-        }
-    }
-
-    public setLogFile(log_file: string | undefined) {
-        if (this.serialConfig.log_file === log_file) {
-            return;
-        }
-        this.serialConfig.log_file = log_file || "";
-        this.destroyLogFile();
-        if (log_file) {
-            this.logFileStream = fs.createWriteStream(log_file, { flags: "a" });
-            if (!this.logFileStream) {
-                MCUDebugChannel.debugMessage(`Failed to create log file stream for ${log_file}`);
-                vscode.window.showErrorMessage(`Failed to create log file stream for ${log_file}`);
-            }
-        }
-    }
-    public setInputMode(input_mode: string | undefined) {
-        const mode = input_mode === "raw" ? TerminalInputMode.RAW : TerminalInputMode.COOKED;
-        if (this.options.inputMode === mode) {
-            return;
-        }
-        this.options.inputMode = mode;
-        this.terminal.resetOptions(this.options);
-    }
-
-    restartSocket() {
-        this.destroySocket();
-        // The helper will create a TCP server for this serial port and report the port number back to us. Once we have the port number, we can connect to it.
-        const socket = new net.Socket();
-        socket.connect(this.tcpPort, "127.0.0.1");
-        socket.on("connect", () => {
-            MCUDebugChannel.debugMessage(`Connected to serial port ${this.device} at 127.0.0.1:${this.tcpPort}`);
-            this.socket = socket;
-        });
-        socket.on("data", (data) => {
-            this.terminal.write(data.toString());
-        });
-        socket.on("error", (err) => {
-            MCUDebugChannel.debugMessage(`Error on serial port ${this.device} connection: ${err.message}`);
-            this.destroySocket();
-        });
-        socket.on("close", () => {
-            MCUDebugChannel.debugMessage(`Connection to serial port ${this.device} closed`);
-            this.destroySocket();
-        });
-    }
-}
-
-const allUUids = new Set<string>();
-function getUUid(baseName: string): string {
-    let uuid = "";
-    do {
-        uuid = `${baseName}-${Math.random().toString(16).substring(2, 10)}`;
-    } while (allUUids.has(uuid));
-    allUUids.add(uuid);
-    return uuid;
-}
-class SerialPortTab extends ManagedTab {
+class SerialPortView extends ManagedTab {
     public emitter = new EventEmitter();
     private socket: net.Socket | null = null;
     private logFileStream: fs.WriteStream | null = null;
     readonly kind: TabKind = "uart";
     readonly direction = "both";
 
-    static createOrGetTab(device: string, serialConfig: SerialParams, doClear: boolean = false, tcpPort: number = 0): SerialPortTab {
+    static createOrGetTab(device: string, serialConfig: SerialParams, doClear: boolean = false, tcpPort: number = 0): SerialPortView {
         const baseName = path.basename(device);
-        const existing = CockpitPanel.instance?.findTabByLabel(baseName) as unknown as SerialPortTab | null;
+        const existing = CockpitPanel.instance?.findTabByLabel(baseName) as unknown as SerialPortView | null;
         if (existing) {
             // If a tab with the same name already exists, we will reuse it for the new serial port. This allows us to preserve the terminal buffer and other state in the tab, which can be useful for debugging purposes. We will just clear the buffer and reset the options to match the new serial port configuration.
             if (doClear) {
@@ -841,7 +720,7 @@ class SerialPortTab extends ManagedTab {
             existing.setState({ kind: "active" });
             return existing;
         } else {
-            return new SerialPortTab(device, serialConfig, doClear, tcpPort);
+            return new SerialPortView(device, serialConfig, doClear, tcpPort);
         }
     }
 
@@ -868,16 +747,12 @@ class SerialPortTab extends ManagedTab {
             return;
         }
         if (this.socket) {
+            super.onUserInput(outgoing);
             this.socket.write(outgoing);
-            this.echoInput(this.inputMode === "raw" ? this._rawEchoText(outgoing) : outgoing);
         }
         if (this.logFileStream) {
             this.logFileStream.write(outgoing);
         }
-    }
-
-    private _rawEchoText(text: string): string {
-        return text.replace(/\r(?!\n)/g, "\r\n");
     }
 
     onUserClose(): void {
@@ -888,15 +763,18 @@ class SerialPortTab extends ManagedTab {
 
     public notifyConnected(reason: string) {
         this.send(`\r\n\x1b[32m[${this.device} connected] ${reason}\x1b[0m\r\n`);
+        this.setState({ kind: "active" });
     }
 
     public notifyDisconnected(reason: string) {
         this.destroySocket();
         this.send(`\r\n\x1b[33m[${this.device} disconnected: ${reason} — retrying...]\x1b[0m\r\n`);
+        this.setState({ kind: "inactive" });
     }
 
     public notifyReconnected() {
         this.send(`\r\n\x1b[32m[${this.device} reconnected]\x1b[0m\r\n`);
+        this.setState({ kind: "active" });
     }
 
     setTcpPort(port: number) {

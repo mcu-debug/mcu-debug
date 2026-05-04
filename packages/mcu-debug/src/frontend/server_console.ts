@@ -3,34 +3,19 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { IPtyTerminalOptions, magentaWrite, PtyTerminal } from "./pty";
-import { getAnyFreePort, TerminalInputMode } from "../adapter/servers/common";
+import { createTerminalUniqueName, getUUid, ManagedTabConsole } from "./views/ManagedTab";
+import { magentaWrite } from "./ansi-helpers";
+import { getAnyFreePort } from "../adapter/servers/common";
 
 //      vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: 'myName' });
 
 let consoleLogFd = -1;
 export class GDBServerConsoleInstance {
     protected static allConsoles: GDBServerConsoleInstance[] = [];
-    public ptyTerm: PtyTerminal | null = null;
-    protected ptyOptions: IPtyTerminalOptions;
+    public terminal: ManagedTabConsole | null = null;
     protected toBackend: net.Socket | null = null;
 
-    private constructor() {
-        this.ptyOptions = {
-            name: "gdb-server",
-            prompt: "", // Can't have a prompt since the gdb-server or semihosting may have one
-            inputMode: TerminalInputMode.COOKED,
-        };
-    }
-
-    public static newOrExistingConsole(): GDBServerConsoleInstance {
-        let inst = GDBServerConsoleInstance.allConsoles.find((c) => c.isClosed());
-        if (inst) {
-            return inst;
-        }
-        inst = new GDBServerConsoleInstance();
-        GDBServerConsoleInstance.allConsoles.push(inst);
-        return inst;
+    constructor() {
     }
 
     public static disposeAll() {
@@ -41,37 +26,44 @@ export class GDBServerConsoleInstance {
                 c.toBackend.destroy();
                 c.toBackend = null;
             }
-            if (c.ptyTerm) {
-                c.ptyTerm.dispose();
-            }
         }
     }
 
     public newBackendConnection(socket: net.Socket) {
         this.createAndShowTerminal();
         this.toBackend = socket;
-        if (!this.ptyTerm) {
+        if (!this.terminal) {
             throw new Error("PTY terminal not created");
         }
-        this.ptyTerm.resume();
+        this.terminal?.enableInput();
+        this.terminal?.setState({ kind: "active" });
         this.clearTerminal();
         this.debugMsg('onBackendConnect: gdb-server session connected. You can switch to "DEBUG CONSOLE" to see GDB interactions.');
         socket.setKeepAlive(true);
         socket.on("close", () => {
             this.debugMsg("onBackendConnect: gdb-server session closed");
-            magentaWrite("GDB server session ended. This terminal will be reused, waiting for next session to start...", this.ptyTerm!);
+            magentaWrite("GDB server session ended. This terminal will be reused, waiting for next session to start...", this.terminal!);
             this.toBackend = null;
-            this.ptyTerm!.pause();
+            this.freeTerminal();
         });
         socket.on("data", (data) => {
-            this.ptyTerm!.write(data);
+            this.terminal?.send(data.toString());
             this.logData(data);
         });
         socket.on("error", (e) => {
             this.debugMsg(`GDBServerConsole: onBackendConnect: gdb-server program client error ${e}`);
             this.toBackend = null;
-            this.ptyTerm!.pause();
+            this.freeTerminal();
         });
+    }
+
+    private freeTerminal() {
+        if (this.terminal) {
+            this.terminal.disableInput();
+            this.terminal.setState({ kind: "inactive" });
+            this.terminal.removeAllListeners();
+            this.terminal = null;
+        }
     }
 
     public isClosed() {
@@ -79,42 +71,49 @@ export class GDBServerConsoleInstance {
     }
 
     protected createAndShowTerminal() {
-        if (!this.ptyTerm) {
+        if (!this.terminal) {
             this.setupTerminal();
         }
     }
 
     public clearTerminal() {
-        this.ptyTerm!.clearTerminalBuffer();
+        this.terminal?.clear();
     }
 
     private setupTerminal() {
-        this.ptyOptions.name = GDBServerConsoleInstance.createTermName(this.ptyOptions.name, null);
-        this.ptyTerm = new PtyTerminal(this.ptyOptions);
-        this.ptyTerm.terminal!.show();
-        this.ptyTerm.on("close", () => {
+        const baseName = "gdb-server";
+        const uuid = getUUid(baseName);
+        const [name, terminal, isNew] = createTerminalUniqueName(baseName, (nm: string) => {
+            const ret = new ManagedTabConsole(uuid, nm, "console", "both", "Enter input for gdb-server");
+            return ret;
+        });
+        this.terminal = terminal;
+        this.terminal?.setState({ kind: "inactive" });
+        this.terminal?.clear();
+        this.terminal?.setLabel(name);
+        this.terminal.addCloseHandler(() => {
             this.onTerminalClosed();
         });
-        this.ptyTerm.on("data", (data) => {
+        this.terminal.on("data", (data) => {
             this.sendToBackend(data);
         });
         if (this.toBackend === null) {
-            magentaWrite("Waiting for gdb server to start...\n", this.ptyTerm);
-            this.ptyTerm.pause();
+            magentaWrite("Waiting for gdb server to start...\n", this.terminal);
+            this.terminal.disableInput();
         } else {
-            magentaWrite("Resuming connection to gdb server...\n", this.ptyTerm);
-            this.ptyTerm.resume();
+            magentaWrite("Resuming connection to gdb server...\n", this.terminal);
+            this.terminal.enableInput();
         }
     }
 
     private onTerminalClosed() {
-        this.ptyTerm = null;
+        this.terminal = null;
         if (this.toBackend) {
             // Let the terminal close completely and try to re-launch
             setTimeout(() => {
                 vscode.window.showInformationMessage("gdb-server terminal closed unexpectedly. Trying to reopen it");
                 this.setupTerminal();
-            }, 10);
+            }, 100);
         }
     }
 
@@ -126,24 +125,11 @@ export class GDBServerConsoleInstance {
     }
 
     public logData(data: Buffer | string) {
-        GDBServerConsole.logDataStatic(this.ptyTerm!, data);
+        GDBServerConsole.logDataStatic(data);
     }
 
     public debugMsg(msg: string) {
-        GDBServerConsole.debugMsgStatic(this.ptyTerm!, msg);
-    }
-
-    public static createTermName(want: string, existing: string | null): string {
-        let ret = want;
-        let count = 1;
-        while (vscode.window.terminals.findIndex((t) => t.name === ret) >= 0) {
-            if (existing === ret) {
-                return existing;
-            }
-            ret = `${want}-${count}`;
-            count = count + 1;
-        }
-        return ret;
+        GDBServerConsole.debugMsgStatic(this.terminal, msg);
     }
 }
 
@@ -197,15 +183,15 @@ export class GDBServerConsole {
         return this.toBackendServer !== null;
     }
 
-    public static debugMsgStatic(ptyTerm: PtyTerminal, msg: string) {
+    public static debugMsgStatic(console: ManagedTabConsole | null, msg: string) {
         const date = new Date();
         msg = `[${date.toISOString()}] SERVER CONSOLE DEBUG: ` + msg;
         // console.log(msg);
-        if (ptyTerm) {
+        if (console) {
             msg += msg.endsWith("\n") ? "" : "\n";
-            magentaWrite(msg, ptyTerm);
+            magentaWrite(msg, console);
         }
-        GDBServerConsole.logDataStatic(ptyTerm, msg);
+        GDBServerConsole.logDataStatic(msg);
     }
 
     // Create a server for the GDBServer running in the adapter process. Any data
@@ -238,21 +224,13 @@ export class GDBServerConsole {
 
     // The gdb-server running in the backend (debug adapter)
     protected onBackendConnect(socket: net.Socket) {
-        const inst = GDBServerConsoleInstance.newOrExistingConsole();
+        const inst = new GDBServerConsoleInstance();
         inst.newBackendConnection(socket);
     }
 
-    public static logDataStatic(ptyTerm: PtyTerminal, data: Buffer | string) {
+    public static logDataStatic(data: Buffer | string) {
         try {
             if (consoleLogFd >= 0) {
-                if (!ptyTerm || !ptyTerm.isReady) {
-                    // Maybe we should do our own buffering rather than the pty doing it. This can
-                    // help if the user kills the terminal. But we would have lost previous data anyways
-                    const date = new Date();
-                    const msg = `[${date.toISOString()}] SERVER CONSOLE DEBUG: ******* Terminal not yet ready, buffering... ******`;
-                    // console.log(msg);
-                    // fs.writeFileSync(logFd, msg);
-                }
                 fs.writeFileSync(consoleLogFd, data.toString());
                 fs.fdatasyncSync(consoleLogFd);
             }

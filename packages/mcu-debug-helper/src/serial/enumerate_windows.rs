@@ -25,7 +25,7 @@ pub fn list() -> Vec<AvailablePort> {
         Ok(ports) => ports
             .into_iter()
             .map(|info| {
-                let (description, vid, pid) = match info.port_type {
+                let (description, vid, pid, serial) = match info.port_type {
                     SerialPortType::UsbPort(usb) => {
                         let desc = [usb.manufacturer.as_deref(), usb.product.as_deref()]
                             .into_iter()
@@ -34,17 +34,18 @@ pub fn list() -> Vec<AvailablePort> {
                             .join(" ")
                             .trim()
                             .to_string();
-                        (desc, Some(usb.vid), Some(usb.pid))
+                        (desc, Some(usb.vid), Some(usb.pid), usb.serial_number)
                     }
-                    SerialPortType::BluetoothPort => ("Bluetooth".to_string(), None, None),
-                    SerialPortType::PciPort => ("PCI".to_string(), None, None),
-                    SerialPortType::Unknown => (String::new(), None, None),
+                    SerialPortType::BluetoothPort => ("Bluetooth".to_string(), None, None, None),
+                    SerialPortType::PciPort => ("PCI".to_string(), None, None, None),
+                    SerialPortType::Unknown => (String::new(), None, None, None),
                 };
                 AvailablePort {
                     path: info.port_name,
                     description,
                     vid,
                     pid,
+                    serial,
                 }
             })
             .collect(),

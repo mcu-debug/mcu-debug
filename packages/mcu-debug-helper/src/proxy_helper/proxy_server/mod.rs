@@ -45,7 +45,7 @@ pub use serial::{FunnelWriter, SerialPortBacking, SerialPortRegistry};
 #[cfg(test)]
 mod tests;
 
-pub const CURRENT_VERSION: &str = "1.0.3";
+pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ── FrameWriter ───────────────────────────────────────────────────────────────
 

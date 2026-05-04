@@ -5,4 +5,10 @@
  * platform-specific enumerators. `description` is informational only —
  * never used as an identity key. Port paths are the stable key.
  */
-export type AvailablePort = { path: string; description: string; vid: number | null; pid: number | null };
+export type AvailablePort = {
+    path: string;
+    description: string;
+    vid: number | null;
+    pid: number | null;
+    serial: string | null;
+};

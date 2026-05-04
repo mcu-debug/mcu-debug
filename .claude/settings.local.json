@@ -14,7 +14,9 @@
       "Bash(npm install *)",
       "Bash(npm run *)",
       "Bash(node esbuild.js)",
-      "Bash(npx tsc-strict *)"
+      "Bash(npx tsc-strict *)",
+      "Bash(xargs ls *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

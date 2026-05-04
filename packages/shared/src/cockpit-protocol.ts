@@ -12,8 +12,8 @@
 // Tab model
 // ---------------------------------------------------------------------------
 
-export type TabKind = 'uart' | 'rtt' | 'swo' | 'cockpit';
-export type TabInputMode = 'raw' | 'cooked';
+export type TabKind = 'uart' | 'rtt' | 'swo' | 'console' | 'cockpit';
+export type TabInputMode = 'raw' | 'cooked' | 'none';
 
 /**
  * Visual/operational state of a tab. The extension drives all transitions.

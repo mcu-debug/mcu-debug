@@ -1,23 +1,18 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
-
 import { SWORTTDecoder } from "./common";
-import { SWOConsoleDecoderConfig } from "../common";
+import { SWOBinaryDecoderConfig, SWOConsoleDecoderConfig } from "../common";
 import { Packet } from "../common";
-import { IPtyTerminalOptions, PtyTerminal } from "../../pty";
 import { HrTimer, TerminalInputMode, TextEncoding } from "../../../adapter/servers/common";
+import { getUUid, createTerminalUniqueName, ManagedTabConsole } from "../../views/ManagedTab";
 
 export class SWOConsoleProcessor implements SWORTTDecoder {
-    private positionCount: number = 0;
-    private output: vscode.OutputChannel | null = null;
     private position: number = 0;
     private timeout: any = null;
     public readonly format: string = "console";
     private port: number;
     private encoding: TextEncoding;
-    private showOutputTimer: NodeJS.Timeout | null = null;
-    private useTerminal = true;
-    private ptyTerm: PtyTerminal | null = null;
+    private terminal: ManagedTabConsole | null = null;
     private timestamp: boolean = false;
     private hrTimer: HrTimer = new HrTimer();
     private logFd: number = -1;
@@ -27,75 +22,47 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
         this.port = config.port;
         this.encoding = config.encoding || TextEncoding.UTF8;
         this.timestamp = !!config.timestamp;
-        this.useTerminal = "useTerminal" in config ? (config as any).useTerminal : true; // TODO: Remove
-        if (this.useTerminal) {
-            this.createVSCodeTerminal(config);
-        } else {
-            this.createVSCodeChanne(config);
-        }
+        this.terminal = SWOConsoleProcessor.createTerminal(config, () => {
+            this.dispose();
+        });
         if (config.logfile) {
             this.logfile = config.logfile;
             try {
                 this.logFd = fs.openSync(config.logfile, "w");
             } catch (e: any) {
                 const msg = `Could not open file ${config.logfile} for writing. ${e.toString()}`;
+                this.logFd = -1;
                 vscode.window.showErrorMessage(msg);
             }
         }
     }
 
-    private createName(config: SWOConsoleDecoderConfig) {
+    public static createName(config: SWOConsoleDecoderConfig | SWOBinaryDecoderConfig) {
         // Try to keep it small while still having enough info
-        const basic = `SWO:${config.label || ""}[port:${this.port}`;
-
-        if (this.useTerminal) {
-            return basic + "] console";
-        } else {
-            return basic + ", type: console]";
-        }
+        const enc = config.encoding ? `, enc:${config.encoding}` : "";
+        const basic = `SWO:${config.label || ""}[port:${config.port}${enc}]`;
+        return basic;
     }
 
-    private createVSCodeTerminal(config: SWOConsoleDecoderConfig) {
-        const options: IPtyTerminalOptions = {
-            name: this.createName(config),
-            prompt: "",
-            inputMode: TerminalInputMode.DISABLED,
-        };
-        this.ptyTerm = PtyTerminal.findExisting(options.name);
-        if (this.ptyTerm) {
-            this.ptyTerm.clearTerminalBuffer();
-        } else {
-            this.ptyTerm = new PtyTerminal(options);
-            this.ptyTerm.on("close", () => {
-                this.ptyTerm = null;
-            });
-            if (config.showOnStartup) {
-                this.ptyTerm.terminal?.show();
-            }
-        }
-    }
-
-    private createVSCodeChanne(config: SWOConsoleDecoderConfig) {
-        this.output = vscode.window.createOutputChannel(this.createName(config));
-
-        // A work-around. A blank display will appear if the output is shown immediately
-        if (config.showOnStartup) {
-            this.showOutputTimer = setTimeout(() => {
-                this.output?.show(true);
-                this.showOutputTimer = null;
-            }, 1);
-        }
+    public static createTerminal(config: SWOConsoleDecoderConfig | SWOBinaryDecoderConfig, closeCallback: () => void): ManagedTabConsole {
+        const baseName = SWOConsoleProcessor.createName(config);
+        let [name, terminal, isNew] = createTerminalUniqueName<ManagedTabConsole>(baseName, (nm: string) => {
+            const uuid = getUUid('SWO');
+            const ret = new ManagedTabConsole(uuid, nm, "swo", "tx");
+            return ret;
+        });
+        terminal.on("close", () => {
+            closeCallback();
+        });
+        terminal.clear();
+        terminal.setLabel(name);
+        terminal.setState({ kind: "active" });
+        return terminal;
     }
 
     private pushOutput(str: string) {
-        if (str) {
-            if (this.useTerminal) {
-                if (this.ptyTerm) {
-                    this.ptyTerm.write(str);
-                }
-            } else {
-                this.output?.append(str);
-            }
+        if (this.terminal && str) {
+            this.terminal.send(str);
         }
     }
 
@@ -108,7 +75,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
     }
 
     private logFileWrite(text: string) {
-        if (this.logFd < 0 || text === "") {
+        if (this.logFd <= 0 || text === "") {
             return;
         }
         try {
@@ -169,23 +136,20 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
         this.logFileWrite(text);
     }
 
-    public hardwareEvent(event: Packet) {}
-    public synchronized() {}
-    public lostSynchronization() {}
+    public hardwareEvent(event: Packet) { }
+    public synchronized() { }
+    public lostSynchronization() { }
 
     public dispose() {
-        if (this.output) {
-            this.output.dispose();
-            this.output = null;
-        }
-        if (this.ptyTerm) {
-            this.ptyTerm.dispose();
-            this.ptyTerm = null;
-        }
         this.close();
     }
 
     public close() {
+        if (this.terminal) {
+            this.terminal.setState({ kind: "inactive" });
+            this.terminal.removeAllListeners();
+            this.terminal = null;
+        }
         if (this.logFd >= 0) {
             fs.closeSync(this.logFd);
             this.logFd = -1;

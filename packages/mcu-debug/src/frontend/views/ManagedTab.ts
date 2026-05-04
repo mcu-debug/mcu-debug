@@ -13,7 +13,48 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 
+const EventEmitter = require('events');
+
 import type { TabDescriptor, TabInputMode, TabKind, TabState, ToUi, FromUi } from "@mcu-debug/shared";
+import { CockpitPanel } from "./CockpitPanel";
+
+const allUUids = new Set<string>();
+export function getUUid(baseName: string): string {
+    let uuid = "";
+    do {
+        uuid = `${baseName}-${Math.random().toString(16).substring(2, 10)}`;
+    } while (allUUids.has(uuid));
+    allUUids.add(uuid);
+    return uuid;
+}
+
+const termalsMap = new Map<string, ManagedTab | ManagedTabConsole>();
+export function createTerminalUniqueName<T>(want: string, ctor: (name: string) => T): [string, T, boolean] {
+    let ret = want;
+    let count = 1;
+    while (true) {
+        let found = false;
+        for (const term of termalsMap.values()) {
+            const isActive = term?.state.kind === "active";
+            if (term.label.startsWith(want)) {
+                // Semi exact match, only reuse if inactive and exact label match. This allows multiple "SWO:foo" terminals to coexist
+                // without clashing, but still reuses the terminal if we are recreating the same one after a reload.
+                if (!isActive && term.label === ret) {
+                    // Reuse this terminal, exact match
+                    return [ret, term as unknown as T, false];
+                }
+                found = true;
+            }
+        }
+        if (!found) {
+            const term = ctor(ret);
+            CockpitPanel.instance?.addTab(term as unknown as ManagedTab);
+            return [ret, term, true];
+        }
+        ret = `${want}-${count}`;
+        count = count + 1;
+    }
+}
 
 /**
  * Base class for a tab hosted in the MCU DEBUG panel (CockpitPanel).
@@ -35,6 +76,8 @@ export abstract class ManagedTab {
     private _panel: CockpitPanelSink | null = null;
     private _state: TabState = { kind: "active" };
     private _label: string;
+    private _savedInputMode: TabInputMode | null = null;
+    private _closeHandlers: (() => void)[] = [];
 
     // For tabs that buffer data before the webview is ready. This is still needed for the
     // first terminal mount and when VS Code deallocates the entire cockpit webview.
@@ -56,10 +99,12 @@ export abstract class ManagedTab {
         this._label = label;
         this._placeholderText = placeholderText;
         this._inputMode = inputMode;
+        termalsMap.set(label, this as unknown as ManagedTab);
     }
 
     private _placeholderText: string;
     private _inputMode: TabInputMode;
+    private _savedPlaceholderText: string | null = null;
 
     get label(): string { return this._label; }
     get state(): TabState { return this._state; }
@@ -127,7 +172,7 @@ export abstract class ManagedTab {
     // -------------------------------------------------------------------------
 
     /** Write a text chunk to the tab's xterm.js terminal. */
-    protected send(text: string): void {
+    public send(text: string): void {
         if (text.length === 0) {
             return;
         }
@@ -150,29 +195,29 @@ export abstract class ManagedTab {
     }
 
     /** Clear the tab's terminal. */
-    protected clear(): void {
+    public clear(): void {
         this._backingStore = "";
         this._post({ type: "clear", tabId: this.tabId });
     }
 
     /** Update the tab's visual state. Extension always drives this; webview never self-transitions. */
-    protected setState(state: TabState): void {
+    public setState(state: TabState): void {
         this._state = state;
         this._post({ type: "tab-set-state", tabId: this.tabId, state });
     }
 
     /** Rename the tab's display label. */
-    protected setLabel(label: string): void {
+    public setLabel(label: string): void {
         this._label = label;
         this._post({ type: "tab-set-label", tabId: this.tabId, label });
     }
 
-    protected setPlaceholderText(placeholderText: string): void {
+    public setPlaceholderText(placeholderText: string): void {
         this._placeholderText = placeholderText;
         this._post({ type: "tab-update", tabId: this.tabId, patch: { placeholderText } });
     }
 
-    protected setInputMode(inputMode: TabInputMode): void {
+    public setInputMode(inputMode: TabInputMode): void {
         this._inputMode = inputMode;
         this._post({ type: "tab-update", tabId: this.tabId, patch: { inputMode } });
     }
@@ -195,7 +240,14 @@ export abstract class ManagedTab {
     // -------------------------------------------------------------------------
 
     /** Called when the engineer submits a line in the tab's input bar. */
-    onUserInput(_text: string): void { /* override in subclass */ }
+    onUserInput(_text: string): void {
+        // Default no-op. Subclasses override if they have user input.
+        if (this.inputMode === "cooked") {
+            this.echoInput(_text + "\r\n");
+        } else {
+            this.echoInput(_text.replace(/\r(?!\n)/g, "\r\n"));
+        }
+    }
 
     /**
      * Called when the user clicks × on the tab.
@@ -203,7 +255,84 @@ export abstract class ManagedTab {
      * After calling super.onUserClose(), the tab is detached from the panel.
      */
     onUserClose(): void {
+        termalsMap.delete(this._label);
+        this.callCloseHandlers();
         this._panel = null;
+    }
+
+    /**
+     * Freeze user input
+     */
+    disableInput(): void {
+        if (this.inputMode === "none") {
+            return;
+        }
+        this._savedInputMode = this.inputMode;
+        this._savedPlaceholderText = this._placeholderText;
+        this.setPlaceholderText("Input disabled until connection is ready...");
+        this.setInputMode("none");
+    }
+
+    /**
+     * Unfreeze user input with the given mode
+     */
+    enableInput(): void {
+        if (this._savedInputMode === null) {
+            return;
+        }
+        this.setInputMode(this._savedInputMode);
+        this.setPlaceholderText(this._savedPlaceholderText ?? "Enter input");
+        this._savedPlaceholderText = null;
+        this._savedInputMode = null;
+    }
+
+    addCloseHandler(handler: () => void): void {
+        this._closeHandlers.push(handler);
+    }
+
+    protected callCloseHandlers(): void {
+        for (const handler of this._closeHandlers) {
+            handler();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Other public methods
+}
+
+export class ManagedTabConsole extends ManagedTab {
+    protected emitter = new EventEmitter();
+
+    constructor(
+        tabId: string,
+        label: string,
+        readonly kind: TabKind,
+        readonly direction: TabDescriptor["direction"] = "both",
+        placeholderText = "Enter input for console",
+        readonly mode: "raw" | "cooked" = "cooked"
+    ) {
+        super(tabId, label, placeholderText, mode);
+    }
+
+    onUserClose(): void {
+        this.emitter.emit("close");
+        super.onUserClose();
+        this.removeAllListeners();
+    }
+
+    onUserInput(text: string): void {
+        this.emitter.emit("data", text);
+        super.onUserInput(text);
+    }
+
+    on(event: "data", listener: (data: string) => void): void;
+    on(event: "close", listener: () => void): void;
+    on(event: string, listener: (...args: any[]) => void): void {
+        this.emitter.on(event, listener);
+    }
+
+    removeAllListeners(): void {
+        this.emitter.removeAllListeners();
     }
 }
 

@@ -14,7 +14,7 @@ import { EditableTreeViewProvider } from "./webview_tree/editable-tree";
 import { CockpitPanel } from "./views/CockpitPanel";
 import { SerialPortManager } from "./serial";
 
-import { RTTCore, SWOCore } from "./swo/core";
+import { RTTCore, SWOCore } from "./swo/swo-core";
 import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ChainedConfig, SerialConfig, getHelperExecutable } from "../adapter/servers/common";
 import { Reporting } from "../analytics/reporting";
 
@@ -25,7 +25,7 @@ import { FileSWOSource } from "./swo/sources/file";
 import { SerialSWOSource } from "./swo/sources/serial";
 import { UsbSWOSource } from "./swo/sources/usb";
 import { SymbolInformation, SymbolScope } from "../adapter/symbols";
-import { IOTerminal } from "./bidir_terminal";
+import { IOTerminal } from "./io-terminal";
 import { GDBServerConsole } from "./server_console";
 import { CDebugSession, CDebugChainedSessionItem } from "./cortex_debug_session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
@@ -47,8 +47,6 @@ class ServerStartedPromise {
 }
 
 export class MCUDebugExtension {
-    private rttTerminals: IOTerminal[] = [];
-
     private gdbServerConsole: GDBServerConsole | null = null;
 
     private liveWatchProvider!: LiveWatchTreeProvider;
@@ -108,7 +106,6 @@ export class MCUDebugExtension {
             vscode.debug.onDidReceiveDebugSessionCustomEvent(this.receivedCustomEvent.bind(this)),
             vscode.debug.onDidStartDebugSession(this.debugSessionStarted.bind(this)),
             vscode.debug.onDidTerminateDebugSession(this.debugSessionTerminated.bind(this)),
-            vscode.window.onDidCloseTerminal(this.terminalClosed.bind(this)),
 
             vscode.debug.registerDebugConfigurationProvider("mcu-debug", new CortexDebugConfigurationProvider(context)),
         );
@@ -312,7 +309,6 @@ export class MCUDebugExtension {
                 if (Object.keys(newSession.rttPortMap).length > 0) {
                     this.initializeRTT(session, args);
                 }
-                this.cleanupRTTTerminals();
             },
             (error) => {
                 vscode.window.showErrorMessage(`Internal Error: Could not get startup arguments. Many debug functions can fail. Please report this problem. Error: ${error}`);
@@ -767,54 +763,13 @@ export class MCUDebugExtension {
         });
     }
 
-    private cleanupRTTTerminals() {
-        this.rttTerminals = this.rttTerminals.filter((t) => {
-            if (!t.inUse) {
-                t.dispose();
-                return false;
-            }
-            return true;
-        });
-    }
-
-    private allocateTerminal(decoder: RTTConsoleDecoderOpts, src: SocketIOSource) {
-        for (const terminal of this.rttTerminals) {
-            const success = !terminal.inUse && terminal.tryReuse(decoder, src);
-            if (success) {
-                if (vscode.debug.activeDebugConsole) {
-                    vscode.debug.activeDebugConsole.appendLine(`Reusing RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);
-                }
-                return;
-            }
-        }
-        const newTerminal = new IOTerminal(this.context, decoder, src);
-        this.rttTerminals.push(newTerminal);
-        if (vscode.debug.activeDebugConsole) {
-            vscode.debug.activeDebugConsole.appendLine(`Created RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);
-        }
-    }
-
     private rttCreateTerninal(e: vscode.DebugSessionCustomEvent, decoder: RTTConsoleDecoderOpts) {
         this.createRTTSource(e, decoder.tcpPort, decoder.port).then((src: SocketRTTSource) => {
-            for (const terminal of this.rttTerminals) {
-                const success = !terminal.inUse && terminal.tryReuse(decoder, src);
-                if (success) {
-                    if (vscode.debug.activeDebugConsole) {
-                        vscode.debug.activeDebugConsole.appendLine(`Reusing RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);
-                    }
-                    return;
-                }
-            }
             const newTerminal = new IOTerminal(this.context, decoder, src);
-            this.rttTerminals.push(newTerminal);
             if (vscode.debug.activeDebugConsole) {
                 vscode.debug.activeDebugConsole.appendLine(`Created RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);
             }
         });
-    }
-
-    private terminalClosed(terminal: vscode.Terminal) {
-        this.rttTerminals = this.rttTerminals.filter((t) => t.terminal !== terminal);
     }
 
     private initializeSWO(session: vscode.DebugSession, args: ConfigurationArguments) {

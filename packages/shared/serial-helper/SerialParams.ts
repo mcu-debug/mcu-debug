@@ -7,12 +7,28 @@ import type { StopBits } from "./StopBits";
 /**
  * Parameters to open or reconfigure a serial port.
  *
- * All fields except `path` have defaults (115200 8N1 no flow control), so
- * a `serial.open` request only needs to supply `path`. On `serial.listOpen`
- * responses all fields are always present.
+ * Specify the device via `path` (direct path or glob), `serial` (USB serial
+ * number), or `vid`/`pid` (USB vendor/product IDs in hex, e.g. `"0x0483"`).
+ * `serial` is the most stable identifier in lab environments with multiple
+ * boards. All baud/framing fields default to 115200 8N1 no flow control.
  */
 export type SerialParams = {
-    path: string;
+    /**
+     * Direct device path or glob (e.g. `/dev/ttyUSB0`, `/dev/tty.usbserial-*`, `COM3`).
+     */
+    path?: string | null;
+    /**
+     * USB serial number. Stable across reconnects and reboots.
+     */
+    serial?: string | null;
+    /**
+     * USB vendor ID in hex (e.g. `"0x0483"`). Used with `pid` when `serial` is unavailable.
+     */
+    vid?: string | null;
+    /**
+     * USB product ID in hex (e.g. `"0x374b"`). Used with `vid` when `serial` is unavailable.
+     */
+    pid?: string | null;
     baud_rate: number;
     data_bits: number;
     stop_bits: StopBits;

@@ -1,30 +1,29 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import { RTTConsoleDecoderOpts, TerminalInputMode, TextEncoding, BinaryEncoding, HrTimer } from "../adapter/servers/common";
-import { IPtyTerminalOptions, magentaWrite, PtyTerminal } from "./pty";
+import { magentaWrite } from "./ansi-helpers";
 import { decoders as DECODER_MAP } from "./swo/decoders/utils";
 import { SocketIOSource, SocketRTTSource, SocketUARTSource } from "./swo/sources/socket";
 import { RESET } from "./ansi-helpers";
+import { createTerminalUniqueName, getUUid, ManagedTab, ManagedTabConsole } from "./views/ManagedTab";
+import { TabKind } from "@mcu-debug/shared";
+import { EventEmitter } from "stream";
 
-export class IOTerminal {
-    protected ptyTerm: PtyTerminal | null = null;
-    protected ptyOptions: IPtyTerminalOptions;
+export class IOTerminal extends EventEmitter {
+    protected terminal: ManagedTabConsole | null = null;
     protected binaryFormatter: BinaryFormatter | null = null;
     private source: SocketIOSource | null = null;
-    public inUse = true;
     protected logFd: number = -1;
     private startOfNewLine = true;
     protected hrTimer: HrTimer = new HrTimer();
-    public get terminal(): vscode.Terminal | null {
-        return this.ptyTerm ? this.ptyTerm.terminal : null;
-    }
 
     constructor(
         protected context: vscode.ExtensionContext,
         public options: RTTConsoleDecoderOpts,
         src: SocketIOSource,
+        private readonly kind: TabKind = "rtt",
     ) {
-        this.ptyOptions = this.createTermOptions(null);
+        super();
         this.createTerminal();
         this.sanitizeEncodings(this.options);
         this.connectToSource(src);
@@ -32,7 +31,12 @@ export class IOTerminal {
 
     private connectToSource(src: SocketIOSource) {
         this.hrTimer = new HrTimer();
-        this.binaryFormatter = new BinaryFormatter(this.ptyTerm!, this.options.encoding, this.options.scale);
+        this.binaryFormatter = new BinaryFormatter(this.terminal!, this.options.encoding, this.options.scale);
+        if (src.connected) {
+            this.terminal?.setState({ kind: "active" });
+        } else {
+            this.terminal?.setState({ kind: "inactive" });
+        }
         src.once("disconnected", () => {
             this.onClose();
         });
@@ -42,10 +46,11 @@ export class IOTerminal {
                 // Server closed the connection. We are done with this session
             } else if (code === "ECONNREFUSED") {
                 // We expect 'ECONNREFUSED' if the server has not yet started after all the retries
-                magentaWrite(`${e}\n.`, this.ptyTerm!);
+                magentaWrite(`${e}\n.`, this.terminal!);
             } else {
-                magentaWrite(`${e}\n`, this.ptyTerm!);
+                magentaWrite(`${e}\n`, this.terminal!);
             }
+            this.onClose();
         });
         src.on("data", (data) => {
             this.onData(data);
@@ -53,7 +58,7 @@ export class IOTerminal {
 
         if (src.connError) {
             this.source = src;
-            magentaWrite(`${src.connError.message}\n`, this.ptyTerm!);
+            magentaWrite(`${src.connError.message}\n`, this.terminal!);
         } else if (src.connected) {
             this.source = src;
             this.openLogFile();
@@ -61,21 +66,24 @@ export class IOTerminal {
             src.once("connected", () => {
                 this.source = src;
                 this.openLogFile();
+                this.terminal?.setState({ kind: "active" });
             });
         }
     }
 
     private onClose() {
         this.source = null;
-        this.inUse = false;
         if (!this.options.noclear && this.logFd >= 0) {
             this.closeLogFd(false);
         } else if (this.logFd >= 0 && !this.startOfNewLine) {
             this.writeLogFile(Buffer.from("\n"));
             this.startOfNewLine = true;
         }
-        this.ptyTerm!.write(RESET + "\n");
-        magentaWrite(`RTT connection on TCP port ${this.options.tcpPort} ended. Waiting for next connection...`, this.ptyTerm!);
+        this.terminal?.send(RESET + "\n");
+        magentaWrite(`RTT connection on TCP port ${this.options.tcpPort} ended. Waiting for next connection...`, this.terminal!);
+        this.terminal?.setState({ kind: "inactive" });
+        this.terminal?.removeAllListeners();
+        this.terminal = null;
     }
 
     private onData(data: Buffer) {
@@ -87,7 +95,7 @@ export class IOTerminal {
                 this.writeNonBinary(data);
             }
         } catch (e) {
-            magentaWrite(`Error writing data: ${e}\n`, this.ptyTerm!);
+            magentaWrite(`Error writing data: ${e}\n`, this.terminal!);
         }
     }
 
@@ -98,7 +106,7 @@ export class IOTerminal {
             } catch (e: any) {
                 const msg = `Could not open file ${this.options.logfile} for writing. ${e.toString()}`;
                 console.error(msg);
-                magentaWrite(msg, this.ptyTerm!);
+                magentaWrite(msg, this.terminal!);
             }
         } else if (this.logFd >= 0 && !this.options.logfile) {
             // It is already open but new connection does not want logging anymore
@@ -112,32 +120,38 @@ export class IOTerminal {
         }
     }
 
-    private writeNonBinaryChunk(data: Buffer | string, ts: string) {
+    private logToFd(msg: string) {
         if (this.logFd >= 0) {
-            let str: string;
-            if (typeof data !== "string" && !(data instanceof String)) {
-                str = data.toString("utf8");
-            } else {
-                str = data as string;
-            }
-            if (ts) {
-                // We emulate what the terminal does adding a timestamp after all new lines
-                if (this.startOfNewLine) {
-                    this.writeLogFile(Buffer.from(ts));
-                }
-                this.startOfNewLine = false;
-                if (str.endsWith("\n")) {
-                    str = str.slice(0, str.length - 1);
-                    this.startOfNewLine = true; // Get it the next time something is written
-                }
-                str = str.replace(/\n/g, "\n" + ts);
-                this.writeLogFile(Buffer.from(this.startOfNewLine ? str + "\n" : str));
-            } else {
-                this.writeLogFile(Buffer.from(str));
-            }
+            this.writeLogFile(Buffer.from(msg));
         }
+    }
 
-        this.ptyTerm!.writeWithHeader(data, ts);
+    private lastCharWasNl = true;
+    private writeNonBinaryChunk(data: Buffer | string, ts: string) {
+        if (!this.terminal) {
+            // Writes after a terminal is closed
+            return;
+        }
+        let strData = data.toString();
+        if (strData.length === 0) {
+            return;
+        }
+        if (!ts) {
+            this.logToFd(strData);
+            this.terminal.send(strData);
+            return;
+        }
+        if (this.lastCharWasNl) {
+            this.terminal.send(ts);
+        }
+        this.lastCharWasNl = strData.endsWith("\n");
+        strData = strData.slice(0, strData.length - (this.lastCharWasNl ? 1 : 0));
+        strData = strData.replace(/\n/g, "\n" + ts);
+        if (this.lastCharWasNl) {
+            strData += "\n";
+        }
+        this.logToFd(strData);
+        this.terminal.send(strData);
     }
 
     private lastTime: bigint = BigInt(-1);
@@ -164,7 +178,7 @@ export class IOTerminal {
                     this.writeNonBinaryChunk(buf.slice(start, ix - 1), time);
                 }
                 this.writeNonBinaryChunk(`<switch to vTerm#${String.fromCharCode(chr)}>\n`, "");
-                buf = buf.slice(ix + 1);
+                buf = buf.subarray(ix + 1);
                 ix = 0;
                 start = 0;
             }
@@ -174,43 +188,44 @@ export class IOTerminal {
         }
     }
 
-    protected createTermOptions(existing: string | null): IPtyTerminalOptions {
-        const ret: IPtyTerminalOptions = {
-            name: IOTerminal.createTermName(this.source, this.options, existing),
-            prompt: this.createPrompt(),
-            inputMode: this.options.inputmode || TerminalInputMode.COOKED,
-        };
-        return ret;
-    }
-
     protected createTerminal() {
-        this.ptyTerm = new PtyTerminal(this.createTermOptions(null));
-        this.ptyTerm.on("data", this.sendData.bind(this));
-        this.ptyTerm.on("close", this.terminalClosed.bind(this));
-    }
+        const baseName = this.createTermName(this.source, this.options, null);
+        const uuid = getUUid(this.kind.toUpperCase());
+        const mode = (this.options.inputmode === TerminalInputMode.RAW) ? "raw" : "cooked";
 
-    protected createPrompt(): string {
-        const defaultPrompt = this.source?.createPromptLabel() || "";
-        return this.options.noprompt ? "" : this.options.prompt || `${defaultPrompt}> `;
-    }
-
-    protected static createTermName(source: SocketIOSource | null, options: RTTConsoleDecoderOpts, existing: string | null): string {
-        const suffix = options.type === "binary" ? `enc:${getBinaryEncoding(options.encoding)}` : options.type;
-        const defaultName = source?.createTerminalName() || "???";
-        const orig = options.label || `RTT Ch:${options.port} ${suffix}`;
-        let ret = orig;
-        let count = 1;
-        while (vscode.window.terminals.findIndex((t) => t.name === ret) >= 0) {
-            if (existing === ret) {
-                return existing;
-            }
-            ret = `${orig}-${count}`;
-            count++;
+        const [name, terminal, isNew] = createTerminalUniqueName<ManagedTabConsole>(baseName, (nm: string) => {
+            const term = new ManagedTabConsole(uuid, nm, this.kind, "both", `Enter input for ${this.kind}`, mode);
+            return term;
+        });
+        this.terminal = terminal;
+        this.terminal.setInputMode(mode);
+        this.terminal.setLabel(name);
+        this.terminal.setState({ kind: this.source?.connected ? "active" : "inactive" });
+        if (isNew) {
+            this.terminal.setState({ kind: "inactive" });
         }
-        return ret;
+        this.terminal.on("close", this.terminalClosed.bind(this));
+        this.terminal.on("data", (data) => {
+            if (this.source?.connected) {
+                this.source.write(data);
+                if (this.logFd >= 0) {
+                    this.writeLogFile(Buffer.from(data));
+                }
+            }
+        });
     }
 
+    protected createTermName(source: SocketIOSource | null, options: RTTConsoleDecoderOpts, existing: string | null): string {
+        const suffix = options.type === "binary" ? `enc:${getBinaryEncoding(options.encoding)}` : options.type;
+        const kindUpper = this.kind.toUpperCase();
+        const orig = options.label || `${kindUpper} Ch:${options.port} ${suffix}`;
+        return orig;
+    }
+
+    // User removed the tab from the UI
     protected terminalClosed() {
+        this.emit("close");
+        this.freeTerminal();
         this.dispose();
     }
 
@@ -237,7 +252,7 @@ export class IOTerminal {
             try {
                 fs.closeSync(this.logFd);
             } catch (e) {
-                magentaWrite(`Error: closing fille ${e}\n`, this.ptyTerm!);
+                magentaWrite(`Error: closing fille ${e}\n`, this.terminal!);
             }
             this.logFd = -1;
             this.startOfNewLine = true;
@@ -247,34 +262,16 @@ export class IOTerminal {
         }
     }
 
-    // If all goes well, this will reset the terminal options. Label for the VSCode terminal has to match
-    // since there no way to rename it. If successful, tt will reset the Terminal options and mark it as
-    // used (inUse = true) as well
-    public tryReuse(options: RTTConsoleDecoderOpts, src: SocketIOSource): boolean {
-        if (!this.ptyTerm || !this.ptyTerm.terminal) {
-            return false;
+    private freeTerminal() {
+        if (this.terminal) {
+            this.terminal.setState({ kind: "inactive" });
+            this.terminal.removeAllListeners();
+            this.terminal = null;
         }
-        this.sanitizeEncodings(this.options);
-        const newTermName = IOTerminal.createTermName(this.source, options, this.ptyOptions.name);
-        if (newTermName === this.ptyOptions.name) {
-            this.inUse = true;
-            if (!this.options.noclear || this.options.type !== options.type) {
-                this.ptyTerm.clearTerminalBuffer();
-                this.closeLogFd(true);
-            }
-            this.options = options;
-            this.ptyOptions = this.createTermOptions(newTermName);
-            this.ptyTerm.resetOptions(this.ptyOptions);
-            this.connectToSource(src);
-            return true;
-        }
-        return false;
     }
 
     public dispose() {
-        if (this.ptyTerm) {
-            this.ptyTerm.dispose();
-        }
+        this.freeTerminal();
         this.closeLogFd(false);
     }
 }
@@ -313,7 +310,7 @@ class BinaryFormatter {
     private hrTimer = new HrTimer();
 
     constructor(
-        protected ptyTerm: PtyTerminal,
+        protected ptyTerm: ManagedTab,
         protected encoding: string,
         protected scale: number,
     ) {
@@ -343,7 +340,7 @@ class BinaryFormatter {
                 const decodedStr = padLeft(`${decodedValue}`, 12);
                 const scaledValue = padLeft(`${decodedValue * this.scale}`, 12);
 
-                this.ptyTerm.write(`${timestamp} ${chars}  0x${hexvalue} - ${decodedStr} - ${scaledValue}\n`);
+                this.ptyTerm.send(`${timestamp} ${chars}  0x${hexvalue} - ${decodedStr} - ${scaledValue}\n`);
                 this.bytesRead = 0;
             }
         }
