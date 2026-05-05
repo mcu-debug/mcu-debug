@@ -1519,8 +1519,9 @@ export class GDBDebugSession extends SeqDebugSession {
             if (this.args.noDebug) {
                 // No Debug -> Always Continue
                 needsContinue = true;
-            } else if (!this.args.breakAfterReset && this.args.runToEntryPoint) {
-                // Run to Entry Point -> Set Breakpoint, Run. Only if breakAfterReset is false
+            } else if (this.args.runToEntryPoint) {
+                // Run to Entry Point -> Set Breakpoint. breakAfterReset is ignored in this case, we always want to run to
+                // the entry point and stop there, even if breakAfterReset is false. This mimics cortex-debug's behavior
                 commands = [`-break-insert -t ${this.args.runToEntryPoint}`];
                 needsContinue = true;
             } else {

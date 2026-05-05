@@ -1,7 +1,7 @@
 {
   "name": "mcu-debug",
   "publisher": "mcu-debug",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "preview": true,
   "description": "A debugger and debug adapter for MCUs",
   "displayName": "MCU-Debug",
