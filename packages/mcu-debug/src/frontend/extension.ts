@@ -92,6 +92,8 @@ export class MCUDebugExtension {
             vscode.commands.registerCommand("mcu-debug.examineMemory", this.examineMemory.bind(this)),
 
             vscode.commands.registerCommand("mcu-debug.resetDevice", this.resetDevice.bind(this)),
+            vscode.commands.registerCommand("mcu-debug.pauseAll", this.pauseAll.bind(this)),
+            vscode.commands.registerCommand("mcu-debug.resumeAll", this.resumeAll.bind(this)),
 
             vscode.commands.registerCommand("mcu-debug.listAvailableSerialPorts", (noDisplay?: boolean) => this.serialPortManager.listAvailablePortsCmd(noDisplay)),
 
@@ -141,6 +143,29 @@ export class MCUDebugExtension {
             }
             session.customRequest("reset-device", "reset");
         }
+    }
+
+    private pauseAll() {
+        for (const s of CDebugSession.CurrentSessions) {
+            if (s.status === "running") {
+                s.session.customRequest("pause", { threadId: 1 });
+            }
+        }
+    }
+
+    private resumeAll() {
+        for (const s of CDebugSession.CurrentSessions) {
+            if (s.status === "stopped") {
+                s.session.customRequest("continue", { threadId: 1, singleThread: false });
+            }
+        }
+    }
+
+    private updateSessionContext() {
+        const sessions = CDebugSession.CurrentSessions;
+        vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.CHAINED_SESSIONS_ACTIVE}`, sessions.length > 1);
+        vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.HAS_RUNNING_SESSIONS}`, sessions.some((s) => s.status === "running"));
+        vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.HAS_STOPPED_SESSIONS}`, sessions.some((s) => s.status === "stopped"));
     }
 
     private async startServerConsole(context: vscode.ExtensionContext, logFName: string = ""): Promise<void> {
@@ -287,6 +312,7 @@ export class MCUDebugExtension {
         }
 
         const newSession = CDebugSession.NewSessionStarted(session);
+        this.updateSessionContext();
 
         this.functionSymbols = [];
         session.customRequest("get-arguments").then(
@@ -357,6 +383,7 @@ export class MCUDebugExtension {
             vscode.window.showInformationMessage(`Debug session did not terminate cleanly ${e}\n${e ? e.stackstrace : ""}. Please report this problem`);
         } finally {
             CDebugSession.RemoveSession(session);
+            this.updateSessionContext();
         }
     }
 
@@ -637,6 +664,7 @@ export class MCUDebugExtension {
         const mySession = CDebugSession.FindSession(e.session);
         if (mySession) {
             mySession.status = "stopped";
+            this.updateSessionContext();
             this.liveWatchProvider?.debugStopped(e.session);
             if (mySession.swo) {
                 mySession.swo.debugStopped();
@@ -651,6 +679,7 @@ export class MCUDebugExtension {
         const mySession = CDebugSession.FindSession(e.session);
         if (mySession) {
             mySession.status = "running";
+            this.updateSessionContext();
             this.liveWatchProvider?.debugContinued(e.session);
             if (mySession.swo) {
                 mySession.swo.debugContinued();

@@ -374,6 +374,22 @@
         }
       },
       {
+        "command": "mcu-debug.pauseAll",
+        "title": "Pause All Debug Sessions",
+        "icon": {
+          "dark": "images/pause-all-dark.svg",
+          "light": "images/pause-all-light.svg"
+        }
+      },
+      {
+        "command": "mcu-debug.resumeAll",
+        "title": "Resume All Debug Sessions",
+        "icon": {
+          "dark": "images/resume-all-dark.svg",
+          "light": "images/resume-all-light.svg"
+        }
+      },
+      {
         "command": "mcu-debug.varHexModeTurnOff",
         "title": "Disable Hex mode",
         "icon": {
@@ -3722,6 +3738,14 @@
           "when": "debugType == mcu-debug"
         },
         {
+          "command": "mcu-debug.pauseAll",
+          "when": "debugType == mcu-debug && mcu-debug:chainedSessionsActive"
+        },
+        {
+          "command": "mcu-debug.resumeAll",
+          "when": "debugType == mcu-debug && mcu-debug:chainedSessionsActive"
+        },
+        {
           "command": "mcu-debug.toggleVariableHexFormat",
           "when": "debugType == mcu-debug"
         },
@@ -3732,8 +3756,18 @@
       ],
       "debug/toolBar": [
         {
+          "command": "mcu-debug.pauseAll",
+          "group": "navigation@50",
+          "when": "debugType == mcu-debug && mcu-debug:chainedSessionsActive && mcu-debug:hasRunningSessions"
+        },
+        {
+          "command": "mcu-debug.resumeAll",
+          "group": "navigation@51",
+          "when": "debugType == mcu-debug && mcu-debug:chainedSessionsActive && mcu-debug:hasStoppedSessions"
+        },
+        {
           "command": "mcu-debug.resetDevice",
-          "group": "navigation",
+          "group": "navigation@52",
           "when": "debugType == mcu-debug"
         }
       ],

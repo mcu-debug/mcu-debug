@@ -47,6 +47,11 @@ export class CDebugSession {
         }
     }
 
+    // Depth-First Search (DFS): walks the session tree recursively, visiting each
+    // node's children before the node itself (post-order). This means child sessions
+    // are always visited before their parent — intentional for operations like pauseAll,
+    // where children should halt before the parent so the master core doesn't advance
+    // while slaves are still running.
     public broadcastDFS(cb: (s: CDebugSession) => void, fromRoot: boolean = true) {
         const root = fromRoot ? this.getRoot() : this;
         root._broadcastDFS(cb);

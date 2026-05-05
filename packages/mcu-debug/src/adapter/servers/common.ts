@@ -16,6 +16,9 @@ export enum MCUDebugKeys {
     REGISTER_DISPLAY_MODE = "registerUseNaturalFormat",
     VARIABLE_DISPLAY_MODE = "variableUseNaturalFormat",
     SERVER_LOG_FILE_NAME = "dbgServerLogfile",
+    CHAINED_SESSIONS_ACTIVE = "chainedSessionsActive",
+    HAS_RUNNING_SESSIONS = "hasRunningSessions",
+    HAS_STOPPED_SESSIONS = "hasStoppedSessions",
 }
 
 export enum NumberFormat {
