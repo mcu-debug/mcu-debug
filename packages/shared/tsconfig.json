@@ -4,12 +4,13 @@
     "module": "CommonJS",
     "types": ["node"],
     "declaration": true,
-    "rootDir": "src",
+    "rootDir": ".",
     "outDir": "lib",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*", "dasm-helper/**/*.ts", "proxy-protocol/**/*.ts", "serial-helper/**/*.ts"],
+  "exclude": ["lib", "node_modules"]
 }

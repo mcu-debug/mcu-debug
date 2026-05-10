@@ -29,7 +29,7 @@ import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage"
 import { setExtensionPath } from "./proxy";
 import { getUUid, ManagedTab } from "./views/ManagedTab";
 import { CockpitPanel } from "./views/CockpitPanel";
-import { TabKind } from "@mcu-debug/shared/lib/cockpit-protocol";
+import type { TabKind } from "@mcu-debug/shared";
 
 const PROXY_TIMOUT = 5000;
 

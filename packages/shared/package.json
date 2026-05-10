@@ -9,12 +9,34 @@
       "types": "./lib/index.d.ts",
       "require": "./lib/index.js",
       "import": "./lib/index.mjs"
+    },
+    "./cockpit-protocol": {
+      "types": "./lib/src/cockpit-protocol.d.ts",
+      "require": "./lib/src/cockpit-protocol.js",
+      "import": "./lib/src/cockpit-protocol.js"
+    },
+    "./dasm-helper/*": {
+      "types": "./lib/dasm-helper/*.d.ts",
+      "require": "./lib/dasm-helper/*.js",
+      "import": "./lib/dasm-helper/*.js"
+    },
+    "./proxy-protocol/*": {
+      "types": "./lib/proxy-protocol/*.d.ts",
+      "require": "./lib/proxy-protocol/*.js",
+      "import": "./lib/proxy-protocol/*.js"
+    },
+    "./serial-helper/*": {
+      "types": "./lib/serial-helper/*.d.ts",
+      "require": "./lib/serial-helper/*.js",
+      "import": "./lib/serial-helper/*.js"
     }
   },
   "scripts": {
     "compile": "tsc -p tsconfig.json && node esbuild.js",
     "build": "npm run compile",
-    "watch": "node esbuild.js --watch"
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc -p tsconfig.json --watch --preserveWatchOutput"
   },
   "dependencies": {
     "proper-lockfile": "^4.1.2"
@@ -22,7 +44,8 @@
   "devDependencies": {
     "@types/node": "^25.6.0",
     "esbuild": "^0.27.2",
-    "typescript": "^5.0.0"
+    "npm-run-all": "^4.1.5",
+    "typescript": "6.0.3"
   },
   "engines": {
     "node": ">=18.0.0"
