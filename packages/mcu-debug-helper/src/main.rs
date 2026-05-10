@@ -15,8 +15,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use mcu_debug_helper::da_helper::run::DaHelperArgs;
-use mcu_debug_helper::proxy_helper::run::ProxyArgs;
+use mcu_debug::da_helper::run::DaHelperArgs;
+use mcu_debug::proxy_helper::run::ProxyArgs;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::DaHelper(args) => mcu_debug_helper::da_helper::run::run(args),
-        Commands::Proxy(args) => mcu_debug_helper::proxy_helper::run::run(args),
+        Commands::DaHelper(args) => mcu_debug::da_helper::run::run(args),
+        Commands::Proxy(args) => mcu_debug::proxy_helper::run::run(args),
     }
 }

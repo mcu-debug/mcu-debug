@@ -205,7 +205,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
         let serverargs: string[] = [];
         let helpers = `${this.args.extensionPath}/support/openocd-helpers.tcl`;
         if (this.args.hostConfig?.enabled) {
-            const remoteHelpers = "./mcu-debug-helper/support/openocd-helpers.tcl";
+            const remoteHelpers = "./mcu-debug/support/openocd-helpers.tcl";
             this.args.hostConfig.syncFiles = this.args.hostConfig.syncFiles || [];
             this.args.hostConfig.syncFiles.push({ local: helpers, remote: remoteHelpers });
             helpers = remoteHelpers;
@@ -278,7 +278,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
         return /Info\s:[^\n]*Listening on port \d+ for gdb connection/i;
     }
 
-    public serverLaunchStarted(): void {}
+    public serverLaunchStarted(): void { }
 
     public serverLaunchCompleted(): void {
         if (this.args.swoConfig.enabled) {

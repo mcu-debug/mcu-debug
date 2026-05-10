@@ -91,7 +91,7 @@ const SSH_TUNNEL_POLL_MS = 250;
 const SSH_RUN_TIMEOUT_MS = 15000;
 const SSH_DEPLOY_TIMEOUT_MS = 60000;
 const SSH_AGENT_LAUNCH_TIMEOUT_MS = 30000;
-const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mcu-debug-helper";
+const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mcu-debug";
 
 let _extensionPath = "";
 
@@ -140,7 +140,7 @@ async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs =
     });
 }
 
-// Deploys the mcu-debug-helper binary to REMOTE_HELPER_PATH on the remote host.
+// Deploys the mcu-debug binary to REMOTE_HELPER_PATH on the remote host.
 // Detects remote OS/arch via `uname -sm`, selects the matching local binary, and
 // streams it over SSH stdin — no scp required, so it works on all platforms.
 async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
@@ -160,7 +160,7 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
         throw new Error(`Unsupported remote OS/arch: "${unameOut}"`);
     }
 
-    const localBinary = path.join(_extensionPath, "bin", archDir, "mcu-debug-helper");
+    const localBinary = path.join(_extensionPath, "bin", archDir, "mcu-debug");
     if (!fs.existsSync(localBinary)) {
         throw new Error(`Local helper binary not found for ${archDir}: ${localBinary}`);
     }

@@ -452,7 +452,7 @@ module.exports = {
             sshProxyServerPath: {
                 type: "string",
                 description:
-                    'Path to a pre-installed mcu-debug-helper binary on the remote host (e.g. "/usr/local/bin/mcu-debug-helper" or "~/bin/mcu-debug-helper"). ' +
+                    'Path to a pre-installed mcu-debug binary on the remote host (e.g. "/usr/local/bin/mcu-debug" or "~/bin/mcu-debug"). ' +
                     "When set, the extension skips the automatic binary deployment step entirely and uses this path to launch the Probe Agent. " +
                     "Use this when macOS Gatekeeper, Windows SmartScreen, or lab policy prevents running a freshly-copied executable, " +
                     "or when the binary has already been installed and granted the necessary permissions by other means.",
@@ -508,11 +508,11 @@ module.exports = {
                     },
                     vid: {
                         type: "string",
-                        description: "USB vendor ID in hex (e.g. \"0x0483\"). Used with pid to identify the device type when serial is unavailable.",
+                        description: 'USB vendor ID in hex (e.g. "0x0483"). Used with pid to identify the device type when serial is unavailable.',
                     },
                     pid: {
                         type: "string",
-                        description: "USB product ID in hex (e.g. \"0x374b\"). Used with vid to identify the device type when serial is unavailable.",
+                        description: 'USB product ID in hex (e.g. "0x374b"). Used with vid to identify the device type when serial is unavailable.',
                     },
                     baud_rate: {
                         type: "number",

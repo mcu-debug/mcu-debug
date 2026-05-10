@@ -86,12 +86,12 @@
 		{
             "type": "lldb",
             "request": "launch",
-            "name": "Launch mcu-debug-helper",
+            "name": "Launch mcu-debug",
             "cargo": {
-				"cwd": "${workspaceFolder}/packages/mcu-debug-helper",
+				"cwd": "${workspaceFolder}/packages/mcu-debug",
                 "args": [
                     "build",
-                    "--bin=mcu-debug-helper" // Replace 'yourprogram' with your actual binary name
+                    "--bin=mcu-debug" // Replace 'yourprogram' with your actual binary name
                 ]
             },
             "program": "${cargo:program}",
@@ -104,9 +104,9 @@
         {
             "type": "lldb",
             "request": "attach",
-            "name": "Attach mcu-debug-helper",
+            "name": "Attach mcu-debug",
             "pid": "${command:pickMyProcess}",
-			"program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug-helper",
+			"program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug",
             "sourceLanguages": ["rust"]
         }
 	],

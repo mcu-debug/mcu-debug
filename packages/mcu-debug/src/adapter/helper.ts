@@ -55,11 +55,11 @@ export function withTimeout(millis: number, promise: Promise<any>): Promise<any>
 }
 
 /**
- * DebugHelper manages communication with the mcu-debug-helper Rust process.
+ * DebugHelper manages communication with the mcu-debug Rust process.
  *
  * Protocol: Content-Length based (same as DAP/LSP)
  * - Both directions use: "Content-Length: <bytes>\r\n\r\n<JSON body>"
- * - Rust side: See packages/mcu-debug-helper/src/transport.rs:StdioTransport
+ * - Rust side: See packages/mcu-debug/src/transport.rs:StdioTransport
  *
  * Traffic characteristics:
  * - TS -> Rust: Light, infrequent (requests for disassembly, symbol lookups, etc.)
@@ -325,12 +325,12 @@ export class DebugHelper {
                     this.rttSymbolResolve(); // Resolve RTT promise anyway to avoid hanging if RTT symbol is missing
                 }
                 const delta = Date.now() - this.startTime;
-                this.session.handleMsg(Stderr, `mcu-debug-helper: Symbol table ready (version: ${event.version}, elapsed: ${delta}ms)`);
+                this.session.handleMsg(Stderr, `mcu-debug: Symbol table ready (version: ${event.version}, elapsed: ${delta}ms)`);
                 break;
             }
             case "DisassemblyReady": {
                 const delta = Date.now() - this.startTime;
-                this.session.handleMsg(Stderr, `mcu-debug-helper: Disassembly ready (${event.instruction_count} instructions, elapsed: ${delta}ms)`);
+                this.session.handleMsg(Stderr, `mcu-debug: Disassembly ready (${event.instruction_count} instructions, elapsed: ${delta}ms)`);
                 break;
             }
 
@@ -338,7 +338,7 @@ export class DebugHelper {
                 this.rttSymbolAddress = event.address;
                 this.rttSymbolResolve();
                 const delta = Date.now() - this.startTime;
-                this.session.handleMsg(Stderr, `mcu-debug-helper: RTT found at ${event.address}, elapsed: ${delta}ms`);
+                this.session.handleMsg(Stderr, `mcu-debug: RTT found at ${event.address}, elapsed: ${delta}ms`);
                 break;
             }
             case "Progress":
@@ -379,7 +379,7 @@ export class DebugHelper {
             this.stderrBuffer = this.stderrBuffer.substring(newlineIndex + 1);
 
             if (line.length > 0) {
-                this.session.handleMsg(Stderr, `mcu-debug-helper stderr: ${line}`);
+                this.session.handleMsg(Stderr, `mcu-debug stderr: ${line}`);
             }
         }
     }
@@ -425,7 +425,7 @@ export class DebugHelper {
 
             // Send request using Content-Length protocol (same as DAP/LSP)
             // Format: "Content-Length: <bytes>\r\n\r\n<JSON body>"
-            // Matches what Rust expects in: packages/mcu-debug-helper/src/transport.rs:read_message()
+            // Matches what Rust expects in: packages/mcu-debug/src/transport.rs:read_message()
             try {
                 const body = Buffer.from(JSON.stringify(request), "utf8");
                 const header = `Content-Length: ${body.length}\r\n\r\n`;

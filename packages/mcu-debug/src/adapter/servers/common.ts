@@ -295,7 +295,7 @@ export interface HostConfig {
     sshHost?: string; // Required when type === "ssh"
     sshProxyPort?: number; // SSH type, daemon mode: port the pre-running Probe Agent is listening on (connect-to-existing)
     wslProxyPort?: number; // auto type, WSL NAT mode: fixed port for the agent to bind to (must be open in Windows Firewall)
-    sshProxyServerPath?: string; // Path to a pre-installed mcu-debug-helper on the remote host. When set, skips binary deployment entirely.
+    sshProxyServerPath?: string; // Path to a pre-installed mcu-debug on the remote host. When set, skips binary deployment entirely.
     token?: string; // Override for daemon-mode token; auto-managed when absent (do not commit to source control)
     syncFiles?: { local: string; remote?: string }[]; // List of files to sync (host-local path glob patterns and optional remote path)
 
@@ -1266,19 +1266,19 @@ export function binaryMatchesPlatform(filePath: string, platform: NodeJS.Platfor
 }
 
 /**
- * Returns the path to the mcu-debug-helper executable for the current platform and architecture. Will throw if not found.
+ * Returns the path to the mcu-debug executable for the current platform and architecture. Will throw if not found.
  * 
  * @param extPath - VSCode extension path
  * @returns path to the exeutable (can be a debug version if it matches current platform and architecture)
  * 
  * env.PROD_MCU_DEBUG_HELPER can be set to "1" to disable the check for a dev build and always use the
- * unqualified bin/mcu-debug-helper (if it exists)
+ * unqualified bin/mcu-debug (if it exists)
  */
 export function getHelperExecutable(extPath: string): string {
     // const extPath = this.session.args.extensionPath;
     const platform = process.platform;
     const arch = process.arch;
-    let helperName = "mcu-debug-helper";
+    let helperName = "mcu-debug";
     if (platform === "win32") {
         helperName += ".exe";
     }
@@ -1307,7 +1307,7 @@ export function getHelperExecutable(extPath: string): string {
         }
         return helperPath;
     } else {
-        throw new Error(`mcu-debug-helper executable not found for platform ${platform} and architecture ${arch} at path ${helperPath}`);
+        throw new Error(`mcu-debug executable not found for platform ${platform} and architecture ${arch} at path ${helperPath}`);
     }
 }
 

@@ -1269,7 +1269,7 @@
                   },
                   "sshProxyServerPath": {
                     "type": "string",
-                    "description": "Path to a pre-installed mcu-debug-helper binary on the remote host (e.g. \"/usr/local/bin/mcu-debug-helper\" or \"~/bin/mcu-debug-helper\"). When set, the extension skips the automatic binary deployment step entirely and uses this path to launch the Probe Agent. Use this when macOS Gatekeeper, Windows SmartScreen, or lab policy prevents running a freshly-copied executable, or when the binary has already been installed and granted the necessary permissions by other means."
+                    "description": "Path to a pre-installed mcu-debug binary on the remote host (e.g. \"/usr/local/bin/mcu-debug\" or \"~/bin/mcu-debug\"). When set, the extension skips the automatic binary deployment step entirely and uses this path to launch the Probe Agent. Use this when macOS Gatekeeper, Windows SmartScreen, or lab policy prevents running a freshly-copied executable, or when the binary has already been installed and granted the necessary permissions by other means."
                   },
                   "syncFiles": {
                     "type": "array",
@@ -2828,7 +2828,7 @@
                   },
                   "sshProxyServerPath": {
                     "type": "string",
-                    "description": "Path to a pre-installed mcu-debug-helper binary on the remote host (e.g. \"/usr/local/bin/mcu-debug-helper\" or \"~/bin/mcu-debug-helper\"). When set, the extension skips the automatic binary deployment step entirely and uses this path to launch the Probe Agent. Use this when macOS Gatekeeper, Windows SmartScreen, or lab policy prevents running a freshly-copied executable, or when the binary has already been installed and granted the necessary permissions by other means."
+                    "description": "Path to a pre-installed mcu-debug binary on the remote host (e.g. \"/usr/local/bin/mcu-debug\" or \"~/bin/mcu-debug\"). When set, the extension skips the automatic binary deployment step entirely and uses this path to launch the Probe Agent. Use this when macOS Gatekeeper, Windows SmartScreen, or lab policy prevents running a freshly-copied executable, or when the binary has already been installed and granted the necessary permissions by other means."
                   },
                   "syncFiles": {
                     "type": "array",

@@ -15,7 +15,7 @@ export class MCUDebugChannel {
         }
         if (!MCUDebugChannel.logStream) {
             try {
-                const logDir = path.join(os.tmpdir(), "mcu-debug-helper", "extension-logs");
+                const logDir = path.join(os.tmpdir(), "mcu-debug", "extension-logs");
                 fs.mkdirSync(logDir, { recursive: true });
                 const ts = Math.floor(Date.now() / 1000);
                 const logFile = path.join(logDir, `mcu-debug-extension_${process.pid}-${ts}.log`);
