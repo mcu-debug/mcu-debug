@@ -44,6 +44,13 @@ export function parseBigint(value: string): bigint {
     return parseAddress(value);
 }
 
+// Convert any address representation (number, hex/decimal string, or already-bigint) to bigint.
+export function parseAddrVal(val: number | string | bigint): bigint {
+    if (typeof val === "bigint") { return val; }
+    if (typeof val === "number") { return BigInt(val); }
+    return parseAddress(val);
+}
+
 export function binaryFormat(value: number, padding: number = 0, includePrefix: boolean = true, group: boolean = false): string {
     let base = (value >>> 0).toString(2);
     while (base.length < padding) {

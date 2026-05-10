@@ -233,13 +233,13 @@ export interface RTTConfiguration {
 
 export interface ElfSection {
     name: string;
-    address: bigint; // New base address
-    addressOrig: bigint; // original base address in Elf file
+    address: number | string; // base address — number or hex string from launch.json, or hex string when created internally
+    addressOrig?: string; // original ELF VMA as hex string, set by the DA during symbol loading
 }
 export interface SymbolFile {
     file: string;
-    offset?: bigint;
-    textaddress?: bigint;
+    offset?: number | string; // number or hex string
+    textaddress?: number | string; // number or hex string
     sections: ElfSection[];
     sectionMap: { [name: string]: ElfSection };
 }

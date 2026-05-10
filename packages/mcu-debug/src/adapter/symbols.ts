@@ -6,7 +6,7 @@ import { SpawnLineReader, SymbolFile, validateELFHeader, canonicalizePath, Confi
 import { Interval, IntervalTree } from "@flatten-js/interval-tree";
 
 import { GDBDebugSession } from "./gdb-session";
-import { formatAddress, parseAddress, parseBigint } from "../frontend/utils";
+import { formatAddress, parseAddress, parseBigint, parseAddrVal } from "../frontend/utils";
 import { GdbMiOutput } from "./gdb-mi/mi-types";
 import { Stderr } from "./gdb-mi/mi-types";
 import { DisassemblyInstruction } from "../adapter/servers/common";
@@ -309,24 +309,24 @@ export class SymbolTable {
                 return true;
             }
             const name = match[1];
-            const offset = symF.offset || 0n;
+            const offset = symF.offset !== undefined ? parseAddrVal(symF.offset) : 0n;
             const vmaOrig = BigInt("0x" + match[3].trim());
             let vmaStart = vmaOrig + offset;
             const section = symF.sectionMap[name];
-            if (name === ".text" && typeof symF.textaddress === "bigint") {
-                vmaStart = symF.textaddress;
+            if (name === ".text" && symF.textaddress !== undefined) {
+                vmaStart = parseAddrVal(symF.textaddress);
                 if (!section) {
                     symF.sections.push({
-                        address: vmaStart,
-                        addressOrig: vmaOrig,
+                        address: "0x" + vmaStart.toString(16),
+                        addressOrig: "0x" + vmaOrig.toString(16),
                         name: name,
                     });
                     symF.sectionMap[name] = symF.sections[symF.sections.length - 1];
                 }
             }
             if (section) {
-                section.addressOrig = vmaStart;
-                vmaStart = section.address;
+                section.addressOrig = "0x" + vmaStart.toString(16);
+                vmaStart = parseAddrVal(section.address);
             }
             const region = new MemoryRegion({
                 name: name,
@@ -385,10 +385,10 @@ export class SymbolTable {
                 return true;
             }
 
-            const offset = symF.offset || 0n;
+            const offset = symF.offset !== undefined ? parseAddrVal(symF.offset) : 0n;
             const addr: bigint = parseBigint("0x" + match[1].trim());
             const section = symF.sectionMap[secName];
-            const newaddr = addr + (section ? addr - section.addressOrig : offset);
+            const newaddr = addr + (section ? addr - parseAddrVal(section.addressOrig!) : offset);
 
             // Canonicalize file path and add variations
             let canonicalFile = cxt.curObjFile;
@@ -568,7 +568,7 @@ export class SymbolTable {
     private readNmSymbolLine(cxt: ObjectReaderContext, symF: SymbolFile, line: string, err: any): boolean {
         const match = line && line.match(NM_SYMBOL_RE);
         if (match) {
-            const offset = symF.offset || 0n;
+            const offset = symF.offset !== undefined ? parseAddrVal(symF.offset) : 0n;
             const address = parseAddress("0x" + match[1].trim()) + offset;
             const file = canonicalizePath(match[2]);
             this.addressToFileOrig.set(address, file);

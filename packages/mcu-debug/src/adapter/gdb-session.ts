@@ -15,7 +15,7 @@ import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands, parseStoppedThreadInfo } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
-import { formatAddress, parseAddress } from "../frontend/utils";
+import { formatAddress, parseAddrVal } from "../frontend/utils";
 import { BreakpointManager } from "./breakpoints";
 import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
@@ -1421,10 +1421,10 @@ export class GDBDebugSession extends SeqDebugSession {
             // If you just used 'add-symbol-file' debugging works but RTOS detection fails
             // for most debuggers.
             for (const symF of this.args.symbolFiles) {
-                const offset = symF.offset ? `-o ${formatAddress(symF.offset)}"` : "";
-                let otherArgs = typeof symF.textaddress === "bigint" ? ` ${formatAddress(symF.textaddress)}"` : "";
+                const offset = symF.offset !== undefined ? `-o ${formatAddress(parseAddrVal(symF.offset))}"` : "";
+                let otherArgs = symF.textaddress !== undefined ? ` ${formatAddress(parseAddrVal(symF.textaddress))}"` : "";
                 for (const section of symF.sections) {
-                    otherArgs += ` -s ${section.name} ${section.address}`;
+                    otherArgs += ` -s ${section.name} ${formatAddress(parseAddrVal(section.address))}`;
                 }
                 const cmd = `add-symbol-file \\"${symF.file}\\" ${offset} ${otherArgs}`.trimEnd();
                 this.symPostConnectInitCommands.push(`interpreter-exec console "${cmd}"`);

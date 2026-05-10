@@ -3,7 +3,6 @@ import * as fs from "fs";
 import * as os from "os";
 import { STLinkServerController } from "../adapter/servers/stlink";
 import { GDBServerConsole } from "./server_console";
-import { parseAddress } from "./utils";
 import {
     ChainedConfigurations,
     ChainedEvents,
@@ -311,27 +310,6 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
         return config;
     }
 
-    private static adjustStrIntProp(obj: any, prop: string, where: string) {
-        if (!(prop in obj)) {
-            return;
-        }
-        let val: any = obj[prop];
-        if (val) {
-            let isIntString = false;
-            if (typeof val === "string") {
-                val = val.trim();
-                isIntString = val.match(/^0[x][0-9a-f]+/i) || val.match(/^[0-9]+/);
-            }
-            if (isIntString) {
-                obj[prop] = parseAddress(val);
-            } else if (typeof obj[prop] !== "number") {
-                vscode.window.showErrorMessage(`Invalid "${prop}" value ${val} for ${where}. Must be a number or a string." +
-                    " Use a string starting with "0x" for a hexadecimal number`);
-                delete obj[prop];
-            }
-        }
-    }
-
     private validateLoadAndSymbolFiles(config: ConfigOptions, cwd: string) {
         // Right now, we don't consider a bad executable as fatal. Technically, you don't need an executable but
         // users will get a horrible debug experience ... so many things don't work.
@@ -354,12 +332,9 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
                 } else {
                     symF.file = exe;
                 }
-                CortexDebugConfigurationProvider.adjustStrIntProp(symF, "offset", `file ${exe}`);
-                CortexDebugConfigurationProvider.adjustStrIntProp(symF, "textaddress", `file ${exe}`);
                 symF.sectionMap = {};
                 symF.sections = symF.sections || [];
                 for (const section of symF.sections) {
-                    CortexDebugConfigurationProvider.adjustStrIntProp(section, "address", `section ${section.name} of file ${exe}`);
                     symF.sectionMap[section.name] = section;
                 }
                 validateELFHeader(exe, (str: string, fatal: boolean) => {
