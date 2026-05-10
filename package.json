@@ -25,6 +25,6 @@
   },
   "dependencies": {
     "@vscode/codicons": "^0.0.44",
-    "vsce": "^2.15.0"
+    "@vscode/vsce": "^3.9.1"
   }
 }
