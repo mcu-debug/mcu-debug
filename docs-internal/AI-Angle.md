@@ -297,38 +297,52 @@ The SKILL.md instruction for the AI is one line: *"To attach to a debug session,
 
 ---
 
-### **10. Implementation Split (Node + Rust)**
+### **10. Implementation Split (TS DA server + Rust DAP client)**
 
-The CLI reuses the existing TypeScript codebase for orchestration and delegates terminal rendering to the Rust helper binary that is already shipped.
+The CLI does not rewrite the TypeScript DA — it replaces VS Code as the DAP *client* that drives it. All session logic (GDB management, gdb-server controllers, RTT/SWO/UART, GDB MI, session lifecycle) stays in the TS DA untouched. See [cli-architecture.md](cli-architecture.md) for the full rationale.
 
 | Component | Language | Responsibility |
 |---|---|---|
-| `mcu-debug` CLI orchestrator | Node/TS | GDB process management, mux logic, tee file, session socket, RTT/SWO handling, meta-command parsing — reuses existing DA code |
-| `mcu-debug-helper attach` (new subcommand) | Rust + ratatui | TUI rendering, raw terminal handling, user input capture, socket client |
+| TS DA | TypeScript | DAP **server** — GDB, gdb-server controllers, RTT/SWO/UART, session lifecycle. Unchanged from VS Code path. |
+| `mcu-debug debug` | Rust | DAP **client** — drives TS DA startup sequence, resolves launch config, manages session socket, routes mux stream from DAP `output` events |
+| `mcu-debug debug` (TUI mode) | Rust + ratatui | Three-region TUI when stdout is a TTY |
+| `mcu-debug debug` (headless mode) | Rust | Raw mux stream to stdout when not a TTY — the AI subprocess path |
+| `mcu-debug attach` | Rust | Joins an existing session socket — human or AI late-attacher |
 
-#### **Why this split**
+#### **Three UI modes**
 
-* **Reuse:** The TypeScript DA already knows how to drive GDB, parse output, manage RTT pre-decoders, and handle the proxy. None of that needs to be rewritten.
-* **TUI tooling:** Rust's `ratatui` is best-in-class for terminal UIs. Node's terminal libraries either require native modules (raw mode, key handling) or are less polished.
-* **Already shipped:** `mcu-debug-helper` is pre-built per platform and checked in. Adding an `attach` subcommand costs nothing in distribution complexity. (Same pattern as the planned `serial` subcommand for UART.)
-* **Clean separation:** Orchestrator runs headless and exposes a socket. The TUI is just the first attacher. AI attachers, second-human attachers, CI injectors all use the same protocol.
+The same session engine presents three faces depending on context:
+
+```
+stdout is a TTY     →  ratatui TUI  (human interactive, Mode 2)
+stdout is not a TTY →  headless     (AI subprocess, CI/CD — Modes 1 and 4)
+inside VS Code      →  Glass Cockpit WebviewPanel (handled by the extension, not mcu-debug binary)
+```
+
+The dummy/headless mode is **real and required**. When an AI spawns `mcu-debug debug` as a subprocess, it must receive a clean tagged mux stream on stdout with zero terminal manipulation. The TTY check (`std::io::stdout().is_terminal()`) is the gating condition.
 
 #### **Process model**
 
 ```
-User runs `mcu-debug` in their terminal:
-  ├─ Node orchestrator starts (manages GDB, mux, tee, socket)
-  └─ Spawns `mcu-debug-helper attach <socket>` with stdio inherited
-       → Helper takes over the terminal and renders the TUI
-       → Helper exits → orchestrator shuts down (or persists if --detach)
+Human in terminal (Mode 2 — TUI):
+  mcu-debug debug
+    ├─ resolves launch config
+    ├─ spawns TS DA subprocess, acts as its DAP client
+    ├─ stdout is TTY → starts ratatui TUI
+    └─ creates ~/.mcu-debug/current.sock for potential attachers
 
-AI runs `mcu-debug attach`:
-  └─ Spawns `mcu-debug-helper attach <socket>` in headless mode (--no-tui)
-       → Helper proxies socket I/O to/from stdio
-       → AI sees the tagged stream on stdout
+AI spawns as subprocess (Mode 1 — headless):
+  mcu-debug debug          ← AI's child process
+    ├─ spawns TS DA subprocess, acts as its DAP client
+    ├─ stdout is not TTY → headless, no terminal code
+    └─ tagged mux stream written to stdout ← AI reads this
+
+AI attaches to human's session (Mode 3 — hybrid):
+  mcu-debug attach         ← AI's child process
+    └─ connects to ~/.mcu-debug/current.sock
+       → tagged stream to stdout, commands from stdin
+       → human's TUI remains live, both see all output
 ```
-
-The orchestrator never touches the terminal directly. All terminal interaction lives in the Rust helper. This keeps the Node side portable and the Rust side focused on what it does well.
 
 ---
 

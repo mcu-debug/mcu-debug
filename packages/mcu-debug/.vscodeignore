@@ -26,4 +26,4 @@ tmp/**
 **/tmp/**
 **/.#*
 **/*~
-bin/mcu-debug-helper*
+bin/mcu-debug*

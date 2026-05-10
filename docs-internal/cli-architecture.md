@@ -1,6 +1,6 @@
 # CLI Architecture — `mcu-debug`
 
-Design document for the standalone Rust CLI debugger. Covers the binary rename rationale, the no-DAP direct-GDB model, subcommand structure, remote probe support, and topology auto-detection.
+Design document for the standalone `mcu-debug` CLI. Covers the binary rename rationale, the DAP-client architecture, three UI modes, subcommand structure, remote probe support, and topology auto-detection.
 
 Related: [cli-config.md](cli-config.md) (launch.json resolution), [uart-management.md](uart-management.md) (UART/serial), [AI-Angle.md](AI-Angle.md) (AI integration, deployment modes), [Proxy-Plan.md](Proxy-Plan.md) (Funnel Protocol, remote topologies).
 
@@ -28,45 +28,103 @@ That role has expanded beyond recognition:
 
 ---
 
-## 2. No DAP — Direct GDB
+## 2. Architecture: DAP Client, Not a Rewrite
 
-The VS Code Debug Adapter runs a DAP server (Debug Adapter Protocol) so VS Code can talk to it. This adds a full translation layer: every VS Code concept (breakpoint, stack frame, variable) gets translated to/from GDB commands, responses are reformatted, async events are marshalled through the protocol.
+### The key insight
 
-**The CLI has none of this.** There is no DAP client above it. The CLI talks directly to GDB.
+The TS Debug Adapter is already a **DAP server**. VS Code is its DAP client today. The CLI replaces VS Code as the DAP client — the DA itself is untouched.
 
 ```
-VS Code path:   VS Code ↔ [DAP] ↔ TS DA ↔ GDB ↔ [Funnel] ↔ Probe Agent ↔ gdb-server ↔ probe
-CLI path:       mcu-debug ↔ GDB ↔ [Funnel] ↔ Probe Agent ↔ gdb-server ↔ probe
+VS Code today:
+  VS Code (DAP client) ↔ [DAP] ↔ TS DA (DAP server) ↔ GDB ↔ [Funnel] ↔ Probe Agent ↔ gdb-server
+
+CLI (mcu-debug debug):
+  mcu-debug (DAP client) ↔ [DAP] ↔ TS DA (DAP server) ↔ GDB ↔ [Funnel] ↔ Probe Agent ↔ gdb-server
 ```
 
-Consequences:
+The DA contains years of accumulated work: every gdb-server controller (OpenOCD, JLink, PyOCD, STLink, pyocd, pemicro…), all RTT/SWO/UART handling, GDB MI initialization sequences, session lifecycle. A pure Rust rewrite of all that — tested against each server type on real hardware — would be a multi-month effort with significant regression risk.
 
-- **Simpler, not just different.** The DAP translation layer is significant complexity. CLI skips it entirely.
-- **Full GDB power.** No translation tax. GDB scripts, watchpoints, custom commands — all available directly.
-- **GDB MI or text mode — CLI chooses.** The TS DA uses GDB/MI (`-interpreter=mi2`) because MI is machine-parseable. For the CLI, where an AI or human reads the output, text mode (`-interpreter=console`) plus selective MI for specific operations may be more appropriate. TBD per use case.
-- **AI has raw GDB.** This is the "Sergeant Schultz" architecture — the orchestrator passes GDB commands through without interpreting them. The AI handles dialect differences (GDB vs LLDB-MI vs whatever) directly.
+A DAP client is the right unit of new work. The DA stays; only the *client* that drives it changes.
+
+### What the CLI controller does
+
+The DAP startup sequence is exactly what VS Code does — documented, mechanical:
+
+```
+→ initialize           (clientID: "mcu-debug-cli" signals CLI mode to the DA)
+← capabilities
+→ launch               (with fully-resolved launch config — see cli-config.md)
+← initialized event
+→ setBreakpoints       (from launch config, if any)
+→ configurationDone
+← stopped / continued
+   ... session running ...
+```
+
+Variable resolution (envFile, `${config:...}`, etc.) happens in the CLI controller before the `launch` request is sent. The DA receives an already-resolved config — no change needed on that path.
+
+### Pass-through mode after startup
+
+Once the session is running and RTT/SWO/UART are live, the controller enters pass-through:
+
+- **GDB commands in:** user or AI sends a command → controller wraps in a DAP `evaluate` request (or a custom `gdbCommand` request for CLI mode) → DA forwards to GDB → response comes back as DAP `output` event → goes to the mux stream
+- **GDB stays in MI mode:** all existing initialization sequences use GDB/MI and stay untouched. User-facing commands are wrapped with `-interpreter-exec console "..."` so output is human/AI-readable rather than MI syntax
+- **RTT/SWO/UART out:** already flowing as DAP `output` events — controller reads them and routes to the mux stream by `category` field (`"rtt:0"`, `"uart:ttyUSB0"`, etc.)
+
+The mux stream is the same tagged format described in [AI-Angle.md §1](AI-Angle.md) regardless of which UI is consuming it.
+
+### What the DA needs to know about CLI mode
+
+Surface is small. The `clientID: "mcu-debug-cli"` in the `initialize` request is the signal. In CLI mode the DA:
+
+- Emits errors and diagnostics as DAP `output` events rather than calling `vscode.window.showErrorMessage`
+- Does not call `vscode.workspace.getConfiguration` (config arrives pre-resolved)
+- Everything else: unchanged
+
+The `vscode.*` API calls in the DA are mostly UI/notification calls, not session logic. Core GDB management, gdb-server controllers, RTT/SWO/UART — none of that touches VS Code APIs.
 
 ---
 
-## 3. Subcommand Structure
+## 3. Three UI Modes
+
+The same `mcu-debug debug` session engine supports three presentation modes. Mode is auto-detected from the environment; no flag needed in the common cases. See [AI-Angle.md §9](AI-Angle.md) for the full deployment mode descriptions.
+
+| Mode | When | What runs |
+|---|---|---|
+| **VS Code Cockpit** | Running inside VS Code (extension handles this path) | WebviewPanel + xterm.js Glass Cockpit — see AI-Angle.md §6 |
+| **Rust TUI** | `stdout` is a TTY, running standalone in a terminal | `ratatui` — three-region layout: live mux output / AI-REQUEST / input line |
+| **Dummy / headless** | `stdout` is not a TTY (AI subprocess, CI/CD, pipe) | No terminal manipulation; mux stream written raw to stdout |
+
+The dummy mode is **real and required**. When an AI (Claude, Copilot, etc.) spawns `mcu-debug debug` as a subprocess, stdout is not a TTY. The binary must detect this and run silently with zero terminal manipulation — no escape codes, no cursor movement, no ratatui. The AI's parent TUI is never disturbed. The mux stream on stdout is all the AI needs.
+
+TTY detection:
+```rust
+let headless = !std::io::stdout().is_terminal();
+```
+
+The ratatui TUI and the dummy mode are both implemented in the Rust `mcu-debug` binary. The TS DA is the session engine in all three modes — it doesn't know or care which UI is consuming its output events.
+
+---
+
+## 4. Subcommand Structure
 
 ```
 mcu-debug proxy        ← Probe Agent: gdb-server lifecycle, Funnel Protocol server, serial ports
 mcu-debug da-helper    ← ELF/symbol/disassembly helper (called by TS DA — interface unchanged)
-mcu-debug debug        ← CLI debugger: direct GDB, TUI, mux stream, AI-ready
-mcu-debug attach       ← Attach to a running mcu-debug session (~/.mcu-debug/current.sock)
+mcu-debug debug        ← DAP client: drives TS DA, presents TUI or headless mux stream
+mcu-debug attach       ← Attach to a running session socket (~/.mcu-debug/current.sock)
 mcu-debug dump-config  ← Resolve and print a launch.json config (see cli-config.md)
 ```
 
 `mcu-debug proxy` and `mcu-debug da-helper` are existing functionality, binary rename only.
 
-`mcu-debug debug` is new. Takes a `--config` name and a `launch.json` path (defaults to `./launch.json`), resolves variables (see [cli-config.md](cli-config.md)), and starts a debug session.
+`mcu-debug debug` is new. Resolves the launch config (cli-config.md), spawns the TS DA as a subprocess, acts as its DAP client, detects TTY/headless, starts the appropriate UI, and manages the session socket for potential attachers.
 
-`mcu-debug attach` is the session-join path for the human+AI hybrid mode (see [AI-Angle.md §9](AI-Angle.md)).
+`mcu-debug attach` joins an existing session — the human+AI hybrid path (AI-Angle.md §9 Mode 3).
 
 ---
 
-## 4. Remote Probe Support — Funnel Protocol Client in Rust
+## 5. Remote Probe Support — Funnel Protocol Client in Rust
 
 The VS Code extension's TypeScript side contains the Funnel Protocol **client**: SSH tunnel management, proxy deploy-and-probe, stream multiplexing. That code is not reusable in a pure Rust CLI — it's tightly coupled to VS Code APIs and Node.js.
 
@@ -90,7 +148,7 @@ The framing is simple. The complexity is in the **connection lifecycle** — pro
 
 ---
 
-## 5. Topology Auto-Detection
+## 6. Topology Auto-Detection
 
 In the VS Code extension, `vscode.env.remoteName` was the single API call that revealed the entire topology:
 
@@ -218,7 +276,7 @@ Mirrors the VS Code behaviour:
 
 ---
 
-## 6. Future: Eliminating the TS Proxy Client
+## 7. Future: Eliminating the TS Proxy Client
 
 Once the Rust Funnel client exists for the CLI, there is a natural path to removing the TypeScript Funnel client from the VS Code DA entirely.
 
@@ -244,14 +302,77 @@ This is not a v1 concern — the TS Funnel client works and is tested across all
 
 ---
 
-## 7. What the CLI Does Not Have
+## 8. Packaging and Distribution
+
+> **Status: TBD / pending verification.** Strategy is directionally agreed; exact packaging mechanism needs validation before implementation.
+
+### Node.js prerequisite
+
+The CLI controller (DAP client) is a Node.js program. Node.js is a documented prerequisite.
+
+**Why this is acceptable for v1:**
+- GitHub Copilot CLI requires Node.js already — confirmed
+- Claude CLI Node.js requirement — *TBD, needs verification*
+- The primary v1 use case is as an AI skill/tool (Copilot CLI, Claude CLI); both audiences are developers with Node.js likely already present
+- Trivial to document: "install Node.js 20+ from nodejs.org"
+
+### Invocation model
+
+```sh
+# Preferred — always-latest, no pre-install required
+npx mcu-debug debug
+
+# Or installed globally
+npm install -g mcu-debug
+mcu-debug debug
+```
+
+`npx` is the natural fit for AI skill definitions. The SKILL.md or tool manifest references `npx mcu-debug` and the AI executes it directly. npx handles download and caching; the AI does not need to manage installation.
+
+### npm package structure
+
+The npm package is not pure JS — it also needs the platform-specific Rust binary (`mcu-debug` — proxy, da-helper, TUI). This is a solved pattern in the ecosystem (esbuild, biome, Rollup all do this):
+
+```
+mcu-debug (npm)                  ← JS CLI controller + package.json bin entry
+  optionalDependencies:
+    mcu-debug-linux-x64          ← contains pre-built Rust binary for linux/x64
+    mcu-debug-darwin-arm64       ← contains pre-built Rust binary for mac/arm64
+    mcu-debug-win32-x64          ← contains pre-built Rust binary for win/x64
+    ...
+```
+
+npm installs only the optional dep matching the current platform. The JS wrapper locates the binary at a well-known relative path inside the installed optional package. The pre-built binaries already exist (currently checked in under `packages/mcu-debug/bin/`) — this is a repackaging of what already ships in the VS Code extension.
+
+### Rust binary discovery (fallback chain)
+
+When the CLI controller needs to invoke the Rust binary, it searches in order:
+
+1. **npm optional dep** — `node_modules/mcu-debug-<platform>/bin/mcu-debug` (standard npm install path)
+2. **`~/.mcu-debug/bin/`** — explicit user install, or placed there by the VS Code extension
+3. **`PATH`** — if user has installed manually
+4. **VS Code extension install** — `~/.vscode/extensions/mcu-debug.mcu-debug-*/bin/mcu-debug` (glob on version) — *wonky but useful as a last resort for users who have the extension but installed the CLI separately*
+5. → Error with clear message: "mcu-debug binary not found — run `npm install -g mcu-debug` or install the VS Code extension"
+
+The VS Code extension path (step 4) is intentionally last. The path format is unstable (version-stamped, platform-specific locations vary between VS Code and VS Code Insiders and Cursor), but it is a genuine escape hatch for users who have the extension installed and are trying out the CLI without a full npm install.
+
+### What the VS Code extension does
+
+No changes needed for the extension's own operation — it continues to use its own bundled binary from `packages/mcu-debug/bin/`. The npm packaging is a parallel distribution channel, not a replacement.
+
+The extension could optionally write the binary to `~/.mcu-debug/bin/` on activation, making it available to the CLI fallback chain (step 2 above) without any npm install. Simple, reliable, no path-guessing needed.
+
+---
+
+## 9. What the CLI Does Not Have
 
 | Missing vs VS Code | Reason / mitigation |
 |---|---|
-| DAP server | Not needed — direct GDB is simpler and more powerful |
-| `vscode.env.remoteName` | Replaced by OS-level detection (§5) |
-| VS Code settings store | Replaced by `mcu-debug-settings.json` (see cli-config.md) |
+| VS Code as DAP client | Replaced by `mcu-debug debug` acting as DAP client (§2) |
+| `vscode.env.remoteName` | Replaced by OS-level detection (§6) |
+| VS Code settings store | Replaced by `mcu-debug-settings.json` + `envFile` (see cli-config.md) |
 | Workspace state (Memento) | UART config and session state from `launch.json` + `~/.mcu-debug/` |
 | Auto-start Probe Agent on probe host | v1: require pre-running for WSL/Docker; SSH auto-deploy for LAB |
-| Webview / xterm.js | Replaced by ratatui TUI (see AI-Angle.md §10) |
+| Webview / xterm.js Cockpit | Replaced by ratatui TUI (Mode 2) or headless stream (Mode 1) |
+| Zero-install single binary | Node.js prerequisite; npx covers most cases (see §8) |
 | Extension marketplace updates | Distributed as a standalone binary; updated independently |
