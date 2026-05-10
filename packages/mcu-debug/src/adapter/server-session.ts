@@ -1,7 +1,6 @@
 import { EventEmitter } from "events";
 import * as child_process from "child_process";
 import * as net from "net";
-import * as fs from "fs";
 import path from "path";
 import { JLinkServerController } from "./servers/jlink";
 import { OpenOCDServerController } from "./servers/openocd";
@@ -13,7 +12,7 @@ import { PEServerController } from "./servers/pemicro";
 import { QEMUServerController } from "./servers/qemu";
 import { ExternalServerController } from "./servers/external";
 import { GDBDebugSession } from "./gdb-session";
-import { ConfigurationArguments, createPortName, GDBServerController, GenericCustomEvent, quoteShellCmdLine, TcpPortDef, TcpPortDefMap } from "./servers/common";
+import { createPortName, GDBServerController, GenericCustomEvent, quoteShellCmdLine, TcpPortDef, TcpPortDefMap } from "./servers/common";
 import { GdbEventNames, Stderr } from "./gdb-mi/mi-types";
 import { TcpPortScanner } from "@mcu-debug/shared";
 import { greenFormat } from "../frontend/ansi-helpers";
@@ -32,34 +31,6 @@ const SERVER_TYPE_MAP: { [key: string]: any } = {
     "probe-rs": ProbeRsServerController,
     external: ExternalServerController,
 };
-
-export function getEnvFromConfig(args: ConfigurationArguments): { [key: string]: string } {
-    const env = args.env ? { ...args.env } : {};
-    if (args.envFile) {
-        try {
-            const contents = fs.readFileSync(args.envFile, "utf-8");
-            const envLines = contents.split("\n");
-            envLines.forEach((line) => {
-                line = line.trim();
-                if (!line || line.startsWith("#")) {
-                    return;
-                }
-                const ix = line.indexOf("=");
-                if (ix > 0) {
-                    const key = line.substring(0, ix).trim();
-                    const value = line.substring(ix + 1).trim();
-                    if (key) {
-                        env[key] = value;
-                    }
-                }
-            });
-        } catch (e: any) {
-            // Ignore errors in reading env file, just log
-            console.error(`Could not load environment variables from file: ${e.message}`);
-        }
-    }
-    return env;
-}
 
 export class GDBServerSession extends EventEmitter {
     public serverController: GDBServerController;
@@ -160,7 +131,7 @@ export class GDBServerSession extends EventEmitter {
                     return;
                 }
             } else {
-                const env = { ...process.env, ...getEnvFromConfig(this.session.args) };
+                const env = { ...process.env, ...(this.session.args.env || {}) };
                 this.process = child_process.spawn(executable, args, {
                     cwd: serverCwd,
                     env: env,

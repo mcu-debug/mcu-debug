@@ -13,6 +13,7 @@ import {
     defSymbolFile,
     ConfigurationArguments,
     SWOConfiguration,
+    substituteEnvVarsInConfig,
 } from "../adapter/servers/common";
 import { CDebugChainedSessionItem, CDebugSession } from "./cortex_debug_session";
 import * as path from "path";
@@ -60,6 +61,14 @@ export class CortexDebugConfigurationProvider implements vscode.DebugConfigurati
     public async resolveDebugConfiguration(folder: vscode.WorkspaceFolder | undefined, config: ConfigOptions, token?: vscode.CancellationToken): Promise<vscode.DebugConfiguration | undefined> {
         if (GDBServerConsole.BackendPort <= 0) {
             vscode.window.showErrorMessage("GDB server console not yet ready. Please try again. Report this problem");
+            return undefined;
+        }
+        let errs: string[] = [];
+        config = substituteEnvVarsInConfig(config, (msg) => {
+            errs.push(msg);
+        });
+        if (errs.length > 0) {
+            vscode.window.showErrorMessage("Errors in environment variable substitution from env or envFile:\n" + errs.join("\n"));
             return undefined;
         }
         config.gdbServerConsolePort = GDBServerConsole.BackendPort;

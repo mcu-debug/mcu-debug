@@ -389,7 +389,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     pvtAvoidPorts: number[];
     pvtOpenOCDDebug: boolean;
     env: { [key: string]: string };
-    envFile: string;
+    envFile?: string;
 
     numberOfProcessors: number;
     targetProcessor: number;
@@ -1309,4 +1309,96 @@ export function getHelperExecutable(extPath: string): string {
     } else {
         throw new Error(`mcu-debug-helper executable not found for platform ${platform} and architecture ${arch} at path ${helperPath}`);
     }
+}
+
+// Escape sequences: \\ → \, \n → newline, \r → CR, \t → tab, \${VAR} → literal ${VAR}, \x → x.
+// Variable substitution: ${VAR} → env value. Use \${VAR} to suppress substitution.
+// \\${VAR} gives a literal backslash followed by the substituted value.
+function processEnvVarsAndEscapes(str: string, env: { [key: string]: string }, errFn?: (msg: string) => void): string {
+    return str.replace(/\\(\\|\$\{[^}]+\}|[\s\S])|(\$\{([^}]+)\})/g, (match, escaped, _varRef, varName) => {
+        if (escaped !== undefined) {
+            if (escaped === '\\') { return '\\'; }
+            if (escaped === 'n') { return '\n'; }
+            if (escaped === 'r') { return '\r'; }
+            if (escaped === 't') { return '\t'; }
+            return escaped; // \${VAR} → ${VAR}, \g → g, etc.
+        }
+        if (env[varName] !== undefined) {
+            return env[varName];
+        }
+        errFn?.(`Environment variable "${varName}" not found for substitution in "${str}"`);
+        return match;
+    });
+}
+
+export function getEnvFromConfig(args: ConfigurationArguments, errFn?: (msg: string) => void): { [key: string]: string } {
+    const env: { [key: string]: string } = {};
+    const envMap: { [key: string]: string } = {};
+    for (const key in process.env) {
+        if (Object.prototype.hasOwnProperty.call(process.env, key)) {
+            const value = process.env[key];
+            if (typeof value === "string") {
+                envMap[key] = value;
+            }
+        }
+    }
+    if (args.env) {
+        for (const key in args.env) {
+            if (Object.prototype.hasOwnProperty.call(args.env, key)) {
+                env[key] = processEnvVarsAndEscapes(args.env[key], envMap, errFn);
+            }
+        }
+    }
+    if (args.envFile) {
+        try {
+            const contents = fs.readFileSync(args.envFile, "utf-8");
+            const envLines = contents.split("\n");
+            for (let line of envLines) {
+                line = line.trim();
+                if (!line || line.startsWith("#")) {
+                    continue;
+                }
+                const ix = line.indexOf("=");
+                if (ix > 0) {
+                    const key = line.substring(0, ix).trim();
+                    let value = line.substring(ix + 1).trim();
+                    if (key) {
+                        env[key] = processEnvVarsAndEscapes(value, envMap, errFn);
+                    }
+                }
+            }
+        } catch (e: any) {
+            // Ignore errors in reading env file, just log
+            errFn?.(`Could not load environment variables from file: ${e.message}`);
+        }
+    }
+    args.env = env;
+    return env;
+}
+
+export function substituteEnvVarsInConfig(args: any, errFn?: (msg: string) => void): any {
+    if (!args || typeof args !== "object") {
+        return args;
+    }
+    if (!args.env && !args.envFile) {
+        return args;
+    }
+    const savedEnvFile = args.envFile; // getEnvFromConfig clears envFile; restore it after the round-trip for debugging/DA visibility
+    getEnvFromConfig(args, errFn); // resolves args.env (merging envFile entries) and clears args.envFile
+
+    const env = args.env || {};
+    const jsonStr = JSON.stringify(args); // envFile is absent here, preventing it from being mangled by substitution
+    const substitutedStr = processEnvVarsAndEscapes(jsonStr, env, errFn);
+    let substitutedArgs: any;
+    try {
+        substitutedArgs = JSON.parse(substitutedStr);
+    } catch (e) {
+        // An env var value containing JSON-special characters (quotes, backslashes) can corrupt the JSON.
+        errFn?.(`Failed to parse config after environment variable substitution: ${e}`);
+        substitutedArgs = args; // fall back to the pre-substitution config
+    }
+    if (savedEnvFile !== undefined) {
+        substitutedArgs.envFile = savedEnvFile;
+    }
+    return substitutedArgs;
 }

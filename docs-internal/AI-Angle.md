@@ -9,7 +9,7 @@ To provide a high-bandwidth, autonomous debugging bridge that allows AI agents (
 ### **1. System Architecture**
 The system uses a **Node.js Orchestrator** to manage the lifecycle of the debug session, leveraging existing VS Code configurations.
 
-* **Config Source:** Uses `launch.json` and `settings.json` as the Single Source of Truth (SSOT) for paths, toolchains, and GDB-server parameters.
+* **Config Source:** Uses `launch.json` as the Single Source of Truth (SSOT) for paths, toolchains, and GDB-server parameters. Outside VS Code, `${config:...}` variables are resolved via `mcu-debug-settings.json` — see [cli-config.md](cli-config.md). The CLI is a pure Rust binary (`mcu-debug`) with no DAP layer — direct GDB — see [cli-architecture.md](cli-architecture.md).
 * **Process Management:** Instead of `node-pty` (which adds ANSI complexity for AI), use `child_process.spawn` for raw, sequential data streams.
 * **The Multiplexer (Mux):** All data sources are tagged and piped to a single `stdout` stream for the AI.
     * `[GDB]`: Standard GDB machine-interface or text output.
@@ -224,6 +224,8 @@ The SKILL.md should include: *"If the engineer indicates a timing-sensitive appl
 ---
 
 ### **9. CLI Deployment Modes**
+
+> **Config resolution in CLI mode** (no VS Code APIs available) is covered in [cli-config.md](cli-config.md). The short version: `${workspaceFolder}` and `${env:...}` resolve natively; `${config:...}` variables resolve via `mcu-debug-settings.json`, which the VS Code extension writes automatically as a side-effect of normal settings editing.
 
 The CLI tool serves three distinct scenarios. The same core binary handles all of them; only the attachment pattern differs. There is **no** "AI launches a terminal for the human" magic — that path was considered and rejected as over-complex and platform-fragile.
 
