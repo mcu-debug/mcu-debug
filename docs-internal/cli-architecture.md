@@ -28,60 +28,93 @@ That role has expanded beyond recognition:
 
 ---
 
-## 2. Architecture: DAP Client, Not a Rewrite
+## 2. Architecture: New Entry Point, Not a Rewrite
 
 ### The key insight
 
-The TS Debug Adapter is already a **DAP server**. VS Code is its DAP client today. The CLI replaces VS Code as the DAP client — the DA itself is untouched.
+The DA code is not being replaced — it is getting a **second entry point**. VS Code drives it today via DAP. The CLI drives it directly, in-process, through a new **Driver** that calls the same session logic without any protocol overhead.
 
 ```
 VS Code today:
-  VS Code (DAP client) ↔ [DAP] ↔ TS DA (DAP server) ↔ GDB ↔ [Funnel] ↔ Probe Agent ↔ gdb-server
+  VS Code ↔ [DAP/stdio] ↔ DA entry point (DAP server)
+                               └─ session logic: GDB, gdb-servers, RTT/SWO/UART
 
-CLI (mcu-debug debug):
-  mcu-debug (DAP client) ↔ [DAP] ↔ TS DA (DAP server) ↔ GDB ↔ [Funnel] ↔ Probe Agent ↔ gdb-server
+CLI tomorrow (same Node.js process, new entry point):
+  CLI Driver entry point
+      └─ session logic: GDB, gdb-servers, RTT/SWO/UART   ← identical, untouched
 ```
 
-The DA contains years of accumulated work: every gdb-server controller (OpenOCD, JLink, PyOCD, STLink, pyocd, pemicro…), all RTT/SWO/UART handling, GDB MI initialization sequences, session lifecycle. A pure Rust rewrite of all that — tested against each server type on real hardware — would be a multi-month effort with significant regression risk.
+No separate process. No DAP framing between a client and server. Direct in-process function calls. The session logic — every gdb-server controller, GDB MI handling, RTT/SWO/UART, session lifecycle — runs exactly as it does today, just driven by a different caller.
 
-A DAP client is the right unit of new work. The DA stays; only the *client* that drives it changes.
+### The refactoring: adapter pattern for `vscode.*` calls
 
-### What the CLI controller does
+The DA currently calls `vscode.*` APIs directly for UI and config:
 
-The DAP startup sequence is exactly what VS Code does — documented, mechanical:
-
-```
-→ initialize           (clientID: "mcu-debug-cli" signals CLI mode to the DA)
-← capabilities
-→ launch               (with fully-resolved launch config — see cli-config.md)
-← initialized event
-→ setBreakpoints       (from launch config, if any)
-→ configurationDone
-← stopped / continued
-   ... session running ...
+```typescript
+vscode.window.showErrorMessage("GDB crashed");
+vscode.workspace.getConfiguration("mcu-debug").get("armToolchainPath");
 ```
 
-Variable resolution (envFile, `${config:...}`, etc.) happens in the CLI controller before the `launch` request is sent. The DA receives an already-resolved config — no change needed on that path.
+These get extracted behind an `IHostAdapter` interface:
 
-### Pass-through mode after startup
+```typescript
+interface IHostAdapter {
+    showError(msg: string): void;
+    showInfo(msg: string): void;
+    getConfig<T>(key: string): T | undefined;
+    // ... similarly for other vscode.* calls in the DA
+}
+```
 
-Once the session is running and RTT/SWO/UART are live, the controller enters pass-through:
+Two implementations:
 
-- **GDB commands in:** user or AI sends a command → controller wraps in a DAP `evaluate` request (or a custom `gdbCommand` request for CLI mode) → DA forwards to GDB → response comes back as DAP `output` event → goes to the mux stream
-- **GDB stays in MI mode:** all existing initialization sequences use GDB/MI and stay untouched. User-facing commands are wrapped with `-interpreter-exec console "..."` so output is human/AI-readable rather than MI syntax
-- **RTT/SWO/UART out:** already flowing as DAP `output` events — controller reads them and routes to the mux stream by `category` field (`"rtt:0"`, `"uart:ttyUSB0"`, etc.)
+| Adapter | Used by | Behaviour |
+|---|---|---|
+| `VscodeAdapter` | VS Code entry point (existing) | Calls `vscode.window.*`, `vscode.workspace.*` — identical to today |
+| `CliAdapter` | CLI Driver entry point (new) | Writes errors/info to the mux stream; config arrives pre-resolved in the launch request — no lookup needed |
 
-The mux stream is the same tagged format described in [AI-Angle.md §1](AI-Angle.md) regardless of which UI is consuming it.
+The `vscode.*` calls in the DA are mostly notification/UI calls. The session logic — GDB, gdb-server controllers, RTT/SWO/UART — does not touch VS Code APIs. The refactoring scope is bounded.
 
-### What the DA needs to know about CLI mode
+### The CLI Driver entry point
 
-Surface is small. The `clientID: "mcu-debug-cli"` in the `initialize` request is the signal. In CLI mode the DA:
+A new `src/cli-driver.ts` (or equivalent). Called by the Node.js process when launched by the Rust bootstrap in CLI mode. Responsibilities:
 
-- Emits errors and diagnostics as DAP `output` events rather than calling `vscode.window.showErrorMessage`
-- Does not call `vscode.workspace.getConfiguration` (config arrives pre-resolved)
-- Everything else: unchanged
+1. Receive the fully-resolved launch config (passed from Rust via the TCP channel — already variable-substituted per [cli-config.md](cli-config.md))
+2. Instantiate the session with `CliAdapter`
+3. Start the session: gdb-server, GDB, RTT/SWO/UART — same sequence as the DAP `launch` handler, called directly
+4. Expose the mux stream over the TCP channel to the Rust process (TUI or headless relay)
+5. Accept commands from Rust (GDB input, meta-commands) and forward to GDB
+6. Create the session socket (`~/.mcu-debug/current.sock`) for late attachers
 
-The `vscode.*` API calls in the DA are mostly UI/notification calls, not session logic. Core GDB management, gdb-server controllers, RTT/SWO/UART — none of that touches VS Code APIs.
+### Process model
+
+```
+mcu-debug debug  (Rust binary)
+  │
+  ├─ checks Node >= 22
+  ├─ spawns: node cli-controller.js --port <tcp-port>   (bundled JS, sibling to binary)
+  │    └─ CLI Driver starts session (in-process, direct calls)
+  │         ├─ GDB, gdb-server, RTT/SWO/UART
+  │         ├─ mux stream → TCP port → Rust
+  │         └─ session socket: ~/.mcu-debug/current.sock
+  │
+  ├─ [if TTY]     starts ratatui TUI, connects to Node via TCP port
+  └─ [if no TTY]  spawns Node with inherited stdio, waits, forwards exit code
+                  AI reads the mux stream directly from Node's stdout
+                  (Unix: can exec-replace for true process substitution;
+                   Windows: spawn-and-wait is equivalent from outside)
+```
+
+In headless mode Rust spawns Node with inherited stdio and waits, forwarding the exit code. The AI subprocess sees a clean stream. No TCP port, no TUI code runs. On Unix, `exec` can replace the process entirely (true process substitution); on Windows, spawn-and-wait is the equivalent and behaves identically from the outside — a thin waiting Rust process in the tree costs nothing.
+
+### The TCP channel (Rust TUI ↔ Node)
+
+This is the same session socket protocol used for `mcu-debug attach` (AI-Angle.md §9 Mode 3). The Rust TUI is just the first attacher. The protocol:
+
+- **Node → Rust:** tagged mux stream frames (same `[GDB]`, `[RTT#0]`, `[UART:ttyUSB0]` format)
+- **Rust → Node:** user input from TUI (GDB commands, meta-commands like `!!SIGINT`)
+
+One protocol, two consumers (TUI attacher, AI attacher). Defining it once unlocks both.
 
 ---
 

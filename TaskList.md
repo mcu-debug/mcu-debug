@@ -33,6 +33,11 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] RTT
   - [x] `New:` Native RTT support
   - [x] `New:` Rust RTT support. Defmt-print support added. Add as a pre-decoder to rttConfig
+  - [x] `New`: UART support. We can now show UART and users can use it for input and output
+- [x] `New:` **New window in Panel area. Moving all items from VSCode Terminal to its own Panel**
+  - [x] `New`: gdb-server output
+  - [x] `New`: RTT/SWO Windows
+  - [x] `New:` UART Windwos
 - [ ] `New`: Rust Language support (debug works, but some things in Variable window could be better)
 - [ ] General
    - [ ] `New:` Source Maps
@@ -66,6 +71,11 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] ssh built into VSCode (SSH - Remote)
   - [x] WSL mirrored mode
   - [x] WSL NAT mode
+- [ ] AI Support.
+  - [ ] CLI support. Run MCU-Debug outside VSCode or inside VSCode in CLI mode
+  - [ ] AI Cockpit window for Humans and AI to look at
+  - [ ] AI can control execution of FW, interact with the debugger
+  - [ ] [More line items here](./docs-internal/cli-plan.md)
 
  Testing:
  - [ ] All of the above

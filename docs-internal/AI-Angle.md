@@ -297,51 +297,51 @@ The SKILL.md instruction for the AI is one line: *"To attach to a debug session,
 
 ---
 
-### **10. Implementation Split (TS DA server + Rust DAP client)**
+### **10. Implementation Split (TS Driver + Rust bootstrap/TUI)**
 
-The CLI does not rewrite the TypeScript DA — it replaces VS Code as the DAP *client* that drives it. All session logic (GDB management, gdb-server controllers, RTT/SWO/UART, GDB MI, session lifecycle) stays in the TS DA untouched. See [cli-architecture.md](cli-architecture.md) for the full rationale.
+The DA code is not being replaced or rewritten — it gets a **second entry point** called the CLI Driver. VS Code drives it via DAP today; the CLI Driver calls the same session logic in-process, directly. See [cli-architecture.md](cli-architecture.md) for the full design.
 
 | Component | Language | Responsibility |
 |---|---|---|
-| TS DA | TypeScript | DAP **server** — GDB, gdb-server controllers, RTT/SWO/UART, session lifecycle. Unchanged from VS Code path. |
-| `mcu-debug debug` | Rust | DAP **client** — drives TS DA startup sequence, resolves launch config, manages session socket, routes mux stream from DAP `output` events |
-| `mcu-debug debug` (TUI mode) | Rust + ratatui | Three-region TUI when stdout is a TTY |
-| `mcu-debug debug` (headless mode) | Rust | Raw mux stream to stdout when not a TTY — the AI subprocess path |
-| `mcu-debug attach` | Rust | Joins an existing session socket — human or AI late-attacher |
+| DA session logic | TypeScript | GDB, gdb-server controllers, RTT/SWO/UART, session lifecycle — **unchanged** |
+| VS Code entry point | TypeScript | Existing DAP server, uses `VscodeAdapter` for `vscode.*` calls — **unchanged** |
+| CLI Driver (`cli-driver.ts`) | TypeScript | New entry point: drives session directly (in-process), uses `CliAdapter`, exposes mux stream over TCP channel to Rust |
+| `IHostAdapter` / `VscodeAdapter` / `CliAdapter` | TypeScript | Adapter pattern that abstracts `vscode.*` API calls — the main refactoring work |
+| `mcu-debug debug` | Rust | Bootstrap: checks Node >= 22, spawns Node with bundled JS, owns terminal |
+| `mcu-debug debug` (TUI mode) | Rust + ratatui | Three-region TUI when stdout is a TTY; connects to Node via TCP session socket |
+| `mcu-debug debug` (headless mode) | Rust | exec-replaces self with Node; AI reads mux stream directly from Node stdout |
+| `mcu-debug attach` | Rust | Joins an existing session socket — human or AI late-attacher (same protocol as TUI) |
 
 #### **Three UI modes**
 
-The same session engine presents three faces depending on context:
-
 ```
-stdout is a TTY     →  ratatui TUI  (human interactive, Mode 2)
-stdout is not a TTY →  headless     (AI subprocess, CI/CD — Modes 1 and 4)
-inside VS Code      →  Glass Cockpit WebviewPanel (handled by the extension, not mcu-debug binary)
+stdout is a TTY     →  Rust bootstrap spawns Node, starts ratatui TUI, connects via TCP
+stdout is not a TTY →  Rust bootstrap exec-replaces with Node; mux stream goes to stdout
+inside VS Code      →  Glass Cockpit WebviewPanel — extension handles this, Rust not involved
 ```
-
-The dummy/headless mode is **real and required**. When an AI spawns `mcu-debug debug` as a subprocess, it must receive a clean tagged mux stream on stdout with zero terminal manipulation. The TTY check (`std::io::stdout().is_terminal()`) is the gating condition.
 
 #### **Process model**
 
 ```
 Human in terminal (Mode 2 — TUI):
-  mcu-debug debug
-    ├─ resolves launch config
-    ├─ spawns TS DA subprocess, acts as its DAP client
-    ├─ stdout is TTY → starts ratatui TUI
-    └─ creates ~/.mcu-debug/current.sock for potential attachers
+  mcu-debug debug   (Rust)
+    ├─ checks Node >= 22
+    ├─ spawns: node cli-controller.js --port <N>
+    │    └─ CLI Driver: starts session in-process, mux stream → TCP port N
+    │         └─ creates ~/.mcu-debug/current.sock
+    └─ ratatui TUI connects to port N, renders output, sends input
 
 AI spawns as subprocess (Mode 1 — headless):
-  mcu-debug debug          ← AI's child process
-    ├─ spawns TS DA subprocess, acts as its DAP client
-    ├─ stdout is not TTY → headless, no terminal code
-    └─ tagged mux stream written to stdout ← AI reads this
+  mcu-debug debug   (Rust)
+    └─ spawns node cli-controller.js with inherited stdio, waits
+         └─ CLI Driver: mux stream → stdout ← AI reads this directly
+         (Unix: Rust can exec-replace; Windows: spawn-and-wait, equivalent from outside)
 
 AI attaches to human's session (Mode 3 — hybrid):
-  mcu-debug attach         ← AI's child process
+  mcu-debug attach  (Rust)
     └─ connects to ~/.mcu-debug/current.sock
-       → tagged stream to stdout, commands from stdin
-       → human's TUI remains live, both see all output
+       → mux stream to stdout, commands from stdin
+       → TUI remains live; both see all output
 ```
 
 ---
