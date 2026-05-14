@@ -30,14 +30,17 @@ packages/mcu-debug/src/
     breakpoints.ts, variables.ts, symbols.ts, memory.ts, ...
 
   cli/                  ← CLI-specific: new entry point + CLI-only concerns
-    cli-driver.ts       ← new entry point; drives session in-process via CliAdapter
-    cli-adapter.ts      ← IHostAdapter implementation for CLI mode
-    config-resolver.ts  ← envFile parsing + variable substitution (see cli-config.md)
+    cli-driver.ts       ← new entry point; drives session in-process (see Phase 5)
+    cli-adapter.ts      ← CliAdapter: implements IHostAdapter for CLI mode
+    config-resolver.ts  ← thin glue: creates CliAdapter, calls common/ConfigProvider
     session-socket.ts   ← ~/.mcu-debug/current.sock server (mux broadcast + command receive)
 
   common/               ← shared by both frontend AND cli
-                           RULE: zero `vscode` imports — enforced by tsconfig/lint
-    host-adapter.ts     ← IHostAdapter interface definition
+                           RULE: no `import from 'vscode'` (extension API) — enforced by tsconfig/lint
+                           NOTE: @vscode/debugprotocol and @vscode/debugadapter ARE allowed —
+                                 they are plain npm packages with no extension-host dependency
+    host-adapter.ts     ← IHostAdapter interface (used by ConfigProvider — see below)
+    config-provider.ts  ← bulk of frontend/configprovider.ts logic; ctor takes IHostAdapter
     swo/                ← moved from frontend/swo/ (decoders + sources — no vscode deps)
     serial/             ← moved from frontend/serial.ts (serial stream client)
     mux/                ← mux stream tag formatting, parsing, routing
@@ -46,7 +49,8 @@ packages/mcu-debug/src/
 
   frontend/             ← pure VS Code extension code (vscode APIs welcome here)
     extension.ts        ← VS Code activation (see note below)
-    configprovider.ts   ← resolveDebugConfiguration hooks
+    configprovider.ts   ← thin wrapper: creates VscodeAdapter, delegates to common/ConfigProvider
+                           hooks (resolveDebugConfiguration etc.) stay here — VS Code lifecycle
     vscode-adapter.ts   ← VscodeAdapter: implements IHostAdapter using vscode.*
     cortex_debug_session.ts
     proxy.ts            ← Rust proxy binary lifecycle (VS Code only; CLI bootstrap handles this in Rust)
@@ -74,13 +78,25 @@ Enforce with a separate `tsconfig.common.json` that excludes `@types/vscode`.
 
 ### IHostAdapter — the key seam
 
+`IHostAdapter` is the boundary for **config resolution only** — it is used by `common/ConfigProvider`,
+not injected into the DA session. The DA session (GDBDebugSession) communicates exclusively through
+DAP events (`OutputEvent`, `StoppedEvent`, etc.) — it never calls `vscode.window.*` or any host UI
+directly. `OutputEvent.category` carries all the routing metadata the CLI needs.
+
 ```typescript
 // common/host-adapter.ts
 interface IHostAdapter {
+    // Workspace context — where is the project root?
+    getWorkspaceFolder(): string | undefined;
+
+    // Settings bridge:
+    //   VS Code:  vscode.workspace.getConfiguration("mcu-debug").get(key)
+    //   CLI:      .vscode/mcu-debug-settings.json → ~/.mcu-debug/settings.json
+    getSetting<T>(key: string): T | undefined;
+
+    // User-facing diagnostics during config resolution
     showError(msg: string): void;
-    showInfo(msg: string): void;
     showWarning(msg: string): void;
-    // ... other vscode.window.* calls used in the DA
 }
 
 // frontend/vscode-adapter.ts  (imports vscode)
@@ -88,6 +104,19 @@ class VscodeAdapter implements IHostAdapter { ... }
 
 // cli/cli-adapter.ts  (no vscode)
 class CliAdapter implements IHostAdapter { ... }
+```
+
+The DA session uses `sendEvent()` / `sendResponse()` — never `IHostAdapter`. In CLI mode
+the Driver overrides these to intercept events and route them to the mux stream:
+
+```typescript
+// Routing table for OutputEvent.category → mux channel
+// 'console'   → [GDB] channel  (GDB console output, MI notifications)
+// 'important' → highlighted / TUI status bar  (errors, warnings)
+// 'stdout'    → target stdout mux channel
+// 'stderr'    → target stderr mux channel
+// Lifecycle events (StoppedEvent, ContinuedEvent, TerminatedEvent) → TUI state / session teardown
+// Custom events (SWOConfigureEvent, UARTConfigureEvent) → configure mux channels
 ```
 
 ---
@@ -109,8 +138,9 @@ Rationale:
 
 1. Update imports to use `common/` for things that moved there
    (`ansi-helpers`, `utils`, `swo/`, `serial/`) — mechanical, low risk
-2. Instantiate and inject `VscodeAdapter` where the DA session is created —
-   adds the adapter seam without restructuring anything else
+2. `configprovider.ts` becomes a thin wrapper: create `VscodeAdapter`, delegate to
+   `common/ConfigProvider` — the VS Code lifecycle hooks (`resolveDebugConfiguration` etc.)
+   stay in `frontend/configprovider.ts`, only the logic moves to `common/`
 3. Multi-core: leave entirely alone for v1
 
 **CLI reimplements what it needs independently** (`cli-driver.ts`) rather than inheriting
@@ -151,7 +181,11 @@ Entry point. Everything starts here.
 
 ---
 
-### Phase 2 — Config resolution (Node — `cli/config-resolver.ts`)
+### Phase 2 — Config resolution (Node — `common/config-provider.ts` + `cli/config-resolver.ts`)
+
+The resolution logic lives in `common/ConfigProvider` (moved from `frontend/configprovider.ts`).
+`cli/config-resolver.ts` is thin: it instantiates `CliAdapter` and calls `ConfigProvider`.
+`frontend/configprovider.ts` does the same with `VscodeAdapter` — shared logic, two thin callers.
 
 Runs first thing in the Node process before any session logic.
 
@@ -228,11 +262,28 @@ Only needed if topology is not `Local`.
 
 ### Phase 5 — Session startup (Node — `cli/cli-driver.ts`)
 
-Drives the session logic directly in-process. Mirrors the DAP `launch` handler flow,
-called as direct function calls through `CliAdapter` instead of over DAP.
+Drives the session logic directly in-process. `GDBDebugSession` is NOT started via
+`GDBDebugSession.run()` (which starts the stdio DAP server). Instead the CLI Driver calls
+`dispatchRequest()` directly with synthetic DAP request objects — no DAP framing, no stdio
+transport, direct in-process calls. `SeqDebugSession`'s serialized-execution queue works
+unchanged; the CLI Driver just feeds it requests and awaits responses via the existing
+Promise resolver in `sendResponse()`.
 
-- [ ] Instantiate `CliAdapter` (implements `IHostAdapter` — errors/info → mux stream)
-- [ ] Inject adapter into session (same constructor the DAP server uses)
+- [ ] **Event interception** — override `sendEvent()` to route DAP events to the mux stream
+      instead of a transport. No IHostAdapter needed at the session level.
+  - [ ] `OutputEvent{category:'console'}` → `[GDB]` mux channel
+  - [ ] `OutputEvent{category:'important'}` → highlighted / TUI status bar
+  - [ ] `OutputEvent{category:'stdout'/'stderr'}` → target output mux channels
+  - [ ] `StoppedEvent` / `ContinuedEvent` → TUI status indicator
+  - [ ] `TerminatedEvent` → session teardown sequence
+  - [ ] `SWOConfigureEvent`, `UARTConfigureEvent` (custom) → configure mux channels
+- [ ] **No-op transport** — skip `super.sendEvent()` / `super.sendResponse()` calls so the
+      uninitialized stdio transport is never touched
+- [ ] **Dispatch synthetic requests** via `dispatchRequest()` — the same sequence as the
+      DAP `launch` handler flow, now driven directly:
+  - [ ] `initialize` request
+  - [ ] `launch` (or `attach`) request with fully-resolved config from Phase 2
+  - [ ] `configurationDone` request
 - [ ] Launch gdb-server (delegates to existing `servers/*.ts` controllers — untouched)
 - [ ] Wait for gdb-server ports to be ready
 - [ ] Launch GDB, connect to gdb-server (existing `gdb-session.ts` — untouched)
@@ -280,27 +331,38 @@ Late-attacher path for AI (Mode 1 via subprocess) and hybrid mode (Mode 3).
 The mechanical refactor that makes both VS Code and CLI share the same underlying code.
 Can proceed in parallel with phases above once the `common/` structure is defined.
 
-- [ ] Create `src/common/` with `tsconfig.common.json` (no `@types/vscode`)
+- [ ] Create `src/common/` with `tsconfig.common.json` (excludes `@types/vscode` only —
+      `@vscode/debugprotocol` and `@vscode/debugadapter` are plain npm packages and ARE allowed)
 - [ ] Define `IHostAdapter` interface in `common/host-adapter.ts`
+      (`getWorkspaceFolder`, `getSetting`, `showError`, `showWarning` — config resolution only)
+- [ ] Extract bulk of `frontend/configprovider.ts` → `common/config-provider.ts`
+      (envFile, variable substitution, validation, defaults — all pure logic, no vscode deps)
+- [ ] Implement `VscodeAdapter` in `frontend/vscode-adapter.ts`
+- [ ] Implement `CliAdapter` in `cli/cli-adapter.ts`
+      (reads `mcu-debug-settings.json`, workspaceFolder = dir containing launch.json)
+- [ ] Thin down `frontend/configprovider.ts` to: create VscodeAdapter, delegate to
+      common/ConfigProvider — VS Code lifecycle hooks stay, logic moves out
 - [ ] Move `frontend/swo/` → `common/swo/` (decoders + sources — no vscode deps)
 - [ ] Move `frontend/serial.ts` → `common/serial/`
 - [ ] Move `frontend/ansi-helpers.ts` → `common/`
 - [ ] Extract non-vscode utils from `frontend/utils.ts` → `common/utils.ts`
-- [ ] Implement `VscodeAdapter` in `frontend/vscode-adapter.ts`
 - [ ] Update `frontend/` imports to use `common/` for moved files — mechanical, low risk
-- [ ] Update `extension.ts` to inject `VscodeAdapter` at session creation — minimum viable touch
+- [ ] Update `extension.ts` imports for moved files — mechanical, minimum viable touch
 - [ ] **Do not refactor `extension.ts` internals for v1** — multi-core and panel lifecycle
       stay as-is; convergence deferred until both paths are working
 
 ---
 
-### Packaging (TBD — pending verification)
+### Packaging
 
-See [cli-architecture.md §8](./cli-architecture.md) for full discussion.
+See [cli-architecture.md §8](./cli-architecture.md) for full design rationale and wrapper code.
 
-- [ ] Verify: GH Copilot CLI requires Node.js? (believed yes)
-- [ ] Verify: Claude CLI requires Node.js?
 - [ ] `cli-controller.js` bundled via existing esbuild pipeline (single file, no node_modules)
-- [ ] npm optional deps for platform Rust binaries (esbuild/biome pattern)
-- [ ] VS Code extension writes Rust binary to `~/.mcu-debug/bin/` on activation (escape hatch)
-- [ ] Distribution: npm + `npx mcu-debug` for AI skill use; marketplace unchanged for VS Code
+- [ ] Extension activation writes `~/.mcu-debug/config.json` → `{ extensionPath, version }`
+      (stable pointer — recreated on every activation, absorbs version-path churn)
+- [ ] npm package (`mcu-debug` on npmjs.com) is a thin JS wrapper only — no binaries bundled
+      Reads `config.json`, sets `MCU_DEBUG_NODE` + `MCU_DEBUG_CLI_JS`, spawns Rust binary
+      Errors clearly with marketplace URL if extension not installed (Option 1 — no fallback)
+- [ ] Node.js >= 22 check in Rust bootstrap (GH Copilot CLI confirmed >= 22; Claude CLI >= 22)
+- [ ] Distribution: `npx mcu-debug` for AI/CI use; `npm install -g` for terminal users;
+      VS Code extension path unchanged — all assets in extension dir, config.json is the pointer

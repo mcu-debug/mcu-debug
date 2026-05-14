@@ -5,7 +5,7 @@ import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
 import { TargetInfo } from "./target-info";
 import { GdbEventNames, Stderr, Stdout } from "./gdb-mi/mi-types";
-import { parseAddress } from "../frontend/utils";
+import { parseAddress } from "../common/utils";
 import { RTTConfiguration, RTTServerHelper } from "./servers/common";
 import { EventEmitter } from "events";
 import { DebugProtocol } from "@vscode/debugprotocol";
@@ -573,7 +573,7 @@ export class ThroughputMonitor {
     private startTime = Date.now();
     private lastReportTime = Date.now();
 
-    constructor(private mainSession: GDBDebugSession) {}
+    constructor(private mainSession: GDBDebugSession) { }
 
     /** Call this inside your RTT poll logic when data arrives */
     public record(buffer: Buffer, msgCount: number = 1) {

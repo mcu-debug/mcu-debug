@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import { RTTConsoleDecoderOpts, TerminalInputMode, TextEncoding, BinaryEncoding, HrTimer } from "../adapter/servers/common";
-import { magentaWrite } from "./ansi-helpers";
+import { magentaWrite } from "../common/ansi-helpers";
 import { decoders as DECODER_MAP } from "./swo/decoders/utils";
 import { SocketIOSource, SocketRTTSource, SocketUARTSource } from "./swo/sources/socket";
-import { RESET } from "./ansi-helpers";
+import { RESET } from "../common/ansi-helpers";
 import { createTerminalUniqueName, getUUid, ManagedTab, ManagedTabConsole } from "./views/ManagedTab";
 import { TabKind } from "@mcu-debug/shared";
 import { EventEmitter } from "stream";

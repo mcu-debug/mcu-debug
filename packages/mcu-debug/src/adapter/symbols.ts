@@ -6,7 +6,7 @@ import { SpawnLineReader, SymbolFile, validateELFHeader, canonicalizePath, Confi
 import { Interval, IntervalTree } from "@flatten-js/interval-tree";
 
 import { GDBDebugSession } from "./gdb-session";
-import { formatAddress, parseAddress, parseBigint, parseAddrVal } from "../frontend/utils";
+import { formatAddress, parseAddress, parseBigint, parseAddrVal } from "../common/utils";
 import { GdbMiOutput } from "./gdb-mi/mi-types";
 import { Stderr } from "./gdb-mi/mi-types";
 import { DisassemblyInstruction } from "../adapter/servers/common";
@@ -82,7 +82,7 @@ const SCOPE_MAP: { [id: string]: SymbolScope } = {
  */
 export class ObjectReaderContext {
     public curObjFile: string | null = null; // Current object file being processed from nm/objdump
-    constructor(public reader: SpawnLineReader) {}
+    constructor(public reader: SpawnLineReader) { }
 
     public setCallback(cb: (line: string, err?: any) => boolean) {
         this.reader.callback = cb;
@@ -205,7 +205,7 @@ export class SymbolTable {
 
     private objdumpPath: string = "";
 
-    constructor(private gdbSession: GDBDebugSession) {}
+    constructor(private gdbSession: GDBDebugSession) { }
 
     public initialize(executables: SymbolFile[]) {
         this.executables = executables;

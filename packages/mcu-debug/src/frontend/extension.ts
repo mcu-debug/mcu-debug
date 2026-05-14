@@ -18,7 +18,7 @@ import { RTTCore, SWOCore } from "./swo/swo-core";
 import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ChainedConfig, SerialConfig, getHelperExecutable } from "../adapter/servers/common";
 import { Reporting } from "../analytics/reporting";
 
-import { CortexDebugConfigurationProvider } from "./configprovider";
+import { McuDebugConfigurationProvider } from "./configprovider";
 import { JLinkSocketRTTSource, SocketRTTSource, SocketSWOSource, PeMicroSocketSource, SocketUARTSource, SocketIOSource } from "./swo/sources/socket";
 import { FifoSWOSource } from "./swo/sources/fifo";
 import { FileSWOSource } from "./swo/sources/file";
@@ -109,7 +109,7 @@ export class MCUDebugExtension {
             vscode.debug.onDidStartDebugSession(this.debugSessionStarted.bind(this)),
             vscode.debug.onDidTerminateDebugSession(this.debugSessionTerminated.bind(this)),
 
-            vscode.debug.registerDebugConfigurationProvider("mcu-debug", new CortexDebugConfigurationProvider(context)),
+            vscode.debug.registerDebugConfigurationProvider("mcu-debug", new McuDebugConfigurationProvider(context)),
         );
     }
 

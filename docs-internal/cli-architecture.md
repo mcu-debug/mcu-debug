@@ -1,6 +1,6 @@
 # CLI Architecture — `mcu-debug`
 
-Design document for the standalone `mcu-debug` CLI. Covers the binary rename rationale, the DAP-client architecture, three UI modes, subcommand structure, remote probe support, and topology auto-detection.
+Design document for the standalone `mcu-debug` CLI. Covers the binary rename rationale, the new-entry-point architecture, three UI modes, subcommand structure, remote probe support, topology auto-detection, and packaging.
 
 Related: [cli-config.md](cli-config.md) (launch.json resolution), [uart-management.md](uart-management.md) (UART/serial), [AI-Angle.md](AI-Angle.md) (AI integration, deployment modes), [Proxy-Plan.md](Proxy-Plan.md) (Funnel Protocol, remote topologies).
 
@@ -68,10 +68,10 @@ interface IHostAdapter {
 
 Two implementations:
 
-| Adapter | Used by | Behaviour |
-|---|---|---|
-| `VscodeAdapter` | VS Code entry point (existing) | Calls `vscode.window.*`, `vscode.workspace.*` — identical to today |
-| `CliAdapter` | CLI Driver entry point (new) | Writes errors/info to the mux stream; config arrives pre-resolved in the launch request — no lookup needed |
+| Adapter         | Used by                        | Behaviour                                                                                                  |
+| --------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `VscodeAdapter` | VS Code entry point (existing) | Calls `vscode.window.*`, `vscode.workspace.*` — identical to today                                         |
+| `CliAdapter`    | CLI Driver entry point (new)   | Writes errors/info to the mux stream; config arrives pre-resolved in the launch request — no lookup needed |
 
 The `vscode.*` calls in the DA are mostly notification/UI calls. The session logic — GDB, gdb-server controllers, RTT/SWO/UART — does not touch VS Code APIs. The refactoring scope is bounded.
 
@@ -122,11 +122,11 @@ One protocol, two consumers (TUI attacher, AI attacher). Defining it once unlock
 
 The same `mcu-debug debug` session engine supports three presentation modes. Mode is auto-detected from the environment; no flag needed in the common cases. See [AI-Angle.md §9](AI-Angle.md) for the full deployment mode descriptions.
 
-| Mode | When | What runs |
-|---|---|---|
-| **VS Code Cockpit** | Running inside VS Code (extension handles this path) | WebviewPanel + xterm.js Glass Cockpit — see AI-Angle.md §6 |
-| **Rust TUI** | `stdout` is a TTY, running standalone in a terminal | `ratatui` — three-region layout: live mux output / AI-REQUEST / input line |
-| **Dummy / headless** | `stdout` is not a TTY (AI subprocess, CI/CD, pipe) | No terminal manipulation; mux stream written raw to stdout |
+| Mode                 | When                                                 | What runs                                                                  |
+| -------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------- |
+| **VS Code Cockpit**  | Running inside VS Code (extension handles this path) | WebviewPanel + xterm.js Glass Cockpit — see AI-Angle.md §6                 |
+| **Rust TUI**         | `stdout` is a TTY, running standalone in a terminal  | `ratatui` — three-region layout: live mux output / AI-REQUEST / input line |
+| **Dummy / headless** | `stdout` is not a TTY (AI subprocess, CI/CD, pipe)   | No terminal manipulation; mux stream written raw to stdout                 |
 
 The dummy mode is **real and required**. When an AI (Claude, Copilot, etc.) spawns `mcu-debug debug` as a subprocess, stdout is not a TTY. The binary must detect this and run silently with zero terminal manipulation — no escape codes, no cursor movement, no ratatui. The AI's parent TUI is never disturbed. The mux stream on stdout is all the AI needs.
 
@@ -151,7 +151,7 @@ mcu-debug dump-config  ← Resolve and print a launch.json config (see cli-confi
 
 `mcu-debug proxy` and `mcu-debug da-helper` are existing functionality, binary rename only.
 
-`mcu-debug debug` is new. Resolves the launch config (cli-config.md), spawns the TS DA as a subprocess, acts as its DAP client, detects TTY/headless, starts the appropriate UI, and manages the session socket for potential attachers.
+`mcu-debug debug` is new. Resolves the launch config (cli-config.md), spawns Node with `cli-controller.js` (the CLI Driver entry point), detects TTY/headless, starts the appropriate UI, and manages the session socket for potential attachers (§2).
 
 `mcu-debug attach` joins an existing session — the human+AI hybrid path (AI-Angle.md §9 Mode 3).
 
@@ -171,13 +171,13 @@ The framing is simple. The complexity is in the **connection lifecycle** — pro
 
 ### Why reimplement rather than reuse
 
-| Factor | Assessment |
-|---|---|
-| TS Funnel client is DAP-shaped | Code is intertwined with TS DA session lifecycle; extracting cleanly is more surgery than rewrite |
-| No Node.js on lab servers / CI agents | Single binary with zero runtime deps is a hard requirement for those environments |
-| Server side already Rust | Having both sides of the Funnel in the same language is natural |
-| Protocol is simple | The framing is 50 lines. The state machine is ~200. Not a research project |
-| TS DA keeps its own client | VS Code path is unaffected — TS client stays, continues to work, no regressions |
+| Factor                                | Assessment                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| TS Funnel client is DAP-shaped        | Code is intertwined with TS DA session lifecycle; extracting cleanly is more surgery than rewrite |
+| No Node.js on lab servers / CI agents | Single binary with zero runtime deps is a hard requirement for those environments                 |
+| Server side already Rust              | Having both sides of the Funnel in the same language is natural                                   |
+| Protocol is simple                    | The framing is 50 lines. The state machine is ~200. Not a research project                        |
+| TS DA keeps its own client            | VS Code path is unaffected — TS client stays, continues to work, no regressions                   |
 
 ---
 
@@ -185,12 +185,12 @@ The framing is simple. The complexity is in the **connection lifecycle** — pro
 
 In the VS Code extension, `vscode.env.remoteName` was the single API call that revealed the entire topology:
 
-| `remoteName` value | Meaning | Probe location | Transport |
-|---|---|---|---|
-| `undefined` | Running locally | Same machine | No proxy, or local proxy |
-| `"wsl"` | Running in WSL | Windows host | Proxy on Windows host |
-| `"dev-container"` / `"attached-container"` | Docker container | Docker host | Proxy on host |
-| `"ssh-remote"` | VS Code Remote SSH | Local machine (user's laptop) | Funnel via SSH tunnel |
+| `remoteName` value                         | Meaning            | Probe location                | Transport                |
+| ------------------------------------------ | ------------------ | ----------------------------- | ------------------------ |
+| `undefined`                                | Running locally    | Same machine                  | No proxy, or local proxy |
+| `"wsl"`                                    | Running in WSL     | Windows host                  | Proxy on Windows host    |
+| `"dev-container"` / `"attached-container"` | Docker container   | Docker host                   | Proxy on host            |
+| `"ssh-remote"`                             | VS Code Remote SSH | Local machine (user's laptop) | Funnel via SSH tunnel    |
 
 From that one value, `remoteConfig: { type: "auto" }` in launch.json just worked — near-zero questions to the user.
 
@@ -262,13 +262,13 @@ fn detect_topology() -> DetectedTopology {
 
 ### Mapping topology → proxy strategy
 
-| Detected topology | `remoteConfig: auto` behaviour |
-|---|---|
-| `Local` | No proxy; GDB connects directly to gdb-server ports |
+| Detected topology  | `remoteConfig: auto` behaviour                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `Local`            | No proxy; GDB connects directly to gdb-server ports                                                          |
 | `Wsl { mirrored }` | Probe Agent expected on Windows host at `127.0.0.1`; auto-start via `wsl.exe` interop or require pre-running |
-| `Wsl { nat }` | Same but use gateway IP instead of 127.0.0.1 |
-| `Docker` | Probe Agent expected on Docker host at `host.docker.internal` or gateway IP |
-| `SshServer` | Probe is locally attached to this machine; no proxy needed; `Local` behaviour |
+| `Wsl { nat }`      | Same but use gateway IP instead of 127.0.0.1                                                                 |
+| `Docker`           | Probe Agent expected on Docker host at `host.docker.internal` or gateway IP                                  |
+| `SshServer`        | Probe is locally attached to this machine; no proxy needed; `Local` behaviour                                |
 
 ### The "auto-start" question
 
@@ -337,75 +337,148 @@ This is not a v1 concern — the TS Funnel client works and is tested across all
 
 ## 8. Packaging and Distribution
 
-> **Status: TBD / pending verification.** Strategy is directionally agreed; exact packaging mechanism needs validation before implementation.
+### Design principle: single source of truth
+
+All CLI assets — the Rust binary, `cli-controller.js`, SVD files, server scripts, every bundled resource — live in **one place**: the VS Code extension directory. The extension is already installed, already versioned, already updated by the marketplace. There is no second copy to drift out of sync.
+
+The npm package (`mcu-debug` on npmjs.com) is a **thin locator wrapper only**. It contains no binaries, no JS bundles. Its entire job is to find the assets that the extension already put on disk and hand off to them.
+
+### How the extension advertises itself
+
+On every activation, the VS Code extension writes a small JSON file to a well-known stable location:
+
+```
+~/.mcu-debug/config.json
+```
+
+```jsonc
+{
+  "extensionPath": "/Users/hdm/.vscode/extensions/mcu-debug-1.4.2",
+  "version": "1.4.2"
+}
+```
+
+This file is the stable pointer. It is recreated every time VS Code activates the extension, so it always reflects the current installation. The path to the extension directory changes with every version update; `config.json` absorbs that churn invisibly.
+
+### The npx wrapper
+
+The npm package contains a single JS file — the wrapper entry point. No platform binaries, no large bundles. It installs in milliseconds with `npx mcu-debug` or `npm install -g mcu-debug`.
+
+What it does:
+
+```javascript
+#!/usr/bin/env node
+// packages/mcu-debug-npm/index.js  (~15 lines, the entire npm package)
+import { readFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { homedir } from "os";
+import { join } from "path";
+
+const configPath = join(homedir(), ".mcu-debug", "config.json");
+let config;
+try {
+  config = JSON.parse(readFileSync(configPath, "utf8"));
+} catch {
+  console.error(
+    "mcu-debug: VS Code extension not found.\n" +
+    "Install the mcu-debug extension from the VS Code marketplace first:\n" +
+    "  https://marketplace.visualstudio.com/items?itemName=mcu-debug.mcu-debug\n" +
+    "Then re-run this command."
+  );
+  process.exit(1);
+}
+
+const bin = join(config.extensionPath, "bin", "mcu-debug" + (process.platform === "win32" ? ".exe" : ""));
+const result = spawnSync(bin, process.argv.slice(2), {
+  stdio: "inherit",
+  env: {
+    ...process.env,
+    MCU_DEBUG_NODE:   process.execPath,                                    // same Node binary for sub-spawns
+    MCU_DEBUG_CLI_JS: join(config.extensionPath, "dist", "cli-controller.js"),
+  },
+});
+process.exit(result.status ?? 1);
+```
+
+The two env vars it injects:
+
+| Env var              | Value                                            | Purpose                                                                      |
+| -------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `MCU_DEBUG_NODE`     | `process.execPath`                               | Rust bootstrap uses this path to spawn `cli-controller.js` — same Node binary, no PATH search |
+| `MCU_DEBUG_CLI_JS`   | `<extensionPath>/dist/cli-controller.js`         | Rust bootstrap uses this path to locate the bundled Node controller          |
+
+`process.execPath` is the key. It is the absolute path to the Node binary that is currently running the wrapper. The Rust bootstrap does not need to search PATH for `node`, deal with nvm shims, or worry about version. It uses exactly the same Node version that found the binary in the first place.
+
+### What the Rust bootstrap does with these vars
+
+In `mcu-debug debug`:
+
+```rust
+let node = env::var("MCU_DEBUG_NODE")
+    .unwrap_or_else(|_| locate_node_on_path());   // fallback for direct invocations
+
+let cli_js = env::var("MCU_DEBUG_CLI_JS")
+    .unwrap_or_else(|_| {
+        // direct invocation (extension spawning mcu-debug directly):
+        // binary is at <extensionPath>/bin/mcu-debug
+        // controller is at <extensionPath>/dist/cli-controller.js
+        current_exe().parent().parent().join("dist/cli-controller.js")
+    });
+```
+
+When invoked via the npx wrapper, both vars are set — no PATH searching, no guessing. When invoked directly by the VS Code extension (which has a known path), the fallback derives `cli-controller.js` relative to the binary location.
 
 ### Node.js prerequisite
 
-The CLI controller (DAP client) is a Node.js program. Node.js is a documented prerequisite.
+The CLI controller (`cli-controller.js`) is a Node.js program. Node.js >= 22 is a documented prerequisite.
 
-**Why this is acceptable for v1:**
-- GitHub Copilot CLI requires Node.js already — confirmed
-- Claude CLI Node.js requirement — *TBD, needs verification*
-- The primary v1 use case is as an AI skill/tool (Copilot CLI, Claude CLI); both audiences are developers with Node.js likely already present
-- Trivial to document: "install Node.js 20+ from nodejs.org"
+**Why this is acceptable:**
+- The Rust bootstrap checks the version early and gives a clear error with a link to nodejs.org
+- GitHub Copilot CLI requires Node.js >= 22 — confirmed
+- Claude CLI recommends Node.js >= 22 — confirmed
+- Primary v1 audience: developers running Copilot CLI or Claude CLI, who almost certainly have Node.js already
+- `npx` itself requires Node.js — anyone who can run `npx mcu-debug` already satisfies the prerequisite
 
-### Invocation model
-
-```sh
-# Preferred — always-latest, no pre-install required
-npx mcu-debug debug
-
-# Or installed globally
-npm install -g mcu-debug
-mcu-debug debug
+Version check in Rust bootstrap:
+```rust
+// Run `node --version`, parse vX.Y.Z, require X >= 22
+// On failure: "Node.js 22+ is required. Download from https://nodejs.org"
 ```
 
-`npx` is the natural fit for AI skill definitions. The SKILL.md or tool manifest references `npx mcu-debug` and the AI executes it directly. npx handles download and caching; the AI does not need to manage installation.
+### Distribution channels
 
-### npm package structure
+| Channel                     | Audience                           | How they get `mcu-debug`                                     |
+| --------------------------- | ---------------------------------- | ------------------------------------------------------------ |
+| **npx mcu-debug**           | AI skills (Copilot, Claude), CI/CD | `npx mcu-debug debug ...` — no install, no PATH changes      |
+| **npm install -g mcu-debug**| Terminal users who want it in PATH | Standard npm global install; wrapper becomes `mcu-debug` cmd |
+| **VS Code extension**       | VS Code users (existing path)      | Extension bundles the binary; no npm needed at all           |
 
-The npm package is not pure JS — it also needs the platform-specific Rust binary (`mcu-debug` — proxy, da-helper, TUI). This is a solved pattern in the ecosystem (esbuild, biome, Rollup all do this):
+The VS Code extension path is **completely unchanged** — it continues to invoke its own bundled binary from `packages/mcu-debug/bin/` exactly as it does today. The npm packaging is a parallel distribution channel, not a replacement.
 
-```
-mcu-debug (npm)                  ← JS CLI controller + package.json bin entry
-  optionalDependencies:
-    mcu-debug-linux-x64          ← contains pre-built Rust binary for linux/x64
-    mcu-debug-darwin-arm64       ← contains pre-built Rust binary for mac/arm64
-    mcu-debug-win32-x64          ← contains pre-built Rust binary for win/x64
-    ...
-```
+### What lives in the extension, what lives in npm
 
-npm installs only the optional dep matching the current platform. The JS wrapper locates the binary at a well-known relative path inside the installed optional package. The pre-built binaries already exist (currently checked in under `packages/mcu-debug/bin/`) — this is a repackaging of what already ships in the VS Code extension.
+| Asset                         | Location                                    | Found via                  |
+| ----------------------------- | ------------------------------------------- | -------------------------- |
+| Rust binary (`mcu-debug`)     | `<extensionPath>/bin/`                      | `config.json` → binary     |
+| CLI controller (`cli-controller.js`) | `<extensionPath>/dist/`            | `MCU_DEBUG_CLI_JS` env var |
+| SVD files                     | `<extensionPath>/svd/`                      | `config.json` → extensionPath |
+| OpenOCD scripts, server data  | `<extensionPath>/resources/`                | `config.json` → extensionPath |
+| `~/.mcu-debug/config.json`    | Written by extension on activation          | Well-known stable path     |
+| npm package (`mcu-debug`)     | npmjs.com — wrapper only, no assets         | `npx` or `npm install -g`  |
 
-### Rust binary discovery (fallback chain)
-
-When the CLI controller needs to invoke the Rust binary, it searches in order:
-
-1. **npm optional dep** — `node_modules/mcu-debug-<platform>/bin/mcu-debug` (standard npm install path)
-2. **`~/.mcu-debug/bin/`** — explicit user install, or placed there by the VS Code extension
-3. **`PATH`** — if user has installed manually
-4. **VS Code extension install** — `~/.vscode/extensions/mcu-debug.mcu-debug-*/bin/mcu-debug` (glob on version) — *wonky but useful as a last resort for users who have the extension but installed the CLI separately*
-5. → Error with clear message: "mcu-debug binary not found — run `npm install -g mcu-debug` or install the VS Code extension"
-
-The VS Code extension path (step 4) is intentionally last. The path format is unstable (version-stamped, platform-specific locations vary between VS Code and VS Code Insiders and Cursor), but it is a genuine escape hatch for users who have the extension installed and are trying out the CLI without a full npm install.
-
-### What the VS Code extension does
-
-No changes needed for the extension's own operation — it continues to use its own bundled binary from `packages/mcu-debug/bin/`. The npm packaging is a parallel distribution channel, not a replacement.
-
-The extension could optionally write the binary to `~/.mcu-debug/bin/` on activation, making it available to the CLI fallback chain (step 2 above) without any npm install. Simple, reliable, no path-guessing needed.
+The npm package version is kept in sync with the extension version. A version mismatch between the wrapper and the extension is harmless — the wrapper is stateless; only the extension assets matter.
 
 ---
 
 ## 9. What the CLI Does Not Have
 
-| Missing vs VS Code | Reason / mitigation |
-|---|---|
-| VS Code as DAP client | Replaced by `mcu-debug debug` acting as DAP client (§2) |
-| `vscode.env.remoteName` | Replaced by OS-level detection (§6) |
-| VS Code settings store | Replaced by `mcu-debug-settings.json` + `envFile` (see cli-config.md) |
-| Workspace state (Memento) | UART config and session state from `launch.json` + `~/.mcu-debug/` |
-| Auto-start Probe Agent on probe host | v1: require pre-running for WSL/Docker; SSH auto-deploy for LAB |
-| Webview / xterm.js Cockpit | Replaced by ratatui TUI (Mode 2) or headless stream (Mode 1) |
-| Zero-install single binary | Node.js prerequisite; npx covers most cases (see §8) |
-| Extension marketplace updates | Distributed as a standalone binary; updated independently |
+| Missing vs VS Code                   | Reason / mitigation                                                   |
+| ------------------------------------ | --------------------------------------------------------------------- |
+| VS Code as DAP client                | Replaced by `mcu-debug debug` acting as DAP client (§2)               |
+| `vscode.env.remoteName`              | Replaced by OS-level detection (§6)                                   |
+| VS Code settings store               | Replaced by `mcu-debug-settings.json` + `envFile` (see cli-config.md) |
+| Workspace state (Memento)            | UART config and session state from `launch.json` + `~/.mcu-debug/`    |
+| Auto-start Probe Agent on probe host | v1: require pre-running for WSL/Docker; SSH auto-deploy for LAB       |
+| Webview / xterm.js Cockpit           | Replaced by ratatui TUI (Mode 2) or headless stream (Mode 1)          |
+| Zero-install single binary           | Node.js >= 22 prerequisite; `npx mcu-debug` covers most cases (see §8) |
+| Extension marketplace updates        | Distributed as a standalone binary; updated independently             |

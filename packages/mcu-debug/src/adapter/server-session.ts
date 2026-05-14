@@ -15,7 +15,7 @@ import { GDBDebugSession } from "./gdb-session";
 import { createPortName, GDBServerController, GenericCustomEvent, quoteShellCmdLine, TcpPortDef, TcpPortDefMap } from "./servers/common";
 import { GdbEventNames, Stderr } from "./gdb-mi/mi-types";
 import { TcpPortScanner } from "@mcu-debug/shared";
-import { greenFormat } from "../frontend/ansi-helpers";
+import { greenFormat } from "../common/ansi-helpers";
 import { ProxyClient } from "./proxy-client";
 import { ProbeRsServerController } from "./servers/probe-rs";
 

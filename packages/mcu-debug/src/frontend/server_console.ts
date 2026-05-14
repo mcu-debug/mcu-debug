@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { createTerminalUniqueName, getUUid, ManagedTabConsole } from "./views/ManagedTab";
-import { magentaWrite } from "./ansi-helpers";
+import { magentaWrite } from "../common/ansi-helpers";
 import { getAnyFreePort } from "../adapter/servers/common";
 
 //      vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: 'myName' });

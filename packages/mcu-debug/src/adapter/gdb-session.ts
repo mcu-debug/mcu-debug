@@ -15,7 +15,7 @@ import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands, parseStoppedThreadInfo } from "./gdb-mi/mi-commands";
 import { SessionMode } from "./servers/common";
-import { formatAddress, parseAddrVal } from "../frontend/utils";
+import { formatAddress, parseAddrVal } from "../common/utils";
 import { BreakpointManager } from "./breakpoints";
 import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";

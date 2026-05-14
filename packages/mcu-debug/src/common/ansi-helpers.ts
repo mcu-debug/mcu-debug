@@ -1,4 +1,4 @@
-import { ManagedTab } from "./views/ManagedTab";
+import { ManagedTab } from "../frontend/views/ManagedTab";
 
 /* eslint-disable @stylistic/no-multi-spaces */
 export const ESC = "\x1b"; // ASCII escape character

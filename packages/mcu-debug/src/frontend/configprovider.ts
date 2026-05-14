@@ -39,7 +39,7 @@ const OPENOCD_VALID_RTOS: string[] = [
 ];
 const JLINK_VALID_RTOS: string[] = ["Azure", "ChibiOS", "embOS", "FreeRTOS", "NuttX", "Zephyr"];
 
-export class CortexDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
+export class McuDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
     constructor(private context: vscode.ExtensionContext) {
     }
 

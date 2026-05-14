@@ -34,7 +34,7 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { SymbolInformation, SymbolTable, SymbolType, SymbolNode, MemoryRegion } from "./symbols";
 import { TargetArchitecture, TargetInfo, TargetMemoryRegion, TargetMemoryRegions } from "./target-info";
-import { formatAddress, formatAddress32, formatAddress64, parseAddress, parseAddressCleaned } from "../frontend/utils";
+import { formatAddress, formatAddress32, formatAddress64, parseAddress, parseAddressCleaned } from "../common/utils";
 import { Stdout } from "./gdb-mi/mi-types";
 import { SortedArray } from "sorted-array-type";
 import { start } from "node:repl";

@@ -1,7 +1,7 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { GDBDebugSession } from "./gdb-session";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
-import { formatAddress, parseAddress } from "../frontend/utils";
+import { formatAddress, parseAddress } from "../common/utils";
 import { GdbMiRecord } from "./gdb-mi/mi-types";
 
 export type MemoryReadCallback = (b: Buffer, len: number) => Promise<void>;
@@ -9,7 +9,7 @@ export class MemoryRequests {
     constructor(
         private mainSession: GDBDebugSession,
         private gdbInstance: GdbInstance,
-    ) {}
+    ) { }
     private sendResponse(response: DebugProtocol.Response) {
         this.mainSession.sendResponse(response);
     }

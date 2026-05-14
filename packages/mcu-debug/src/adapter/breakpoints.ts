@@ -3,7 +3,7 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { canonicalizePath } from "./servers/common";
 import { GDBDebugSession } from "./gdb-session";
 import { Stderr } from "./gdb-mi/mi-types";
-import { parseAddress, parseAddressCleaned } from "../frontend/utils";
+import { parseAddress, parseAddressCleaned } from "../common/utils";
 
 //
 // TODO: Strategy for managing breakppints

@@ -1,4 +1,4 @@
-import { parseAddress } from "../frontend/utils";
+import { parseAddress } from "../common/utils";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { DataEvaluateExpressionAsNumber, GdbMiOrCliCommandForOob } from "./gdb-mi/mi-commands";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
