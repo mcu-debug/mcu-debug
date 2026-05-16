@@ -24,9 +24,9 @@ import { SerialErrorKind } from "@mcu-debug/shared/serial-helper/SerialErrorKind
 import { awaitWithTimeout, ConfigurationArguments, HostConfig, SerialConfig, TerminalInputMode } from "../adapter/servers/common";
 import { EventEmitter } from "stream";
 import { MCUDebugChannel } from "../dbgmsgs";
-import { getProxyForSerialPorts } from "./proxy";
+import { getProxyForSerialPorts, initProxy } from "../common/proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
-import { setExtensionPath } from "./proxy";
+import { VscodeAdapter } from "./vscode-adapter";
 import { getUUid, ManagedTab } from "./views/ManagedTab";
 import { CockpitPanel } from "./views/CockpitPanel";
 import type { TabKind } from "@mcu-debug/shared";
@@ -64,7 +64,7 @@ export class SerialPortManager {
 
     constructor(private context: vscode.ExtensionContext) {
         SerialPortManager.instance = this;
-        setExtensionPath(context.extensionPath);
+        initProxy(new VscodeAdapter(context));
     }
 
     public logInfo(message: string) {

@@ -1,7 +1,3 @@
-import * as vscode from "vscode";
-import * as path from "path";
-import * as fs from "fs";
-
 import { SWOConsoleProcessor } from "./decoders/swo-console";
 import { SWOBinaryProcessor } from "./decoders/swo-binary";
 import { SWORTTGraphProcessor } from "./decoders/graph";
@@ -24,10 +20,11 @@ import { EventEmitter } from "events";
 import { PacketType, Packet } from "./common";
 import { parseUnsigned } from "./decoders/utils";
 import { SymbolInformation } from "../../adapter/symbols";
-import { getNonce, RTTCommonDecoderOpts } from "../../adapter/servers/common";
+import { RTTCommonDecoderOpts } from "../../adapter/servers/common";
 import { SocketRTTSource, SocketSWOSource } from "./sources/socket";
 
 import * as RingBuffer from "ring-buffer-ts";
+import { getHostAdapter, ISWORTTView } from "../host-adapter";
 
 enum Status {
     IDLE = 1,
@@ -203,74 +200,8 @@ interface ConfigurationArguments {
     };
     graphConfig: GraphConfiguration[];
 }
-
-class SWOWebview {
-    private viewPanel: vscode.WebviewPanel;
-    private currentStatus: "stopped" | "terminated" | "continued" = "stopped";
-    private now: Date;
-
-    constructor(
-        private extensionPath: string,
-        public graphs: GraphConfiguration[],
-    ) {
-        this.now = new Date();
-        const time = this.now.toTimeString();
-
-        const showOptions = { preserveFocus: true, viewColumn: vscode.ViewColumn.Beside };
-        const viewOptions: vscode.WebviewOptions & vscode.WebviewPanelOptions = {
-            retainContextWhenHidden: true,
-            enableFindWidget: false,
-            enableCommandUris: false,
-            enableScripts: true,
-            localResourceRoots: [vscode.Uri.file(path.join(extensionPath, "dist"))],
-        };
-
-        const title = `SWO/RTT Graphs [${time}]`;
-        this.viewPanel = vscode.window.createWebviewPanel("mcu-debug.grapher", title, showOptions, viewOptions);
-        this.viewPanel.webview.onDidReceiveMessage((msg) => {
-            this.onMessage(msg);
-        });
-        this.viewPanel.webview.html = this.getHTML();
-    }
-
-    private getHTML() {
-        const onDiskPath = vscode.Uri.file(path.join(this.extensionPath, "dist", "grapher.bundle.js"));
-        const scriptUri = this.viewPanel.webview.asWebviewUri(onDiskPath);
-
-        const nonce = getNonce();
-
-        let html = fs.readFileSync(path.join(this.extensionPath, "resources", "grapher.html"), { encoding: "utf8", flag: "r" });
-        html = html.replace(/\$\{nonce\}/g, nonce).replace(/\$\{scriptUri\}/g, scriptUri.toString());
-
-        return html;
-    }
-
-    private processors: (SWORTTGraphProcessor | SWORTTAdvancedProcessor)[] = [];
-    public registerProcessors(processor: SWORTTGraphProcessor | SWORTTAdvancedProcessor): void {
-        processor.on("message", this.sendMessage.bind(this));
-        this.processors.push(processor);
-    }
-
-    public clearProcessors(): void {
-        this.processors = [];
-    }
-
-    private lastId: number = 0;
-    public sendMessage(message: GrapherMessage): void {
-        message.timestamp = new Date().getTime();
-        this.viewPanel.webview.postMessage(message);
-    }
-
-    private onMessage(message: GrapherMessage) {
-        if (message.type === "init") {
-            const message = { type: "configure", graphs: this.graphs, status: this.currentStatus };
-            this.viewPanel.webview.postMessage(message);
-        }
-    }
-}
-
 export class SWORTTCoreBase {
-    protected webview: SWOWebview | null = null;
+    protected webview: ISWORTTView | null = null;
 
     public debugSessionTerminated() {
         if (this.webview) {
@@ -301,31 +232,14 @@ export class SWOCore extends SWORTTCoreBase {
     private functionSymbols: SymbolInformation[] = [];
 
     constructor(
-        private session: vscode.DebugSession,
+        private session: any,
         private source: SWORTTSource,
         args: ConfigurationArguments,
         extensionPath: string,
     ) {
         super();
         this.itmDecoder = new ITMDecoder();
-        session.customRequest("load-function-symbols").then(
-            async (result) => {
-                try {
-                    const filePath = result.file as string;
-                    const fileContent = await fs.promises.readFile(filePath, "utf8");
-                    const parsed = JSON.parse(fileContent, (key, value) => {
-                        return key === "address" || key === "addressOrig" ? BigInt(value) : value;
-                    });
-                    this.functionSymbols = parsed.functionSymbols;
-                    await fs.promises.unlink(filePath);
-                } catch (e) {
-                    this.functionSymbols = [];
-                }
-            },
-            (error) => {
-                this.functionSymbols = [];
-            },
-        );
+        this.functionSymbols = getHostAdapter().loadFunctionSymbols(session);
 
         const onConnected = () => {
             this.connected = true;
@@ -341,7 +255,8 @@ export class SWOCore extends SWORTTCoreBase {
         this.source.on("disconnected", this.handleDisconnected.bind(this));
 
         if (args.graphConfig.length >= 1) {
-            this.webview = new SWOWebview(extensionPath, args.graphConfig);
+            this.webview = getHostAdapter().createSWORTTWebView(extensionPath, args.graphConfig);
+            //new SWOWebview(extensionPath, args.graphConfig);
         }
 
         args.swoConfig.decoders.forEach((conf) => {
@@ -369,7 +284,7 @@ export class SWOCore extends SWORTTCoreBase {
                         }
                         this.processors.push(processor);
                     } catch (e: any) {
-                        vscode.window.showErrorMessage(`Error Initializing Advanced Decoder: ${e.toString()}`);
+                        getHostAdapter().showError(`Error Initializing Advanced Decoder: ${e.toString()}`);
                     }
                     break;
                 default:
@@ -539,7 +454,8 @@ export class RTTCore extends SWORTTCoreBase {
         super();
 
         if (args.graphConfig.length >= 1) {
-            this.webview = new SWOWebview(extensionPath, args.graphConfig);
+            this.webview = getHostAdapter().createSWORTTWebView(extensionPath, args.graphConfig);
+            // this.webview = new SWOWebview(extensionPath, args.graphConfig);
         }
 
         args.rttConfig.decoders.forEach((conf) => {
@@ -564,7 +480,7 @@ export class RTTCore extends SWORTTCoreBase {
                         }
                         this.processors.push(processor);
                     } catch (e: any) {
-                        vscode.window.showErrorMessage(`Error Initializing Advanced Decoder: ${e.toString()}`);
+                        getHostAdapter().showError(`Error Initializing Advanced Decoder: ${e.toString()}`);
                     }
                     break;
                 default:

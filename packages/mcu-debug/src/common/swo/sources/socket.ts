@@ -2,7 +2,7 @@ import { SWORTTSource } from "./common";
 import { EventEmitter } from "events";
 import * as net from "net";
 import { parseHostPort, SocketTimout } from "../../../adapter/servers/common";
-import * as vscode from "vscode";
+import { getHostAdapter } from "../../host-adapter";
 import { TextDecoder } from "util";
 import { setFlagsFromString } from "v8";
 import { MCUDebugChannel } from "../../../dbgmsgs";
@@ -38,7 +38,7 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
                         this.processData(data);
                     });
                 } catch (e) {
-                    vscode.window.showErrorMessage(`Could not launch SWO/RTT pre-decoder ${this.decoderSpec?.program}: ${e}`);
+                    getHostAdapter().showError(`Could not launch SWO/RTT pre-decoder ${this.decoderSpec?.program}: ${e}`);
                     reject(e);
                     return;
                 }

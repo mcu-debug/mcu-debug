@@ -1,7 +1,7 @@
 import { SWORTTSource } from "./common";
 import { EventEmitter } from "events";
 import type { SerialPort } from "serialport";
-import * as vscode from "vscode";
+import { getHostAdapter } from "../../host-adapter";
 
 export class SerialSWOSource extends EventEmitter implements SWORTTSource {
     private serialPort: SerialPort | null = null;
@@ -20,7 +20,7 @@ export class SerialSWOSource extends EventEmitter implements SWORTTSource {
             this.emit("data", buffer);
         });
         this.serialPort!.on("error", (error) => {
-            vscode.window.showErrorMessage(`Unable to open serial port: ${device} - ${error.toString()}`);
+            getHostAdapter().showError(`Unable to open serial port: ${device} - ${error.toString()}`);
         });
         this.serialPort!.on("open", () => {
             this.connected = true;

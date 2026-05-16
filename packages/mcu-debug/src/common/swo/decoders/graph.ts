@@ -1,10 +1,9 @@
-import * as vscode from "vscode";
 import * as fs from "fs";
 import { SWORTTDecoder } from "./common";
 import { decoders as DECODER_MAP } from "./utils";
 import { EventEmitter } from "events";
-import { SWOGraphDecoderConfig, GrapherDataMessage } from "../common";
-import { Packet } from "../common";
+import { SWOGraphDecoderConfig, GrapherDataMessage, Packet } from "../common";
+import { getHostAdapter } from "../../host-adapter";
 
 function parseEncoded(buffer: Buffer, encoding: string) {
     return DECODER_MAP[encoding] ? DECODER_MAP[encoding](buffer) : DECODER_MAP.unsigned(buffer);
@@ -32,7 +31,7 @@ export class SWORTTGraphProcessor extends EventEmitter implements SWORTTDecoder 
                 this.logFd = fs.openSync(config.logfile, "w");
             } catch (e: any) {
                 const msg = `Could not open file ${config.logfile} for writing. ${e.toString()}`;
-                vscode.window.showErrorMessage(msg);
+                getHostAdapter().showError(msg);
             }
         }
     }
@@ -54,7 +53,7 @@ export class SWORTTGraphProcessor extends EventEmitter implements SWORTTDecoder 
                 fs.writeSync(this.logFd, packet.data);
             } catch (e: any) {
                 const msg = `Could not write to file ${this.logfile} for writing. ${e.toString()}`;
-                vscode.window.showErrorMessage(msg);
+                getHostAdapter().showError(msg);
                 try {
                     fs.closeSync(this.logFd);
                 } catch (closeErr) {
@@ -65,9 +64,9 @@ export class SWORTTGraphProcessor extends EventEmitter implements SWORTTDecoder 
         }
     }
 
-    public hardwareEvent(event: Packet) {}
-    public synchronized() {}
-    public lostSynchronization() {}
+    public hardwareEvent(event: Packet) { }
+    public synchronized() { }
+    public lostSynchronization() { }
     public dispose() {
         this.close();
     }

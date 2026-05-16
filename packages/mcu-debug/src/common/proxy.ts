@@ -1,4 +1,3 @@
-
 // Copyright (c) 2026 MCU-Debug Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,12 +18,16 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
-import * as vscode from "vscode";
 import { spawn } from "child_process";
 import { computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode } from "@mcu-debug/shared";
-import { MCUDebugChannel } from "../dbgmsgs";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
-import { time } from "console";
+import { IHostAdapter } from "./host-adapter";
+
+let _host: IHostAdapter | undefined;
+
+export function initProxy(adapter: IHostAdapter): void {
+    _host = adapter;
+}
 
 let localProxyProcess: ChildProcess | null = null;
 
@@ -93,18 +96,12 @@ const SSH_DEPLOY_TIMEOUT_MS = 60000;
 const SSH_AGENT_LAUNCH_TIMEOUT_MS = 30000;
 const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mcu-debug";
 
-let _extensionPath = "";
-
-export function setExtensionPath(extPath: string) {
-    _extensionPath = extPath;
-}
-
 // Runs a command on the remote host via SSH. Returns trimmed stdout on success,
 // rejects with a descriptive error on non-zero exit or timeout.
 async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs = SSH_RUN_TIMEOUT_MS): Promise<string> {
     const sshHost = hostConfig.sshHost!;
     return new Promise<string>((resolve, reject) => {
-        MCUDebugChannel.debugMessage(`Running SSH command on ${sshHost}: ${command}`);
+        _host!.debugMessage(`Running SSH command on ${sshHost}: ${command}`);
         const proc = spawn("ssh", [sshHost, command]);
         let stdout = "";
         let stderr = "";
@@ -124,17 +121,17 @@ async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs =
         proc.on("exit", (code) => {
             clearTimeout(timer);
             if (code === 0) {
-                MCUDebugChannel.debugMessage(`SSH command succeeded on ${sshHost}: ${command}\n${stdout.trim()}`);
+                _host!.debugMessage(`SSH command succeeded on ${sshHost}: ${command}\n${stdout.trim()}`);
                 resolve(stdout.trim());
             } else {
-                MCUDebugChannel.debugMessage(`SSH command failed (exit ${code}) on ${sshHost}: ${command}\n${stderr.trim()}`);
+                _host!.debugMessage(`SSH command failed (exit ${code}) on ${sshHost}: ${command}\n${stderr.trim()}`);
                 reject(new Error(`SSH command failed (exit ${code}) on ${sshHost}: ${command}\n${stderr.trim()}`));
             }
         });
 
         proc.on("error", (err) => {
             clearTimeout(timer);
-            MCUDebugChannel.debugMessage(`SSH process error on ${sshHost}: ${err.message}`);
+            _host!.debugMessage(`SSH process error on ${sshHost}: ${err.message}`);
             reject(new Error(`SSH process error on ${sshHost}: ${err.message}`));
         });
     });
@@ -160,14 +157,14 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
         throw new Error(`Unsupported remote OS/arch: "${unameOut}"`);
     }
 
-    const localBinary = path.join(_extensionPath, "bin", archDir, "mcu-debug");
+    const localBinary = path.join(_host!.getExtensionPath(), "bin", archDir, "mcu-debug");
     if (!fs.existsSync(localBinary)) {
         throw new Error(`Local helper binary not found for ${archDir}: ${localBinary}`);
     }
 
     await new Promise<void>((resolve, reject) => {
         const args = [sshHost, `mkdir -p ~/.mcu-debug/bin && rm -f ${REMOTE_HELPER_PATH} && cat > ${REMOTE_HELPER_PATH} && chmod +x ${REMOTE_HELPER_PATH}`];
-        MCUDebugChannel.debugMessage(`Deploying helper binary ${localBinary} to ${sshHost}: ssh ${args.join(" ")}`);
+        _host!.debugMessage(`Deploying helper binary ${localBinary} to ${sshHost}: ssh ${args.join(" ")}`);
         const proc = spawn("ssh", args);
 
         let stderr = "";
@@ -177,24 +174,24 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
 
         const timer = setTimeout(() => {
             proc.kill();
-            MCUDebugChannel.debugMessage(`Binary deploy to ${sshHost} timed out after ${SSH_DEPLOY_TIMEOUT_MS / 1000}s`);
+            _host!.debugMessage(`Binary deploy to ${sshHost} timed out after ${SSH_DEPLOY_TIMEOUT_MS / 1000}s`);
             reject(new Error(`Binary deploy to ${sshHost} timed out after ${SSH_DEPLOY_TIMEOUT_MS / 1000}s`));
         }, SSH_DEPLOY_TIMEOUT_MS);
 
         proc.on("exit", (code) => {
             clearTimeout(timer);
             if (code === 0) {
-                MCUDebugChannel.debugMessage(`Binary deploy to ${sshHost} succeeded`);
+                _host!.debugMessage(`Binary deploy to ${sshHost} succeeded`);
                 resolve();
             } else {
-                MCUDebugChannel.debugMessage(`Binary deploy to ${sshHost} failed (exit ${code}): ${stderr.trim()}`);
+                _host!.debugMessage(`Binary deploy to ${sshHost} failed (exit ${code}): ${stderr.trim()}`);
                 reject(new Error(`Binary deploy to ${sshHost} failed (exit ${code}): ${stderr.trim()}`));
             }
         });
 
         proc.on("error", (err) => {
             clearTimeout(timer);
-            MCUDebugChannel.debugMessage(`SSH deploy process error on ${sshHost}: ${err.message}`);
+            _host!.debugMessage(`SSH deploy process error on ${sshHost}: ${err.message}`);
             reject(new Error(`SSH deploy process error on ${sshHost}: ${err.message}`));
         });
 
@@ -202,7 +199,7 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
         readStream.on("error", (err) => {
             clearTimeout(timer);
             proc.kill();
-            MCUDebugChannel.debugMessage(`Failed to read local binary ${localBinary} on ${sshHost}: ${err.message}`);
+            _host!.debugMessage(`Failed to read local binary ${localBinary} on ${sshHost}: ${err.message}`);
             reject(new Error(`Failed to read local binary ${localBinary} on ${sshHost}: ${err.message}`));
         });
         readStream.pipe(proc.stdin!);
@@ -230,7 +227,7 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
     const remoteCmd = `${remoteHelperPath} proxy --port 0 --token ${token}`;
 
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
-        MCUDebugChannel.debugMessage(`Starting SSH proxy server on ${sshHost} with command: ssh ${sshHost} ${remoteCmd}`);
+        _host!.debugMessage(`Starting SSH proxy server on ${sshHost} with command: ssh ${sshHost} ${remoteCmd}`);
         const proc = spawn("ssh", [sshHost, remoteCmd]);
         let settled = false;
         let stdoutBuf = "";
@@ -252,12 +249,12 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
 
         proc.stderr?.on("data", (d: Buffer) => {
             const line = d.toString().trim();
-            MCUDebugChannel.debugMessage(`SSH proxy agent stderr on ${sshHost}: ${line}`);
+            _host!.debugMessage(`SSH proxy agent stderr on ${sshHost}: ${line}`);
         });
 
         proc.stdout?.on("data", (d: Buffer) => {
             stdoutBuf += d.toString();
-            MCUDebugChannel.debugMessage(`SSH proxy agent stdout on ${sshHost}: ${d.toString().trim()}`);
+            _host!.debugMessage(`SSH proxy agent stdout on ${sshHost}: ${d.toString().trim()}`);
             // Wait for a complete newline-terminated line
             const nl = stdoutBuf.indexOf("\n");
             if (nl === -1) {
@@ -308,7 +305,7 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
             } else {
                 sshAgentProcess = null;
                 if (code !== 0 && code !== null) {
-                    vscode.window.showErrorMessage(`SSH proxy agent on ${sshHost} exited unexpectedly with code ${code}`);
+                    _host!.showError(`SSH proxy agent on ${sshHost} exited unexpectedly with code ${code}`);
                 }
             }
         });
@@ -345,8 +342,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             return; // reuse existing tunnel
         }
         const reason = !fingerprintMatch ? `launch config changed (${sshTunnelConfig?.sshHost} → ${sshHost})` : `per-session agent process exited unexpectedly`;
-        MCUDebugChannel.debugMessage(`Existing SSH tunnel invalidated: ${reason}. Restarting from scratch.`);
-        vscode.window.showWarningMessage(`SSH tunnel restarting: ${reason}.`);
+        _host!.debugMessage(`Existing SSH tunnel invalidated: ${reason}. Restarting from scratch.`);
+        _host!.showWarning(`SSH tunnel restarting: ${reason}.`);
         killSshAgent();
         killSshTunnel();
     }
@@ -356,19 +353,19 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             try {
                 await sshCopyHelper(hostConfig);
             } catch (error) {
-                MCUDebugChannel.debugMessage(`Failed to deploy SSH helper binary to ${sshHost}: ${error}`);
-                vscode.window.showErrorMessage(`Failed to deploy helper binary for SSH proxy: ${error}. Cannot start SSH tunnel.`);
+                _host!.debugMessage(`Failed to deploy SSH helper binary to ${sshHost}: ${error}`);
+                _host!.showError(`Failed to deploy helper binary for SSH proxy: ${error}. Cannot start SSH tunnel.`);
                 return Promise.reject(error);
             }
         }
         try {
             const result = await startSshProxyServer(hostConfig);
             proxyLaunchResults = result;
-            MCUDebugChannel.debugMessage(`SSH proxy server started on ${sshHost} with port ${result.serverPort}`);
+            _host!.debugMessage(`SSH proxy server started on ${sshHost} with port ${result.serverPort}`);
             sshPort = result && result.serverPort ? result.serverPort : undefined;
         } catch (error) {
-            MCUDebugChannel.debugMessage(`Failed to start SSH proxy server on ${sshHost}: ${error}`);
-            vscode.window.showErrorMessage(`Failed to start SSH proxy server: ${error}. Cannot start SSH tunnel.`);
+            _host!.debugMessage(`Failed to start SSH proxy server on ${sshHost}: ${error}`);
+            _host!.showError(`Failed to start SSH proxy server: ${error}. Cannot start SSH tunnel.`);
             return Promise.reject(error);
         }
     }
@@ -382,7 +379,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     const cmdString = `ssh ${args.join(" ")}`;
 
     return new Promise<void>((resolve, reject) => {
-        MCUDebugChannel.debugMessage(`Starting SSH tunnel with command: ${cmdString}`);
+        _host!.debugMessage(`Starting SSH tunnel with command: ${cmdString}`);
         const proc = spawn("ssh", args);
         let settled = false;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -401,8 +398,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             cleanup();
             proc.kill();
             sshTunnelProcess = null;
-            MCUDebugChannel.debugMessage(`SSH tunnel failed to start for ${sshHost}: ${msg}`);
-            vscode.window.showErrorMessage(`Failed to start SSH tunnel: ${msg}`);
+            _host!.debugMessage(`SSH tunnel failed to start for ${sshHost}: ${msg}`);
+            _host!.showError(`Failed to start SSH tunnel: ${msg}`);
             reject(new Error(msg));
         };
 
@@ -414,8 +411,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             cleanup();
             sshTunnelProcess = proc;
             sshTunnelConfig = { sshHost, sshPort, localPort, args, fingerprint };
-            vscode.window.showInformationMessage(`SSH tunnel started: ${cmdString}`);
-            MCUDebugChannel.debugMessage(`SSH tunnel started for ${sshHost} on local port ${localPort}`);
+            _host!.showInfo(`SSH tunnel started: ${cmdString}`);
+            _host!.debugMessage(`SSH tunnel started for ${sshHost} on local port ${localPort}`);
             resolve();
         };
 
@@ -425,8 +422,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
                 fail(`SSH process exited prematurely (code ${code}). Check host and credentials: ${sshHost}`);
             } else {
                 if (code !== 0 && code !== null) {
-                    MCUDebugChannel.debugMessage(`SSH tunnel process for ${sshHost} exited with code ${code}`);
-                    vscode.window.showErrorMessage(`SSH tunnel to ${sshHost} exited with code ${code}`);
+                    _host!.debugMessage(`SSH tunnel process for ${sshHost} exited with code ${code}`);
+                    _host!.showError(`SSH tunnel to ${sshHost} exited with code ${code}`);
                 }
                 sshTunnelProcess = null;
             }
@@ -472,14 +469,14 @@ let currentHostConfig: HostConfig | null = null;
 export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
     try {
         const command = "mcu-debug-proxy.startProxyServer";
-        const value = await vscode.commands.executeCommand<ProxyLaunchResults | null>(command, policy);
+        const value = await _host!.executeProxyCommand<ProxyLaunchResults | null>(command, policy);
         proxyLaunchResults = value;
         currentPolicy = policy;
         return value;
     } catch (error) {
         proxyLaunchResults = null;
         currentPolicy = null;
-        vscode.window.showErrorMessage(`Failed to launch proxy server: ${error}, mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
+        _host!.showError(`Failed to launch proxy server: ${error}, mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
         return null;
     }
 }
@@ -487,7 +484,7 @@ export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy):
 export async function getCurrentProxyLaunchResults(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
     const command = "mcu-debug-proxy.getProxyResults";
     try {
-        const value = await vscode.commands.executeCommand<ProxyLaunchResults | null>(command);
+        const value = await _host!.executeProxyCommand<ProxyLaunchResults | null>(command);
         if (!value || !value.serverPort || value.serverPort <= 0) {
             proxyLaunchResults = null;
             return null;
@@ -498,7 +495,7 @@ export async function getCurrentProxyLaunchResults(policy: ProxyLaunchPolicy): P
         }
         return value;
     } catch {
-        vscode.window.showErrorMessage(`Failed to get current proxy launch results. mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
+        _host!.showError(`Failed to get current proxy launch results. mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
         return null;
     }
 }
@@ -508,7 +505,7 @@ function resolveNetworkMode(hostConfig: HostConfig): ProxyNetworkMode | undefine
     if (!hostType) {
         return undefined;
     }
-    return resolveProxyNetworkMode(hostType, vscode.env.remoteName);
+    return resolveProxyNetworkMode(hostType, _host!.getRemoteName());
 }
 
 
@@ -517,7 +514,7 @@ async function resolveWslGatewayHost(): Promise<string | undefined> {
     // It reads os.networkInterfaces() directly and returns the IPv4 address of the
     // WSL virtual ethernet adapter — authoritative, not subject to DNS relay quirks.
     try {
-        const fromProxy = await vscode.commands.executeCommand<string | null>("mcu-debug-proxy.getWslHostIp");
+        const fromProxy = await _host!.executeProxyCommand<string | null>("mcu-debug-proxy.getWslHostIp");
         if (fromProxy) {
             return fromProxy;
         }
@@ -543,8 +540,7 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
     const promise = new Promise<void>((resolve, reject) => {
         // We need to spawn the proxy server on the local machine, but the DA will connect to it via the loopback interface,
         // so no network setup is needed. We can set the mode and return immediately.
-        const extPath = _extensionPath;
-        const helperPath = getHelperExecutable(extPath);// set after we get the free port
+        const helperPath = getHelperExecutable(_host!.getExtensionPath());
         const token = crypto.randomBytes(16).toString("hex");
         let settled = false;
         let timeout: NodeJS.Timeout | undefined;
@@ -569,13 +565,13 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
             hostConfig.pvtProxyPort = port;
             hostConfig.pvtProxyToken = token;
             const args = ["proxy", "--port", port.toString(), "--token", token];
-            MCUDebugChannel.debugMessage(`Starting local proxy with command: ${helperPath} ${args.join(" ")}`);
+            _host!.debugMessage(`Starting local proxy with command: ${helperPath} ${args.join(" ")}`);
             localProxyProcess = spawn(helperPath, args, {
                 stdio: ["pipe", "pipe", "pipe"],
             });
             localProxyProcess.stdout?.on("data", (data: Buffer) => {
                 const line = data.toString().trim();
-                MCUDebugChannel.debugMessage(`Local proxy stdout: ${line}`);
+                _host!.debugMessage(`Local proxy stdout: ${line}`);
                 hostConfig.pvtProxyPort = port;
                 proxyLaunchResults = {
                     policy: computeProxyLaunchPolicy('local'),
@@ -589,22 +585,22 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
             });
             localProxyProcess.stderr?.on("data", (data: Buffer) => {
                 const line = data.toString().trim();
-                MCUDebugChannel.debugMessage(`Local proxy stderr: ${line}`);
+                _host!.debugMessage(`Local proxy stderr: ${line}`);
             });
             localProxyProcess.on("exit", (code) => {
                 cleanup();
-                MCUDebugChannel.debugMessage(`Local proxy process exited with code ${code}`);
+                _host!.debugMessage(`Local proxy process exited with code ${code}`);
                 if (code !== 0 && code !== null) {
-                    vscode.window.showErrorMessage(`Local proxy process exited with code ${code}`);
+                    _host!.showError(`Local proxy process exited with code ${code}`);
                 }
             });
             localProxyProcess.on("error", (err) => {
                 cleanup();
-                MCUDebugChannel.debugMessage(`Local proxy process error: ${err.message}`);
-                vscode.window.showErrorMessage(`Local proxy process error: ${err.message}`);
+                _host!.debugMessage(`Local proxy process error: ${err.message}`);
+                _host!.showError(`Local proxy process error: ${err.message}`);
             });
             localProxyProcess.on("spawn", () => {
-                MCUDebugChannel.debugMessage(`Local proxy process started on port ${port}`);
+                _host!.debugMessage(`Local proxy process started on port ${port}`);
             });
             timeout = setTimeout(() => {
                 if (!settled) {
@@ -623,7 +619,7 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
 export async function handleHostConfig(hostConfig: HostConfig | undefined, delConfig: () => void): Promise<void> {
     if (hostConfig && hostConfig.enabled) {
         if (!hostConfig.type || typeof hostConfig.type !== "string" || !["local", "ssh", "auto"].includes(hostConfig.type)) {
-            vscode.window.showWarningMessage(
+            _host!.showWarning(
                 'hostConfig.type is required when hostConfig.enabled is true. Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).',
             );
             delConfig();
@@ -661,11 +657,11 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             // the Engineer Machine and reads the workspace folder URI authority
             // ("ssh-remote+HOSTNAME") — stable public API, no proposed API required.
             // Fall back to hostConfig.sshHost if the user provides it explicitly.
-            const hostFromProxy = await vscode.commands.executeCommand<string | null>("mcu-debug-proxy.getRemoteSshHost");
+            const hostFromProxy = await _host!.executeProxyCommand<string | null>("mcu-debug-proxy.getRemoteSshHost");
             const sshHostForReverse = hostConfig.sshHost || hostFromProxy || undefined;
             if (!sshHostForReverse) {
                 const msg = "auto-ssh-remote: could not determine SSH host from mcu-debug-proxy. Please specify hostConfig.sshHost explicitly.";
-                vscode.window.showErrorMessage(msg);
+                _host!.showError(msg);
                 throw new Error(msg);
             }
 
@@ -687,12 +683,12 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 }
             }
             if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
-                vscode.window.showErrorMessage("mcu-debug-proxy did not return a valid port");
+                _host!.showError("mcu-debug-proxy did not return a valid port");
                 throw new Error("mcu-debug-proxy did not return a valid port");
             }
             if (!proxyLaunchResults.reverseTunnelPort || proxyLaunchResults.reverseTunnelPort <= 0) {
                 const msg = `SSH reverse tunnel to ${sshHostForReverse} did not return a valid remote port`;
-                vscode.window.showErrorMessage(msg);
+                _host!.showError(msg);
                 throw new Error(msg);
             }
 
@@ -708,8 +704,8 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 await handleLocalHostConfig(hostConfig);
                 currentHostConfig = { ...hostConfig };
             } catch (error) {
-                MCUDebugChannel.debugMessage(`Failed to start local proxy server: ${error}`);
-                vscode.window.showErrorMessage(`Failed to start local proxy server: ${error}. Cannot use local proxy configuration.`);
+                _host!.debugMessage(`Failed to start local proxy server: ${error}`);
+                _host!.showError(`Failed to start local proxy server: ${error}. Cannot use local proxy configuration.`);
                 throw error;
             }
         } else if (resolvedMode) {
@@ -750,7 +746,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 }
             }
             if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
-                vscode.window.showErrorMessage("mcu-debug-proxy did not return a valid port");
+                _host!.showError("mcu-debug-proxy did not return a valid port");
                 throw new Error("mcu-debug-proxy did not return a valid port");
             }
             if (isWslNatMode) {
@@ -765,11 +761,11 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 // succeeds and this modal is never shown.
                 let reachable = await tcpReachable(resolvedProxyHost, proxyLaunchResults.serverPort, 2000);
                 if (!reachable) {
-                    const choice = await vscode.window.showErrorMessage(
+                    const choice = await _host!.showErrorWithChoice(
                         `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
                         "A Windows Security Alert may have appeared — switch to Windows, click \"Allow access\", " +
                         "then click Retry.",
-                        { modal: true },
+                        true,
                         "Retry",
                     );
                     if (choice !== "Retry") {
@@ -781,7 +777,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                             `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
                             "Windows Firewall is still blocking the connection. " +
                             "Set hostConfig.wslProxyPort to a port you have opened in Windows Firewall.";
-                        vscode.window.showErrorMessage(msg);
+                        _host!.showError(msg);
                         throw new Error(msg);
                     }
                 }
@@ -790,7 +786,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
             currentHostConfig = { ...hostConfig };
         } else {
-            vscode.window.showWarningMessage(
+            _host!.showWarning(
                 `Unknown hostConfig.type "${hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`,
             );
             delConfig;
@@ -814,7 +810,7 @@ export async function getProxyForSerialPorts(hostConfig: HostConfig | undefined)
         try {
             if (!hostConfig) {
                 hostConfig = {
-                    type: vscode.env.remoteName ? "auto" : "local",
+                    type: _host!.getRemoteName() ? "auto" : "local",
                     enabled: true,
                 }
             }

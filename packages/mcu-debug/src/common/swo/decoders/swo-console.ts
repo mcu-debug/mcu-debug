@@ -1,10 +1,10 @@
-import * as vscode from "vscode";
 import * as fs from "fs";
 import { SWORTTDecoder } from "./common";
 import { SWOBinaryDecoderConfig, SWOConsoleDecoderConfig } from "../common";
 import { Packet } from "../common";
 import { HrTimer, TerminalInputMode, TextEncoding } from "../../../adapter/servers/common";
-import { getUUid, createTerminalUniqueName, ManagedTabConsole } from "../../views/ManagedTab";
+import { getUUid, createTerminalUniqueName, ManagedTabConsole } from "../../../frontend/views/ManagedTab";
+import { getHostAdapter } from "../../host-adapter";
 
 export class SWOConsoleProcessor implements SWORTTDecoder {
     private position: number = 0;
@@ -32,7 +32,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
             } catch (e: any) {
                 const msg = `Could not open file ${config.logfile} for writing. ${e.toString()}`;
                 this.logFd = -1;
-                vscode.window.showErrorMessage(msg);
+                getHostAdapter().showError(msg);
             }
         }
     }
@@ -82,7 +82,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
             fs.writeSync(this.logFd, text);
         } catch (e: any) {
             const msg = `Could not write to file ${this.logfile}. ${e.toString()}`;
-            vscode.window.showErrorMessage(msg);
+            getHostAdapter().showError(msg);
             try {
                 fs.closeSync(this.logFd);
             } catch (closeErr) {

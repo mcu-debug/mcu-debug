@@ -1,12 +1,12 @@
-import * as vscode from "vscode";
 import * as fs from "fs";
 import { SWORTTDecoder } from "./common";
 import { SWOBinaryDecoderConfig } from "../common";
 import { decoders as DECODER_MAP } from "./utils";
 import { Packet } from "../common";
 import { HrTimer, TerminalInputMode } from "../../../adapter/servers/common";
-import { ManagedTabConsole } from "../../views/ManagedTab";
+import { ManagedTabConsole } from "../../../frontend/views/ManagedTab";
 import { SWOConsoleProcessor } from "./swo-console";
+import { getHostAdapter } from "../../host-adapter";
 
 function parseEncoded(buffer: Buffer, encoding: string) {
     return DECODER_MAP[encoding] ? DECODER_MAP[encoding](buffer) : DECODER_MAP.unsigned(buffer);
@@ -36,7 +36,7 @@ export class SWOBinaryProcessor implements SWORTTDecoder {
                 this.logFd = fs.openSync(config.logfile, "w");
             } catch (e: any) {
                 const msg = `Could not open file ${config.logfile} for writing. ${e.toString()}`;
-                vscode.window.showErrorMessage(msg);
+                getHostAdapter().showError(msg);
             }
         }
     }
@@ -58,7 +58,7 @@ export class SWOBinaryProcessor implements SWORTTDecoder {
                 fs.writeSync(this.logFd, packet.data);
             } catch (e: any) {
                 const msg = `Could not write to file ${this.logfile} for writing. ${e.toString()}`;
-                vscode.window.showErrorMessage(msg);
+                getHostAdapter().showError(msg);
                 try {
                     fs.closeSync(this.logFd);
                 } catch (closeErr) {

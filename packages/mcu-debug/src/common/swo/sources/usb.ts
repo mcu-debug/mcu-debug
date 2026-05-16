@@ -1,7 +1,7 @@
 import { EventEmitter } from "stream";
 import { SWORTTSource } from "./common";
 import { promisify } from "util";
-import * as vscode from "vscode";
+import { getHostAdapter } from "../../host-adapter";
 
 /*
  * NOTE: using legacy node-usb interface, because the modern
@@ -32,12 +32,12 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
 
     private async findDevice(): Promise<
         | {
-              dev: UsbDevice;
-              config: UsbConfigDescriptor;
-              iface: UsbInterfaceDescriptor;
-              endpoint: UsbEndpointDescriptor;
-              productName: string;
-          }
+            dev: UsbDevice;
+            config: UsbConfigDescriptor;
+            iface: UsbInterfaceDescriptor;
+            endpoint: UsbEndpointDescriptor;
+            productName: string;
+        }
         | undefined
     > {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -85,7 +85,7 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
     public async start() {
         const { dev, config, iface, endpoint, productName } = (await this.findDevice()) ?? {};
         if (!dev) {
-            vscode.window.showErrorMessage(`Couldn't find a device matching '${this.device}' with interface '${this.port}`);
+            getHostAdapter().showError(`Couldn't find a device matching '${this.device}' with interface '${this.port}`);
             return;
         }
 

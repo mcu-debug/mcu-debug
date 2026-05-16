@@ -1,0 +1,734 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { STLinkServerController } from "../adapter/servers/stlink";
+import {
+    ChainedConfigurations,
+    ChainedEvents,
+    MCUDebugKeys,
+    validateELFHeader,
+    SymbolFile,
+    defSymbolFile,
+    ConfigurationArguments,
+    substituteEnvVarsInConfig,
+} from "../adapter/servers/common";
+import { IHostAdapter } from "./host-adapter";
+
+// ConfigOptions extends ConfigurationArguments with a string index signature so that
+// dynamic property access (config[propName]) and OS-overlay merges compile cleanly.
+type ConfigOptions = ConfigurationArguments & { [key: string]: any };
+
+// Please confirm these names with OpenOCD source code. Their docs are incorrect as to case
+const OPENOCD_VALID_RTOS: string[] = [
+    "auto",
+    "FreeRTOS",
+    "ThreadX",
+    "chibios",
+    "Chromium-EC",
+    "eCos",
+    "embKernel",
+    // 'hwthread',
+    "linux",
+    "mqx",
+    "nuttx",
+    "RIOT",
+    "uCOS-III",
+    "Zephyr",
+];
+const JLINK_VALID_RTOS: string[] = ["Azure", "ChibiOS", "embOS", "FreeRTOS", "NuttX", "Zephyr"];
+
+export class McuDebugConfigurationProviderBase {
+    constructor(protected readonly host: IHostAdapter) { }
+
+    public provideDebugConfigurations(): { [key: string]: any }[] {
+        return [
+            {
+                name: "MCU Debug: Launch",
+                cwd: "${workspaceFolder}",
+                executable: "./bin/executable.elf",
+                request: "launch",
+                type: "mcu-debug",
+                runToEntryPoint: "main",
+                servertype: "jlink",
+            },
+        ];
+    }
+
+    public async resolveDebugConfiguration(folderPath: string | undefined, config: ConfigOptions): Promise<ConfigOptions | undefined> {
+        if (this.host.getGdbServerConsolePort() <= 0) {
+            this.host.showError("GDB server console not yet ready. Please try again. Report this problem");
+            return undefined;
+        }
+        let errs: string[] = [];
+        config = substituteEnvVarsInConfig(config, (msg) => {
+            errs.push(msg);
+        });
+        if (errs.length > 0) {
+            this.host.showError("Errors in environment variable substitution from env or envFile:\n" + errs.join("\n"));
+            return undefined;
+        }
+        config.gdbServerConsolePort = this.host.getGdbServerConsolePort();
+        config.pvtAvoidPorts = this.host.getUsedPorts();
+
+        try {
+            await this.host.handleHostConfig(config.hostConfig, () => delete config.hostConfig);
+        } catch (error) {
+            // All errors should already be surfaced in handleHostConfig, so we just return here to avoid cascading failures. The user can fix the issue and try again.
+            return undefined; // Errors already surfaced in handleHostConfig
+        }
+
+        // Flatten the platform specific stuff as it is not done by VSCode at this point.
+        switch (os.platform()) {
+            case "darwin":
+                Object.assign(config, config.osx);
+                break;
+            case "win32":
+                Object.assign(config, config.windows);
+                break;
+            case "linux":
+                Object.assign(config, config.linux);
+                break;
+            default:
+                console.log(`Unknown platform ${os.platform()}`);
+                break;
+        }
+        // Delete all OS props instead just the current one. See Issue#1114
+        delete config.osx;
+        delete config.windows;
+        delete config.linux;
+
+        this.sanitizeChainedConfigs(config);
+        if ((config as any).debugger_args && !config.debuggerArgs) {
+            config.debuggerArgs = (config as any).debugger_args;
+        }
+        if (!config.debuggerArgs) {
+            config.debuggerArgs = [];
+        }
+
+        const type = config.servertype;
+
+        let validationResponse: string | null = null;
+
+        if (!config.swoConfig) {
+            config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0, source: "probe" };
+        } else if (config.swoConfig.enabled) {
+            if (!config.swoConfig.cpuFrequency) {
+                config.swoConfig.cpuFrequency = 1 * 1e6;
+                this.host.showWarning(`launch.json: Missing/Invalid swoConfig.cpuFrequency. setting to ${config.swoConfig.cpuFrequency} Hz`);
+            }
+            if (!config.swoConfig.swoFrequency) {
+                config.swoConfig.swoFrequency = config.swoConfig.cpuFrequency / 2;
+                this.host.showWarning(`launch.json: Missing/Invalid swoConfig.swoFrequency. setting to ${config.swoConfig.swoFrequency} Hz`);
+            }
+            if (!config.swoConfig.swoEncoding) {
+                config.swoConfig.swoEncoding = "uart";
+            }
+            if (!config.swoConfig.source) {
+                config.swoConfig.source = "probe";
+            }
+            if (!config.swoConfig.decoders) {
+                config.swoConfig.decoders = [];
+            }
+            for (const d of config.swoConfig.decoders) {
+                if (d.type === "advanced") {
+                    if (d.ports === undefined && d.port !== undefined) {
+                        d.ports = [d.port];
+                    }
+                } else {
+                    if (d.port === undefined && (d as any).number !== undefined) {
+                        d.port = (d as any).number;
+                    }
+                }
+            }
+        }
+        if (!config.rttConfig) {
+            config.rttConfig = { enabled: false, decoders: [] };
+        } else if (!config.rttConfig.decoders) {
+            config.rttConfig.decoders = [];
+        }
+
+        if (!config.graphConfig) {
+            config.graphConfig = [];
+        }
+        if (!config.preLaunchCommands) {
+            config.preLaunchCommands = [];
+        }
+        if (!config.postLaunchCommands) {
+            config.postLaunchCommands = [];
+        }
+        if (!config.preAttachCommands) {
+            config.preAttachCommands = [];
+        }
+        if (!config.postAttachCommands) {
+            config.postAttachCommands = [];
+        }
+        if (!config.preResetCommands) {
+            config.preResetCommands = (config as any).preRestartCommands || [];
+        }
+        if (!config.postResetCommands) {
+            config.postResetCommands = (config as any).postRestartCommands || [];
+        }
+        if (config.overridePreEndSessionCommands === undefined) {
+            config.overridePreEndSessionCommands = null;
+        }
+        if (!config.postResetSessionCommands) {
+            config.postResetSessionCommands = (config as any).postRestartSessionCommands || null;
+        }
+        if (config.runToEntryPoint) {
+            config.runToEntryPoint = config.runToEntryPoint.trim();
+        } else if (config.runToMain) {
+            config.runToEntryPoint = "main";
+            this.host.showWarning('launch.json: "runToMain" has been deprecated and will not work in future versions of mcu-debug. Please use "runToEntryPoint" instead');
+        }
+
+        switch (type) {
+            case "jlink":
+                validationResponse = this.verifyJLinkConfiguration(config);
+                break;
+            case "openocd":
+                validationResponse = this.verifyOpenOCDConfiguration(config);
+                break;
+            case "stutil":
+                validationResponse = this.verifySTUtilConfiguration(config);
+                break;
+            case "stlink":
+                validationResponse = this.verifySTLinkConfiguration(config);
+                break;
+            case "probe-rs":
+                validationResponse = this.verifyProbeRSConfiguration(config);
+                break;
+            case "pyocd":
+                validationResponse = this.verifyPyOCDConfiguration(config);
+                break;
+            case "bmp":
+                validationResponse = this.verifyBMPConfiguration(config);
+                break;
+            case "pe":
+                validationResponse = this.verifyPEConfiguration(config);
+                break;
+            case "external":
+                validationResponse = this.verifyExternalConfiguration(config);
+                break;
+            case "qemu":
+                validationResponse = this.verifyQEMUConfiguration(config);
+                break;
+            default: {
+                const validValues = ["jlink", "openocd", "stutil", "stlink", "pyocd", "bmp", "pe", "external", "qemu"].map((s) => `"${s}"`).join(", ");
+                validationResponse = "Invalid servertype parameters. The following values are supported: " + validValues;
+                break;
+            }
+        }
+
+        if (config.armToolchainPath) {
+            config.toolchainPath = config.armToolchainPath;
+        }
+        this.setOsSpecficConfigSetting(config, "toolchainPath", "armToolchainPath");
+
+        if (!config.toolchainPath) {
+            if (!config.armToolchainPath && config.servertype === "stlink") {
+                // Special case to auto-resolve GCC toolchain for STM32CubeIDE users. Doesn't quite work
+                // if you are using WSL or remote debug. It will be re-calcutate later anyways in the debug adapter
+                const stController = new STLinkServerController();
+                config.armToolchainPath = stController.getArmToolchainPath();
+                config.toolchainPath = config.armToolchainPath;
+            }
+        }
+
+        if (!config.toolchainPrefix) {
+            config.toolchainPrefix = this.host.getSetting<string>("mcu-debug", "armToolchainPrefix") || "arm-none-eabi";
+        }
+
+        this.setOsSpecficConfigSetting(config, "gdbPath");
+        this.setOsSpecficConfigSetting(config, "objdumpPath");
+        config.extensionPath = this.host.getExtensionPath();
+        if (os.platform() === "win32") {
+            config.extensionPath = config.extensionPath.replace(/\\/g, "/"); // GDB doesn't interpret the path correctly with backslashes.
+        }
+
+        config.registerUseNaturalFormat = this.host.getSetting<boolean>("mcu-debug", MCUDebugKeys.REGISTER_DISPLAY_MODE, true);
+        config.variableUseNaturalFormat = this.host.getSetting<boolean>("mcu-debug", MCUDebugKeys.VARIABLE_DISPLAY_MODE, true);
+
+        if (validationResponse) {
+            this.host.showError(validationResponse);
+            return undefined;
+        }
+
+        return config;
+    }
+
+    public resolveDebugConfigurationWithSubstitutedVariables(folderPath: string | undefined, config: ConfigOptions): ConfigOptions | undefined {
+        const wsFile = this.host.getWorkspaceFilePath();
+        let cwd = config.cwd || folderPath || (wsFile ? path.dirname(wsFile) : ".");
+        const isAbsCwd = path.isAbsolute(cwd);
+        if (!isAbsCwd && folderPath) {
+            cwd = path.join(folderPath, cwd);
+        } else if (!isAbsCwd) {
+            cwd = path.resolve(cwd);
+        }
+        config.cwd = cwd;
+        if (!cwd || !fs.existsSync(cwd)) {
+            this.host.showWarning(`Invalid "cwd": "${cwd}". Many operations can fail. Trying to continue`);
+        }
+        this.validateLoadAndSymbolFiles(config, cwd);
+
+        if (config.liveWatch?.enabled) {
+            const supportedList = ["openocd", "jlink", "stlink"];
+            if (supportedList.indexOf(config.servertype) < 0) {
+                const str = supportedList.join(", ");
+                this.host.showInfo(
+                    `Live watch is not officially supported for servertype '${config.servertype}'. ` +
+                    `Only ${str} are supported and tested. ` +
+                    `Report back to us if it works with your servertype '${config.servertype}'.\n \n` +
+                    'If you are using an "external" servertype and it is working for you, then you can safely ignore this message. ',
+                );
+            }
+        }
+
+        let validationResponse: string | null = null;
+        switch (config.servertype) {
+            case "jlink":
+                validationResponse = this.verifyJLinkConfigurationAfterSubstitution(config);
+                break;
+            default:
+                /* config.servertype was already checked in resolveDebugConfiguration */
+                validationResponse = null;
+                break;
+        }
+        if (validationResponse) {
+            this.host.showError(validationResponse);
+            return undefined;
+        }
+
+        return config;
+    }
+
+    private validateLoadAndSymbolFiles(config: ConfigOptions, cwd: string) {
+        // Right now, we don't consider a bad executable as fatal. Technically, you don't need an executable but
+        // users will get a horrible debug experience ... so many things don't work.
+        if (config.executable) {
+            let exe = config.executable;
+            exe = path.isAbsolute(exe) ? exe : path.join(cwd || ".", exe);
+            config.executable = path.normalize(exe).replace(/\\/g, "/");
+        }
+        const def = defSymbolFile(config.executable);
+        const symFiles: SymbolFile[] = config.symbolFiles?.map((v) => (typeof v === "string" ? defSymbolFile(v) : (v as SymbolFile))) || [def];
+        if (!symFiles || symFiles.length === 0) {
+            this.host.showWarning('No "executable" or "symbolFiles" specified. We will try to run program without symbols');
+        } else {
+            for (const symF of symFiles) {
+                let exe = symF.file;
+                exe = path.isAbsolute(exe) ? exe : path.join(cwd, exe);
+                exe = path.normalize(exe).replace(/\\/g, "/");
+                if (!config.symbolFiles) {
+                    config.executable = exe;
+                } else {
+                    symF.file = exe;
+                }
+                symF.sectionMap = {};
+                symF.sections = symF.sections || [];
+                for (const section of symF.sections) {
+                    symF.sectionMap[section.name] = section;
+                }
+                validateELFHeader(exe, (str: string, fatal: boolean) => {
+                    if (fatal) {
+                        this.host.showError(str);
+                    } else {
+                        // this.host.showWarning(str);
+                    }
+                });
+            }
+            if (config.symbolFiles) {
+                config.symbolFiles = symFiles;
+            }
+        }
+
+        if (config.loadFiles) {
+            for (let ix = 0; ix < config.loadFiles.length; ix++) {
+                let fName = config.loadFiles[ix];
+                fName = path.isAbsolute(fName) ? fName : path.join(cwd, fName);
+                fName = path.normalize(fName).replace(/\\/g, "/");
+                config.loadFiles[ix] = fName;
+            }
+        } else if (config.executable && config.symbolFiles) {
+            // This is a special case when you have symbol files, we don't pass anything to gdb on the command line
+            // and a target load will fail. Create a loadFiles from the executable if it exists.
+            config.loadFiles = [config.executable];
+        }
+    }
+
+    private handleChainedInherits(config: ConfigOptions, parent: any, props: string[]) {
+        if (!props) {
+            return;
+        }
+        const blackList: string[] = ["type", "name", "request", "chainedConfigurations"];
+
+        for (const propName of props) {
+            if (blackList.includes(propName) || propName.startsWith("pvt")) {
+                this.host.showWarning(`Cannot inherit property '${propName}' for configuration '${config.name}' ` + `because it is reserved`);
+                continue;
+            }
+            const val = parent[propName];
+            if (val !== undefined) {
+                config[propName] = val;
+            } else {
+                this.host.showWarning(`Cannot inherit property '${propName}' for configuration '${config.name}' ` + `because it does not exist in parent configuration`);
+            }
+        }
+    }
+
+    private handleChainedOverrides(config: ConfigOptions, props: any) {
+        if (!props) {
+            return;
+        }
+        const blackList: string[] = ["type", "name", "request"];
+
+        for (const propName of Object.keys(props)) {
+            if (blackList.includes(propName) || propName.startsWith("pvt")) {
+                continue;
+            }
+            const val = props[propName];
+            if (val === null) {
+                delete config[propName];
+            } else {
+                config[propName] = val;
+            }
+        }
+    }
+
+    private sanitizeChainedConfigs(config: ConfigOptions) {
+        // First are we chained ... as in do we have a parent?
+        const isChained = this.host.findChainedSession(config.name);
+        if (isChained) {
+            (config as any).pvtParent = isChained.parent.config;
+            (config as any).pvtMyConfigFromParent = isChained.config;
+            this.handleChainedInherits(config, (config as any).pvtParent, isChained.config.inherits);
+            this.handleChainedOverrides(config, isChained.config.overrides);
+        }
+
+        // See if we gave children and sanitize them
+        const chained = config.chainedConfigurations;
+        if (!chained || !chained.enabled || !chained.launches || chained.launches.length === 0) {
+            config.chainedConfigurations = { enabled: false } as ChainedConfigurations;
+            return;
+        }
+        if (!chained.delayMs) {
+            chained.delayMs = 0;
+        }
+        if (!chained.waitOnEvent || !Object.values(ChainedEvents).includes(chained.waitOnEvent)) {
+            chained.waitOnEvent = ChainedEvents.POSTINIT;
+        }
+        if (chained.detached === undefined || chained.detached === null) {
+            chained.detached = config.servertype === "jlink" ? true : false;
+        }
+        if (chained.lifecycleManagedByParent === undefined || chained.lifecycleManagedByParent === null) {
+            chained.lifecycleManagedByParent = true;
+        }
+        const overrides = chained.overrides || {};
+        for (const launch of chained.launches) {
+            if (launch.enabled === undefined || launch.enabled === null) {
+                launch.enabled = true;
+            }
+            if (launch.delayMs === undefined) {
+                launch.delayMs = chained.delayMs;
+            }
+            if (launch.detached === undefined || launch.detached === null) {
+                launch.detached = chained.detached;
+            }
+            if (launch.waitOnEvent === undefined || !Object.values(ChainedEvents).includes(launch.waitOnEvent)) {
+                launch.waitOnEvent = chained.waitOnEvent;
+            }
+            if (launch.lifecycleManagedByParent === undefined || launch.lifecycleManagedByParent === null) {
+                launch.lifecycleManagedByParent = chained.lifecycleManagedByParent;
+            }
+            const inherits = (launch.inherits || []).concat(chained.inherits || []);
+            if (inherits.length > 0) {
+                launch.inherits = inherits;
+            } else {
+                delete (launch as any).inherits;
+            }
+
+            const tmp = launch.overrides || {};
+            if (Object.keys(overrides).length > 0 || Object.keys(tmp).length > 0) {
+                launch.overrides = Object.assign(overrides, tmp);
+            } else {
+                delete (launch as any).overrides;
+            }
+        }
+    }
+
+    private setOsSpecficConfigSetting(config: ConfigOptions, dstName: string, propName: string = "") {
+        if (!config[dstName]) {
+            propName = propName || dstName;
+            for (const configName of ["mcu-debug", "cortex-debug"]) {
+                const obj = this.host.getSetting<any>(configName, propName);
+                if (obj !== undefined && obj !== null) {
+                    if (typeof obj === "object") {
+                        const osName = os.platform();
+                        const osOverride = osName === "win32" ? "windows" : osName === "darwin" ? "osx" : "linux";
+                        const val = obj[osOverride];
+                        if (val !== undefined) {
+                            config[dstName] = obj[osOverride];
+                            return;
+                        }
+                    } else {
+                        config[dstName] = obj;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    private verifyQEMUConfiguration(config: ConfigOptions): string {
+        this.setOsSpecficConfigSetting(config, "serverpath", "qemupath");
+        // if (config.qemupath && !config.serverpath) { config.serverpath = config.qemupath; }
+
+        if (!config.cpu) {
+            config.cpu = "mcu-m3";
+        }
+        if (!config.machine) {
+            config.machine = "lm3s6965evb";
+        }
+
+        if (config.swoConfig.enabled) {
+            this.host.showWarning("SWO support is not available when using QEMU.");
+            config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0 };
+            config.graphConfig = [];
+        }
+
+        if (config.rtos) {
+            return "RTOS support is not available when using QEMU";
+        }
+
+        return "";
+    }
+
+    private verifyJLinkConfiguration(config: ConfigOptions): string {
+        if (config.jlinkpath && !config.serverpath) {
+            config.serverpath = config.jlinkpath;
+        } // Obsolete
+        if (!config.interface && config.jlinkInterface) {
+            config.interface = config.jlinkInterface;
+        }
+        if (!config.interface) {
+            config.interface = "swd";
+        }
+
+        this.setOsSpecficConfigSetting(config, "serverpath", "JLinkGDBServerPath");
+
+        if (!config.device) {
+            return "Device Identifier is required for J-Link configurations. " + "Please see https://www.segger.com/downloads/supported-devices.php for supported devices";
+        }
+
+        if ((config.interface === "jtag" || config.interface === "cjtag") && config.swoConfig.enabled && config.swoConfig.source === "probe") {
+            return "SWO Decoding cannot be performed through the J-Link Probe in JTAG mode.";
+        }
+
+        if (config.rttConfig && config.rttConfig.enabled && config.rttConfig.decoders && config.rttConfig.decoders.length !== 0) {
+            let chosenPort;
+            for (const dec of config.rttConfig.decoders) {
+                if (dec.port === undefined) {
+                    dec.port = 0;
+                } else if (dec.port < 0 || dec.port > 15) {
+                    return `Invalid port/channel '${dec.port}'.  JLink RTT port/channel must be between 0 and 15.`;
+                }
+
+                if (chosenPort !== undefined && chosenPort !== dec.port) {
+                    return `Port/channel ${dec.port} selected but another decoder is using port ${chosenPort}. ` + "JLink RTT only allows a single RTT port/channel per debugging session.";
+                } else {
+                    chosenPort = dec.port;
+                }
+            }
+        }
+
+        return "";
+    }
+
+    private verifyJLinkConfigurationAfterSubstitution(config: ConfigOptions): string {
+        function defaultExt() {
+            switch (os.platform()) {
+                case "darwin":
+                    return ".dylib";
+                case "linux":
+                    return ".so";
+                case "win32":
+                    return ".dll";
+                default:
+                    console.log(`Unknown platform ${os.platform()}`);
+                    return "";
+            }
+        }
+
+        if (config.rtos) {
+            if (JLINK_VALID_RTOS.indexOf(config.rtos) === -1) {
+                /* When we do not have a file extension use the default OS one for file check, as J-Link allows the
+                 * parameter to be used without one.
+                 */
+                if ("" === path.extname(config.rtos)) {
+                    config.rtos = config.rtos + defaultExt();
+                }
+
+                if (!fs.existsSync(config.rtos)) {
+                    return (
+                        `JLink RTOS plugin file "${config.rtos}" not found.\n` +
+                        `The following RTOS values are supported by J-Link: ${JLINK_VALID_RTOS.join(", ")}.` +
+                        " A custom plugin can be used by supplying a complete path to a J-Link GDB Server Plugin."
+                    );
+                }
+            } else {
+                config.rtos = `GDBServer/RTOSPlugin_${config.rtos}` + defaultExt();
+            }
+        }
+
+        return "";
+    }
+
+    private verifyOpenOCDConfiguration(config: ConfigOptions): string {
+        if (config.openOCDPath && !config.serverpath) {
+            config.serverpath = config.openOCDPath;
+        } // Obsolete
+        this.setOsSpecficConfigSetting(config, "serverpath", "openocdPath");
+
+        if (config.rtos && OPENOCD_VALID_RTOS.indexOf(config.rtos) === -1) {
+            return `The following RTOS values are supported by OpenOCD: ${OPENOCD_VALID_RTOS.join(" ")}.` + 'You can always use "auto" and OpenOCD generally does the right thing';
+        }
+
+        if (!this.host.findChainedSession(config.name)) {
+            // Not chained so configFiles, searchDir matter
+            if (!config.configFiles || config.configFiles.length === 0) {
+                return "At least one OpenOCD Configuration File must be specified.";
+            }
+
+            if (!config.searchDir || config.searchDir.length === 0) {
+                config.searchDir = [];
+            }
+        }
+
+        return "";
+    }
+
+    private verifySTUtilConfiguration(config: ConfigOptions): string {
+        if (config.stutilpath && !config.serverpath) {
+            config.serverpath = config.stutilpath;
+        } // obsolete
+        this.setOsSpecficConfigSetting(config, "serverpath", "stutilPath");
+
+        if (config.rtos) {
+            return "The st-util GDB Server does not have support for the rtos option.";
+        }
+
+        if (config.swoConfig.enabled && config.swoConfig.source === "probe") {
+            this.host.showWarning("SWO support is not available from the probe when using the ST-Util GDB server. Disabling SWO.");
+            config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0 };
+            config.graphConfig = [];
+        }
+
+        return "";
+    }
+
+    private verifySTLinkConfiguration(config: ConfigOptions): string {
+        if (config.stlinkPath && !config.serverpath) {
+            config.serverpath = config.stlinkPath;
+        } // Obsolete
+        this.setOsSpecficConfigSetting(config, "serverpath", "stlinkPath");
+        this.setOsSpecficConfigSetting(config, "stm32cubeprogrammer");
+
+        if (config.rtos) {
+            return "The ST-Link GDB Server does not have support for the rtos option.";
+        }
+
+        return "";
+    }
+
+    private verifyProbeRSConfiguration(config: ConfigOptions): string {
+        if (config.probeRSPath && !config.serverpath) {
+            config.serverpath = config.probeRSPath;
+        }
+        this.setOsSpecficConfigSetting(config, "serverpath", "probeRSPath");
+
+        if (config.rtos) {
+            return "The probe-rs GDB Server does not have support for the rtos option.";
+        }
+
+        return "";
+    }
+
+    private verifyPyOCDConfiguration(config: ConfigOptions): string {
+        if (config.pyocdPath && !config.serverpath) {
+            config.serverpath = config.pyocdPath;
+        } // Obsolete
+        this.setOsSpecficConfigSetting(config, "serverpath", "pyocdPath");
+
+        if (config.rtos) {
+            return "The PyOCD GDB Server does not have support for the rtos option.";
+        }
+
+        if (config.board && !config.boardId) {
+            config.boardId = config.board;
+        }
+        if (config.target && !config.targetId) {
+            config.targetId = config.target;
+        }
+
+        return "";
+    }
+
+    private verifyBMPConfiguration(config: ConfigOptions): string {
+        if (!config.BMPGDBSerialPort) {
+            return "A Serial Port for the Black Magic Probe GDB server is required.";
+        }
+        if (!config.powerOverBMP) {
+            config.powerOverBMP = "lastState";
+        }
+        if (!config.interface) {
+            config.interface = "swd";
+        }
+        if (!config.targetId) {
+            config.targetId = 1;
+        }
+
+        if (config.rtos) {
+            return "The Black Magic Probe GDB Server does not have support for the rtos option.";
+        }
+
+        return "";
+    }
+
+    private verifyPEConfiguration(config: ConfigOptions): string {
+        this.setOsSpecficConfigSetting(config, "serverpath", "PEGDBServerPath");
+
+        if (config.configFiles && config.configFiles.length > 1) {
+            return "Only one pegdbserver Configuration File is allowed.";
+        }
+
+        if (!config.device) {
+            return "Device Identifier is required for PE configurations. Please run `pegdbserver_console.exe -devicelist` for supported devices";
+        }
+
+        if (config.swoConfig.enabled && config.swoConfig.source !== "socket") {
+            return "The PE GDB Server Only supports socket type SWO";
+        }
+
+        return "";
+    }
+
+    private verifyExternalConfiguration(config: ConfigOptions): string {
+        if (config.swoConfig.enabled) {
+            if (config.swoConfig.source === "socket" && !config.swoConfig.swoPort) {
+                this.host.showWarning('SWO source type "socket" requires a "swoPort". Disabling SWO support.');
+                config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0 };
+                config.graphConfig = [];
+            } else if (config.swoConfig.source !== "socket" && !config.swoConfig.swoPath) {
+                this.host.showWarning(`SWO source type "${config.swoConfig.source}" requires a "swoPath". Disabling SWO support.`);
+                config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0 };
+                config.graphConfig = [];
+            }
+        }
+
+        if (!config.gdbTarget) {
+            return 'External GDB server type must specify the GDB target. This should either be a "hostname:port" combination or a serial port.';
+        }
+
+        return "";
+    }
+}

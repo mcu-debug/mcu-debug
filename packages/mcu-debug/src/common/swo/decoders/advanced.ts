@@ -1,22 +1,21 @@
-import * as vscode from "vscode";
 import { SWORTTDecoder } from "./common";
-import { GrapherDataMessage } from "../common";
+import { GrapherDataMessage, Packet } from "../common";
 import { SWOAdvancedDecoderConfig, AdvancedDecoder } from "../advanced-decoder";
 import { EventEmitter } from "events";
-import { Packet } from "../common";
 import { MCUDebugChannel } from "../../../dbgmsgs";
 import { HrTimer } from "../../../adapter/servers/common";
+import { IOutputChannel, getHostAdapter } from "../../host-adapter";
 
 // Use eval('require') to prevent bundlers (esbuild/webpack) from trying to bundle these dynamic paths
 const dynamicRequire = eval("require");
 
 export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecoder {
-    private output: vscode.OutputChannel | undefined;
+    private output: IOutputChannel | undefined;
     public readonly format: string = "advanced";
     private ports: number[];
     private decoder: AdvancedDecoder | undefined;
     private timer = new HrTimer();
-    private static outputPanels = new Map<string, vscode.OutputChannel>();
+    private static outputPanels = new Map<string, IOutputChannel>();
 
     constructor(config: SWOAdvancedDecoderConfig) {
         super();
@@ -44,7 +43,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
                 const name = `SWO/RTT: ${this.decoder!.outputLabel() || ""} [type: ${this.decoder!.typeName()}]`;
                 let panel = SWORTTAdvancedProcessor.outputPanels.get(name);
                 if (!panel) {
-                    panel = vscode.window.createOutputChannel(name);
+                    panel = getHostAdapter().createOutputChannel(name);
                     SWORTTAdvancedProcessor.outputPanels.set(name, panel);
                 } else {
                     panel.clear();
@@ -70,7 +69,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
         }
     }
 
-    public hardwareEvent(event: Packet) {}
+    public hardwareEvent(event: Packet) { }
 
     public synchronized() {
         try {

@@ -1,7 +1,7 @@
 import * as fs from "fs";
-import * as vscode from "vscode";
 import { EventEmitter } from "events";
 import { SWORTTSource } from "./common";
+import { getHostAdapter } from "../../host-adapter";
 
 export class FileSWOSource extends EventEmitter implements SWORTTSource {
     public connected: boolean = false;
@@ -23,7 +23,7 @@ export class FileSWOSource extends EventEmitter implements SWORTTSource {
             if (this.timeout <= 0 || fs.existsSync(this.SWOPath)) {
                 fs.open(this.SWOPath, "r", (err, fd) => {
                     if (err) {
-                        vscode.window.showWarningMessage(`Unable to open path: ${this.SWOPath} - Unable to read SWO data.`);
+                        getHostAdapter().showWarning(`Unable to open path: ${this.SWOPath} - Unable to read SWO data.`);
                     } else {
                         this.fd = fd;
                         this.interval = setInterval(this.read.bind(this), 2);
@@ -34,7 +34,7 @@ export class FileSWOSource extends EventEmitter implements SWORTTSource {
             } else if (this.timeout > 0) {
                 const delta = Date.now() - start;
                 if (delta >= this.timeout) {
-                    vscode.window.showWarningMessage(`SWO File ${this.SWOPath} does not exist even after timeout of ${this.timeout}ms.`);
+                    getHostAdapter().showWarning(`SWO File ${this.SWOPath} does not exist even after timeout of ${this.timeout}ms.`);
                 } else {
                     setTimeout(() => openFile(Math.min(10, retryTime + 1)), Math.min(10, retryTime + 1));
                 }

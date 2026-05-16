@@ -9,7 +9,6 @@ import path from "path";
 import hasbin from "hasbin";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { Console, GdbEventNames, GdbMiFrameIF, GdbMiOutput, GdbMiRecord, GdbMiThreadIF, Stderr, Stdout } from "./gdb-mi/mi-types";
-import { SWODecoderConfig } from "../frontend/swo/common";
 import { GdbOutputMsgContainer, GdbOutputStoreage, VariableManager } from "./variables";
 import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
@@ -29,6 +28,7 @@ import { TcpPortScanner } from "@mcu-debug/shared";
 import { DisassemblyAdapter } from "./disassebly-gdb";
 import { DebugHelper, withTimeout } from "./helper";
 import { DisassemblyAdapterNew } from "./disassembly-new";
+import { SWODecoderConfig } from "../common/swo/common";
 
 export const RustDebugHelperEnabled = true;
 

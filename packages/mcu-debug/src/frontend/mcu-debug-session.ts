@@ -1,9 +1,9 @@
 import { assert } from "console";
 import * as vscode from "vscode";
 import { ConfigurationArguments, ChainedConfig } from "../adapter/servers/common";
-import { RTTCore, SWOCore } from "./swo/swo-core";
-import { SWORTTSource } from "./swo/sources/common";
-import { SocketRTTSource, SocketUARTSource } from "./swo/sources/socket";
+import { RTTCore, SWOCore } from "../common/swo/swo-core";
+import { SWORTTSource } from "../common/swo/sources/common";
+import { SocketRTTSource, SocketUARTSource } from "../common/swo/sources/socket";
 
 export class CDebugSession {
     public swo: SWOCore | null = null;

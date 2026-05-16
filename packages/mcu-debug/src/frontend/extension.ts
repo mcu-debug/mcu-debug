@@ -14,20 +14,22 @@ import { EditableTreeViewProvider } from "./webview_tree/editable-tree";
 import { CockpitPanel } from "./views/CockpitPanel";
 import { SerialPortManager } from "./serial";
 
-import { RTTCore, SWOCore } from "./swo/swo-core";
+import { RTTCore, SWOCore } from "../common/swo/swo-core";
 import { ConfigurationArguments, RTTCommonDecoderOpts, RTTConsoleDecoderOpts, MCUDebugKeys, ChainedEvents, ChainedConfig, SerialConfig, getHelperExecutable } from "../adapter/servers/common";
 import { Reporting } from "../analytics/reporting";
 
 import { McuDebugConfigurationProvider } from "./configprovider";
-import { JLinkSocketRTTSource, SocketRTTSource, SocketSWOSource, PeMicroSocketSource, SocketUARTSource, SocketIOSource } from "./swo/sources/socket";
-import { FifoSWOSource } from "./swo/sources/fifo";
-import { FileSWOSource } from "./swo/sources/file";
-import { SerialSWOSource } from "./swo/sources/serial";
-import { UsbSWOSource } from "./swo/sources/usb";
+import { VscodeAdapter } from "./vscode-adapter";
+import { setHostAdapter } from "../common/host-adapter";
+import { JLinkSocketRTTSource, SocketRTTSource, SocketSWOSource, PeMicroSocketSource, SocketUARTSource, SocketIOSource } from "../common/swo/sources/socket";
+import { FifoSWOSource } from "../common/swo/sources/fifo";
+import { FileSWOSource } from "../common/swo/sources/file";
+import { SerialSWOSource } from "../common/swo/sources/serial";
+import { UsbSWOSource } from "../common/swo/sources/usb";
 import { SymbolInformation, SymbolScope } from "../adapter/symbols";
 import { IOTerminal } from "./io-terminal";
-import { GDBServerConsole } from "./server_console";
-import { CDebugSession, CDebugChainedSessionItem } from "./cortex_debug_session";
+import { GDBServerConsole } from "./server-console";
+import { CDebugSession, CDebugChainedSessionItem } from "./mcu-debug-session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "@mcu-debug/shared";
@@ -865,6 +867,7 @@ export class MCUDebugExtension {
 
 export async function activate(context: vscode.ExtensionContext) {
     try {
+        setHostAdapter(new VscodeAdapter(context));
         Reporting.activateTelemetry(context);
         MCUDebugChannel.createDebugChannel();
         const packageJson = context.extension.packageJSON;
