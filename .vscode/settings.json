@@ -20,5 +20,8 @@
     },
     "rust-analyzer.runnables.extraEnv": {
         "RUST_BACKTRACE": "1"
+    },
+    "chat.tools.terminal.autoApprove": {
+        "npm install": true
     }
 }

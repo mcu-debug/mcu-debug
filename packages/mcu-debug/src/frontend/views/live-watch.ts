@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { TreeItem, TreeItemCollapsibleState, DebugSession, ProviderResult, Event, EventEmitter, Disposable } from "vscode";
+import { IDebugSession } from "../../common/host-adapter";
 import { TreeViewProviderDelegate, TreeItem as WebviewTreeItem } from "../webview_tree/editable-tree";
 import {
     LiveUpdateEvent,
@@ -570,11 +571,11 @@ class LiveVariableNodeMsg extends LiveVariableNode {
         private empty = true,
     ) {
         const dummy: GdbMapUpdater = {
-            addToMap: (gdbName: string, node: LiveVariableNode) => {},
+            addToMap: (gdbName: string, node: LiveVariableNode) => { },
             getFromMap: (gdbName: string): LiveVariableNode | undefined => {
                 return undefined;
             },
-            removeFromMap: (gdbName: string) => {},
+            removeFromMap: (gdbName: string) => { },
             getLiveSessionId: () => undefined,
         };
         super(dummy, parent, "dummy", "dummy");
@@ -626,7 +627,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
     private liveSessionVersion = LatestLiveSessionVersion;
     private liveSessionId: string | undefined;
     private refreshCallback?: () => void;
-    private updateComposite: (items: WebviewTreeItem[]) => void = () => {};
+    private updateComposite: (items: WebviewTreeItem[]) => void = () => { };
 
     protected oldState = new Map<string, vscode.TreeItemCollapsibleState>();
     constructor(private context: vscode.ExtensionContext) {
@@ -855,7 +856,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         state.update(WATCH_LIST_STATE, data);
     }
 
-    public isSameSession(session: vscode.DebugSession): boolean {
+    public isSameSession(session: IDebugSession): boolean {
         if (session && LiveWatchTreeProvider.session && session.id === LiveWatchTreeProvider.session.id) {
             return true;
         }

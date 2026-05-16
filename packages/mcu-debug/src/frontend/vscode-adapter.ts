@@ -3,14 +3,16 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import { HostConfig, ChainedConfig } from "../adapter/servers/common";
-import { IHostAdapter, ISWORTTView, IOutputChannel } from "../common/host-adapter";
+import { IHostAdapter, ISWORTTView, IOutputChannel, ISerialPortView, IDebugSession } from "../common/host-adapter";
 import { handleHostConfig } from "../common/proxy";
 import { GraphConfiguration } from "../common/swo/common";
 import { MCUDebugChannel } from "../dbgmsgs";
-import { CDebugSession, CDebugChainedSessionItem } from "./mcu-debug-session";
+import { CDebugSession, CDebugChainedSessionItem } from "../common/mcu-debug-session";
 import { GDBServerConsole } from "./server-console";
-import { SWOWebview } from "./swo/swo-view";
+import { SWOWebview } from "./swo-view";
+import { SerialPortView } from "./serial-view";
 import { SymbolInformation } from "../adapter/symbols";
+import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 
 // It lives here (frontend/) so that common/ stays free of vscode imports.
 export class VscodeAdapter implements IHostAdapter {
@@ -43,6 +45,10 @@ export class VscodeAdapter implements IHostAdapter {
 
     getUsedPorts(): number[] {
         return CDebugSession.getAllUsedPorts();
+    }
+
+    stopDebugging(session: IDebugSession): void {
+        vscode.debug.stopDebugging(session as unknown as vscode.DebugSession);
     }
 
     async handleHostConfig(hostConfig: HostConfig | undefined, onDelete: () => void): Promise<void> {
@@ -106,8 +112,25 @@ export class VscodeAdapter implements IHostAdapter {
 
         return symbols;
     }
-}
 
+    async showQuickPick(
+        items: { label: string; description?: string; detail?: string }[],
+        opts?: { title?: string; placeHolder?: string }
+    ): Promise<string | undefined> {
+        const result = await vscode.window.showQuickPick(items, {
+            title: opts?.title,
+            placeHolder: opts?.placeHolder,
+            canPickMany: false,
+            matchOnDescription: true,
+            matchOnDetail: true,
+        });
+        return result?.label;
+    }
+
+    createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, tcpPort: number): ISerialPortView {
+        return SerialPortView.createOrGetTab(device, serialConfig, isNew, tcpPort);
+    }
+}
 export class VSCodeOutputChannel implements IOutputChannel {
     private output: vscode.OutputChannel;
     constructor(name: string) {

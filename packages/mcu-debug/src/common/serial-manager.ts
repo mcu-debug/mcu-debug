@@ -13,23 +13,16 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 
-import * as fs from "fs";
 import * as net from "net";
-import * as vscode from "vscode";
-import * as path from "path";
 import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { AvailablePort } from "@mcu-debug/shared/serial-helper/AvailablePort";
 import { SerialPortInfo } from "@mcu-debug/shared/proxy-protocol/SerialPortInfo";
 import { SerialErrorKind } from "@mcu-debug/shared/serial-helper/SerialErrorKind";
-import { awaitWithTimeout, ConfigurationArguments, HostConfig, SerialConfig, TerminalInputMode } from "../adapter/servers/common";
-import { EventEmitter } from "stream";
+import { awaitWithTimeout, ConfigurationArguments, HostConfig, SerialConfig } from "../adapter/servers/common";
 import { MCUDebugChannel } from "../dbgmsgs";
-import { getProxyForSerialPorts, initProxy } from "../common/proxy";
+import { getProxyForSerialPorts } from "./proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
-import { VscodeAdapter } from "./vscode-adapter";
-import { getUUid, ManagedTab } from "./views/ManagedTab";
-import { CockpitPanel } from "./views/CockpitPanel";
-import type { TabKind } from "@mcu-debug/shared";
+import { getHostAdapter, ISerialPortView } from "./host-adapter";
 
 const PROXY_TIMOUT = 5000;
 
@@ -57,14 +50,13 @@ export class SerialPortManager {
     private pendingPromises: Map<number, { resolve: (value: any) => void; reject: (reason?: any) => void }> = new Map();
     private availablePorts: AvailablePort[] = [];
     private openPorts: SerialPortInfo[] = [];
-    private serialPortViews: Map<string, SerialPortView> = new Map();
+    private serialPortViews: Map<string, ISerialPortView> = new Map();
     private serialPortConfigs: Map<string, SerialParams> = new Map();
     private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
     private pendingAvailableSnapshotResolvers: Array<() => void> = [];
 
-    constructor(private context: vscode.ExtensionContext) {
+    constructor() {
         SerialPortManager.instance = this;
-        initProxy(new VscodeAdapter(context));
     }
 
     public logInfo(message: string) {
@@ -72,15 +64,14 @@ export class SerialPortManager {
     }
     public logError(message: string) {
         MCUDebugChannel.debugMessage(`ERROR: ${message}`);
-        vscode.window.showErrorMessage(message);
+        getHostAdapter().showError(message);
     }
 
     /** Human-readable description of a port selector for log messages. */
     private static portSel(p: SerialParams): string {
         if (p.path) { return p.path; }
         if (p.serial) { return `serial=${p.serial}`; }
-        if (p.vid || p.pid) { return `vid=${p.vid ?? '?'} pid=${p.pid ?? '?'}`; }
-        return '(no selector)';
+        return `vid=${p.vid} pid=${p.pid}`;
     }
 
     /**
@@ -451,7 +442,7 @@ export class SerialPortManager {
 
     public async listAvailablePortsCmd(noDisplay?: boolean): Promise<AvailablePort[]> {
         const tmpHostConfig: HostConfig = {
-            type: vscode.env.remoteName ? "auto" : "local",
+            type: getHostAdapter().getRemoteName() ? "auto" : "local",
             enabled: true,
         }
         const resolvedHostConfig = await getProxyForSerialPorts(tmpHostConfig);
@@ -477,11 +468,8 @@ export class SerialPortManager {
                 detail: `VID: ${p.vid !== null ? p.vid.toString(16).padStart(4, '0') : 'N/A'} PID: ${p.pid !== null ? p.pid.toString(16).padStart(4, '0') : 'N/A'}`,
             });
         }
-        vscode.window.showQuickPick(items, {
+        getHostAdapter().showQuickPick(items, {
             title: 'Available Serial Ports',
-            canPickMany: false,
-            matchOnDescription: true,
-            matchOnDetail: true,
             placeHolder: 'Serial ports found on the probe host',
         });
 
@@ -583,10 +571,10 @@ export class SerialPortManager {
         // we can allow both local and remote serial ports, but if it's devcontainer or wsl, we can only allow one type of serial port.
         // This is not ideal, but it's a reasonable compromise given the limitations of the current proxy design.
         const tmpHostConfig: HostConfig | undefined = args?.hostConfig || {
-            type: vscode.env.remoteName ? "auto" : "local",
+            type: getHostAdapter().getRemoteName() ? "auto" : "local",
             enabled: true,
         }
-        this.isFunnelTransport = (tmpHostConfig.type === "ssh" || vscode.env.remoteName !== undefined);
+        this.isFunnelTransport = (tmpHostConfig.type === "ssh" || getHostAdapter().getRemoteName() !== undefined);
         const resolvedHostConfig = await getProxyForSerialPorts(tmpHostConfig);
         if (!resolvedHostConfig) {
             this.logError(`Failed to resolve proxy configuration for serial ports. Serial ports will not be available.`);
@@ -644,7 +632,7 @@ export class SerialPortManager {
             view.setLogFile(log_file ?? undefined);
             view.setInputMode(input_mode ?? undefined);
         } else {
-            view = SerialPortView.createOrGetTab(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
+            view = getHostAdapter().createSerialPortView(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
             this.serialPortViews.set(actualPath, view);
             view.emitter.on("close", () => {
                 this.removeSerialPortTab(actualPath);
@@ -657,7 +645,7 @@ export class SerialPortManager {
         }
     }
 
-    public getSerialPortTab(path: string): SerialPortView | null {
+    public getSerialPortTab(path: string): ISerialPortView | null {
         return this.serialPortViews.get(path) || null;
     }
 
@@ -699,163 +687,10 @@ export class SerialPortManager {
     }
 }
 
-class SerialPortView extends ManagedTab {
-    public emitter = new EventEmitter();
-    private socket: net.Socket | null = null;
-    private logFileStream: fs.WriteStream | null = null;
-    readonly kind: TabKind = "uart";
-    readonly direction = "both";
-
-    static createOrGetTab(device: string, serialConfig: SerialParams, doClear: boolean = false, tcpPort: number = 0): SerialPortView {
-        const baseName = path.basename(device);
-        const existing = CockpitPanel.instance?.findTabByLabel(baseName) as unknown as SerialPortView | null;
-        if (existing) {
-            // If a tab with the same name already exists, we will reuse it for the new serial port. This allows us to preserve the terminal buffer and other state in the tab, which can be useful for debugging purposes. We will just clear the buffer and reset the options to match the new serial port configuration.
-            if (doClear) {
-                existing.clear();
-            }
-            existing.serialConfig = serialConfig;
-            existing.setLogFile(serialConfig.log_file ?? undefined);
-            existing.setInputMode(serialConfig.input_mode ?? undefined);
-            existing.setState({ kind: "active" });
-            return existing;
-        } else {
-            return new SerialPortView(device, serialConfig, doClear, tcpPort);
-        }
-    }
-
-    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
-        const baseName = path.basename(device);
-        super(
-            `serial-${getUUid('serial')}`,
-            baseName,
-            "Enter input for serial port " + device,
-            serialConfig.input_mode === "raw" ? "raw" : "cooked",
-        );
-        if (this.tcpPort) {
-            this.restartSocket();
-        }
-        if (this.serialConfig.log_file) {
-            this.setLogFile(this.serialConfig.log_file);
-        }
-        CockpitPanel.instance?.addTab(this);
-    }
-
-    onUserInput(text: string) {
-        const outgoing = this.inputMode === "raw" ? text : `${text}\r\n`;
-        if (!outgoing) {
-            return;
-        }
-        if (this.socket) {
-            super.onUserInput(outgoing);
-            this.socket.write(outgoing);
-        }
-        if (this.logFileStream) {
-            this.logFileStream.write(outgoing);
-        }
-    }
-
-    onUserClose(): void {
-        MCUDebugChannel.debugMessage(`Terminal for serial port ${this.device} closed`);
-        this.destroySocket();
-        this.emitter.emit("close");
-    }
-
-    public notifyConnected(reason: string) {
-        this.send(`\r\n\x1b[32m[${this.device} connected] ${reason}\x1b[0m\r\n`);
-        this.setState({ kind: "active" });
-    }
-
-    public notifyDisconnected(reason: string) {
-        this.destroySocket();
-        this.send(`\r\n\x1b[33m[${this.device} disconnected: ${reason} — retrying...]\x1b[0m\r\n`);
-        this.setState({ kind: "inactive" });
-    }
-
-    public notifyReconnected() {
-        this.send(`\r\n\x1b[32m[${this.device} reconnected]\x1b[0m\r\n`);
-        this.setState({ kind: "active" });
-    }
-
-    setTcpPort(port: number) {
-        if (this.tcpPort === port && this.socket && !this.socket.destroyed) {
-            return;
-        }
-        this.tcpPort = port;
-        this.restartSocket();
-    }
-
-    private destroySocket() {
-        if (this.socket) {
-            this.socket.destroy();
-            this.socket = null;
-        }
-    }
-
-    private destroyLogFile() {
-        if (this.serialConfig.log_file) {
-            this.logFileStream?.end(() => {
-                MCUDebugChannel.debugMessage(`Closed log file stream for ${this.serialConfig.log_file}`);
-            });
-            this.logFileStream = null;
-        }
-    }
-
-    public setLogFile(log_file: string | undefined) {
-        if (this.serialConfig.log_file === log_file) {
-            return;
-        }
-        this.serialConfig.log_file = log_file || "";
-        this.destroyLogFile();
-        if (log_file) {
-            this.logFileStream = fs.createWriteStream(log_file, { flags: "a" });
-            if (!this.logFileStream) {
-                MCUDebugChannel.debugMessage(`Failed to create log file stream for ${log_file}`);
-                vscode.window.showErrorMessage(`Failed to create log file stream for ${log_file}`);
-            }
-        }
-    }
-
-    public setInputMode(input_mode: string | undefined) {
-        const mode = input_mode === "raw" ? TerminalInputMode.RAW : TerminalInputMode.COOKED;
-        if (this.inputMode === (mode === TerminalInputMode.RAW ? "raw" : "cooked")) {
-            return;
-        }
-        super.setInputMode(mode === TerminalInputMode.RAW ? "raw" : "cooked");
-    }
-
-    restartSocket() {
-        this.destroySocket();
-        // The helper will create a TCP server for this serial port and report the port number back to us. Once we have the port number, we can connect to it.
-        const socket = new net.Socket();
-        socket.connect(this.tcpPort, "127.0.0.1");
-        socket.on("connect", () => {
-            MCUDebugChannel.debugMessage(`Connected to serial port ${this.device} at 127.0.0.1:${this.tcpPort}`);
-            this.socket = socket;
-        });
-        socket.on("data", (data) => {
-            this.send(data.toString());
-            if (this.logFileStream) {
-                this.logFileStream.write(data);
-            }
-        });
-        socket.on("error", (err) => {
-            MCUDebugChannel.debugMessage(`Error on serial port ${this.device} connection: ${err.message}`);
-            this.destroySocket();
-            this.notifyDisconnected(err.message);
-        });
-        socket.on("close", () => {
-            MCUDebugChannel.debugMessage(`Connection to serial port ${this.device} closed`);
-            this.destroySocket();
-            this.notifyDisconnected("Connection closed");
-        });
-    }
-}
-
 /**
  * Represents an active connection to a serial port on the proxy side, including the TCP server that the proxy helper creates for it and the socket
  * connection to that server. The SerialPortManager keeps track of these and routes data between the terminal and the socket.
- * 
+ *
  * For non remote ports, the proxy server is already listening on a TCP port and we just need to connect to it and forward data. For remote ports, the proxy server creates a new TCP server for each port and reports the port number back to us, so we need to create a new socket connection for each port and manage those separately.
  */
 export class ProxySerialTcpServer {

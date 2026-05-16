@@ -2,11 +2,11 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { GraphConfiguration, GrapherMessage } from "../../common/swo/common";
-import { SWORTTGraphProcessor } from "../../common/swo/decoders/graph";
-import { SWORTTAdvancedProcessor } from "../../common/swo/decoders/advanced";
-import { getNonce } from "../../adapter/servers/common";
-import { ISWORTTView } from "../../common/host-adapter";
+import { GraphConfiguration, GrapherMessage } from "../common/swo/common";
+import { SWORTTGraphProcessor } from "../common/swo/decoders/graph";
+import { SWORTTAdvancedProcessor } from "../common/swo/decoders/advanced";
+import { getNonce } from "../adapter/servers/common";
+import { ISWORTTView } from "../common/host-adapter";
 
 export class SWOWebview implements ISWORTTView {
     private viewPanel: vscode.WebviewPanel;

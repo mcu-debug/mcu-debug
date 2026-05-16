@@ -1,3 +1,5 @@
+import * as net from "net";
+
 export function hexFormat(value: number, padding: number = 8, includePrefix: boolean = true): string {
     let base = (value >>> 0).toString(16);
     base = base.padStart(padding, "0");
@@ -148,4 +150,26 @@ export function parseDimIndex(spec: string, count: number): string[] {
     }
 
     return [];
+}
+
+/** Attempt a TCP connection to host:port within timeoutMs. Returns true if the connection
+ *  succeeds (socket connected), false on any error or timeout. Used to pre-flight the
+ *  WSL NAT proxy path while we still have access to the VS Code UI. */
+export function tcpReachable(host: string, port: number, timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        const socket = net.createConnection({ host, port });
+        const timer = setTimeout(() => {
+            socket.destroy();
+            resolve(false);
+        }, timeoutMs);
+        socket.once("connect", () => {
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once("error", () => {
+            clearTimeout(timer);
+            resolve(false);
+        });
+    });
 }

@@ -21,13 +21,8 @@ import * as path from "path";
 import { spawn } from "child_process";
 import { computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
-import { IHostAdapter } from "./host-adapter";
-
-let _host: IHostAdapter | undefined;
-
-export function initProxy(adapter: IHostAdapter): void {
-    _host = adapter;
-}
+import { getHostAdapter } from "./host-adapter";
+import { tcpReachable } from "./utils";
 
 let localProxyProcess: ChildProcess | null = null;
 
@@ -37,27 +32,6 @@ interface SshTunnelConfig {
     localPort: number;
     args: string[];
     fingerprint: string; // key over all config fields that affect what tunnel/agent is running
-}
-/** Attempt a TCP connection to host:port within timeoutMs. Returns true if the connection
- *  succeeds (socket connected), false on any error or timeout. Used to pre-flight the
- *  WSL NAT proxy path while we still have access to the VS Code UI. */
-function tcpReachable(host: string, port: number, timeoutMs: number): Promise<boolean> {
-    return new Promise((resolve) => {
-        const socket = net.createConnection({ host, port });
-        const timer = setTimeout(() => {
-            socket.destroy();
-            resolve(false);
-        }, timeoutMs);
-        socket.once("connect", () => {
-            clearTimeout(timer);
-            socket.destroy();
-            resolve(true);
-        });
-        socket.once("error", () => {
-            clearTimeout(timer);
-            resolve(false);
-        });
-    });
 }
 
 // Stable string over every config field that determines whether an existing SSH tunnel+agent can be reused.
@@ -101,7 +75,7 @@ const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mcu-debug";
 async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs = SSH_RUN_TIMEOUT_MS): Promise<string> {
     const sshHost = hostConfig.sshHost!;
     return new Promise<string>((resolve, reject) => {
-        _host!.debugMessage(`Running SSH command on ${sshHost}: ${command}`);
+        getHostAdapter().debugMessage(`Running SSH command on ${sshHost}: ${command}`);
         const proc = spawn("ssh", [sshHost, command]);
         let stdout = "";
         let stderr = "";
@@ -121,17 +95,17 @@ async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs =
         proc.on("exit", (code) => {
             clearTimeout(timer);
             if (code === 0) {
-                _host!.debugMessage(`SSH command succeeded on ${sshHost}: ${command}\n${stdout.trim()}`);
+                getHostAdapter().debugMessage(`SSH command succeeded on ${sshHost}: ${command}\n${stdout.trim()}`);
                 resolve(stdout.trim());
             } else {
-                _host!.debugMessage(`SSH command failed (exit ${code}) on ${sshHost}: ${command}\n${stderr.trim()}`);
+                getHostAdapter().debugMessage(`SSH command failed (exit ${code}) on ${sshHost}: ${command}\n${stderr.trim()}`);
                 reject(new Error(`SSH command failed (exit ${code}) on ${sshHost}: ${command}\n${stderr.trim()}`));
             }
         });
 
         proc.on("error", (err) => {
             clearTimeout(timer);
-            _host!.debugMessage(`SSH process error on ${sshHost}: ${err.message}`);
+            getHostAdapter().debugMessage(`SSH process error on ${sshHost}: ${err.message}`);
             reject(new Error(`SSH process error on ${sshHost}: ${err.message}`));
         });
     });
@@ -157,14 +131,14 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
         throw new Error(`Unsupported remote OS/arch: "${unameOut}"`);
     }
 
-    const localBinary = path.join(_host!.getExtensionPath(), "bin", archDir, "mcu-debug");
+    const localBinary = path.join(getHostAdapter().getExtensionPath(), "bin", archDir, "mcu-debug");
     if (!fs.existsSync(localBinary)) {
         throw new Error(`Local helper binary not found for ${archDir}: ${localBinary}`);
     }
 
     await new Promise<void>((resolve, reject) => {
         const args = [sshHost, `mkdir -p ~/.mcu-debug/bin && rm -f ${REMOTE_HELPER_PATH} && cat > ${REMOTE_HELPER_PATH} && chmod +x ${REMOTE_HELPER_PATH}`];
-        _host!.debugMessage(`Deploying helper binary ${localBinary} to ${sshHost}: ssh ${args.join(" ")}`);
+        getHostAdapter().debugMessage(`Deploying helper binary ${localBinary} to ${sshHost}: ssh ${args.join(" ")}`);
         const proc = spawn("ssh", args);
 
         let stderr = "";
@@ -174,24 +148,24 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
 
         const timer = setTimeout(() => {
             proc.kill();
-            _host!.debugMessage(`Binary deploy to ${sshHost} timed out after ${SSH_DEPLOY_TIMEOUT_MS / 1000}s`);
+            getHostAdapter().debugMessage(`Binary deploy to ${sshHost} timed out after ${SSH_DEPLOY_TIMEOUT_MS / 1000}s`);
             reject(new Error(`Binary deploy to ${sshHost} timed out after ${SSH_DEPLOY_TIMEOUT_MS / 1000}s`));
         }, SSH_DEPLOY_TIMEOUT_MS);
 
         proc.on("exit", (code) => {
             clearTimeout(timer);
             if (code === 0) {
-                _host!.debugMessage(`Binary deploy to ${sshHost} succeeded`);
+                getHostAdapter().debugMessage(`Binary deploy to ${sshHost} succeeded`);
                 resolve();
             } else {
-                _host!.debugMessage(`Binary deploy to ${sshHost} failed (exit ${code}): ${stderr.trim()}`);
+                getHostAdapter().debugMessage(`Binary deploy to ${sshHost} failed (exit ${code}): ${stderr.trim()}`);
                 reject(new Error(`Binary deploy to ${sshHost} failed (exit ${code}): ${stderr.trim()}`));
             }
         });
 
         proc.on("error", (err) => {
             clearTimeout(timer);
-            _host!.debugMessage(`SSH deploy process error on ${sshHost}: ${err.message}`);
+            getHostAdapter().debugMessage(`SSH deploy process error on ${sshHost}: ${err.message}`);
             reject(new Error(`SSH deploy process error on ${sshHost}: ${err.message}`));
         });
 
@@ -199,7 +173,7 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
         readStream.on("error", (err) => {
             clearTimeout(timer);
             proc.kill();
-            _host!.debugMessage(`Failed to read local binary ${localBinary} on ${sshHost}: ${err.message}`);
+            getHostAdapter().debugMessage(`Failed to read local binary ${localBinary} on ${sshHost}: ${err.message}`);
             reject(new Error(`Failed to read local binary ${localBinary} on ${sshHost}: ${err.message}`));
         });
         readStream.pipe(proc.stdin!);
@@ -227,7 +201,7 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
     const remoteCmd = `${remoteHelperPath} proxy --port 0 --token ${token}`;
 
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
-        _host!.debugMessage(`Starting SSH proxy server on ${sshHost} with command: ssh ${sshHost} ${remoteCmd}`);
+        getHostAdapter().debugMessage(`Starting SSH proxy server on ${sshHost} with command: ssh ${sshHost} ${remoteCmd}`);
         const proc = spawn("ssh", [sshHost, remoteCmd]);
         let settled = false;
         let stdoutBuf = "";
@@ -249,12 +223,12 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
 
         proc.stderr?.on("data", (d: Buffer) => {
             const line = d.toString().trim();
-            _host!.debugMessage(`SSH proxy agent stderr on ${sshHost}: ${line}`);
+            getHostAdapter().debugMessage(`SSH proxy agent stderr on ${sshHost}: ${line}`);
         });
 
         proc.stdout?.on("data", (d: Buffer) => {
             stdoutBuf += d.toString();
-            _host!.debugMessage(`SSH proxy agent stdout on ${sshHost}: ${d.toString().trim()}`);
+            getHostAdapter().debugMessage(`SSH proxy agent stdout on ${sshHost}: ${d.toString().trim()}`);
             // Wait for a complete newline-terminated line
             const nl = stdoutBuf.indexOf("\n");
             if (nl === -1) {
@@ -305,7 +279,7 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
             } else {
                 sshAgentProcess = null;
                 if (code !== 0 && code !== null) {
-                    _host!.showError(`SSH proxy agent on ${sshHost} exited unexpectedly with code ${code}`);
+                    getHostAdapter().showError(`SSH proxy agent on ${sshHost} exited unexpectedly with code ${code}`);
                 }
             }
         });
@@ -342,8 +316,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             return; // reuse existing tunnel
         }
         const reason = !fingerprintMatch ? `launch config changed (${sshTunnelConfig?.sshHost} → ${sshHost})` : `per-session agent process exited unexpectedly`;
-        _host!.debugMessage(`Existing SSH tunnel invalidated: ${reason}. Restarting from scratch.`);
-        _host!.showWarning(`SSH tunnel restarting: ${reason}.`);
+        getHostAdapter().debugMessage(`Existing SSH tunnel invalidated: ${reason}. Restarting from scratch.`);
+        getHostAdapter().showWarning(`SSH tunnel restarting: ${reason}.`);
         killSshAgent();
         killSshTunnel();
     }
@@ -353,19 +327,19 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             try {
                 await sshCopyHelper(hostConfig);
             } catch (error) {
-                _host!.debugMessage(`Failed to deploy SSH helper binary to ${sshHost}: ${error}`);
-                _host!.showError(`Failed to deploy helper binary for SSH proxy: ${error}. Cannot start SSH tunnel.`);
+                getHostAdapter().debugMessage(`Failed to deploy SSH helper binary to ${sshHost}: ${error}`);
+                getHostAdapter().showError(`Failed to deploy helper binary for SSH proxy: ${error}. Cannot start SSH tunnel.`);
                 return Promise.reject(error);
             }
         }
         try {
             const result = await startSshProxyServer(hostConfig);
             proxyLaunchResults = result;
-            _host!.debugMessage(`SSH proxy server started on ${sshHost} with port ${result.serverPort}`);
+            getHostAdapter().debugMessage(`SSH proxy server started on ${sshHost} with port ${result.serverPort}`);
             sshPort = result && result.serverPort ? result.serverPort : undefined;
         } catch (error) {
-            _host!.debugMessage(`Failed to start SSH proxy server on ${sshHost}: ${error}`);
-            _host!.showError(`Failed to start SSH proxy server: ${error}. Cannot start SSH tunnel.`);
+            getHostAdapter().debugMessage(`Failed to start SSH proxy server on ${sshHost}: ${error}`);
+            getHostAdapter().showError(`Failed to start SSH proxy server: ${error}. Cannot start SSH tunnel.`);
             return Promise.reject(error);
         }
     }
@@ -379,7 +353,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     const cmdString = `ssh ${args.join(" ")}`;
 
     return new Promise<void>((resolve, reject) => {
-        _host!.debugMessage(`Starting SSH tunnel with command: ${cmdString}`);
+        getHostAdapter().debugMessage(`Starting SSH tunnel with command: ${cmdString}`);
         const proc = spawn("ssh", args);
         let settled = false;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -398,8 +372,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             cleanup();
             proc.kill();
             sshTunnelProcess = null;
-            _host!.debugMessage(`SSH tunnel failed to start for ${sshHost}: ${msg}`);
-            _host!.showError(`Failed to start SSH tunnel: ${msg}`);
+            getHostAdapter().debugMessage(`SSH tunnel failed to start for ${sshHost}: ${msg}`);
+            getHostAdapter().showError(`Failed to start SSH tunnel: ${msg}`);
             reject(new Error(msg));
         };
 
@@ -411,8 +385,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             cleanup();
             sshTunnelProcess = proc;
             sshTunnelConfig = { sshHost, sshPort, localPort, args, fingerprint };
-            _host!.showInfo(`SSH tunnel started: ${cmdString}`);
-            _host!.debugMessage(`SSH tunnel started for ${sshHost} on local port ${localPort}`);
+            getHostAdapter().showInfo(`SSH tunnel started: ${cmdString}`);
+            getHostAdapter().debugMessage(`SSH tunnel started for ${sshHost} on local port ${localPort}`);
             resolve();
         };
 
@@ -422,8 +396,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
                 fail(`SSH process exited prematurely (code ${code}). Check host and credentials: ${sshHost}`);
             } else {
                 if (code !== 0 && code !== null) {
-                    _host!.debugMessage(`SSH tunnel process for ${sshHost} exited with code ${code}`);
-                    _host!.showError(`SSH tunnel to ${sshHost} exited with code ${code}`);
+                    getHostAdapter().debugMessage(`SSH tunnel process for ${sshHost} exited with code ${code}`);
+                    getHostAdapter().showError(`SSH tunnel to ${sshHost} exited with code ${code}`);
                 }
                 sshTunnelProcess = null;
             }
@@ -469,14 +443,14 @@ let currentHostConfig: HostConfig | null = null;
 export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
     try {
         const command = "mcu-debug-proxy.startProxyServer";
-        const value = await _host!.executeProxyCommand<ProxyLaunchResults | null>(command, policy);
+        const value = await getHostAdapter().executeProxyCommand<ProxyLaunchResults | null>(command, policy);
         proxyLaunchResults = value;
         currentPolicy = policy;
         return value;
     } catch (error) {
         proxyLaunchResults = null;
         currentPolicy = null;
-        _host!.showError(`Failed to launch proxy server: ${error}, mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
+        getHostAdapter().showError(`Failed to launch proxy server: ${error}, mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
         return null;
     }
 }
@@ -484,7 +458,7 @@ export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy):
 export async function getCurrentProxyLaunchResults(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
     const command = "mcu-debug-proxy.getProxyResults";
     try {
-        const value = await _host!.executeProxyCommand<ProxyLaunchResults | null>(command);
+        const value = await getHostAdapter().executeProxyCommand<ProxyLaunchResults | null>(command);
         if (!value || !value.serverPort || value.serverPort <= 0) {
             proxyLaunchResults = null;
             return null;
@@ -495,7 +469,7 @@ export async function getCurrentProxyLaunchResults(policy: ProxyLaunchPolicy): P
         }
         return value;
     } catch {
-        _host!.showError(`Failed to get current proxy launch results. mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
+        getHostAdapter().showError(`Failed to get current proxy launch results. mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
         return null;
     }
 }
@@ -505,7 +479,7 @@ function resolveNetworkMode(hostConfig: HostConfig): ProxyNetworkMode | undefine
     if (!hostType) {
         return undefined;
     }
-    return resolveProxyNetworkMode(hostType, _host!.getRemoteName());
+    return resolveProxyNetworkMode(hostType, getHostAdapter().getRemoteName());
 }
 
 
@@ -514,7 +488,7 @@ async function resolveWslGatewayHost(): Promise<string | undefined> {
     // It reads os.networkInterfaces() directly and returns the IPv4 address of the
     // WSL virtual ethernet adapter — authoritative, not subject to DNS relay quirks.
     try {
-        const fromProxy = await _host!.executeProxyCommand<string | null>("mcu-debug-proxy.getWslHostIp");
+        const fromProxy = await getHostAdapter().executeProxyCommand<string | null>("mcu-debug-proxy.getWslHostIp");
         if (fromProxy) {
             return fromProxy;
         }
@@ -540,7 +514,7 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
     const promise = new Promise<void>((resolve, reject) => {
         // We need to spawn the proxy server on the local machine, but the DA will connect to it via the loopback interface,
         // so no network setup is needed. We can set the mode and return immediately.
-        const helperPath = getHelperExecutable(_host!.getExtensionPath());
+        const helperPath = getHelperExecutable(getHostAdapter().getExtensionPath());
         const token = crypto.randomBytes(16).toString("hex");
         let settled = false;
         let timeout: NodeJS.Timeout | undefined;
@@ -565,13 +539,13 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
             hostConfig.pvtProxyPort = port;
             hostConfig.pvtProxyToken = token;
             const args = ["proxy", "--port", port.toString(), "--token", token];
-            _host!.debugMessage(`Starting local proxy with command: ${helperPath} ${args.join(" ")}`);
+            getHostAdapter().debugMessage(`Starting local proxy with command: ${helperPath} ${args.join(" ")}`);
             localProxyProcess = spawn(helperPath, args, {
                 stdio: ["pipe", "pipe", "pipe"],
             });
             localProxyProcess.stdout?.on("data", (data: Buffer) => {
                 const line = data.toString().trim();
-                _host!.debugMessage(`Local proxy stdout: ${line}`);
+                getHostAdapter().debugMessage(`Local proxy stdout: ${line}`);
                 hostConfig.pvtProxyPort = port;
                 proxyLaunchResults = {
                     policy: computeProxyLaunchPolicy('local'),
@@ -585,22 +559,22 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
             });
             localProxyProcess.stderr?.on("data", (data: Buffer) => {
                 const line = data.toString().trim();
-                _host!.debugMessage(`Local proxy stderr: ${line}`);
+                getHostAdapter().debugMessage(`Local proxy stderr: ${line}`);
             });
             localProxyProcess.on("exit", (code) => {
                 cleanup();
-                _host!.debugMessage(`Local proxy process exited with code ${code}`);
+                getHostAdapter().debugMessage(`Local proxy process exited with code ${code}`);
                 if (code !== 0 && code !== null) {
-                    _host!.showError(`Local proxy process exited with code ${code}`);
+                    getHostAdapter().showError(`Local proxy process exited with code ${code}`);
                 }
             });
             localProxyProcess.on("error", (err) => {
                 cleanup();
-                _host!.debugMessage(`Local proxy process error: ${err.message}`);
-                _host!.showError(`Local proxy process error: ${err.message}`);
+                getHostAdapter().debugMessage(`Local proxy process error: ${err.message}`);
+                getHostAdapter().showError(`Local proxy process error: ${err.message}`);
             });
             localProxyProcess.on("spawn", () => {
-                _host!.debugMessage(`Local proxy process started on port ${port}`);
+                getHostAdapter().debugMessage(`Local proxy process started on port ${port}`);
             });
             timeout = setTimeout(() => {
                 if (!settled) {
@@ -619,7 +593,7 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
 export async function handleHostConfig(hostConfig: HostConfig | undefined, delConfig: () => void): Promise<void> {
     if (hostConfig && hostConfig.enabled) {
         if (!hostConfig.type || typeof hostConfig.type !== "string" || !["local", "ssh", "auto"].includes(hostConfig.type)) {
-            _host!.showWarning(
+            getHostAdapter().showWarning(
                 'hostConfig.type is required when hostConfig.enabled is true. Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).',
             );
             delConfig();
@@ -657,11 +631,11 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             // the Engineer Machine and reads the workspace folder URI authority
             // ("ssh-remote+HOSTNAME") — stable public API, no proposed API required.
             // Fall back to hostConfig.sshHost if the user provides it explicitly.
-            const hostFromProxy = await _host!.executeProxyCommand<string | null>("mcu-debug-proxy.getRemoteSshHost");
+            const hostFromProxy = await getHostAdapter().executeProxyCommand<string | null>("mcu-debug-proxy.getRemoteSshHost");
             const sshHostForReverse = hostConfig.sshHost || hostFromProxy || undefined;
             if (!sshHostForReverse) {
                 const msg = "auto-ssh-remote: could not determine SSH host from mcu-debug-proxy. Please specify hostConfig.sshHost explicitly.";
-                _host!.showError(msg);
+                getHostAdapter().showError(msg);
                 throw new Error(msg);
             }
 
@@ -683,12 +657,12 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 }
             }
             if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
-                _host!.showError("mcu-debug-proxy did not return a valid port");
+                getHostAdapter().showError("mcu-debug-proxy did not return a valid port");
                 throw new Error("mcu-debug-proxy did not return a valid port");
             }
             if (!proxyLaunchResults.reverseTunnelPort || proxyLaunchResults.reverseTunnelPort <= 0) {
                 const msg = `SSH reverse tunnel to ${sshHostForReverse} did not return a valid remote port`;
-                _host!.showError(msg);
+                getHostAdapter().showError(msg);
                 throw new Error(msg);
             }
 
@@ -704,8 +678,8 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 await handleLocalHostConfig(hostConfig);
                 currentHostConfig = { ...hostConfig };
             } catch (error) {
-                _host!.debugMessage(`Failed to start local proxy server: ${error}`);
-                _host!.showError(`Failed to start local proxy server: ${error}. Cannot use local proxy configuration.`);
+                getHostAdapter().debugMessage(`Failed to start local proxy server: ${error}`);
+                getHostAdapter().showError(`Failed to start local proxy server: ${error}. Cannot use local proxy configuration.`);
                 throw error;
             }
         } else if (resolvedMode) {
@@ -746,7 +720,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 }
             }
             if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
-                _host!.showError("mcu-debug-proxy did not return a valid port");
+                getHostAdapter().showError("mcu-debug-proxy did not return a valid port");
                 throw new Error("mcu-debug-proxy did not return a valid port");
             }
             if (isWslNatMode) {
@@ -761,7 +735,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 // succeeds and this modal is never shown.
                 let reachable = await tcpReachable(resolvedProxyHost, proxyLaunchResults.serverPort, 2000);
                 if (!reachable) {
-                    const choice = await _host!.showErrorWithChoice(
+                    const choice = await getHostAdapter().showErrorWithChoice(
                         `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
                         "A Windows Security Alert may have appeared — switch to Windows, click \"Allow access\", " +
                         "then click Retry.",
@@ -777,7 +751,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                             `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
                             "Windows Firewall is still blocking the connection. " +
                             "Set hostConfig.wslProxyPort to a port you have opened in Windows Firewall.";
-                        _host!.showError(msg);
+                        getHostAdapter().showError(msg);
                         throw new Error(msg);
                     }
                 }
@@ -786,7 +760,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
             currentHostConfig = { ...hostConfig };
         } else {
-            _host!.showWarning(
+            getHostAdapter().showWarning(
                 `Unknown hostConfig.type "${hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`,
             );
             delConfig;
@@ -810,7 +784,7 @@ export async function getProxyForSerialPorts(hostConfig: HostConfig | undefined)
         try {
             if (!hostConfig) {
                 hostConfig = {
-                    type: _host!.getRemoteName() ? "auto" : "local",
+                    type: getHostAdapter().getRemoteName() ? "auto" : "local",
                     enabled: true,
                 }
             }

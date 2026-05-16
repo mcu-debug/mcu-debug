@@ -3,9 +3,9 @@ import * as fs from "fs";
 import { RTTConsoleDecoderOpts, TerminalInputMode, TextEncoding, BinaryEncoding, HrTimer } from "../adapter/servers/common";
 import { magentaWrite } from "../common/ansi-helpers";
 import { decoders as DECODER_MAP } from "../common/swo/decoders/utils";
-import { SocketIOSource, SocketRTTSource, SocketUARTSource } from "../common/swo/sources/socket";
+import { SocketIOSource } from "../common/swo/sources/socket";
 import { RESET } from "../common/ansi-helpers";
-import { createTerminalUniqueName, getUUid, ManagedTab, ManagedTabConsole } from "./views/ManagedTab";
+import { createTerminalUniqueName, getUUidPrefixed, ManagedTab, ManagedTabConsole } from "./views/ManagedTab";
 import { TabKind } from "@mcu-debug/shared";
 import { EventEmitter } from "stream";
 
@@ -18,7 +18,6 @@ export class IOTerminal extends EventEmitter {
     protected hrTimer: HrTimer = new HrTimer();
 
     constructor(
-        protected context: vscode.ExtensionContext,
         public options: RTTConsoleDecoderOpts,
         src: SocketIOSource,
         private readonly kind: TabKind = "rtt",
@@ -190,7 +189,7 @@ export class IOTerminal extends EventEmitter {
 
     protected createTerminal() {
         const baseName = this.createTermName(this.source, this.options, null);
-        const uuid = getUUid(this.kind.toUpperCase());
+        const uuid = getUUidPrefixed(this.kind.toUpperCase());
         const mode = (this.options.inputmode === TerminalInputMode.RAW) ? "raw" : "cooked";
 
         const [name, terminal, isNew] = createTerminalUniqueName<ManagedTabConsole>(baseName, (nm: string) => {

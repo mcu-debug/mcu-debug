@@ -1,8 +1,45 @@
 import { ChainedConfig, HostConfig } from "../adapter/servers/common";
 import { SymbolInformation } from "../adapter/symbols";
+import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { SWORTTAdvancedProcessor } from "./swo/decoders/advanced";
 import { SWORTTGraphProcessor } from "./swo/decoders/graph";
 import { GraphConfiguration, GrapherMessage } from "./swo/common";
+import { EventEmitter } from "stream";
+
+/**
+ * Platform-agnostic debug configuration — mirrors vscode.DebugConfiguration.
+ * Both ConfigurationArguments and vscode.DebugConfiguration are structurally
+ * compatible with this interface.
+ */
+export interface IDebugConfiguration {
+    name: string;
+    request: string;
+    [key: string]: any;
+}
+
+/**
+ * Platform-agnostic debug session — mirrors vscode.DebugSession.
+ * vscode.DebugSession is structurally assignable to this interface.
+ * The CLI adapter will supply its own implementation.
+ */
+export interface IDebugSession {
+    readonly id: string;
+    readonly type: string;
+    readonly name: string;
+    readonly parentSession?: IDebugSession;
+    readonly configuration: IDebugConfiguration;
+    customRequest(command: string, args?: any): Thenable<any>;
+}
+
+export interface ISerialPortView {
+    readonly emitter: EventEmitter;
+    setTcpPort(port: number): void;
+    setLogFile(log_file: string | undefined): void;
+    setInputMode(input_mode: string | undefined): void;
+    notifyConnected(reason: string): void;
+    notifyReconnected(): void;
+    notifyDisconnected(reason: string): void;
+}
 
 export interface ISWORTTView {
     sendMessage(message: GrapherMessage): void;
@@ -89,6 +126,12 @@ export interface IHostAdapter {
     getGdbServerConsolePort(): number;
     /** Set of TCP ports already in use by active debug sessions. */
     getUsedPorts(): number[];
+    /**
+     * Stop a debug session.
+     * VS Code: vscode.debug.stopDebugging(session).
+     * CLI: terminate the associated debug process.
+     */
+    stopDebugging(session: IDebugSession): void;
 
     // ── Host config / proxy setup ─────────────────────────────────────────────
     /**
@@ -144,6 +187,23 @@ export interface IHostAdapter {
      * loadFunctionSymbols is used to find the PC address with SWO
      */
     loadFunctionSymbols(session: any): SymbolInformation[];
+
+    /**
+     * Create (or reuse) a serial port view for the given device.
+     * The VS Code adapter returns a ManagedTab-backed SerialPortView.
+     * A CLI adapter may return a stdout/readline-based implementation.
+     */
+    createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, tcpPort: number): ISerialPortView;
+
+    /**
+     * Show a quick-pick list of labeled items and return the selected label,
+     * or undefined if the user dismissed. CLI adapter may print the list and
+     * return undefined.
+     */
+    showQuickPick(
+        items: { label: string; description?: string; detail?: string }[],
+        opts?: { title?: string; placeHolder?: string }
+    ): Promise<string | undefined>;
 }
 
 // ── Global singleton ─────────────────────────────────────────────────────────

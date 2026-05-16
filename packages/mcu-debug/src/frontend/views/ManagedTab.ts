@@ -19,7 +19,7 @@ import type { TabDescriptor, TabInputMode, TabKind, TabState, ToUi, FromUi } fro
 import { CockpitPanel } from "./CockpitPanel";
 
 const allUUids = new Set<string>();
-export function getUUid(baseName: string): string {
+export function getUUidPrefixed(baseName: string): string {
     let uuid = "";
     do {
         uuid = `${baseName}-${Math.random().toString(16).substring(2, 10)}`;

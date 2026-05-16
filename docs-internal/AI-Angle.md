@@ -9,7 +9,8 @@ To provide a high-bandwidth, autonomous debugging bridge that allows AI agents (
 ### **1. System Architecture**
 The system uses a **Node.js Orchestrator** to manage the lifecycle of the debug session, leveraging existing VS Code configurations.
 
-* **Config Source:** Uses `launch.json` as the Single Source of Truth (SSOT) for paths, toolchains, and GDB-server parameters. Outside VS Code, `${config:...}` variables are resolved via `mcu-debug-settings.json` — see [cli-config.md](cli-config.md). The CLI is a pure Rust binary (`mcu-debug`) with no DAP layer — direct GDB — see [cli-architecture.md](cli-architecture.md).
+* **Config Source:** Uses `launch.json` as the Single Source of Truth (SSOT) for paths, toolchains, and GDB-server parameters. Outside VS Code, `${config:...}` variables are resolved via `mcu-debug-settings.json` — see [cli-config.md](cli-config.md). ~~The CLI is a pure Rust binary (`mcu-debug`) with no DAP layer — direct GDB — see [cli-architecture.md](cli-architecture.md)~~The CLI is a Node program [cli-architecture.md](cli-architecture.md) leveraging the existing DAP/DA for startup/pause/resume/quit and other setup for RTT/SWO etc.
+* 
 * **Process Management:** Instead of `node-pty` (which adds ANSI complexity for AI), use `child_process.spawn` for raw, sequential data streams.
 * **The Multiplexer (Mux):** All data sources are tagged and piped to a single `stdout` stream for the AI.
     * `[GDB]`: Standard GDB machine-interface or text output.
@@ -82,7 +83,7 @@ The hybrid UI is a VS Code `WebviewPanel` using **xterm.js** (canvas renderer) f
 │                                         │
 │                                         │
 ├─────────────────────────────────────────┤
-│ ⚑ AI REQUEST  (sticky, fixed height)   │  ← [AI-REQUEST] — persists until cleared
+│ ⚑ AI REQUEST  (sticky, fixed height)    │  ← [AI-REQUEST] — persists until cleared
 │  → Press SW2 to trigger the ISR         │
 ├─────────────────────────────────────────┤
 │ > [USER-REQUEST input line]             │  ← engineer types here
@@ -301,16 +302,16 @@ The SKILL.md instruction for the AI is one line: *"To attach to a debug session,
 
 The DA code is not being replaced or rewritten — it gets a **second entry point** called the CLI Driver. VS Code drives it via DAP today; the CLI Driver calls the same session logic in-process, directly. See [cli-architecture.md](cli-architecture.md) for the full design.
 
-| Component | Language | Responsibility |
-|---|---|---|
-| DA session logic | TypeScript | GDB, gdb-server controllers, RTT/SWO/UART, session lifecycle — **unchanged** |
-| VS Code entry point | TypeScript | Existing DAP server, uses `VscodeAdapter` for `vscode.*` calls — **unchanged** |
-| CLI Driver (`cli-driver.ts`) | TypeScript | New entry point: drives session directly (in-process), uses `CliAdapter`, exposes mux stream over TCP channel to Rust |
-| `IHostAdapter` / `VscodeAdapter` / `CliAdapter` | TypeScript | Adapter pattern that abstracts `vscode.*` API calls — the main refactoring work |
-| `mcu-debug debug` | Rust | Bootstrap: checks Node >= 22, spawns Node with bundled JS, owns terminal |
-| `mcu-debug debug` (TUI mode) | Rust + ratatui | Three-region TUI when stdout is a TTY; connects to Node via TCP session socket |
-| `mcu-debug debug` (headless mode) | Rust | exec-replaces self with Node; AI reads mux stream directly from Node stdout |
-| `mcu-debug attach` | Rust | Joins an existing session socket — human or AI late-attacher (same protocol as TUI) |
+| Component                                       | Language       | Responsibility                                                                                                        |
+| ----------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------- |
+| DA session logic                                | TypeScript     | GDB, gdb-server controllers, RTT/SWO/UART, session lifecycle — **unchanged**                                          |
+| VS Code entry point                             | TypeScript     | Existing DAP server, uses `VscodeAdapter` for `vscode.*` calls — **unchanged**                                        |
+| CLI Driver (`cli-driver.ts`)                    | TypeScript     | New entry point: drives session directly (in-process), uses `CliAdapter`, exposes mux stream over TCP channel to Rust |
+| `IHostAdapter` / `VscodeAdapter` / `CliAdapter` | TypeScript     | Adapter pattern that abstracts `vscode.*` API calls — the main refactoring work                                       |
+| `mcu-debug debug`                               | Rust           | Bootstrap: checks Node >= 22, spawns Node with bundled JS, owns terminal                                              |
+| `mcu-debug debug` (TUI mode)                    | Rust + ratatui | Three-region TUI when stdout is a TTY; connects to Node via TCP session socket                                        |
+| `mcu-debug debug` (headless mode)               | Rust           | exec-replaces self with Node; AI reads mux stream directly from Node stdout                                           |
+| `mcu-debug attach`                              | Rust           | Joins an existing session socket — human or AI late-attacher (same protocol as TUI)                                   |
 
 #### **Three UI modes**
 
@@ -374,11 +375,11 @@ UART is supported alongside RTT and SWO with the same model: tagged stream, bidi
 
 Each medium uses the identifier most natural to it:
 
-| Source | Default tag | User-labeled tag |
-|---|---|---|
-| RTT | `[RTT#0]`, `[RTT#1]` (channel number) | `[RTT:Console]` |
-| UART | `[UART:ttyUSB0]`, `[UART:COM3]` (port basename) | `[UART:DebugUART]` |
-| SWO | `[SWO]` (single source) | n/a |
+| Source | Default tag                                     | User-labeled tag   |
+| ------ | ----------------------------------------------- | ------------------ |
+| RTT    | `[RTT#0]`, `[RTT#1]` (channel number)           | `[RTT:Console]`    |
+| UART   | `[UART:ttyUSB0]`, `[UART:COM3]` (port basename) | `[UART:DebugUART]` |
+| SWO    | `[SWO]` (single source)                         | n/a                |
 
 Existing collision-resolution logic (already in place for RTT/SWO labels) handles the rare case of duplicate basenames (e.g. macOS `/dev/cu.X` and `/dev/tty.X`).
 

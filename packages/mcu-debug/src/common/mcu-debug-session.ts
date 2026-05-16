@@ -1,9 +1,9 @@
 import { assert } from "console";
-import * as vscode from "vscode";
 import { ConfigurationArguments, ChainedConfig } from "../adapter/servers/common";
-import { RTTCore, SWOCore } from "../common/swo/swo-core";
-import { SWORTTSource } from "../common/swo/sources/common";
-import { SocketRTTSource, SocketUARTSource } from "../common/swo/sources/socket";
+import { RTTCore, SWOCore } from "./swo/swo-core";
+import { SWORTTSource } from "./swo/sources/common";
+import { SocketRTTSource, SocketUARTSource } from "./swo/sources/socket";
+import { IDebugConfiguration, IDebugSession, getHostAdapter } from "./host-adapter";
 
 export class CDebugSession {
     public swo: SWOCore | null = null;
@@ -19,12 +19,12 @@ export class CDebugSession {
     protected parent: CDebugSession | null = null;
     protected children: CDebugSession[] = [];
     public static CurrentSessions: CDebugSession[] = []; // This may stuff that never fully got created
-    private static ROOT = new CDebugSession({} as vscode.DebugSession, {} as ConfigurationArguments, true); // Dummy node for all sessions trees
+    private static ROOT = new CDebugSession({} as IDebugSession, {} as ConfigurationArguments, true); // Dummy node for all sessions trees
     public usedPorts: Set<number> = new Set<number>();
 
     constructor(
-        public session: vscode.DebugSession,
-        public config: ConfigurationArguments | vscode.DebugConfiguration,
+        public session: IDebugSession,
+        public config: ConfigurationArguments | IDebugConfiguration,
         isRoot: boolean = false,
     ) {
         if (!isRoot) {
@@ -85,11 +85,11 @@ export class CDebugSession {
 
     public stopAll() {
         this.broadcastDFS((arg) => {
-            vscode.debug.stopDebugging(arg.session!);
+            getHostAdapter().stopDebugging(arg.session!);
         });
     }
 
-    public static RemoveSession(session: vscode.DebugSession) {
+    public static RemoveSession(session: IDebugSession) {
         const s = CDebugSession.FindSession(session);
         if (s) {
             s.status = "exited";
@@ -100,7 +100,7 @@ export class CDebugSession {
         }
     }
 
-    public static FindSession(session: vscode.DebugSession) {
+    public static FindSession(session: IDebugSession) {
         return CDebugSession.FindSessionById(session.id);
     }
 
@@ -109,7 +109,7 @@ export class CDebugSession {
         return ret;
     }
 
-    public static GetSession(session: vscode.DebugSession, config?: ConfigurationArguments): CDebugSession {
+    public static GetSession(session: IDebugSession, config?: ConfigurationArguments): CDebugSession {
         const prev = CDebugSession.FindSessionById(session.id);
         if (prev) {
             prev.config = config || prev.config;
@@ -119,13 +119,15 @@ export class CDebugSession {
     }
 
     // Call this method after session actually started. It inserts new session into the session tree
-    public static NewSessionStarted(session: vscode.DebugSession): CDebugSession {
+    public static NewSessionStarted(session: IDebugSession): CDebugSession {
         const newSession = CDebugSession.GetSession(session); // May have already in the global list
         newSession.status = "started";
         if (session.parentSession && session.parentSession.type === "mcu-debug") {
             const parent = CDebugSession.FindSession(session.parentSession);
             if (!parent) {
-                vscode.window.showErrorMessage(`Internal Error: Have parent for new session, Parent = ${session.parentSession.name} but can't find it`);
+                getHostAdapter().showError(
+                    `Internal Error: Have parent for new session, Parent = ${session.parentSession.name} but can't find it`,
+                );
             } else {
                 parent.add(newSession); // Insert into tree
             }
@@ -154,12 +156,12 @@ export class CDebugSession {
     }
 }
 
-export class CDebugChainedSessionItem {
+export class CDebugChainedSessionItem<TSessionOptions = unknown> {
     public static SessionsStack: CDebugChainedSessionItem[] = [];
     constructor(
         public parent: CDebugSession,
         public config: ChainedConfig,
-        public options: vscode.DebugSessionOptions,
+        public options: TSessionOptions,
     ) {
         CDebugChainedSessionItem.SessionsStack.push(this);
     }

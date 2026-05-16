@@ -3,7 +3,7 @@ import { SWORTTDecoder } from "./common";
 import { SWOBinaryDecoderConfig, SWOConsoleDecoderConfig } from "../common";
 import { Packet } from "../common";
 import { HrTimer, TerminalInputMode, TextEncoding } from "../../../adapter/servers/common";
-import { getUUid, createTerminalUniqueName, ManagedTabConsole } from "../../../frontend/views/ManagedTab";
+import { getUUidPrefixed, createTerminalUniqueName, ManagedTabConsole } from "../../../frontend/views/ManagedTab";
 import { getHostAdapter } from "../../host-adapter";
 
 export class SWOConsoleProcessor implements SWORTTDecoder {
@@ -47,7 +47,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
     public static createTerminal(config: SWOConsoleDecoderConfig | SWOBinaryDecoderConfig, closeCallback: () => void): ManagedTabConsole {
         const baseName = SWOConsoleProcessor.createName(config);
         let [name, terminal, isNew] = createTerminalUniqueName<ManagedTabConsole>(baseName, (nm: string) => {
-            const uuid = getUUid('SWO');
+            const uuid = getUUidPrefixed('SWO');
             const ret = new ManagedTabConsole(uuid, nm, "swo", "tx");
             return ret;
         });

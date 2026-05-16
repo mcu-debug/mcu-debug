@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { createTerminalUniqueName, getUUid, ManagedTabConsole } from "./views/ManagedTab";
+import { createTerminalUniqueName, getUUidPrefixed, ManagedTabConsole } from "./views/ManagedTab";
 import { magentaWrite } from "../common/ansi-helpers";
 import { getAnyFreePort } from "../adapter/servers/common";
 
@@ -82,7 +82,7 @@ export class GDBServerConsoleInstance {
 
     private setupTerminal() {
         const baseName = "gdb-server";
-        const uuid = getUUid(baseName);
+        const uuid = getUUidPrefixed(baseName);
         const [name, terminal, isNew] = createTerminalUniqueName(baseName, (nm: string) => {
             const ret = new ManagedTabConsole(uuid, nm, "console", "both", "Enter input for gdb-server");
             return ret;
