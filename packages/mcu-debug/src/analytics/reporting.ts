@@ -51,7 +51,7 @@ export class Reporting {
         } else if (opts.rttConfig?.enabled) {
             props.RTT = "Used";
         }
-        if (opts.graphConfig.length > 0) {
+        if (opts.graphConfig && opts.graphConfig.length > 0) {
             props.Graphing = "Used";
         }
         reporter.sendTelemetryEvent("session-started", props);

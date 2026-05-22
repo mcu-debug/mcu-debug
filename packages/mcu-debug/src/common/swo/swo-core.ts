@@ -198,7 +198,7 @@ interface ConfigurationArguments {
         enabled: boolean;
         decoders: RTTCommonDecoderOpts[];
     };
-    graphConfig: GraphConfiguration[];
+    graphConfig?: GraphConfiguration[];
 }
 export class SWORTTCoreBase {
     protected webview: ISWORTTView | null = null;
@@ -254,7 +254,7 @@ export class SWOCore extends SWORTTCoreBase {
         this.source.on("data", this.handleData.bind(this));
         this.source.on("disconnected", this.handleDisconnected.bind(this));
 
-        if (args.graphConfig.length >= 1) {
+        if (args.graphConfig && args.graphConfig.length >= 1) {
             this.webview = getHostAdapter().createSWORTTWebView(extensionPath, args.graphConfig);
             //new SWOWebview(extensionPath, args.graphConfig);
         }
@@ -453,7 +453,7 @@ export class RTTCore extends SWORTTCoreBase {
     ) {
         super();
 
-        if (args.graphConfig.length >= 1) {
+        if (args.graphConfig && args.graphConfig.length >= 1) {
             this.webview = getHostAdapter().createSWORTTWebView(extensionPath, args.graphConfig);
             // this.webview = new SWOWebview(extensionPath, args.graphConfig);
         }

@@ -4,8 +4,6 @@ import * as net from "net";
 import { parseHostPort, SocketTimout } from "../../../adapter/servers/common";
 import { getHostAdapter } from "../../host-adapter";
 import { TextDecoder } from "util";
-import { setFlagsFromString } from "v8";
-import { MCUDebugChannel } from "../../../dbgmsgs";
 import { WaitForPort, WaitForPortArgs, ReturnObject, Decoder, DecoderSpec } from "@mcu-debug/shared";
 import path from "path";
 const TimerInterval = 250;
@@ -54,7 +52,7 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
                 timeout: timeout,
                 callbacks: {
                     starting: () => {
-                        MCUDebugChannel.debugMessage(`Starting connection to SWO/RTT port ${this.tcpPort}\n`);
+                        getHostAdapter().debugMessage(`Starting connection to SWO/RTT port ${this.tcpPort}\n`);
                     },
                     setup: (socket: net.Socket) => {
                         // This will be called once per try when a socket is created. Set everything up so we
@@ -82,12 +80,12 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
                         this.client = socket;
                         this.connected = true;
                         this.emit("connected");
-                        MCUDebugChannel.debugMessage(`Connected SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}, elapsed=${delta}ms`);
+                        getHostAdapter().debugMessage(`Connected SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}, elapsed=${delta}ms`);
                         this.nTries++;
                     },
                     tryConnect: () => {
                         const delta = Date.now() - start;
-                        MCUDebugChannel.debugMessage(`Trying SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}, elapsed=${delta}ms`);
+                        getHostAdapter().debugMessage(`Trying SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}, elapsed=${delta}ms`);
                         this.nTries++;
                     },
                     timeout: () => {
@@ -131,7 +129,7 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
                     this.timer = undefined;
                     this.connected = true;
                     this.emit("connected");
-                    MCUDebugChannel.debugMessage(`Connected SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}\n`);
+                    getHostAdapter().debugMessage(`Connected SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}\n`);
                     resolve();
                 });
                 this.client.on("data", (buffer) => {
@@ -158,14 +156,14 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
                         const delta = Date.now() - start;
                         if (delta > timeout) {
                             (e as any).message = `Error: Failed to connect to port ${this.tcpPort} ${code}`;
-                            MCUDebugChannel.debugMessage(`Failed ECONNREFUSED SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}`);
+                            getHostAdapter().debugMessage(`Failed ECONNREFUSED SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}`);
                             this.connError = e;
                             this.emit("error", e);
                             reject(e);
                             this.dispose();
                         } else {
                             if (this.nTries % 10 === 0) {
-                                MCUDebugChannel.debugMessage(`Trying SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}`);
+                                getHostAdapter().debugMessage(`Trying SWO/RTT port ${this.tcpPort}, nTries = ${this.nTries}`);
                             }
                             retry = true;
                             this.nTries++;
@@ -198,7 +196,7 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
             }
         } catch (e) {
             // For debug only
-            MCUDebugChannel.debugMessage(`SWO/RTT socket destroy error ${e}`);
+            getHostAdapter().debugMessage(`SWO/RTT socket destroy error ${e}`);
         }
     }
 
@@ -483,7 +481,7 @@ export class PeMicroSocketSource extends SocketSWOSource {
                 }
                 offset = offset + header.dataLength;
             } catch (err: any) {
-                MCUDebugChannel.debugMessage("SWO/RTT socket: " + err.message);
+                getHostAdapter().debugMessage("SWO/RTT socket: " + err.message);
                 // If we couldn't decode the header, just discard the data.
                 // Its probably garbage or out of sync, so upstream would be confused anyway
             }

@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { GDBDebugSession } from "./gdb-session";
 import { GDBServerSession } from "./server-session";
-import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, awaitWithTimeout, getEnvFromConfig } from "./servers/common";
+import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, awaitWithTimeout, processEnvForConfig } from "./servers/common";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { PortReserved } from "@mcu-debug/shared/proxy-protocol/PortReserved";
@@ -407,7 +407,7 @@ export class ProxyClient extends EventEmitter {
                 config_args: this.session.args,
                 server_path: executable,
                 server_args: args,
-                server_env: getEnvFromConfig(this.session.args),
+                server_env: processEnvForConfig(this.session.args),
                 // server_cwd: serverCwd,
                 server_regexes: regexes.map((r) => r.source),
             },

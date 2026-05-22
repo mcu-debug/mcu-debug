@@ -3919,8 +3919,9 @@
   },
   "dependencies": {
     "@vscode/codicons": "^0.0.44",
+    "commander": "^14.0.3",
     "glob": "^13.0.6",
-    "sorted-array-type": "^1.3.0",
-    "ts-command-line-args": "^2.5.1"
+    "jsonc-simple-parser": "^3.0.0",
+    "sorted-array-type": "^1.3.0"
   }
 }

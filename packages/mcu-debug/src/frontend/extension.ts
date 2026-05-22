@@ -5,7 +5,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 
-import { MCUDebugChannel } from "../dbgmsgs";
+import { MCUDebugChannel } from "./dbgmsgs";
 import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
 import { EditableTreeViewProvider } from "./webview_tree/editable-tree";
 import { CockpitPanel } from "./views/CockpitPanel";
@@ -28,6 +28,8 @@ import { IOTerminal } from "./io-terminal";
 import { GDBServerConsole } from "./server-console";
 import { CDebugSession, CDebugChainedSessionItem } from "../common/mcu-debug-session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
+import { logger } from '../common/logger';
+import { VscodeOutputChannelTransport } from './vscode-transport';
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "@mcu-debug/shared";
 interface SVDInfo {
@@ -865,6 +867,7 @@ export async function activate(context: vscode.ExtensionContext) {
         setHostAdapter(new VscodeAdapter(context));
         Reporting.activateTelemetry(context);
         MCUDebugChannel.createDebugChannel();
+        logger.add(new VscodeOutputChannelTransport(MCUDebugChannel.outputChannel, { level: 'debug' }));
         const packageJson = context.extension.packageJSON;
         const version = packageJson.version || "unknown";
         MCUDebugChannel.debugMessage(`Starting mcu-debug extension. Version = ${version}, Path = ${context.extensionPath}, PID=${process.pid}`);

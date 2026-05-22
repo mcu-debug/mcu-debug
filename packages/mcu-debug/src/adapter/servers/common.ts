@@ -365,7 +365,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     serialConfig?: SerialConfig;
     liveWatch: LiveWatchConfig;
     hostConfig?: HostConfig;
-    graphConfig: any[];
+    graphConfig?: any[];
     /// Triple slashes will cause the line to be ignored by the options-doc.py script
     /// We don't expect the following to be in booleann form or have the value of 'none' after
     /// The config provider has done the conversion. If it exists, it means output 'something'
@@ -388,7 +388,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     pvtMyConfigFromParent: ChainedConfig; // My configuration coming from the parent
     pvtAvoidPorts: number[];
     pvtOpenOCDDebug: boolean;
-    env: { [key: string]: string };
+    env?: { [key: string]: string };
     envFile?: string;
 
     numberOfProcessors: number;
@@ -1311,27 +1311,39 @@ export function getHelperExecutable(extPath: string): string {
     }
 }
 
-// Escape sequences: \\ → \, \n → newline, \r → CR, \t → tab, \${VAR} → literal ${VAR}, \x → x.
-// Variable substitution: ${VAR} → env value. Use \${VAR} to suppress substitution.
-// \\${VAR} gives a literal backslash followed by the substituted value.
-function processEnvVarsAndEscapes(str: string, env: { [key: string]: string }, errFn?: (msg: string) => void): string {
-    return str.replace(/\\(\\|\$\{[^}]+\}|[\s\S])|(\$\{([^}]+)\})/g, (match, escaped, _varRef, varName) => {
+// processVarSubstitution — generic prefix-aware variable substitution with escape handling.
+//
+// prefix    : the string between "${" and the variable name, e.g. "env:", "config:", or "" for bare ${VAR}.
+// vars      : map of variable name → replacement value.
+// errFn     : optional callback invoked for each missing variable.
+//
+// Escape sequences (always processed regardless of prefix):
+//   \\  → \        \n → newline    \r → CR    \t → tab
+//   \${<prefix>VAR}  → literal ${<prefix>VAR}  (suppresses substitution)
+//   \<x>  → x       (any other character)
+// Substitution:
+//   ${<prefix>VAR}   → vars[VAR] if defined, otherwise the original match is kept and errFn is called.
+//   \\${<prefix>VAR} → literal \ followed by the substituted value (the escape only covers the backslash).
+export function processVarSubstitution(str: string, vars: { [key: string]: string }, prefix: string, errFn?: (msg: string) => void): string {
+    const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\\\(\\\\|\\$\\{${esc}[^}]+\\}|[\\s\\S])|(\\$\\{${esc}([^}]+)\\})`, 'g');
+    return str.replace(re, (match, escaped, _varRef, varName) => {
         if (escaped !== undefined) {
             if (escaped === '\\') { return '\\'; }
             if (escaped === 'n') { return '\n'; }
             if (escaped === 'r') { return '\r'; }
             if (escaped === 't') { return '\t'; }
-            return escaped; // \${VAR} → ${VAR}, \g → g, etc.
+            return escaped; // \${<prefix>VAR} → ${<prefix>VAR}, \g → g, etc.
         }
-        if (env[varName] !== undefined) {
-            return env[varName];
+        if (vars[varName] !== undefined) {
+            return vars[varName];
         }
-        errFn?.(`Environment variable "${varName}" not found for substitution in "${str}"`);
+        errFn?.(`Variable "\${${prefix}${varName}}" not found for substitution in "${str}"`);
         return match;
     });
 }
 
-export function getEnvFromConfig(args: ConfigurationArguments, errFn?: (msg: string) => void): { [key: string]: string } {
+export function processEnvForConfig(args: ConfigurationArguments, errFn?: (msg: string) => void): { [key: string]: string } {
     const env: { [key: string]: string } = {};
     const envMap: { [key: string]: string } = {};
     for (const key in process.env) {
@@ -1345,7 +1357,7 @@ export function getEnvFromConfig(args: ConfigurationArguments, errFn?: (msg: str
     if (args.env) {
         for (const key in args.env) {
             if (Object.prototype.hasOwnProperty.call(args.env, key)) {
-                env[key] = processEnvVarsAndEscapes(args.env[key], envMap, errFn);
+                env[key] = processVarSubstitution(args.env[key], envMap, 'env:', errFn);
             }
         }
     }
@@ -1363,7 +1375,7 @@ export function getEnvFromConfig(args: ConfigurationArguments, errFn?: (msg: str
                     const key = line.substring(0, ix).trim();
                     let value = line.substring(ix + 1).trim();
                     if (key) {
-                        env[key] = processEnvVarsAndEscapes(value, envMap, errFn);
+                        env[key] = processVarSubstitution(value, envMap, 'env:', errFn);
                     }
                 }
             }
@@ -1384,11 +1396,11 @@ export function substituteEnvVarsInConfig(args: any, errFn?: (msg: string) => vo
         return args;
     }
     const savedEnvFile = args.envFile; // getEnvFromConfig clears envFile; restore it after the round-trip for debugging/DA visibility
-    getEnvFromConfig(args, errFn); // resolves args.env (merging envFile entries) and clears args.envFile
+    processEnvForConfig(args, errFn); // resolves args.env (merging envFile entries) and clears args.envFile
 
     const env = args.env || {};
     const jsonStr = JSON.stringify(args); // envFile is absent here, preventing it from being mangled by substitution
-    const substitutedStr = processEnvVarsAndEscapes(jsonStr, env, errFn);
+    const substitutedStr = processVarSubstitution(jsonStr, env, 'env:', errFn);
     let substitutedArgs: any;
     try {
         substitutedArgs = JSON.parse(substitutedStr);

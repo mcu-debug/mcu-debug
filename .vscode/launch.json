@@ -72,6 +72,27 @@
       		// "preLaunchTask": "npm: compile"
 		},
 		{
+			"name": "Debug CLI",
+			"type": "node",
+			"request": "launch",
+			// "cwd": "${workspaceFolder}",
+			"cwd": "/Users/hdm/mtw37/Hello_World",
+			"runtimeArgs": [ "--nolazy", "--trace-warnings"],//, "--unhandled-rejections=strict" ],
+			"program": "${workspaceFolder}/packages/mcu-debug/dist/mcu-debug-cli.js",
+			"console": "internalConsole",
+			"outputCapture": "std",
+			"args": [ "--log-level", "debug", "-c", "0" ],
+			"env": {
+				"RUST_BACKTRACE": "1",
+				"PROD_MCU_DEBUG_HELPER": "0"
+			},
+			"sourceMaps": true,
+			"outFiles": [
+				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
+			],
+	  		"preLaunchTask": "npm: compile"
+		},
+		{
 			"name": "Launch Tests",
 			"type": "extensionHost",
 			"request": "launch",

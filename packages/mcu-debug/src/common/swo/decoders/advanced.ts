@@ -2,7 +2,6 @@ import { SWORTTDecoder } from "./common";
 import { GrapherDataMessage, Packet } from "../common";
 import { SWOAdvancedDecoderConfig, AdvancedDecoder } from "../advanced-decoder";
 import { EventEmitter } from "events";
-import { MCUDebugChannel } from "../../../dbgmsgs";
 import { HrTimer } from "../../../adapter/servers/common";
 import { IOutputChannel, getHostAdapter } from "../../host-adapter";
 
@@ -63,7 +62,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
                 try {
                     this.decoder.softwareEvent(packet.port, packet.data);
                 } catch (e: any) {
-                    MCUDebugChannel.debugMessage("Error: in softwareEvent() for decoder " + e.toString());
+                    getHostAdapter().debugMessage("Error: in softwareEvent() for decoder " + e.toString());
                 }
             }
         }
@@ -75,7 +74,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
         try {
             this.decoder?.synchronized();
         } catch (e: any) {
-            MCUDebugChannel.debugMessage("Error: in synchronized() for decoder " + e.toString());
+            getHostAdapter().debugMessage("Error: in synchronized() for decoder " + e.toString());
         }
     }
 
@@ -83,7 +82,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
         try {
             this.decoder?.lostSynchronization();
         } catch (e: any) {
-            MCUDebugChannel.debugMessage("Error: in lostSynchronization() for decoder " + e.toString());
+            getHostAdapter().debugMessage("Error: in lostSynchronization() for decoder " + e.toString());
         }
     }
 
@@ -94,7 +93,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
             }
             this.output.append(output);
         } else {
-            MCUDebugChannel.debugMessage(`Error: displayOutput(${output}) called before decoder was fully initialized`);
+            getHostAdapter().debugMessage(`Error: displayOutput(${output}) called before decoder was fully initialized`);
         }
     }
 
@@ -118,7 +117,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
             try {
                 this.decoder.dispose();
             } catch (e: any) {
-                MCUDebugChannel.debugMessage("Error: in dispose() for decoder " + e.toString());
+                getHostAdapter().debugMessage("Error: in dispose() for decoder " + e.toString());
             }
         }
         this.decoder = undefined;

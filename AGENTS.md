@@ -61,6 +61,46 @@ There are two distinct scenarios. See [Proxy-Plan.md](docs-internal/Proxy-Plan.m
 
 ---
 
+## Module Boundary Rules (`packages/mcu-debug/src/`)
+
+These rules are **hard constraints**. Enforce them on every change.
+
+### 1. VS Code APIs are confined to `frontend/`
+
+Only files inside `src/frontend/` may import from `vscode` or use any `vscode.*` API.
+`common/`, `adapter/`, and `cli/` must never import `vscode`.
+
+### 2. Nothing outside `frontend/` may import from `frontend/`
+
+`common/`, `adapter/`, and `cli/` must never import a file whose path contains `src/frontend/`.
+`frontend/` is a consumer of `common/` — not a library for it.
+
+### 3. Platform differences go through `IHostAdapter`
+
+When behaviour differs between the VS Code extension and the CLI, the difference is expressed through the `IHostAdapter` interface (`common/host-adapter.ts`).
+
+- **`VscodeAdapter`** (`frontend/vscode-adapter.ts`) — calls `vscode.*` APIs.
+- **`CliAdapter`** (`cli/cli-adapter.ts`, to be created) — writes to the mux stream / logger.
+
+`adapter/` (the DAP server) does **not** use `IHostAdapter`. It conforms to the DAP protocol and has no platform-specific UI calls.
+
+### 4. Logging via `logger`, not `console` or `MCUDebugChannel`
+
+Use `logger` from `common/logger.ts` in `cli/` only. Use getHostAdapter().debugMessage in `common/` and `frontend/`
+Transports are registered by each entry point (CLI adds `Console`+`File`; VS Code extension adds `VscodeOutputChannelTransport` — see `frontend/vscode-transport.ts`).
+`MCUDebugChannel` (`frontend/dbgmsgs.ts`) is VS Code-only and may only be used within `frontend/`.
+
+### Summary table
+
+| Directory   | May use `vscode.`? | May import from `frontend/`? | Uses `IHostAdapter`? |
+| ----------- | ------------------ | ---------------------------- | -------------------- |
+| `frontend/` | ✅ yes              | ✅ yes (it IS frontend)       | Implements it        |
+| `common/`   | ❌ no               | ❌ no                         | Calls it             |
+| `adapter/`  | ❌ no               | ❌ no                         | ❌ no (DAP only)      |
+| `cli/`      | ❌ no               | ❌ no                         | Implements it        |
+
+---
+
 ## RTT: Two Modes
 
 This project supports RTT in two ways. Most other debuggers only support the first.

@@ -2,12 +2,16 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { HrTimer } from "./adapter/servers/common";
+import { HrTimer } from "../adapter/servers/common";
 
 export class MCUDebugChannel {
     private static vscodeDebugChannel: vscode.OutputChannel;
     private static globalHrTimer = new HrTimer();
     private static logStream: fs.WriteStream | undefined;
+
+    public static get outputChannel(): vscode.OutputChannel {
+        return MCUDebugChannel.vscodeDebugChannel;
+    }
 
     public static createDebugChannel() {
         if (!MCUDebugChannel.vscodeDebugChannel) {

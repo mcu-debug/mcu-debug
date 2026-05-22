@@ -6,7 +6,7 @@ import { HostConfig, ChainedConfig } from "../adapter/servers/common";
 import { IHostAdapter, ISWORTTView, IOutputChannel, ISerialPortView, IDebugSession } from "../common/host-adapter";
 import { handleHostConfig } from "../common/proxy";
 import { GraphConfiguration } from "../common/swo/common";
-import { MCUDebugChannel } from "../dbgmsgs";
+import { MCUDebugChannel } from "./dbgmsgs";
 import { CDebugSession, CDebugChainedSessionItem } from "../common/mcu-debug-session";
 import { GDBServerConsole } from "./server-console";
 import { SWOWebview } from "./swo-view";

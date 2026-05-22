@@ -1243,6 +1243,10 @@ export class GDBDebugSession extends SeqDebugSession {
             // Go ahead and start loading symbols in parallel to gdb and gdb server startup
             const loadSymbolsPromise = this.loadSymbols();
             const startServerPromise = this.startServer();
+            // startServerPromise may reject while we're still awaiting startGdb() below (e.g. gdb-server exits
+            // quickly). Attach a no-op handler immediately so Node.js doesn't fire unhandledRejection during that
+            // window. The actual error is still caught by the try/catch around `await startServerPromise` below.
+            void startServerPromise.catch(() => { });
 
             // Question? Should we supress all running/stopped events until we are fully started? VSCode can
             // easily get confused if we send stopped/running events too early
@@ -1391,12 +1395,12 @@ export class GDBDebugSession extends SeqDebugSession {
     private async startServer(): Promise<void> {
         try {
             const mode = this.args.pvtSessionMode;
-            await this.serverSession.startServer(); // Can throw
             this.serverSession.on("server-exited", (code, signal) => {
                 const msg = `GDB Server exited unexpectedly with code ${code} signal ${signal}`;
                 this.handleMsg(Stderr, msg + "\n");
                 this.sendEvent(new TerminatedEvent());
             });
+            await this.serverSession.startServer(); // Can throw
         } catch (e) {
             throw e;
         }

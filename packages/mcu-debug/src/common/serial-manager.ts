@@ -19,7 +19,6 @@ import { AvailablePort } from "@mcu-debug/shared/serial-helper/AvailablePort";
 import { SerialPortInfo } from "@mcu-debug/shared/proxy-protocol/SerialPortInfo";
 import { SerialErrorKind } from "@mcu-debug/shared/serial-helper/SerialErrorKind";
 import { awaitWithTimeout, ConfigurationArguments, HostConfig, SerialConfig } from "../adapter/servers/common";
-import { MCUDebugChannel } from "../dbgmsgs";
 import { getProxyForSerialPorts } from "./proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { getHostAdapter, ISerialPortView } from "./host-adapter";
@@ -60,10 +59,9 @@ export class SerialPortManager {
     }
 
     public logInfo(message: string) {
-        MCUDebugChannel.debugMessage(message);
+        getHostAdapter().debugMessage(message);
     }
     public logError(message: string) {
-        MCUDebugChannel.debugMessage(`ERROR: ${message}`);
         getHostAdapter().showError(message);
     }
 

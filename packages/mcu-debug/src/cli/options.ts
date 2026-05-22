@@ -1,0 +1,32 @@
+import { Command } from 'commander';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { version } = require('../../package.json') as { version: string };
+
+export interface CliArgs {
+    config: string;
+    json: string;
+    help?: boolean;
+    version?: boolean;
+    settings?: string;
+    logFile?: string;
+    logLevel?: string;
+}
+
+const program = new Command();
+
+program
+    .option('-c, --config <string>', 'Debug configuration to use. Can be the name of a configuration in launch.json, the index of the configuration in launch.json, or a glob pattern to match the name of the configuration in launch.json')
+    .option('-j, --json <string>', 'launch.json file to use', '.vscode/launch.json')
+    .option('-s, --settings <string>', 'Use custom settings JSON file', 'mcu-debug-settings.json')
+    .option('-l, --log-file <string>', 'Log file path', 'mcu-debug.log')
+    .option('-L, --log-level <string>', 'Log level (error, warn, info, debug)', 'info')
+    .version(version, '-V, --version', 'Show version information')
+    .helpOption('-h, --help', 'Show this help message')
+    .parse(process.argv);
+
+export const cliArgs = program.opts<CliArgs>();
+
+export function printHelp() {
+    console.log(program.helpInformation());
+}
+

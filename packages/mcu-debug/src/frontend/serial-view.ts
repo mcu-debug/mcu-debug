@@ -19,7 +19,7 @@ import * as path from "path";
 import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { TerminalInputMode } from "../adapter/servers/common";
 import { EventEmitter } from "stream";
-import { MCUDebugChannel } from "../dbgmsgs";
+import { MCUDebugChannel } from "./dbgmsgs";
 import { getHostAdapter, ISerialPortView } from "../common/host-adapter";
 import { getUUidPrefixed, ManagedTab } from "./views/ManagedTab";
 import { CockpitPanel } from "./views/CockpitPanel";

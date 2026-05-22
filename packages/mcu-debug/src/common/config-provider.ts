@@ -38,7 +38,7 @@ const OPENOCD_VALID_RTOS: string[] = [
 const JLINK_VALID_RTOS: string[] = ["Azure", "ChibiOS", "embOS", "FreeRTOS", "NuttX", "Zephyr"];
 
 export class McuDebugConfigurationProviderBase {
-    constructor(protected readonly host: IHostAdapter) { }
+    constructor(protected readonly host: IHostAdapter, private isCli: boolean = false) { }
 
     public provideDebugConfigurations(): { [key: string]: any }[] {
         return [
