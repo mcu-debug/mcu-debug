@@ -1,10 +1,15 @@
-
+import fs from 'fs';
+import path from 'path';
 import winston from 'winston';
 import { logger } from '../common/logger';
 import { CliArgs } from "./options";
 import { loadConfiguration } from './config-loader';
 import { CliAdapter, setHostAdapter } from './cli-adapter';
 import { CliSessionDriver } from './session-driver';
+import { HrTimer } from '../adapter/servers/common';
+
+
+const timer = new HrTimer();
 
 // Maps the winston level name to a custom label for console output.
 // 'simple' and 'printf' formats use info.level, which after colorize() contains
@@ -16,27 +21,70 @@ const levelLabels: Record<string, string> = {
     debug: 'Debug',
 };
 
-function setupTransports(args: CliArgs): void {
-    const consoleFormat = winston.format.combine(
-        winston.format.colorize(),
-        winston.format.printf((info) => {
-            const rawLevel = (info as any)[Symbol.for('level')] as string;
-            const label = levelLabels[rawLevel] ?? rawLevel;
-            // Replace the raw level text inside the ANSI-wrapped string from colorize()
-            const coloredLabel = info.level.replace(rawLevel, label);
-            return `${coloredLabel}: ${info.message}`;
+// Strip internal console-only fields so they don't appear in file/JSON output.
+const stripConsoleFields = winston.format((info) => {
+    delete (info as any).isConsole;
+    delete (info as any).color;
+    delete (info as any).skipConsole;
+    return info;
+});
+
+const wrapInRed = (text: string) => `\x1b[31m${text}\x1b[0m`; // red for errors
+const wrapInOrange = (text: string) => `\x1b[33m${text}\x1b[0m`; // orange for warnings
+const wrapInGreen = (text: string) => `\x1b[32m${text}\x1b[0m`; // green for info
+
+export function createLogger(logFile: string, logLevel: string) {
+    // Console: human-readable, only what the user needs to see
+    logger.add(
+        new winston.transports.Console({
+            level: logLevel === 'debug' ? 'debug' : 'info',
+            format: winston.format.combine(
+                winston.format((info) => (info as any).skipConsole ? false : info)(),
+                winston.format.colorize(),
+                winston.format.printf(({ level, message, mi, ...meta }) => {
+                    if (meta.isConsole) {
+                        const color = meta.color as string | undefined;
+                        let msg: string = message as string;
+                        switch (color) {
+                            case 'red': msg = wrapInRed(msg); break;
+                            case 'orange': msg = wrapInOrange(msg); break;
+                            case 'green': msg = wrapInGreen(msg); break;
+                        }
+                        return `${msg}`;   // for console transport, just return the message without level or meta
+                    }
+                    const extra = Object.keys(meta).length > 0
+                        ? ' ' + JSON.stringify(meta)
+                        : '';
+                    return `${level}: ${message}${extra}`;
+                }),
+            ),
         }),
     );
-    logger.add(new winston.transports.Console({ format: consoleFormat }));
 
-    if (args.logFile) {
-        logger.add(new winston.transports.File({
-            filename: args.logFile,
-            format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
-        }));
+    if (!logFile) return;
+    try {
+        fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    } catch (err) {
+        logger.error(`Failed to create log directory: ${err instanceof Error ? err.message : String(err)}`);
+        return;
     }
-
-    logger.level = args.logLevel || 'info';
+    try {
+        fs.writeFileSync(logFile, ''); // Clear existing log file on startup
+    } catch (err) {
+        logger.error(`Failed to clear log file: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+    }
+    // File: JSON, everything — perfect for post-mortem analysis
+    logger.add(
+        new winston.transports.File({
+            filename: logFile,
+            level: 'debug',   // capture all including mi:tx / mi:rx
+            format: winston.format.combine(
+                stripConsoleFields(),
+                winston.format.timestamp(),
+                winston.format.json()   // structured; mi content in 'mi' field, not 'message'
+            ),
+        }));
 }
 
 export function validateCliArgs(args: CliArgs): boolean {
@@ -49,7 +97,7 @@ export function validateCliArgs(args: CliArgs): boolean {
 
 async function main() {
     const { cliArgs } = await import("./options");
-    setupTransports(cliArgs);
+    createLogger(cliArgs.logFile || 'mcu-debug.log', cliArgs.logLevel || 'info');
 
     if (!validateCliArgs(cliArgs)) {
         process.exit(1);

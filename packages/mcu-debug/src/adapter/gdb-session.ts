@@ -632,6 +632,7 @@ export class GDBDebugSession extends SeqDebugSession {
             continue: "-exec-continue",
             c: "-exec-continue",
             cont: "-exec-continue",
+            /*
             step: "-exec-step",
             s: "-exec-step",
             next: "-exec-next",
@@ -642,6 +643,7 @@ export class GDBDebugSession extends SeqDebugSession {
             b: "-break-insert",
             run: "-exec-run",
             r: "-exec-run",
+            */
         };
         const isLiveCmd = expr.startsWith("+");
         if (isLiveCmd) {
@@ -656,7 +658,7 @@ export class GDBDebugSession extends SeqDebugSession {
         if (!expr.startsWith("-")) {
             expr = `-interpreter-exec console "${expr}"`;
         }
-        this.handleMsg(Stdout, `${expr}\n`);
+        // this.handleMsg(Stdout, `${expr}\n`);
         const gdbInstance = isLiveCmd ? this.liveWatchMonitor.gdbInstance : this.gdbInstance;
         await gdbInstance!
             .sendCommand(expr)
@@ -1387,7 +1389,7 @@ export class GDBDebugSession extends SeqDebugSession {
         const gdbPath = this.getGdbPath();
         const gdbArgs = ["-q", "--interpreter=mi3", ...(this.args.debuggerArgs || [])];
         this.gdbInstance.debugFlags = this.args.debugFlags;
-        this.handleMsg(GdbEventNames.Console, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
+        this.handleMsg(GdbEventNames.Stderr, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
         this.subscribeToGdbEvents();
         await this.gdbInstance.start(gdbPath, gdbArgs, this.args.cwd, this.getGdbStartCommands());
     }

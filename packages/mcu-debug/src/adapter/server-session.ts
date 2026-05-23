@@ -117,7 +117,7 @@ export class GDBServerSession extends EventEmitter {
                 try {
                     this.proxyClient.on("streamStarted", (data: TcpPortDef) => {
                         if (data.name.startsWith("gdb")) {
-                            this.session.handleMsg(Stderr, `GDB-Server stream ready on port server ${data.remotePort}\n`);
+                            this.session.handleMsg(GdbEventNames.Stderr, `GDB-Server stream ready on port server ${data.remotePort}\n`);
                             resolved = true;
                             resolve();
                         }
@@ -178,7 +178,7 @@ export class GDBServerSession extends EventEmitter {
                     if (resolved || this.clientRequestedStop) {
                         killTimers();
                     }
-                    this.session.handleMsg(GdbEventNames.Console, `Waiting for gdb-server to start ${++count}...\n`);
+                    this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to start ${++count}...\n`);
                 }, 5000);
 
                 timeout = setTimeout(

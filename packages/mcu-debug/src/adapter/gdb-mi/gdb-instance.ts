@@ -285,9 +285,9 @@ export class GdbInstance extends EventEmitter {
                             this.log(Console, record.result as string);
                         }
                     } else if (record.outputType === "target") {
-                        this.log(Stdout, record.result as string);
+                        this.log(Console, record.result as string);
                     } else if (record.outputType === "log") {
-                        this.log(Stderr, record.result as string);
+                        this.log(Console, record.result as string);
                     }
                 }
             }

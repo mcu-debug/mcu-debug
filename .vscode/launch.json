@@ -79,9 +79,11 @@
 			"cwd": "/Users/hdm/mtw37/Hello_World",
 			"runtimeArgs": [ "--nolazy", "--trace-warnings"],//, "--unhandled-rejections=strict" ],
 			"program": "${workspaceFolder}/packages/mcu-debug/dist/mcu-debug-cli.js",
-			"console": "internalConsole",
+			// "console": "internalConsole",
+			"console": "integratedTerminal",
+			"stopOnEntry": false,
 			"outputCapture": "std",
-			"args": [ "--log-level", "debug", "-c", "0" ],
+			"args": [ "--log-level", "debug", "-c", "0", "-s", ".vscode/settings.json" ],
 			"env": {
 				"RUST_BACKTRACE": "1",
 				"PROD_MCU_DEBUG_HELPER": "0"

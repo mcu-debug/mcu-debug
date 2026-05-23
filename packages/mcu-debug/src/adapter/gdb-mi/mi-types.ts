@@ -119,7 +119,7 @@ export enum GdbEventNames {
 
 export const Stderr = GdbEventNames.Stderr;
 export const Stdout = GdbEventNames.Stdout;
-export const Console = GdbEventNames.Console;
+export const Console = GdbEventNames.Console;       // Reserved to GDB output
 export const Telemetry = GdbEventNames.Telemetry;
 
 /// Temporary types for gdb-mi2 parser, to be obsoleted later

@@ -863,9 +863,9 @@ export class HrTimer {
     }
 
     public static toLocalISOString(date: Date): string {
-        const pad = (num: number) => String(num).padStart(2, '0');
-        const tzo = -date.getTimezoneOffset();
-        const dif = tzo >= 0 ? '+' : '-';
+        const pad = (num: number, len: number = 2) => String(num).padStart(len, '0');
+        // const tzo = -date.getTimezoneOffset();
+        // const dif = tzo >= 0 ? '+' : '-';
 
         return date.getFullYear() +
             '-' + pad(date.getMonth() + 1) +
@@ -873,14 +873,16 @@ export class HrTimer {
             'T' + pad(date.getHours()) +
             ':' + pad(date.getMinutes()) +
             ':' + pad(date.getSeconds()) +
-            dif + pad(Math.floor(Math.abs(tzo) / 60)) +
-            ':' + pad(Math.abs(tzo) % 60);
+            '.' + pad(date.getMilliseconds(), 3);
+        //    dif + pad(Math.floor(Math.abs(tzo) / 60)) +
+        // ':' + pad(Math.abs(tzo) % 60);
     }
 
     public createDateTimestamp(): string {
-        const hrUs = this.createPaddedMs(6);
+        // const hrUs = this.createPaddedMs(6);
         const date = new Date();
-        const ret = `[${HrTimer.toLocalISOString(date)}, +${hrUs}ms]`;
+        // const ret = `[${HrTimer.toLocalISOString(date)} +${hrUs}ms]`;
+        const ret = `[${HrTimer.toLocalISOString(date)}]`;
         return ret;
     }
 

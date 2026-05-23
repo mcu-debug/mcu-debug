@@ -10,6 +10,9 @@
         "editor.defaultFormatter": "esbenp.prettier-vscode"
     },
     "typescript.tsdk": "node_modules/typescript/lib",
+    "typescript.tsserver.watchOptions": {
+        "excludeDirectories": ["**/node_modules"]
+    },
     "rust-analyzer.linkedProjects": [
         "packages/mcu-debug-helper/Cargo.toml"
     ],

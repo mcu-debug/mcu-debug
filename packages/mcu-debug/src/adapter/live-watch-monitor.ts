@@ -39,7 +39,7 @@ export class LiveClientSession {
         public clientId: string,
         public sessionId: string,
         public container: VariableContainer,
-    ) {}
+    ) { }
 }
 export class LiveWatchMonitor {
     private sessionsByClientId = new Map<string, LiveClientSession>();
@@ -88,7 +88,7 @@ export class LiveWatchMonitor {
 
     public stop(): void {
         this.stopTimer();
-        this.quit().catch(() => {});
+        this.quit().catch(() => { });
     }
 
     public enabled(): boolean {
@@ -304,7 +304,7 @@ export class LiveWatchMonitor {
             return records;
         } catch (e: any) {
             if (this.debugFlags.anyFlags) {
-                this.handleMsg(GdbEventNames.Console, `mcu-debug: Error updating all variables: ${e}\n`);
+                this.handleMsg(GdbEventNames.Stderr, `mcu-debug: Error updating all variables: ${e}\n`);
             }
             return [];
         }
@@ -340,7 +340,7 @@ export class LiveWatchMonitor {
                 for (const [_clientId, session] of this.sessionsByClientId) {
                     if (session.container.numberOfGdbVariables() > 0) {
                         if (!this.isUpdatingVariables && !this.handlingRequest) {
-                            this.updateVariables().catch(() => {});
+                            this.updateVariables().catch(() => { });
                         }
                         break;
                     }
@@ -353,7 +353,7 @@ export class LiveWatchMonitor {
         const serverType = this.mainSession.args.servertype;
         if (!varObj.addressOf) {
             // Children may not have addressOf info yet, try to get it
-            await varObj.queryGdbVarInfo(this.gdbInstance).catch(() => {});
+            await varObj.queryGdbVarInfo(this.gdbInstance).catch(() => { });
         }
         const size = varObj.sizeof || 0;
         const isOk = varObj.addressOf && size > 0 && size <= 8 && varObj.editable;

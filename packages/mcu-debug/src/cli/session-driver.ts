@@ -1,9 +1,10 @@
+import * as readline from "node:readline";
 import { ConfigurationArguments } from "../adapter/servers/common";
 import { IHostAdapter } from "../common/host-adapter";
-import { CliConfigProvider } from "./config-loader";
 import { logger } from "../common/logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
 import { DebugProtocol } from "@vscode/debugprotocol";
+import winston from "winston";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -32,12 +33,29 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 
 export class CliSessionDriver {
     private session: GDBDebugSession | null = null;
+    private rlPaused: readline.Interface | null = null;
+    private rlRunning: readline.Interface | null = null;
     private nextSeq = 1;
     // Keyed by the seq we assign to each request; resolved when the matching response arrives.
     private pendingRequests = new Map<number, (response: DebugProtocol.Response) => void>();
+    private gdbLogger: winston.Logger;
+    private stdoutLogger: winston.Logger;
+    private stderrLogger: winston.Logger;
+    private mcuStderrLogger: winston.Logger;
+    private mcuStdoutLogger: winston.Logger;
+    private gdbMiLogger: winston.Logger;
+    private history: string[] = [];
 
     constructor(private cliArgs: any, private adapter: IHostAdapter, private config: ConfigurationArguments) {
         // Initialize session driver
+        config.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
+        config.liveWatch = undefined as any; // not used in CLI, but some code expects it to exist
+        this.gdbLogger = logger.child({ source: 'GDB', color: 'cyan', isConsole: true });
+        this.stdoutLogger = logger.child({ source: 'DA', isConsole: true });
+        this.stderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
+        this.mcuStderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
+        this.mcuStdoutLogger = logger.child({ source: 'DA', color: 'orange', isConsole: true });
+        this.gdbMiLogger = logger.child({ source: 'GDB-MI', isConsole: true });
     }
 
     async startSession(cliArgs: any) {
@@ -98,6 +116,118 @@ export class CliSessionDriver {
         });
     }
 
+    private startReadlinePaused() {
+        this.rlPaused = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+            terminal: true,
+            prompt: 'gdb> ',
+            historySize: 1000,
+            history: this.history || [],
+        });
+
+        this.rlPaused.prompt();
+
+        this.rlPaused.on('line', (input: string) => {
+            if (!input.trim()) {
+                this.rlPaused?.prompt();
+                return;
+            }
+            logger.debug(input, { source: 'user-input', skipConsole: true }); // log user input, but not to console to avoid confusion with DA output
+            // Handle user input and send it to the debug session
+            const continueCommands = ['continue', 'c', 'cont', 'run'];
+            if (continueCommands.includes(input.trim().toLowerCase())) {
+                this.sendRequest<DebugProtocol.ContinueResponse>({
+                    seq: 0,          // overwritten by sendRequest
+                    type: 'request', // overwritten by sendRequest
+                    command: 'continue',
+                    arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
+                }).then((response) => {
+                    if (!response.success) {
+                        logger.warn(`Continue request failed: ${response.message}`);
+                    }
+                });
+            } else if (input.trim().toLowerCase() === 'pause') {
+                this.sendRequest<DebugProtocol.PauseResponse>({
+                    seq: 0,          // overwritten by sendRequest
+                    type: 'request', // overwritten by sendRequest
+                    command: 'pause',
+                    arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
+                }).then((response) => {
+                    if (!response.success) {
+                        logger.warn(`Pause request failed: ${response.message}`);
+                    }
+                });
+            } else if (input.trim().toLowerCase() === 'exit') {
+                this.sendRequest<DebugProtocol.TerminateResponse>({
+                    seq: 0,          // overwritten by sendRequest
+                    type: 'request', // overwritten by sendRequest
+                    command: 'terminate',
+                }).then((response) => {
+                    if (!response.success) {
+                        logger.warn(`Terminate request failed: ${response.message}`);
+                    }
+                    this.rlPaused?.close();
+                    this.rlPaused = null;
+                });
+            } else {
+                const save = this.rlPaused
+                // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest"
+                this.sendRequest<DebugProtocol.EvaluateResponse>({
+                    seq: 0,          // overwritten by sendRequest
+                    type: 'request', // overwritten by sendRequest
+                    command: 'evaluate',
+                    arguments: {
+                        expression: input,
+                        context: 'repl',
+                    },
+                }).then((response) => {
+                    if (!response.success) {
+                        logger.warn(`Evaluate request failed: ${response.message}`);
+                    }
+                }).finally(() => {
+                    setTimeout(() => {
+                        if (this.rlPaused === save) {
+                            this.rlPaused?.prompt();
+                        }
+                    }, 250);
+                });
+            }
+        });
+
+        this.rlPaused.on('history', (history) => {
+            this.history = history;
+        });
+
+        this.rlPaused.on('SIGINT', () => {
+            logger.info('SIGINT ignored while paused. Type "continue" to resume or "exit" to terminate the session.');
+        });
+
+        this.rlPaused.on('close', () => {
+            // logger.info('Exiting debug session.');
+        });
+    }
+
+    private startReadlineRunning() {
+        this.rlRunning = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+            terminal: true,
+        });
+        // Don't call pause() — a paused readline won't read stdin and won't detect Ctrl-C.
+        // When terminal:true puts stdin in raw mode, ISIG is cleared so the OS no longer
+        // generates SIGINT for Ctrl-C; readline must read the \x03 byte itself to emit 'SIGINT'.
+        this.rlRunning.on('line', () => { }); // discard any accidental input while running
+        this.rlRunning.on('SIGINT', () => {
+            logger.info('SIGINT received, sending interrupt to debug session...');
+            this.sendRequest<DebugProtocol.PauseResponse>({
+                seq: 0,
+                type: 'request',
+                command: 'pause',
+            });
+        });
+    }
+
     /**
      * Dispatch one request into the DA and return a Promise that resolves with the response.
      * We use handleMessage() (public on ProtocolServer) so the call goes through the normal
@@ -146,26 +276,108 @@ export class CliSessionDriver {
 
     /** Handle events emitted by the DA (stopped, output, terminated, etc.). */
     private handleEvent(event: DebugProtocol.Event): void {
+        if (event.event.startsWith('custom')) {
+            // Custom events are for DA → CLI communication, not user-facing. Log at debug.
+            // TODO: Handle these later. We are only interested in a few
+            return;
+        }
         switch (event.event) {
             case 'stopped':
-                logger.info(`Debug target stopped: reason=${event.body?.reason}`);
+                logger.info(`Stopped: ${event.body?.reason}` +
+                    (event.body?.description ? ` — ${event.body.description}` : ''));
+                this.rlRunning?.close();
+                this.rlRunning = null;
+                this.startReadlinePaused();
                 break;
-            case 'output':
-                if ((event.body?.category === 'console') || (event.body?.category === 'stdout')) {
-                    process.stdout.write(event.body.output);
-                } else if (event.body?.category === 'stderr') {
-                    process.stderr.write(event.body.output);
-                } else {
-                    logger.info(`Output event (category=${event.body?.category}): ${event.body?.output}`);
-                }
+            case 'continued':
+                logger.info('Running');
+                this.rlPaused?.close();
+                this.rlPaused = null;
+                this.startReadlineRunning();
                 break;
             case 'terminated':
-                logger.info("Debug session terminated.");
+                logger.info('Session terminated');
+                this.rlPaused?.close();
+                this.rlPaused = null;
+                this.rlRunning?.close();
+                this.rlRunning = null;
+                process.exit(0);
                 break;
+            case 'thread':
+                // threadId, reason ('started'|'exited') — mostly noise, log at debug
+                logger.debug('thread', { threadId: event.body?.threadId, reason: event.body?.reason });
+                break;
+            case 'output': {
+                const body = event.body as DebugProtocol.OutputEvent['body'];
+                const output = body?.output ?? '';
+                const category = body?.category ?? 'console';
+                this.routeOutput(category, output);
+                break;
+            }
+            case 'initialized': break;
+            case 'uart-configure': break
             default:
-                logger.warn(`Unhandled DA event: ${event.event}`);
+                // Custom events (custom-event-ports-done, SWOConfigure, etc.)
+                logger.debug(`event:${event.event}`, { body: event.body });
+                break;
+
         }
         // TODO: route stopped/output/terminated events to the TUI / headless stream
+    }
+
+    private routeOutput(category: string, output: string): void {
+        const text = output.trimEnd();
+        if (!text || text === '^done') {
+            // this.terminalWrite('\n'); // preserve blank lines, no need to log them
+            return;
+        }
+
+        if (category === 'stdout' && /^\d+[-~&@^]/.test(output)) {
+            // GDB MI command sent by DA (gdbTraces mode) — log structured, never raw to terminal
+            this.gdbMiLogger.debug('mi:tx', { mi: text });
+            this.terminalWrite(`\x1b[2m[MI>] ${text}\x1b[0m\n`); // dim
+            return;
+        }
+
+        if (category === 'console' && output.startsWith('-> ')) {
+            // GDB MI response received — strip the '-> ' the DA added
+            const mi = text.slice(3);
+            this.gdbMiLogger.debug('mi:rx', { mi });
+            this.terminalWrite(`\x1b[2m[MI<] ${mi}\x1b[0m\n`); // dim
+            return;
+        }
+
+        if (category === 'stderr') {
+            // DA internal messages — strip the well-known prefixes
+            const prefix1 = 'mcu-debug stderr: ';
+            const prefix2 = 'mcu-debug: ';
+            if (output.startsWith(prefix1)) {
+                const logLine = output.slice(prefix1.length).trimEnd();
+                this.mcuStderrLogger.info(logLine);
+            } else if (output.startsWith(prefix2)) {
+                const logLine = output.slice(prefix2.length).trimEnd();
+                this.mcuStdoutLogger.info(logLine);
+            } else {
+                this.stderrLogger.info(text);
+            }
+            return;
+        }
+
+        if (text.startsWith('\r') && !text.startsWith('\r[100')) {
+            this.terminalWrite(text); // overwrite current line (e.g. progress updates) — no need to log
+            return;
+        }
+        // category === 'console' without '-> ': real GDB console output the user should see
+        // category === 'stdout' without MI token: target stdout (rare on embedded but handle it)
+        if (category === 'console') {
+            this.gdbLogger.info(text);
+        } else {
+            this.stdoutLogger.info(text);
+        }
+    }
+
+    private terminalWrite(data: string): void {
+        process.stdout.write(data);
     }
 
     async doInitializeRequest(): Promise<DebugProtocol.InitializeResponse> {

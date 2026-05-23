@@ -1,11 +1,12 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
-import { HostConfig, ChainedConfig, ConfigurationArguments } from "../adapter/servers/common";
+import { HostConfig, ChainedConfig, ConfigurationArguments, processVarSubstitution } from "../adapter/servers/common";
 import { SymbolInformation } from "../adapter/symbols";
 import { IDebugSession, IHostAdapter, IOutputChannel, ISerialPortView, ISWORTTView } from "../common/host-adapter";
 import { logger } from "../common/logger";
 import { GraphConfiguration } from "../common/swo/common";
+import JSONC from 'jsonc-simple-parser';
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
 // Return values match VS Code's remoteName strings so resolveProxyNetworkMode() works unchanged.
@@ -70,7 +71,16 @@ export class CliAdapter implements IHostAdapter {
     getSetting<T>(section: string, key: string, defaultValue: T): T;
     getSetting<T>(section: string, key: string): T | undefined;
     getSetting(section: unknown, key: unknown, defaultValue?: unknown): unknown {
-        return defaultValue;
+        if (typeof section !== 'string') {
+            logger.warn(`Invalid section type for getSetting: expected string but got ${typeof section}`);
+            return defaultValue;
+        }
+        if (typeof key !== 'string') {
+            logger.warn(`Invalid key type for getSetting: expected string but got ${typeof key}`);
+            return defaultValue;
+        }
+        const value = this.settings?.[`${section}.${key}`];
+        return value !== undefined ? value : defaultValue;
     }
     getExtensionPath(): string {
         // The CLI bundle is emitted to dist/cli.js; __dirname is <extensionRoot>/dist at runtime.
@@ -127,12 +137,24 @@ export class CliAdapter implements IHostAdapter {
     private initSettings() {
         const settingsFile = this.cliArgs.settings;
         if (settingsFile && fs.existsSync(settingsFile)) {
+            let content: string;
             try {
-                const content = fs.readFileSync(settingsFile, "utf8");
-                this.settings = JSON.parse(content) as { [key: string]: any };
+                content = fs.readFileSync(settingsFile, "utf8");
+                this.settings = JSONC.parse(content) as { [key: string]: any };
             } catch (error) {
                 logger.error("Failed to load configuration from settings file: " + (error instanceof Error ? error.message : String(error)));
                 process.exit(1);
+            }
+            const substitutedContent = processVarSubstitution(content, this.settings as any, 'config:', (msg) => {
+                logger.warn(`In config: variable substitution for ${settingsFile}: ${msg}`);
+            });
+            if (substitutedContent !== content) {
+                try {
+                    this.settings = JSONC.parse(substitutedContent) as { [key: string]: any };
+                } catch (error) {
+                    logger.error("Failed to parse configuration after variable substitution: " + (error instanceof Error ? error.message : String(error)));
+                    // process.exit(1);
+                }
             }
         } else if (settingsFile) {
             logger.warn(`Settings file ${settingsFile} does not exist.`);
