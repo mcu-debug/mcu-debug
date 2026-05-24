@@ -270,21 +270,237 @@ impl App {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
+/// Convert a raw output line (may contain ANSI SGR escapes and tabs) into a
+/// ratatui `Line` with proper styled spans. No external crate needed — we own
+/// the parser so there are no version-compatibility surprises.
+///
+/// Approach inspired by the `ansi-to-tui` crate by Uttarayan Mondal
+/// (https://crates.io/crates/ansi-to-tui, MIT licence).
+///
+/// Handles: bold/dim/italic/underline/reverse/strikethrough, standard 16
+/// colours, 256-colour (38;5;n / 48;5;n), true-colour (38;2;r;g;b / 48;2;r;g;b).
+/// Non-SGR CSI sequences (cursor movement etc.) are silently dropped.
+fn ansi_line(s: &str) -> Line<'static> {
+    let s = s.trim_end_matches('\n');
+
+    // Expand tabs to 8-space stops so ratatui cell-counting stays correct.
+    let expanded: String = {
+        let mut out = String::with_capacity(s.len() + 8);
+        let mut col = 0usize;
+        for ch in s.chars() {
+            if ch == '\t' {
+                let n = 8 - (col % 8);
+                for _ in 0..n {
+                    out.push(' ');
+                }
+                col += n;
+            } else {
+                out.push(ch);
+                col += 1;
+            }
+        }
+        out
+    };
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut style = Style::default();
+    let mut plain_start = 0usize;
+    let bytes = expanded.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        // Look for ESC [
+        if bytes[i] != 0x1b || bytes.get(i + 1) != Some(&b'[') {
+            i += 1;
+            continue;
+        }
+
+        // Flush accumulated plain text before this escape.
+        if plain_start < i {
+            spans.push(Span::styled(expanded[plain_start..i].to_owned(), style));
+        }
+
+        // Scan to the final byte of the CSI sequence (first ASCII letter).
+        let param_start = i + 2;
+        let mut seq_end = param_start;
+        while seq_end < bytes.len() && !bytes[seq_end].is_ascii_alphabetic() {
+            seq_end += 1;
+        }
+
+        if seq_end < bytes.len() && bytes[seq_end] == b'm' {
+            // SGR — parse numeric parameters separated by ';'.
+            let raw = &expanded[param_start..seq_end];
+            let codes: Vec<u32> = raw
+                .split(';')
+                .map(|p| {
+                    if p.is_empty() {
+                        0
+                    } else {
+                        p.parse().unwrap_or(0)
+                    }
+                })
+                .collect();
+            style = apply_sgr(style, &codes);
+        }
+        // Any other CSI terminator (A–Z except m) is silently discarded.
+
+        i = seq_end + 1;
+        plain_start = i;
+    }
+
+    // Flush any trailing plain text.
+    if plain_start < expanded.len() {
+        spans.push(Span::styled(expanded[plain_start..].to_owned(), style));
+    }
+
+    if spans.is_empty() {
+        Line::from(expanded)
+    } else {
+        Line::from(spans)
+    }
+}
+
+/// Apply a parsed SGR parameter list to the current style.
+fn apply_sgr(mut style: Style, codes: &[u32]) -> Style {
+    let mut i = 0;
+    while i < codes.len() {
+        match codes[i] {
+            0 => style = Style::default(),
+            1 => style = style.add_modifier(Modifier::BOLD),
+            2 => style = style.add_modifier(Modifier::DIM),
+            3 => style = style.add_modifier(Modifier::ITALIC),
+            4 => style = style.add_modifier(Modifier::UNDERLINED),
+            7 => style = style.add_modifier(Modifier::REVERSED),
+            9 => style = style.add_modifier(Modifier::CROSSED_OUT),
+            22 => style = style.remove_modifier(Modifier::BOLD | Modifier::DIM),
+            23 => style = style.remove_modifier(Modifier::ITALIC),
+            24 => style = style.remove_modifier(Modifier::UNDERLINED),
+            27 => style = style.remove_modifier(Modifier::REVERSED),
+            29 => style = style.remove_modifier(Modifier::CROSSED_OUT),
+            // Standard fg (30–37), bright fg (90–97)
+            30 => style = style.fg(Color::Black),
+            31 => style = style.fg(Color::Red),
+            32 => style = style.fg(Color::Green),
+            33 => style = style.fg(Color::Yellow),
+            34 => style = style.fg(Color::Blue),
+            35 => style = style.fg(Color::Magenta),
+            36 => style = style.fg(Color::Cyan),
+            37 => style = style.fg(Color::White),
+            39 => style = style.fg(Color::Reset),
+            90 => style = style.fg(Color::DarkGray),
+            91 => style = style.fg(Color::LightRed),
+            92 => style = style.fg(Color::LightGreen),
+            93 => style = style.fg(Color::LightYellow),
+            94 => style = style.fg(Color::LightBlue),
+            95 => style = style.fg(Color::LightMagenta),
+            96 => style = style.fg(Color::LightCyan),
+            97 => style = style.fg(Color::Gray),
+            // Standard bg (40–47), bright bg (100–107)
+            40 => style = style.bg(Color::Black),
+            41 => style = style.bg(Color::Red),
+            42 => style = style.bg(Color::Green),
+            43 => style = style.bg(Color::Yellow),
+            44 => style = style.bg(Color::Blue),
+            45 => style = style.bg(Color::Magenta),
+            46 => style = style.bg(Color::Cyan),
+            47 => style = style.bg(Color::White),
+            49 => style = style.bg(Color::Reset),
+            100 => style = style.bg(Color::DarkGray),
+            101 => style = style.bg(Color::LightRed),
+            102 => style = style.bg(Color::LightGreen),
+            103 => style = style.bg(Color::LightYellow),
+            104 => style = style.bg(Color::LightBlue),
+            105 => style = style.bg(Color::LightMagenta),
+            106 => style = style.bg(Color::LightCyan),
+            107 => style = style.bg(Color::Gray),
+            // 256-colour and true-colour fg
+            38 => match (codes.get(i + 1), codes.get(i + 2)) {
+                (Some(5), Some(&n)) => {
+                    style = style.fg(ansi256(n as u8));
+                    i += 2;
+                }
+                (Some(2), _) if codes.len() > i + 4 => {
+                    style = style.fg(Color::Rgb(
+                        codes[i + 2] as u8,
+                        codes[i + 3] as u8,
+                        codes[i + 4] as u8,
+                    ));
+                    i += 4;
+                }
+                _ => {}
+            },
+            // 256-colour and true-colour bg
+            48 => match (codes.get(i + 1), codes.get(i + 2)) {
+                (Some(5), Some(&n)) => {
+                    style = style.bg(ansi256(n as u8));
+                    i += 2;
+                }
+                (Some(2), _) if codes.len() > i + 4 => {
+                    style = style.bg(Color::Rgb(
+                        codes[i + 2] as u8,
+                        codes[i + 3] as u8,
+                        codes[i + 4] as u8,
+                    ));
+                    i += 4;
+                }
+                _ => {}
+            },
+            _ => {} // unknown / future codes — ignore
+        }
+        i += 1;
+    }
+    style
+}
+
+/// Map an xterm-256 palette index to a ratatui `Color`.
+fn ansi256(n: u8) -> Color {
+    match n {
+        // First 16: standard + bright colours (same as the named colours above).
+        0 => Color::Black,
+        1 => Color::Red,
+        2 => Color::Green,
+        3 => Color::Yellow,
+        4 => Color::Blue,
+        5 => Color::Magenta,
+        6 => Color::Cyan,
+        7 => Color::White,
+        8 => Color::DarkGray,
+        9 => Color::LightRed,
+        10 => Color::LightGreen,
+        11 => Color::LightYellow,
+        12 => Color::LightBlue,
+        13 => Color::LightMagenta,
+        14 => Color::LightCyan,
+        15 => Color::Gray,
+        // 16–231: 6×6×6 colour cube.
+        16..=231 => {
+            let v = n - 16;
+            let b = v % 6;
+            let g = (v / 6) % 6;
+            let r = v / 36;
+            let to_byte = |x: u8| if x == 0 { 0 } else { 55 + x * 40 };
+            Color::Rgb(to_byte(r), to_byte(g), to_byte(b))
+        }
+        // 232–255: greyscale ramp.
+        _ => {
+            let v = 8 + (n - 232) * 10;
+            Color::Rgb(v, v, v)
+        }
+    }
+}
+
 fn render(frame: &mut ratatui::Frame, app: &App, output_height: &Cell<u16>) {
     let has_ai = app.ai_request.is_some();
 
     // Build vertical layout: output | [ai request] | input
     let constraints = if has_ai {
         vec![
-            Constraint::Min(1),     // output — fills remaining space
-            Constraint::Length(3),  // AI request
-            Constraint::Length(3),  // input bar
+            Constraint::Min(1),    // output — fills remaining space
+            Constraint::Length(3), // AI request
+            Constraint::Length(3), // input bar
         ]
     } else {
-        vec![
-            Constraint::Min(1),
-            Constraint::Length(3),
-        ]
+        vec![Constraint::Min(1), Constraint::Length(3)]
     };
 
     let chunks = Layout::default()
@@ -302,17 +518,18 @@ fn render(frame: &mut ratatui::Frame, app: &App, output_height: &Cell<u16>) {
     }
 }
 
-fn render_output(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect, output_height: &Cell<u16>) {
+fn render_output(
+    frame: &mut ratatui::Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    output_height: &Cell<u16>,
+) {
     // How many content lines fit (subtract 2 for the block border).
     // Write back so handle_key can compute proportional page-scroll amounts.
     let visible_height = area.height.saturating_sub(2) as usize;
     output_height.set(visible_height as u16);
 
-    let all_lines: Vec<Line> = app
-        .output
-        .iter()
-        .map(|s| Line::from(s.trim_end_matches('\n').to_owned()))
-        .collect();
+    let all_lines: Vec<Line> = app.output.iter().map(|s| ansi_line(s)).collect();
 
     let total = all_lines.len();
     let scroll = app.scroll as usize;
@@ -411,7 +628,9 @@ pub fn run_tui(reader: Box<dyn MuxReader>, mut writer: Box<dyn MuxWriter>) -> Re
 
     // After leaving the alternate screen, print the last screenful so the
     // output is visible in the terminal scrollback rather than just vanishing.
-    let term_height = crossterm::terminal::size().map(|(_, h)| h as usize).unwrap_or(24);
+    let term_height = crossterm::terminal::size()
+        .map(|(_, h)| h as usize)
+        .unwrap_or(24);
     if let Ok(output) = &result {
         let skip = output.len().saturating_sub(term_height.saturating_sub(2));
         for line in output.iter().skip(skip) {
