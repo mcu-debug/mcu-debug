@@ -45,8 +45,40 @@ enum Commands {
     Proxy(ProxyArgs),
 }
 
+// Maps executable names to their implicit subcommand.
+// Copies/symlinks of the binary with these names skip the subcommand argument,
+// giving each process a distinct p_comm visible in ps/killall/Activity Monitor.
+//   mcu-debug-cli       -> debug
+//   mcu-debug-da-helper -> da-helper
+//   mcu-debug-proxy     -> proxy
+fn implicit_subcommand(exe_stem: &str) -> Option<&'static str> {
+    match exe_stem {
+        "mcu-debug-cli" => Some("debug"),
+        "mcu-debug-da-helper" => Some("da-helper"),
+        "mcu-debug-proxy" => Some("proxy"),
+        _ => None,
+    }
+}
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // argv[0] basename (works for both copies and symlinks).
+    let mut args: Vec<String> = std::env::args().collect();
+    let exe_stem = std::path::Path::new(&args[0])
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    if let Some(sub) = implicit_subcommand(exe_stem) {
+        // Inject the subcommand only when not already supplied explicitly.
+        let has_sub = args.get(1).map_or(false, |a| {
+            matches!(a.as_str(), "debug" | "da-helper" | "proxy")
+        });
+        if !has_sub {
+            args.insert(1, sub.to_string());
+        }
+    }
+
+    let cli = Cli::parse_from(&args);
 
     match cli.command {
         Commands::Debug(args) => mcu_debug::cockpit::run::run(args),
