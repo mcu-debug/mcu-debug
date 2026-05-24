@@ -578,8 +578,9 @@ export class CliSessionDriver {
     }
     private handleMetaCommand(cmd: string) {
         // Handle future meta-commands from the Rust side (e.g. !!RESET, !!NOTE:, etc.)
-        logger.info(`Meta-command from Rust: ${cmd}`);
+        logger.info(`Unhandled meta-command from clients: ${cmd}`);
     }
+
     private writeSockFile(socketPath: string) {
         // Write the socket path to .mcu-debug.sock.json for the Rust side to pick up
         const sockInfo = {
@@ -611,4 +612,3 @@ export class CliSessionDriver {
         });
     }
 }
-
