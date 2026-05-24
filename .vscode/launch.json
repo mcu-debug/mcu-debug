@@ -95,7 +95,7 @@
 	  		"preLaunchTask": "npm: compile"
 		},
 		{
-			"name": "Debug Rust mcu-debug CLI",
+			"name": "Debug Rust mcu-debug TUI",
 			"type": "lldb",
 			"request": "launch",
             "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug",
