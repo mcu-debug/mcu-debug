@@ -108,12 +108,12 @@ export class GDBServerSession extends EventEmitter {
             }
 
             const argsStr = quoteShellCmdLine([executable]) + " " + args.map((a) => quoteShellCmdLine([a])).join(" ") + "\n ";
-            this.session.handleMsg(GdbEventNames.Console, `Starting GDB-Server: ${argsStr}`);
+            this.session.handleMsg(GdbEventNames.Stderr, `Starting GDB-Server: ${argsStr}`);
             this.consoleSocket?.write(greenFormat(argsStr));
             const matchRegex = this.serverController.initMatch();
 
             if (this.proxyClient) {
-                this.session.handleMsg(Stderr, "Starting gdb-server via proxy...\n");
+                this.session.handleMsg(GdbEventNames.Stderr, "Starting gdb-server via proxy...\n");
                 try {
                     this.proxyClient.on("streamStarted", (data: TcpPortDef) => {
                         if (data.name.startsWith("gdb")) {

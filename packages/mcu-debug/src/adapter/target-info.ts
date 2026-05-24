@@ -190,7 +190,7 @@ export class TargetInfo {
             } else {
                 throw new Error("Unknown endianness");
             }
-            this.session.handleMsg(Stdout, `Target endianness: ${this.endianness}\n`);
+            this.session.handleMsg(Stderr, `Target endianness: ${this.endianness}\n`);
         } catch {
             this.session.handleMsg(Stderr, "Warning: Unable to determine target endianness. Defaulting to little endian.\n");
         }
@@ -223,7 +223,7 @@ export class TargetInfo {
                         }
                     }
                     this.architecture = arch;
-                    this.session.handleMsg(Stdout, `Target architecture: ${arch}\n`);
+                    this.session.handleMsg(Stderr, `Target architecture: ${arch}\n`);
                     break;
                 }
             }
@@ -264,7 +264,7 @@ export class TargetInfo {
                 }
             }
             if (regions.length === 0) {
-                this.session.handleMsg(Stdout, "No memory region information available from target. All variables are considered accessible(read/write).\n");
+                this.session.handleMsg(Stderr, "No memory region information available from target. All variables are considered accessible(read/write).\n");
             }
             this.targetMemoryRegions = new TargetMemoryRegions(regions);
         } catch (error: any) {

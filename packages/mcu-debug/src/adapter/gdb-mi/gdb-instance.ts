@@ -15,7 +15,7 @@ class PendingCmdPromise {
         public readonly cmd: string,
         public readonly resolve: (value: GdbMiOutput) => void,
         public readonly reject: (reason?: any) => void,
-    ) {}
+    ) { }
 }
 
 export class GdbInstance extends EventEmitter {
@@ -325,10 +325,10 @@ export class GdbInstance extends EventEmitter {
             this.emit("exited-normally", record);
         } else if (reason === undefined && this.firstStop) {
             reason = "entry";
-            this.log(Console, "Program stopped, probably due to a reset and/or halt issued by debugger");
+            this.log(Stderr, "Program stopped, probably due to a reset and/or halt issued by debugger");
         } else {
             reason = reason || "unknown";
-            this.log(Console, "Not implemented stop reason (assuming exception): " + reason || "Unknown reason");
+            this.log(Stderr, "Not implemented stop reason (assuming exception): " + reason || "Unknown reason");
         }
         this.firstStop = false;
         this.emit(GdbEventNames.Stopped, record, reason);

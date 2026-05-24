@@ -25,15 +25,15 @@ Open <http://localhost:5173>. The fake orchestrator (`dev-mock.ts`) starts autom
 
 **What the mock does over time:**
 
-| Time  | Event |
-|-------|-------|
-| 0s    | 4 tabs created: ttyUSB0 (UART), COM3 (UART), RTT#0, Glass Cockpit |
-| 0s+   | Each tab receives its own independent data stream |
-| 5s    | AI-REQUEST appears in Glass Cockpit tab |
-| 8s    | COM3 goes orange — simulates cable disconnect |
-| 12s   | AI-REQUEST clears |
-| 15s   | COM3 reconnects |
-| 20s   | RTT#0 and Glass Cockpit dim — simulates debug session end |
+| Time | Event                                                             |
+| ---- | ----------------------------------------------------------------- |
+| 0s   | 4 tabs created: ttyUSB0 (UART), COM3 (UART), RTT#0, Glass Cockpit |
+| 0s+  | Each tab receives its own independent data stream                 |
+| 5s   | AI-REQUEST appears in Glass Cockpit tab                           |
+| 8s   | COM3 goes orange — simulates cable disconnect                     |
+| 12s  | AI-REQUEST clears                                                 |
+| 15s  | COM3 reconnects                                                   |
+| 20s  | RTT#0 and Glass Cockpit dim — simulates debug session end         |
 
 Edit any `.svelte` file and the browser updates instantly (HMR). The browser console logs outbound messages (`[cockpit→ext]`) whenever you submit input.
 
