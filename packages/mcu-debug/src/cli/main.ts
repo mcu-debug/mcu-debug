@@ -14,7 +14,7 @@ export function validateCliArgs(args: CliArgs): boolean {
 
 async function main() {
     const { cliArgs } = await import("./options");
-    const customTransport = createTransports(cliArgs, cliArgs.logLevel || 'info');
+    const customTransport = createTransports(cliArgs, 'info');
 
     if (!validateCliArgs(cliArgs)) {
         process.exit(1);

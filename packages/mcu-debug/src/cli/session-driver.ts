@@ -47,7 +47,10 @@ export class CliSessionDriver {
     private mcuStderrLogger: winston.Logger;
     private mcuStdoutLogger: winston.Logger;
     private gdbMiLogger: winston.Logger;
+    private optionalInfo: winston.Logger;
     private history: string[] = [];
+    private isPaused = false;
+    private isInternalClose = false; // to distinguish user-initiated vs DA-initiated session close
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
@@ -64,6 +67,7 @@ export class CliSessionDriver {
         this.mcuStderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
         this.mcuStdoutLogger = logger.child({ source: 'DA', color: 'orange', isConsole: true });
         this.gdbMiLogger = logger.child({ source: 'GDB-MI', isConsole: true });
+        this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
     }
 
     async startSession(cliArgs: any) {
@@ -100,7 +104,7 @@ export class CliSessionDriver {
          */
         this.doInitializeRequest().then(() => {
             logger.info("Initialization complete. Sending launch request...");
-            return this.sendRequest<DebugProtocol.LaunchResponse>({
+            return this.sendRequest<DebugProtocol.LaunchResponse | DebugProtocol.AttachResponse>({
                 seq: 0,          // overwritten by sendRequest
                 type: 'request', // overwritten by sendRequest
                 command: (this.config as any)?.type === 'attach' ? 'attach' : 'launch',
@@ -109,7 +113,7 @@ export class CliSessionDriver {
                     ...this.config,
                 } satisfies DebugProtocol.LaunchRequestArguments,
             });
-        }).then((launchResponse: DebugProtocol.LaunchResponse) => {
+        }).then((launchResponse: DebugProtocol.LaunchResponse | DebugProtocol.AttachResponse) => {
             if (!launchResponse.success) {
                 throw new Error(`Launch failed: ${launchResponse.message}`);
             }
@@ -147,66 +151,7 @@ export class CliSessionDriver {
                 this.rlPaused?.prompt();
                 return;
             }
-            logger.debug(input, { source: 'user-input', skipConsole: true }); // log user input, but not to console to avoid confusion with DA output
-            // Handle user input and send it to the debug session
-            const continueCommands = ['continue', 'c', 'cont', 'run'];
-            if (continueCommands.includes(input.trim().toLowerCase())) {
-                this.sendRequest<DebugProtocol.ContinueResponse>({
-                    seq: 0,          // overwritten by sendRequest
-                    type: 'request', // overwritten by sendRequest
-                    command: 'continue',
-                    arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
-                }).then((response) => {
-                    if (!response.success) {
-                        logger.warn(`Continue request failed: ${response.message}`);
-                    }
-                });
-            } else if (input.trim().toLowerCase() === 'pause') {
-                this.sendRequest<DebugProtocol.PauseResponse>({
-                    seq: 0,          // overwritten by sendRequest
-                    type: 'request', // overwritten by sendRequest
-                    command: 'pause',
-                    arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
-                }).then((response) => {
-                    if (!response.success) {
-                        logger.warn(`Pause request failed: ${response.message}`);
-                    }
-                });
-            } else if (input.trim().toLowerCase() === 'exit') {
-                this.sendRequest<DebugProtocol.TerminateResponse>({
-                    seq: 0,          // overwritten by sendRequest
-                    type: 'request', // overwritten by sendRequest
-                    command: 'terminate',
-                }).then((response) => {
-                    if (!response.success) {
-                        logger.warn(`Terminate request failed: ${response.message}`);
-                    }
-                    this.rlPaused?.close();
-                    this.rlPaused = null;
-                });
-            } else {
-                const save = this.rlPaused
-                // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest"
-                this.sendRequest<DebugProtocol.EvaluateResponse>({
-                    seq: 0,          // overwritten by sendRequest
-                    type: 'request', // overwritten by sendRequest
-                    command: 'evaluate',
-                    arguments: {
-                        expression: input,
-                        context: 'repl',
-                    },
-                }).then((response) => {
-                    if (!response.success) {
-                        logger.warn(`Evaluate request failed: ${response.message}`);
-                    }
-                }).finally(() => {
-                    setTimeout(() => {
-                        if (this.rlPaused === save) {
-                            this.rlPaused?.prompt();
-                        }
-                    }, 250);
-                });
-            }
+            this.handleInputLinePaused(input, true);
         });
 
         this.rlPaused.on('history', (history) => {
@@ -219,6 +164,121 @@ export class CliSessionDriver {
 
         this.rlPaused.on('close', () => {
             // logger.info('Exiting debug session.');
+            if (!this.isInternalClose) {
+                this.doExit(true);
+            }
+            this.isInternalClose = false;
+        });
+    }
+
+    private handleInputLinePaused(input: string, isTerminal: boolean) {
+        const trimmedInput = input.trim();
+        if (!trimmedInput) {
+            return;
+        }
+        logger.debug(input, { source: 'user-input', skipConsole: true }); // log user input, but not to console to avoid confusion with DA output
+        // Handle user input and send it to the debug session
+        const continueCommands = ['continue', 'c', 'cont', 'run'];
+        if (continueCommands.includes(trimmedInput.toLowerCase())) {
+            this.sendRequest<DebugProtocol.ContinueResponse>({
+                seq: 0,          // overwritten by sendRequest
+                type: 'request', // overwritten by sendRequest
+                command: 'continue',
+                arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
+            }).then((response) => {
+                if (!response.success) {
+                    logger.warn(`Continue request failed: ${response.message}`);
+                }
+            });
+        } else if (this.handleSpecialCommands(trimmedInput, isTerminal)) {
+            // Special commands handled
+        } else {
+            const save = this.rlPaused;
+            // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest"
+            this.sendRequest<DebugProtocol.EvaluateResponse>({
+                seq: 0,          // overwritten by sendRequest
+                type: 'request', // overwritten by sendRequest
+                command: 'evaluate',
+                arguments: {
+                    expression: trimmedInput,
+                    context: 'repl',
+                },
+            }).then((response) => {
+                if (!response.success) {
+                    logger.warn(`Evaluate request failed: ${response.message}`);
+                }
+            }).finally(() => {
+                if (isTerminal) {
+                    setTimeout(() => {
+                        if (this.rlPaused === save) {
+                            this.rlPaused?.prompt();
+                        }
+                    }, 250);
+                }
+            });
+        }
+    }
+
+    /**
+     * These commands are special commands that are okay to use in both paused and running states,
+     * and don't get sent to the DA as raw GDB commands. They are for controlling the session itself,
+     * not the target. Some are not even gdb commands (e.g. reset)
+     * @param trimmedInput 
+     * @param isTerminal use true for stdin
+     * @returns true if handled
+     */
+    private handleSpecialCommands(trimmedInput: string, isTerminal: boolean): boolean {
+        if (trimmedInput === 'pause' || trimmedInput === '!!sigint') {
+            this.doInterrupt();
+            return true;
+        } if (trimmedInput === 'reset' || trimmedInput === '!!reset') {
+            this.sendRequest<DebugProtocol.RestartResponse>({
+                seq: 0,          // overwritten by sendRequest
+                type: 'request', // overwritten by sendRequest
+                command: 'reset-device',
+            }).then((response) => {
+                if (!response.success) {
+                    logger.warn(`Reset request failed: ${response.message}`);
+                }
+            });
+            return true;
+        } else if (trimmedInput.toLowerCase() === 'exit') {
+            this.doExit(isTerminal);
+            return true;
+        } else if (trimmedInput.toLowerCase().startsWith('!!')) {
+            // Future meta-commands (!!RESET, !!NOTE:, etc.)
+            this.handleMetaCommand(trimmedInput);
+            return true;
+        }
+        return false;
+    }
+
+    private doExit(isTerminal: boolean) {
+        this.sendRequest<DebugProtocol.TerminateResponse>({
+            seq: 0,          // overwritten by sendRequest
+            type: 'request', // overwritten by sendRequest
+            command: 'terminate',
+        }).then((response) => {
+            if (!response.success) {
+                logger.warn(`Terminate request failed: ${response.message}`);
+            }
+            if (isTerminal) {
+                this.rlPaused?.close();
+                this.rlPaused = null;
+            }
+        });
+    }
+
+    private doInterrupt() {
+        this.sendRequest<DebugProtocol.PauseResponse>({
+            seq: 0,          // overwritten by sendRequest
+            type: 'request', // overwritten by sendRequest
+            command: 'pause',
+            arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
+        }).then((response) => {
+            if (!response.success) {
+                logger.warn(`Pause request failed: ${response.message}`);
+            }
         });
     }
 
@@ -231,7 +291,9 @@ export class CliSessionDriver {
         // Don't call pause() — a paused readline won't read stdin and won't detect Ctrl-C.
         // When terminal:true puts stdin in raw mode, ISIG is cleared so the OS no longer
         // generates SIGINT for Ctrl-C; readline must read the \x03 byte itself to emit 'SIGINT'.
-        this.rlRunning.on('line', () => { }); // discard any accidental input while running
+        this.rlRunning.on('line', (input) => {
+            this.handleInputLineRunning(input, true);
+        }); // discard any accidental input while running
         this.rlRunning.on('SIGINT', () => {
             logger.info('SIGINT received, sending interrupt to debug session...');
             this.sendRequest<DebugProtocol.PauseResponse>({
@@ -240,6 +302,23 @@ export class CliSessionDriver {
                 command: 'pause',
             });
         });
+        this.rlRunning.on('close', () => {
+            // logger.info('Exiting debug session.');
+            if (!this.isInternalClose) {
+                this.doExit(true);
+            }
+            this.isInternalClose = false;
+        });
+    }
+
+    private handleInputLineRunning(input: string, isTerminal: boolean) {
+        const trimmedInput = input.trim();
+        if (!trimmedInput) {
+            return;
+        }
+        if (this.handleSpecialCommands(trimmedInput, isTerminal)) {
+            return;
+        }
     }
 
     /**
@@ -297,17 +376,23 @@ export class CliSessionDriver {
         }
         switch (event.event) {
             case 'stopped':
-                logger.info(`Stopped: ${event.body?.reason}` +
+                this.optionalInfo.info(`Stopped: ${event.body?.reason}` +
                     (event.body?.description ? ` — ${event.body.description}` : ''));
+                this.isInternalClose = true;
                 this.rlRunning?.close();
                 this.rlRunning = null;
+                this.isPaused = true;
                 this.startReadlinePaused();
+                this.isInternalClose = false;
                 break;
             case 'continued':
-                logger.info('Running');
+                this.optionalInfo.info('Running');
+                this.isInternalClose = true;
                 this.rlPaused?.close();
                 this.rlPaused = null;
+                this.isPaused = false;
                 this.startReadlineRunning();
+                this.isInternalClose = false;
                 break;
             case 'terminated':
                 logger.info('Session terminated');
@@ -319,7 +404,7 @@ export class CliSessionDriver {
                 break;
             case 'thread':
                 // threadId, reason ('started'|'exited') — mostly noise, log at debug
-                logger.debug('thread', { threadId: event.body?.threadId, reason: event.body?.reason });
+                this.optionalInfo.debug('thread', { threadId: event.body?.threadId, reason: event.body?.reason });
                 break;
             case 'output': {
                 const body = event.body as DebugProtocol.OutputEvent['body'];
@@ -332,7 +417,7 @@ export class CliSessionDriver {
             case 'uart-configure': break
             default:
                 // Custom events (custom-event-ports-done, SWOConfigure, etc.)
-                logger.debug(`event:${event.event}`, { body: event.body });
+                this.optionalInfo.debug(`event:${event.event}`, { body: event.body });
                 break;
 
         }
@@ -447,7 +532,6 @@ export class CliSessionDriver {
 
     // In session-driver.ts — to be implemented when Node socket is wired up
     private startSocketReader(): Promise<void> {
-        return Promise.resolve(); // placeholder until we implement the socket server
         this.checkSocketFree();
         const socketPath = `${os.tmpdir()}/.mcu-debug-${process.pid}.sock`;
         let timeout: NodeJS.Timeout | null = null;
@@ -455,20 +539,10 @@ export class CliSessionDriver {
             this.server = net.createServer((conn) => {
                 const rl = readline.createInterface({ input: conn });
                 rl.on('line', (line) => {
-                    if (line === '!!SIGINT') {
-                        // Same path as startReadlineRunning's SIGINT handler
-                        this.sendRequest<DebugProtocol.PauseResponse>({
-                            command: 'pause', arguments: { threadId: 1 }, type: 'request', seq: 0 /* overwritten by sendRequest */
-                        });
-                    } else if (line.startsWith('!!')) {
-                        // Future meta-commands (!!RESET, !!NOTE:, etc.)
-                        this.handleMetaCommand(line);
+                    if (this.isPaused) {
+                        this.handleInputLinePaused(line, false);
                     } else {
-                        // Raw GDB input — same path as startReadlinePaused's line handler
-                        this.sendRequest<DebugProtocol.EvaluateResponse>({
-                            command: 'evaluate',
-                            arguments: { expression: line, context: 'repl' }, type: 'request', seq: 0 /* overwritten by sendRequest */
-                        });
+                        this.handleInputLineRunning(line, false);
                     }
                 });
                 if (this.cliArgs.waitForClient && this.serverClients.size == 0) {

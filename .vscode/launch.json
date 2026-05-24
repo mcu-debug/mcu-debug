@@ -83,7 +83,7 @@
 			"console": "integratedTerminal",
 			"stopOnEntry": false,
 			"outputCapture": "std",
-			"args": [ "--log-level", "info", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log" ],
+			"args": [ "-d", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log" ],
 			"env": {
 				"RUST_BACKTRACE": "1",
 				"PROD_MCU_DEBUG_HELPER": "0"
@@ -99,11 +99,11 @@
 			"type": "lldb",
 			"request": "launch",
             "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug",
-			"args": ["debug", "--log-level", "info", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log"],
+			"args": ["debug", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log"],
             "cwd": "/Users/hdm/mtw37/Hello_World",
             "console": "externalTerminal",
 			"preLaunchTask": "Build Helper",
-			"lldbCommands": ["process handle SIGHUP -p false -s false -n false"],
+			"initCommands": ["process handle SIGHUP -p false -s false -n false"],
 			"presentation": {
 			  "reveal": "always",
 			  "focus": true

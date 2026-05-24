@@ -63,11 +63,17 @@ const levelLabels: Record<string, string> = {
     debug: 'Debug',
 };
 
+
+const stripProps = (info: any) => {
+    delete info.isConsole;
+    delete info.color;
+    delete info.skipConsole;
+};
+
+
 // Strip internal console-only fields so they don't appear in file/JSON output.
 const stripConsoleFields = winston.format((info) => {
-    delete (info as any).isConsole;
-    delete (info as any).color;
-    delete (info as any).skipConsole;
+    stripProps(info);
     return info;
 });
 
@@ -75,8 +81,8 @@ const wrapInRed = (text: string) => `\x1b[31m${text}\x1b[0m`; // red for errors
 const wrapInOrange = (text: string) => `\x1b[33m${text}\x1b[0m`; // orange for warnings
 const wrapInGreen = (text: string) => `\x1b[32m${text}\x1b[0m`; // green for info
 
-export function createTransports(cliArgs: CliArgs, logLevel: string): CustomTransport {
-    const consoleLevel = logLevel in winston.config.npm.levels ? logLevel : 'info';
+export function createTransports(cliArgs: CliArgs, consoleLogLevel: string): CustomTransport {
+    const consoleLevel = consoleLogLevel in winston.config.npm.levels ? consoleLogLevel : 'info';
     // Console: human-readable, only what the user needs to see
     logger.add(
         new winston.transports.Console({
@@ -95,6 +101,7 @@ export function createTransports(cliArgs: CliArgs, logLevel: string): CustomTran
                         }
                         return `${msg}`;   // for console transport, just return the message without level or meta
                     }
+                    stripProps(meta);
                     const extra = Object.keys(meta).length > 0
                         ? ' ' + JSON.stringify(meta)
                         : '';
