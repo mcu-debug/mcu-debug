@@ -109,7 +109,30 @@ impl App {
             return;
         }
 
-        self.output.push_back(line);
+        // Simulate terminal \r (carriage return) behaviour for progress bars.
+        //
+        // Two patterns both occur in practice:
+        //  (a) single read_line contains multiple updates: "[ 0%]\r[ 50%]\r[100%]\n"
+        //      → keep only the last \r-segment for display, append normally
+        //  (b) each update ends with \n:  "\r[ 76%] [...]\n"
+        //      → strip leading \r, replace the previous output entry (overwrite)
+        let starts_with_cr = trimmed.starts_with('\r');
+        let display = if trimmed.contains('\r') {
+            // Last segment after the final \r is what a real terminal would show.
+            trimmed.rsplit('\r').next().unwrap_or(trimmed)
+        } else {
+            trimmed
+        };
+
+        if display.is_empty() {
+            return;
+        }
+
+        if starts_with_cr && !self.output.is_empty() {
+            *self.output.back_mut().unwrap() = format!("{}\n", display);
+        } else {
+            self.output.push_back(format!("{}\n", display));
+        }
         if self.output.len() > MAX_LINES {
             self.output.pop_front();
         }
@@ -385,14 +408,26 @@ pub fn run_tui(reader: Box<dyn MuxReader>, mut writer: Box<dyn MuxWriter>) -> Re
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, rx, &mut *writer);
     ratatui::restore();
-    result
+
+    // After leaving the alternate screen, print the last screenful so the
+    // output is visible in the terminal scrollback rather than just vanishing.
+    let term_height = crossterm::terminal::size().map(|(_, h)| h as usize).unwrap_or(24);
+    if let Ok(output) = &result {
+        let skip = output.len().saturating_sub(term_height.saturating_sub(2));
+        for line in output.iter().skip(skip) {
+            print!("{}", line);
+        }
+    }
+    println!("─── mcu-debug session ended ───");
+
+    result.map(|_| ())
 }
 
 fn event_loop(
     terminal: &mut DefaultTerminal,
     rx: mpsc::Receiver<SocketMsg>,
     writer: &mut dyn MuxWriter,
-) -> Result<()> {
+) -> Result<VecDeque<String>> {
     let mut app = App::new();
 
     loop {
@@ -432,5 +467,5 @@ fn event_loop(
         }
     }
 
-    Ok(())
+    Ok(app.output)
 }

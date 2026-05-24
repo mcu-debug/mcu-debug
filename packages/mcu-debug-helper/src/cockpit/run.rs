@@ -15,13 +15,10 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use std::io::IsTerminal;
-use std::time::Duration;
 
-use super::{sock_file, spawn, transport, tui};
+use super::{spawn, transport, tui};
 
 const MIN_NODE_MAJOR: u32 = 22; // Node v22+ is required for stable features we rely on (e.g. stable fetch API)
-/// How long to wait for Node to write `.mcu-debug.sock.json` before giving up.
-const SOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Check that `node` is on PATH and is at least v`MIN_NODE_MAJOR`.
 fn check_node_version() -> Result<()> {
@@ -102,18 +99,15 @@ pub fn run(args: DebugArgs) -> Result<()> {
     // TUI mode: spawn Node (it will create .mcu-debug.sock.json when ready),
     // wait for the socket file, connect, then hand off to the ratatui TUI.
     let mut child = spawn::spawn_node_cli_tui(&cli_js, &node_args)?;
+    let stdin = child.stdin.take().expect("Failed to open stdin");
+    let stdout = child.stdout.take().expect("Failed to open stdout");
 
-    let sock_info = sock_file::wait_for_sock_file(SOCK_TIMEOUT)
-        .context("node CLI did not create a socket file in time")?;
+    // Future `mcu-debug attach` path: connect via Unix socket instead of stdio.
+    //   let sock_info = sock_file::wait_for_sock_file(SOCK_TIMEOUT)
+    //       .context("node CLI did not create a socket file in time")?;
+    //   let (reader, writer) = transport::connect(&sock_info)?;
 
-    eprintln!(
-        "mcu-debug: connected to {} (pid {})",
-        sock_info.display_addr(),
-        sock_info.pid
-    );
-
-    let (reader, writer) = transport::connect(&sock_info)?;
-
+    let (reader, writer) = transport::from_child_stdio(stdout, stdin);
     tui::run_tui(reader, writer)?;
 
     // TUI exited — give Node a moment to shut down gracefully, then kill it.

@@ -40,15 +40,15 @@ pub fn find_node_cli() -> Option<PathBuf> {
 
 /// Spawn the Node CLI process in TUI mode.
 ///
-/// Node owns the debug session and will create `.mcu-debug.sock.json` in the
-/// current directory when ready. The TUI reads the mux stream from that socket,
-/// so Node's stdout is left null. stderr is inherited for visibility of errors.
+/// Node owns the debug session and we will talk via its stdin/stdout pipes. The caller (or an AI
+/// agent reading our stdout) will not see the Node CLI's tagged stream directly. They can either use
+/// the log file or the socket interface to get the tagged stream data.
 pub fn spawn_node_cli_tui(cli_js: &PathBuf, extra_args: &[String]) -> Result<Child> {
     Command::new("node")
         .arg(cli_js)
         .args(extra_args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null()) // TUI reads from Unix socket, not stdout
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("failed to spawn node {}", cli_js.display()))

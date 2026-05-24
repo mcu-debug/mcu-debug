@@ -21,22 +21,68 @@
 //! The reader and writer are split into separate trait objects so the writer
 //! can stay on the main/TUI thread while the reader runs in a background thread.
 
-use anyhow::Result;
 use crate::cockpit::sock_file::SockInfo;
+use anyhow::Result;
 
-/// Read half of the mux stream socket.
+/// Read half of the mux stream.
 pub trait MuxReader: Send {
     /// Read the next newline-terminated line. Returns `None` on EOF (Node exited).
     fn read_line(&mut self) -> Result<Option<String>>;
 }
 
-/// Write half of the mux stream socket.
+/// Write half of the mux stream.
 pub trait MuxWriter: Send {
-    /// Send a user-input line to the Node process. A trailing newline is added if absent.
+    /// Send a line to the Node process. A trailing newline is added if absent.
     fn write_line(&mut self, line: &str) -> Result<()>;
 }
 
-/// Connect to the mux socket described by `info` and return split (reader, writer) halves.
+// ── Stdio transport (piped ChildStdout / ChildStdin) ─────────────────────────
+
+/// Wrap the piped stdout/stdin of a spawned Node child process.
+/// This is the primary transport for `mcu-debug debug` (TUI mode).
+pub fn from_child_stdio(
+    stdout: std::process::ChildStdout,
+    stdin: std::process::ChildStdin,
+) -> (Box<dyn MuxReader>, Box<dyn MuxWriter>) {
+    use std::io::{BufRead, BufReader, Write};
+
+    struct StdioReader(BufReader<std::process::ChildStdout>);
+    struct StdioWriter(std::process::ChildStdin);
+
+    impl MuxReader for StdioReader {
+        fn read_line(&mut self) -> Result<Option<String>> {
+            let mut line = String::new();
+            let n = self.0.read_line(&mut line)?;
+            if n == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(line))
+            }
+        }
+    }
+
+    impl MuxWriter for StdioWriter {
+        fn write_line(&mut self, line: &str) -> Result<()> {
+            self.0.write_all(line.as_bytes())?;
+            if !line.ends_with('\n') {
+                self.0.write_all(b"\n")?;
+            }
+            self.0.flush()?;
+            Ok(())
+        }
+    }
+
+    (
+        Box::new(StdioReader(BufReader::new(stdout))),
+        Box::new(StdioWriter(stdin)),
+    )
+}
+
+// ── Unix domain socket transport (for `mcu-debug attach`) ────────────────────
+
+/// Connect to the mux socket described by `info`.
+/// Used when attaching to an already-running session via `.mcu-debug.sock.json`.
+#[allow(dead_code)]
 pub fn connect(info: &SockInfo) -> Result<(Box<dyn MuxReader>, Box<dyn MuxWriter>)> {
     #[cfg(unix)]
     if let Some(path) = &info.socket {
@@ -58,9 +104,8 @@ pub fn connect(info: &SockInfo) -> Result<(Box<dyn MuxReader>, Box<dyn MuxWriter
     )
 }
 
-// ── Unix domain socket implementation ────────────────────────────────────────
-
 #[cfg(unix)]
+#[allow(dead_code)]
 mod unix {
     use super::{MuxReader, MuxWriter};
     use anyhow::Result;

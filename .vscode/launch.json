@@ -72,7 +72,7 @@
       		// "preLaunchTask": "npm: compile"
 		},
 		{
-			"name": "Debug CLI",
+			"name": "Debug Node mcu-debug CLI",
 			"type": "node",
 			"request": "launch",
 			// "cwd": "${workspaceFolder}",
@@ -93,6 +93,20 @@
 				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
 			],
 	  		"preLaunchTask": "npm: compile"
+		},
+		{
+			"name": "Debug Rust mcu-debug CLI",
+			"type": "lldb",
+			"request": "launch",
+            "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug",
+			"args": ["debug", "--log-level", "info", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log"],
+            "cwd": "/Users/hdm/mtw37/Hello_World",
+            "console": "externalTerminal",
+			"preLaunchTask": "Build Helper",
+			"presentation": {
+			  "reveal": "always",
+			  "focus": true
+			}
 		},
 		{
 			"name": "Launch Tests",
@@ -121,7 +135,7 @@
             // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/stm32f429-rtt.elf"],
             // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/proj_cm4.elf"],
 			"args": ["-h"],
-            "cwd": "${workspaceFolder}/packages/mcu-debug-helper",
+            "cwd": "${workspaceFolder}/packages/mcu-debug",
             "console": "internalConsole"
         },
         {
