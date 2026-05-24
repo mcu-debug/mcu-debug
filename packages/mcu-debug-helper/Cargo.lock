@@ -709,6 +709,7 @@ dependencies = [
  "dunce",
  "flexi_logger",
  "gimli",
+ "libc",
  "log",
  "memmap2",
  "notify",

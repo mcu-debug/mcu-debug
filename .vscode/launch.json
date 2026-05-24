@@ -103,6 +103,7 @@
             "cwd": "/Users/hdm/mtw37/Hello_World",
             "console": "externalTerminal",
 			"preLaunchTask": "Build Helper",
+			"lldbCommands": ["process handle SIGHUP -p false -s false -n false"],
 			"presentation": {
 			  "reveal": "always",
 			  "focus": true

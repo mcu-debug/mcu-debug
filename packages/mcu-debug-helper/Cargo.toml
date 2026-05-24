@@ -32,6 +32,7 @@ serialport = { version = "4.9.0", default-features = false }
 notify = "8.2.0"
 ratatui = "0.29"
 crossterm = "0.28"
+libc = "0.2"
 
 [profile.release]
 strip = "symbols"

@@ -36,14 +36,18 @@
 //!   Ctrl-C           — interrupt target (sends !!SIGINT)
 //!   Ctrl-D           — graceful exit (sends "exit" to Node)
 //!   Ctrl-X           — emergency TUI exit (kills Node)
+//!   F1               — show / hide key-binding help
+
+#[cfg(unix)]
+use libc;
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     DefaultTerminal,
 };
 use std::cell::Cell;
@@ -77,6 +81,8 @@ struct App {
     /// Height of the output panel in rows, updated every frame by `render_output`.
     /// Used to compute proportional page-scroll amounts in `handle_key`.
     output_height: u16,
+    /// When true, a help overlay is rendered on top of all other content.
+    show_help: bool,
 }
 
 impl App {
@@ -92,6 +98,7 @@ impl App {
             history_pos: None,
             history_draft: String::new(),
             output_height: 20,
+            show_help: false,
         }
     }
 
@@ -211,8 +218,17 @@ impl App {
     }
 
     fn handle_key(&mut self, event: crossterm::event::KeyEvent, writer: &mut dyn MuxWriter) {
+        // Any key dismisses the help overlay.
+        if self.show_help {
+            self.show_help = false;
+            return;
+        }
+
         match (event.code, event.modifiers) {
-            // ── Interrupt: forward to the debug session, TUI stays alive ──────
+            // ── Help overlay ──────────────────────────────────────────────────
+            (KeyCode::F(1), _) => {
+                self.show_help = true;
+            }
             // crossterm intercepts Ctrl-C in raw mode; the OS never sees it.
             // We forward `!!SIGINT` over the mux socket so Node can call the
             // DAP `pause` request — same path as `startReadlineRunning`'s
@@ -516,6 +532,10 @@ fn render(frame: &mut ratatui::Frame, app: &App, output_height: &Cell<u16>) {
     } else {
         render_input(frame, app, chunks[1]);
     }
+
+    if app.show_help {
+        render_help(frame);
+    }
 }
 
 fn render_output(
@@ -578,18 +598,89 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::Re
         None => (Style::default().fg(Color::Green), " Input ".to_owned()),
     };
 
-    let line = Line::from(vec![
-        Span::styled("> ", prompt_style),
-        Span::raw(&app.input),
-        Span::styled("█", prompt_style),
-    ]);
+    let line = if app.input.is_empty() && app.history_pos.is_none() {
+        // Placeholder hint when the input bar is empty.
+        Line::from(vec![
+            Span::styled("> ", prompt_style),
+            Span::styled("F1 for help", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("> ", prompt_style),
+            Span::raw(&app.input),
+            Span::styled("█", prompt_style),
+        ])
+    };
     let block = Block::default().borders(Borders::ALL).title(title);
     let para = Paragraph::new(line).block(block);
     frame.render_widget(para, area);
 }
 
-// ── Public entry point ────────────────────────────────────────────────────────
+fn render_help(frame: &mut ratatui::Frame) {
+    const ROWS: u16 = 18;
+    const COLS: u16 = 52;
 
+    let area = centered_rect(COLS, ROWS, frame.area());
+    frame.render_widget(Clear, area);
+
+    let key = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::DarkGray);
+
+    let rows: &[(&str, &str)] = &[
+        ("  ↑ / ↓          ", "Navigate command history"),
+        ("  PgUp / PgDn    ", "Scroll output (90 % page)"),
+        ("  End            ", "Jump to bottom / resume auto-follow"),
+        ("  Enter          ", "Submit command"),
+        ("  Backspace      ", "Delete last character"),
+        ("                 ", ""),
+        ("  Ctrl-C         ", "Interrupt target  (sends !!SIGINT)"),
+        ("  Ctrl-D         ", "Graceful exit     (sends \"exit\")"),
+        ("  Ctrl-X         ", "Emergency TUI exit (kills Node)"),
+        ("                 ", ""),
+        ("  F1             ", "Show / hide this help"),
+        ("                 ", ""),
+        ("  Press any key to close", ""),
+    ];
+
+    let lines: Vec<Line> = rows
+        .iter()
+        .map(|(k, v)| {
+            if v.is_empty() {
+                Line::from(Span::styled(*k, dim))
+            } else {
+                Line::from(vec![Span::styled(*k, key), Span::raw(*v)])
+            }
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            " Key Bindings ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let para = Paragraph::new(Text::from(lines)).block(block);
+    frame.render_widget(para, area);
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect {
+        x,
+        y,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    }
+}
+
+// ── Public entry point ────────────────────────────────────────────────────────
 enum SocketMsg {
     Line(String),
     Eof,
@@ -621,6 +712,13 @@ pub fn run_tui(reader: Box<dyn MuxReader>, mut writer: Box<dyn MuxWriter>) -> Re
             }
         }
     });
+
+    // On Unix, LLDB's PTY management can trigger SIGHUP via kqueue EV_HUP on stdin.
+    // Ignore it so the TUI survives debugger attach/detach cycles.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    }
 
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, rx, &mut *writer);
