@@ -17,7 +17,8 @@
       "Bash(npx tsc-strict *)",
       "Bash(xargs ls *)",
       "Bash(npx tsc *)",
-      "Bash(xargs cat -n)"
+      "Bash(xargs cat -n)",
+      "Bash(git fetch *)"
     ]
   }
 }
