@@ -1,7 +1,10 @@
+import * as net from "node:net";
+import * as os from "node:os";
+import * as fs from "node:fs";
 import * as readline from "node:readline";
 import { ConfigurationArguments } from "../adapter/servers/common";
 import { IHostAdapter } from "../common/host-adapter";
-import { logger } from "../common/logger";
+import { CustomTransport, logger } from "../common/logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import winston from "winston";
@@ -46,7 +49,12 @@ export class CliSessionDriver {
     private gdbMiLogger: winston.Logger;
     private history: string[] = [];
 
-    constructor(private cliArgs: any, private adapter: IHostAdapter, private config: ConfigurationArguments) {
+    // Socker server member variables
+    private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
+    private serverClients = new Set<net.Socket>();
+    private server: net.Server | null = null;
+
+    constructor(private cliArgs: any, private customTransport: CustomTransport, private adapter: IHostAdapter, private config: ConfigurationArguments) {
         // Initialize session driver
         config.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
         config.liveWatch = undefined as any; // not used in CLI, but some code expects it to exist
@@ -59,6 +67,12 @@ export class CliSessionDriver {
     }
 
     async startSession(cliArgs: any) {
+        try {
+            await this.startSocketReader();
+        } catch (error) {
+            logger.error("Failed to start socket reader: " + (error instanceof Error ? error.message : String(error)));
+            process.exit(1);
+        }
         // Start the debug session with the provided CLI arguments
         logger.info("Starting debug session with arguments:", cliArgs);
 
@@ -403,6 +417,124 @@ export class CliSessionDriver {
         }
         logger.info("Debug session initialized. DA capabilities:", response.body);
         return response;
+    }
+
+    private createSocketJsonPath() {
+        return `${process.cwd()}/.mcu-debug.sock.json`;
+    }
+
+    private checkSocketFree() {
+        const socketJsonPath = this.createSocketJsonPath();
+        if (fs.existsSync(socketJsonPath)) {
+            try {
+                const existing = JSON.parse(fs.readFileSync(socketJsonPath, 'utf-8'));
+                if (existing && existing.pid) {
+                    // Check if the process is still running
+                    try {
+                        process.kill(existing.pid, 0); // signal 0 doesn't actually kill, just checks if it exists
+                        logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running. Is another instance running?`, existing);
+                    } catch (err) {
+                        logger.warn(`Socket file ${socketJsonPath} already exists but process ${existing.pid} is not running. It will be overwritten.`, existing);
+                    }
+                } else {
+                    logger.warn(`Socket file ${socketJsonPath} already exists but has unexpected content. It will be overwritten.`, { content: existing });
+                }
+            } catch (err) {
+                logger.error(`Socket file ${socketJsonPath} already exists and could not be read. Is another instance running?`);
+            }
+        }
+    }
+
+    // In session-driver.ts — to be implemented when Node socket is wired up
+    private startSocketReader(): Promise<void> {
+        return Promise.resolve(); // placeholder until we implement the socket server
+        this.checkSocketFree();
+        const socketPath = `${os.tmpdir()}/.mcu-debug-${process.pid}.sock`;
+        let timeout: NodeJS.Timeout | null = null;
+        this.socketPromise = new Promise((resolve, reject) => {
+            this.server = net.createServer((conn) => {
+                const rl = readline.createInterface({ input: conn });
+                rl.on('line', (line) => {
+                    if (line === '!!SIGINT') {
+                        // Same path as startReadlineRunning's SIGINT handler
+                        this.sendRequest<DebugProtocol.PauseResponse>({
+                            command: 'pause', arguments: { threadId: 1 }, type: 'request', seq: 0 /* overwritten by sendRequest */
+                        });
+                    } else if (line.startsWith('!!')) {
+                        // Future meta-commands (!!RESET, !!NOTE:, etc.)
+                        this.handleMetaCommand(line);
+                    } else {
+                        // Raw GDB input — same path as startReadlinePaused's line handler
+                        this.sendRequest<DebugProtocol.EvaluateResponse>({
+                            command: 'evaluate',
+                            arguments: { expression: line, context: 'repl' }, type: 'request', seq: 0 /* overwritten by sendRequest */
+                        });
+                    }
+                });
+                if (this.cliArgs.waitForClient && this.serverClients.size == 0) {
+                    // First client connected, resolve the promise to let session setup continue
+                    resolve();
+                    if (timeout) clearTimeout(timeout!);
+                }
+                // Also pipe mux output back to this connection
+                this.serverClients.add(conn);
+                this.customTransport.addStream(conn);
+                conn.on('close', () => this.serverClients.delete(conn));
+            });
+            this.server.listen(socketPath, () => {
+                logger.info(`Socket server listening on ${socketPath}`);
+                if (!this.cliArgs.waitForClient) {
+                    resolve();
+                } else {
+                    timeout = setTimeout(() => {
+                        if (timeout && this.serverClients.size === 0) {
+                            logger.error('waitForClient is true but no client connected within timeout. Is the client side running and configured correctly?');
+                        }
+                        timeout = null;
+                    }, 5000); // arbitrary timeout to catch listen() failures in waitForClient mode
+                }
+            });
+            this.server.on('error', (err) => {
+                logger.error(`Socket server error: ${err instanceof Error ? err.message : String(err)}`);
+                reject(err);
+            });
+            this.writeSockFile(socketPath);  // triggers Rust's wait_for_sock_file()
+        });
+        return this.socketPromise;
+    }
+    private handleMetaCommand(cmd: string) {
+        // Handle future meta-commands from the Rust side (e.g. !!RESET, !!NOTE:, etc.)
+        logger.info(`Meta-command from Rust: ${cmd}`);
+    }
+    private writeSockFile(socketPath: string) {
+        // Write the socket path to .mcu-debug.sock.json for the Rust side to pick up
+        const sockInfo = {
+            pid: process.pid,
+            socket: socketPath,
+            cwd: process.cwd(),
+            config: this.config.name,
+            startedAt: new Date().toISOString(),
+            logFile: this.cliArgs.logFile
+        };
+        const socketPathJson = `${process.cwd()}/.mcu-debug.sock.json`;
+        try {
+            fs.writeFileSync(socketPathJson, JSON.stringify(sockInfo, null, 2));
+        } catch (err) {
+            logger.error(`Failed to write socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`);
+            if (this.cliArgs.waitForClient) {
+                process.exit(1); // Rust side will detect absence of socket file and wait, so we can exit cleanly here and let Rust restart us when ready
+            }
+            return;
+        }
+        logger.info(`Socket path written to ${socketPathJson}`);
+        process.on('exit', () => {
+            try {
+                fs.unlinkSync(socketPathJson);
+                logger.info(`Cleaned up socket file ${socketPathJson}`);
+            } catch (err) {
+                logger.warn(`Failed to clean up socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        });
     }
 }
 

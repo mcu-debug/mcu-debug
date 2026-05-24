@@ -16,7 +16,8 @@
       "Bash(node esbuild.js)",
       "Bash(npx tsc-strict *)",
       "Bash(xargs ls *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(xargs cat -n)"
     ]
   }
 }

@@ -83,7 +83,7 @@
 			"console": "integratedTerminal",
 			"stopOnEntry": false,
 			"outputCapture": "std",
-			"args": [ "--log-level", "debug", "-c", "0", "-s", ".vscode/settings.json" ],
+			"args": [ "--log-level", "info", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log" ],
 			"env": {
 				"RUST_BACKTRACE": "1",
 				"PROD_MCU_DEBUG_HELPER": "0"

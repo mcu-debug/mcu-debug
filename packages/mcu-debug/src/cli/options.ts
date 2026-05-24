@@ -10,6 +10,7 @@ export interface CliArgs {
     settings?: string;
     logFile?: string;
     logLevel?: string;
+    waitForClient?: boolean;
 }
 
 const program = new Command();
@@ -18,8 +19,9 @@ program
     .option('-c, --config <string>', 'Debug configuration to use. Can be the name of a configuration in launch.json, the index of the configuration in launch.json, or a glob pattern to match the name of the configuration in launch.json')
     .option('-j, --json <string>', 'launch.json file to use', '.vscode/launch.json')
     .option('-s, --settings <string>', 'Use custom settings JSON file', 'mcu-debug-settings.json')
-    .option('-l, --log-file <string>', 'Log file path', 'mcu-debug.log')
+    .option('-l, --log-file <string>', 'Log file path. Default path is $TMPDIR/mcu-debug-logs/<pid>.log', '')
     .option('-L, --log-level <string>', 'Log level (error, warn, info, debug)', 'info')
+    .option('--wait-for-client', 'Wait for a client to connect before starting the debug session')
     .version(version, '-V, --version', 'Show version information')
     .helpOption('-h, --help', 'Show this help message')
     .parse(process.argv);
