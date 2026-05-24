@@ -63,7 +63,7 @@ export class GDBDebugSession extends SeqDebugSession {
     public fileMap: Map<string, number> = new Map();
     private swoLaunchPromise = Promise.resolve();
     private swoLaunched = false;
-    private disassemblyAdapter: DisassemblyAdapter;
+    private disassemblyAdapter: DisassemblyAdapter | undefined = undefined;
     private disassemblyAdapterNew: DisassemblyAdapterNew;
     public debugHelper: DebugHelper;
 
@@ -90,7 +90,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.rttTcpServer = new RttTcpServer(this);
         this.rttManager = new RttBufferManager(this.liveWatchMonitor);
         this.debugHelper = new DebugHelper(this);
-        this.disassemblyAdapter = new DisassemblyAdapter(this);
+        // this.disassemblyAdapter = new DisassemblyAdapter(this);
         this.disassemblyAdapterNew = new DisassemblyAdapterNew(this);
     }
 
@@ -970,7 +970,7 @@ export class GDBDebugSession extends SeqDebugSession {
         if (RustDebugHelperEnabled) {
             return this.disassemblyAdapterNew.disassembleRequest(response, args);
         } else {
-            return this.disassemblyAdapter.disassembleRequest(response, args);
+            return this.disassemblyAdapter?.disassembleRequest(response, args);
         }
     }
     protected cancelRequest(response: DebugProtocol.CancelResponse, args: DebugProtocol.CancelArguments, request?: DebugProtocol.Request): void {
@@ -1225,8 +1225,8 @@ export class GDBDebugSession extends SeqDebugSession {
                         }
                     }
                 }
-                this.disassemblyAdapter.initialize();
-                this.disassemblyAdapterNew.initialize();
+                this.disassemblyAdapter?.initialize();
+                this.disassemblyAdapterNew?.initialize();
             });
             this.handleMsg(Stdout, `MCU-Debug: Embedded MCU debug adapter version ${pkgJsonVersion} (${gitCommitHash}). ` + "Usage info: https://github.com/mcu-debug/mcu-debug#usage");
             if (this.args.debugFlags.anyFlags) {

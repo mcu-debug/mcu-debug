@@ -576,6 +576,9 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
             localProxyProcess.on("spawn", () => {
                 getHostAdapter().debugMessage(`Local proxy process started on port ${port}`);
             });
+            process.on("exit", () => {
+                cleanup();
+            });
             timeout = setTimeout(() => {
                 if (!settled) {
                     cleanup();

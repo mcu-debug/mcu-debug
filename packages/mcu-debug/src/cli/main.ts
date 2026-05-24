@@ -1,7 +1,8 @@
 import { createTransports, CustomTransport, logger } from '../common/logger';
 import { CliArgs } from "./options";
 import { loadConfiguration } from './config-loader';
-import { CliAdapter, setHostAdapter } from './cli-adapter';
+import { CliAdapter } from './cli-adapter';
+import { setHostAdapter } from '../common/host-adapter';
 import { CliSessionDriver } from './session-driver';
 
 export function validateCliArgs(args: CliArgs): boolean {

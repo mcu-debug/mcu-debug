@@ -1,13 +1,17 @@
 import * as net from "node:net";
 import * as os from "node:os";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import * as readline from "node:readline";
 import { ConfigurationArguments } from "../adapter/servers/common";
-import { IHostAdapter } from "../common/host-adapter";
+import { IHostAdapter, ISerialPortView } from "../common/host-adapter";
 import { CustomTransport, logger } from "../common/logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import winston from "winston";
+import { EventEmitter } from "node:stream";
+import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
+import { SerialPortManager } from "../common/serial-manager";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -33,7 +37,6 @@ import winston from "winston";
  *
  * We track in-flight request promises in pendingRequests keyed by seq so we can await each step.
  */
-
 export class CliSessionDriver {
     private session: GDBDebugSession | null = null;
     private rlPaused: readline.Interface | null = null;
@@ -51,6 +54,7 @@ export class CliSessionDriver {
     private history: string[] = [];
     private isPaused = false;
     private isInternalClose = false; // to distinguish user-initiated vs DA-initiated session close
+    private serialManager = new SerialPortManager();
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
@@ -228,10 +232,10 @@ export class CliSessionDriver {
      * @returns true if handled
      */
     private handleSpecialCommands(trimmedInput: string, isTerminal: boolean): boolean {
-        if (trimmedInput === 'pause' || trimmedInput === '!!sigint') {
+        if (trimmedInput === 'pause' || trimmedInput.toLowerCase() === '!!sigint') {
             this.doInterrupt();
             return true;
-        } if (trimmedInput === 'reset' || trimmedInput === '!!reset') {
+        } if (trimmedInput === 'reset' || trimmedInput.toLowerCase() === '!!reset') {
             this.sendRequest<DebugProtocol.RestartResponse>({
                 seq: 0,          // overwritten by sendRequest
                 type: 'request', // overwritten by sendRequest
@@ -367,6 +371,22 @@ export class CliSessionDriver {
         }
     }
 
+    private handleCustomEvent(event: DebugProtocol.Event): void {
+        switch (event.event) {
+            case "swo-configure":
+                // this.receivedSWOConfigureEvent(e);
+                break;
+            case "rtt-configure":
+                //this.receivedRTTConfigureEvent(e);
+                break;
+            case "uart-configure":
+                this.serialManager.createSerialPorts(this.config).catch((error) => {
+                    logger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
+                });
+                break;
+        }
+    }
+
     /** Handle events emitted by the DA (stopped, output, terminated, etc.). */
     private handleEvent(event: DebugProtocol.Event): void {
         if (event.event.startsWith('custom')) {
@@ -414,7 +434,11 @@ export class CliSessionDriver {
                 break;
             }
             case 'initialized': break;
-            case 'uart-configure': break
+            case 'uart-configure':
+                this.serialManager.createSerialPorts(this.config).catch((error) => {
+                    logger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
+                });
+                break;
             default:
                 // Custom events (custom-event-ports-done, SWOConfigure, etc.)
                 this.optionalInfo.debug(`event:${event.event}`, { body: event.body });

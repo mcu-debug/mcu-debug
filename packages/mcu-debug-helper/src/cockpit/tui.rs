@@ -599,10 +599,14 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::Re
     };
 
     let line = if app.input.is_empty() && app.history_pos.is_none() {
-        // Placeholder hint when the input bar is empty.
+        // Placeholder hint when the input bar is empty — cursor still visible at left.
         Line::from(vec![
             Span::styled("> ", prompt_style),
-            Span::styled("F1 for help", Style::default().fg(Color::DarkGray)),
+            Span::styled("█", prompt_style),
+            Span::styled(
+                "Enter 'gdb' command. F1 for terminal help",
+                Style::default().fg(Color::DarkGray),
+            ),
         ])
     } else {
         Line::from(vec![
@@ -635,9 +639,9 @@ fn render_help(frame: &mut ratatui::Frame) {
         ("  Enter          ", "Submit command"),
         ("  Backspace      ", "Delete last character"),
         ("                 ", ""),
-        ("  Ctrl-C         ", "Interrupt target  (sends !!SIGINT)"),
-        ("  Ctrl-D         ", "Graceful exit     (sends \"exit\")"),
-        ("  Ctrl-X         ", "Emergency TUI exit (kills Node)"),
+        ("  Ctrl-C         ", "Interrupt target if running"),
+        ("  Ctrl-D         ", "Graceful exit"),
+        ("  Ctrl-X         ", "Emergency exit"),
         ("                 ", ""),
         ("  F1             ", "Show / hide this help"),
         ("                 ", ""),

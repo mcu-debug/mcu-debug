@@ -1,5 +1,8 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import * as net from 'net';
+import { getHostAdapter } from '../common/host-adapter';
+import { EventEmitter } from 'events';
 import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { HostConfig, ChainedConfig, ConfigurationArguments, processVarSubstitution } from "../adapter/servers/common";
 import { SymbolInformation } from "../adapter/symbols";
@@ -7,6 +10,7 @@ import { IDebugSession, IHostAdapter, IOutputChannel, ISerialPortView, ISWORTTVi
 import { logger } from "../common/logger";
 import { GraphConfiguration } from "../common/swo/common";
 import JSONC from 'jsonc-simple-parser';
+import { TabState } from '@mcu-debug/shared/cockpit-protocol';
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
 // Return values match VS Code's remoteName strings so resolveProxyNetworkMode() works unchanged.
@@ -125,8 +129,9 @@ export class CliAdapter implements IHostAdapter {
         return [];
     }
     createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, tcpPort: number): ISerialPortView {
-        throw new Error("Serial port view not supported in CLI mode.");
+        return new CLISerialPortView(device, serialConfig, false, tcpPort);
     }
+
     showQuickPick(items: { label: string; description?: string; detail?: string; }[], opts?: { title?: string; placeHolder?: string; }): Promise<string | undefined> {
         return Promise.resolve(undefined);
     }
@@ -195,15 +200,178 @@ export class CliOutputChannel implements IOutputChannel {
         // No-op, nothing to dispose in CLI
     }
 }
+export class CLISerialPortView implements ISerialPortView {
+    public readonly emitter = new EventEmitter();
+    private socket: net.Socket | null = null;
+    private logFileStream: fs.WriteStream | null = null;
+    private txtPrefix: string;
+    private lineBuffer: LineBuffer
 
-let hostAdapterInstance: IHostAdapter | null = null;
-export function getHostAdapter(): IHostAdapter {
-    if (!hostAdapterInstance) {
-        throw new Error("Host adapter not set. This should never happen, as the CLI entry point should set it before any other code runs.");
+    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
+        this.txtPrefix = `[${path.basename(device)}]`;
+        if (this.tcpPort) {
+            this.restartSocket();
+        }
+        if (this.serialConfig.log_file) {
+            this.setLogFile(this.serialConfig.log_file);
+        }
+        this.lineBuffer = new LineBuffer(this.txtPrefix, (source, line) => {
+            logger.info(`${source} ${line}`, { source: "serial-port", isConsole: true });
+        });
     }
-    return hostAdapterInstance;
+
+    send(text: string): void {
+        this.lineBuffer.push(text);
+    }
+
+    setState(state: TabState): void {
+        // No-op in CLI mode, but could be used to track connection state if desired
+    }
+    setLabel(label: string): void {
+        // No-op in CLI mode, but could be used to prefix log messages if desired
+    }
+    setPlaceholderText(placeholderText: string): void {
+        // No-op in CLI mode
+    }
+
+    onUserInput(text: string) {
+        const outgoing = `${text}\r\n`;
+        if (!outgoing) {
+            return;
+        }
+        if (this.socket) {
+            this.socket.write(outgoing);
+        }
+        if (this.logFileStream) {
+            this.logFileStream.write(outgoing);
+        }
+    }
+
+    onUserClose(): void {
+        // This should not happen but we will have it here in case we create a way to close from CLI
+        this.destroySocket();
+        this.send(`\r\n\x1b[33m${this.txtPrefix} !!closed\x1b[0m\r\n`);
+    }
+
+    public notifyConnected(reason: string) {
+        this.send(`\r\n\x1b[32m${this.txtPrefix} !!connected] ${reason}\x1b[0m\r\n`);
+        this.setState({ kind: "active" });
+    }
+
+    public notifyDisconnected(reason: string) {
+        this.destroySocket();
+        this.send(`\r\n\x1b[33m${this.txtPrefix} !!disconnected: ${reason} — retrying...\x1b[0m\r\n`);
+        this.setState({ kind: "inactive" });
+    }
+
+    public notifyReconnected() {
+        this.send(`\r\n\x1b[32m${this.txtPrefix} !!reconnected\x1b[0m\r\n`);
+        this.setState({ kind: "active" });
+    }
+
+    setTcpPort(port: number) {
+        if (this.tcpPort === port && this.socket && !this.socket.destroyed) {
+            return;
+        }
+        this.tcpPort = port;
+        this.restartSocket();
+    }
+
+    private destroySocket() {
+        if (this.socket) {
+            this.socket.destroy();
+            this.socket = null;
+        }
+    }
+
+    private destroyLogFile() {
+        if (this.serialConfig.log_file) {
+            this.logFileStream?.end(() => {
+                getHostAdapter().debugMessage(`Closed log file stream for ${this.serialConfig.log_file}`);
+            });
+            this.logFileStream = null;
+        }
+    }
+
+    public setLogFile(log_file: string | undefined) {
+        if (this.serialConfig.log_file === log_file) {
+            return;
+        }
+        this.serialConfig.log_file = log_file || "";
+        this.destroyLogFile();
+        if (log_file) {
+            this.logFileStream = fs.createWriteStream(log_file, { flags: "a" });
+            if (!this.logFileStream) {
+                getHostAdapter().debugMessage(`Failed to create log file stream for ${log_file}`);
+                getHostAdapter().showError(`Failed to create log file stream for ${log_file}`);
+            }
+        }
+    }
+
+    public setInputMode(input_mode: string | undefined) {
+    }
+
+    restartSocket() {
+        this.destroySocket();
+        // The helper will create a TCP server for this serial port and report the port number back to us. Once we have the port number, we can connect to it.
+        const socket = new net.Socket();
+        socket.connect(this.tcpPort, "127.0.0.1");
+        socket.on("connect", () => {
+            getHostAdapter().debugMessage(`Connected to serial port ${this.device} at 127.0.0.1:${this.tcpPort}`);
+            this.socket = socket;
+        });
+        socket.on("data", (data) => {
+            this.send(data.toString());
+            if (this.logFileStream) {
+                this.logFileStream.write(data);
+            }
+        });
+        socket.on("error", (err) => {
+            getHostAdapter().debugMessage(`Error on serial port ${this.device} connection: ${err.message}`);
+            this.destroySocket();
+            this.notifyDisconnected(err.message);
+        });
+        socket.on("close", () => {
+            getHostAdapter().debugMessage(`Connection to serial port ${this.device} closed`);
+            this.destroySocket();
+            this.notifyDisconnected("Connection closed");
+        });
+    }
 }
 
-export function setHostAdapter(adapter: IHostAdapter): void {
-    hostAdapterInstance = adapter;
+class LineBuffer {
+    private buf = '';
+    private timer: NodeJS.Timeout | null = null;
+    private readonly TIMEOUT_MS = 50;  // covers 115200 baud USB packet batching
+
+    constructor(
+        private source: string,
+        private emit: (source: string, line: string) => void
+    ) { }
+
+    push(chunk: string): void {
+        this.buf += chunk;
+        // Flush on every complete line
+        let nl: number;
+        while ((nl = this.buf.indexOf('\n')) !== -1) {
+            const line = this.buf.slice(0, nl).replace(/\r$/, ''); // strip \r from \r\n
+            this.buf = this.buf.slice(nl + 1);
+            if (line.length > 0) this.emit(this.source, line);
+        }
+        // Arm timer for trailing data without \n
+        if (this.buf.length > 0 && !this.timer) {
+            this.timer = setTimeout(() => {
+                this.timer = null;
+                if (this.buf.length > 0) {
+                    this.emit(this.source, this.buf);
+                    this.buf = '';
+                }
+            }, this.TIMEOUT_MS);
+        }
+    }
+
+    flush(): void {
+        if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+        if (this.buf.length > 0) { this.emit(this.source, this.buf); this.buf = ''; }
+    }
 }

@@ -8,7 +8,7 @@ import { logger } from "../common/logger";
 import { ConfigurationArguments, substituteEnvVarsInConfig } from "../adapter/servers/common";
 import { McuDebugConfigurationProviderBase } from "../common/config-provider";
 import { processVarSubstitution } from "../adapter/servers/common";
-import { getHostAdapter } from "./cli-adapter";
+import { getHostAdapter } from "../common/host-adapter";
 
 // This file is responsible for loading the debug configuration from a JSON file specified in the CLI arguments,
 // processing variable substitutions, and providing the final configuration object to be used for starting the
