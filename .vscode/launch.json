@@ -10,7 +10,8 @@
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug",
 				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy",
-				"/Users/hdm/mtw37/Dual-CPU_Empty_PSOC6_App/Dual-CPU_Empty_PSOC6_App.code-workspace"
+				// "/Users/hdm/mtw37/Dual-CPU_Empty_PSOC6_App/Dual-CPU_Empty_PSOC6_App.code-workspace"
+				"/Users/hdm/rtt/Hello_RTT/mtb-example-hal-hello-world.code-workspace"
 			],
 			"sourceMaps": true,
 			"outFiles": [

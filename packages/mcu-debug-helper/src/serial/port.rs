@@ -214,6 +214,10 @@ pub struct SerialParams {
     /// Optional frontend-only terminal input mode hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_mode: Option<String>,
+    /// Optional frontend-only label for the serial port. Kept in schema so generated
+    /// TypeScript stays in sync with UI usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 fn default_baud_rate() -> u32 {

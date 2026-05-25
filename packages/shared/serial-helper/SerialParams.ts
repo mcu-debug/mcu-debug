@@ -48,4 +48,9 @@ export type SerialParams = {
      * Optional frontend-only terminal input mode hint.
      */
     input_mode?: string | null;
+    /**
+     * Optional frontend-only label for the serial port. Kept in schema so generated
+     * TypeScript stays in sync with UI usage.
+     */
+    label?: string | null;
 };

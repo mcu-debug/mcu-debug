@@ -208,7 +208,20 @@ export class CLISerialPortView implements ISerialPortView {
     private lineBuffer: LineBuffer
 
     constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
-        this.txtPrefix = `[${path.basename(device)}]`;
+        const trimLeft = (str: string, char: string) => {
+            while (str.startsWith(char)) {
+                str = str.slice(1);
+            }
+            return str;
+        };
+        const trimRight = (str: string, char: string) => {
+            while (str.endsWith(char)) {
+                str = str.slice(0, -1);
+            }
+            return str;
+        };
+        const label = serialConfig.label ? trimLeft(trimRight(serialConfig.label, ']'), '[') : path.basename(device);
+        this.txtPrefix = `[${label}]`;
         if (this.tcpPort) {
             this.restartSocket();
         }
@@ -216,7 +229,7 @@ export class CLISerialPortView implements ISerialPortView {
             this.setLogFile(this.serialConfig.log_file);
         }
         this.lineBuffer = new LineBuffer(this.txtPrefix, (source, line) => {
-            logger.info(`${source} ${line}`, { source: "serial-port", isConsole: true });
+            logger.info(`${source} ${line}`, { source: "serial", isConsole: true });
         });
     }
 
