@@ -45,7 +45,9 @@
     let buffer = ""; // xterm.js write buffer (throttled)
     let earlyBuffer = ""; // pre-mount stream buffer (before xterm.js exists)
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    let themeUpdateTimer: ReturnType<typeof setTimeout> | null = null;
     let resizeObserver: ResizeObserver;
+    let themeObserver: MutationObserver;
     let dataListener: { dispose(): void } | undefined;
     let terminalTextarea: HTMLTextAreaElement | undefined;
 
@@ -53,6 +55,74 @@
 
     function readCssVar(styles: CSSStyleDeclaration, name: string, fallback: string): string {
         return styles.getPropertyValue(name).trim() || fallback;
+    }
+
+    /**
+     * Build an xterm theme from VS Code's CSS custom properties.
+     *
+     * VS Code injects theme colors as CSS custom properties on <body>. If the
+     * active theme doesn't define terminal-specific colors (terminal.background /
+     * terminal.foreground), we fall back to editor colors and ultimately to
+     * hard-coded defaults that match the current light/dark mode so the terminal
+     * is always readable.
+     */
+    function buildXtermTheme(): object {
+        // VS Code adds vscode-light / vscode-dark / vscode-high-contrast* classes
+        // to <body> so we can pick appropriate fallback colors without guessing.
+        const bodyClasses = document.body.classList;
+        const isLight =
+            bodyClasses.contains("vscode-light") ||
+            bodyClasses.contains("vscode-high-contrast-light");
+
+        // VS Code injects CSS vars on <body>. Reading from documentElement is
+        // equivalent because custom properties cascade, but we try both to be safe.
+        const cs = getComputedStyle(document.body);
+
+        const fallbackBg = isLight ? "#ffffff" : "#1e1e1e";
+        const fallbackFg = isLight ? "#333333" : "#cccccc";
+
+        const bg =
+            cs.getPropertyValue("--vscode-terminal-background").trim() ||
+            cs.getPropertyValue("--vscode-editor-background").trim() ||
+            fallbackBg;
+        const fg =
+            cs.getPropertyValue("--vscode-terminal-foreground").trim() ||
+            cs.getPropertyValue("--vscode-editor-foreground").trim() ||
+            fallbackFg;
+
+        return {
+            background: bg,
+            foreground: fg,
+            cursor: readCssVar(cs, "--vscode-terminalCursor-foreground", isLight ? "#333333" : "#aeafad"),
+            cursorAccent: bg,
+            black: readCssVar(cs, "--vscode-terminal-ansiBlack", isLight ? "#000000" : "#000000"),
+            red: readCssVar(cs, "--vscode-terminal-ansiRed", "#cd3131"),
+            green: readCssVar(cs, "--vscode-terminal-ansiGreen", "#0dbc79"),
+            yellow: readCssVar(cs, "--vscode-terminal-ansiYellow", "#e5e510"),
+            blue: readCssVar(cs, "--vscode-terminal-ansiBlue", "#2472c8"),
+            magenta: readCssVar(cs, "--vscode-terminal-ansiMagenta", "#bc3fbc"),
+            cyan: readCssVar(cs, "--vscode-terminal-ansiCyan", "#11a8cd"),
+            white: readCssVar(cs, "--vscode-terminal-ansiWhite", isLight ? "#555555" : "#e5e5e5"),
+            brightBlack: readCssVar(cs, "--vscode-terminal-ansiBrightBlack", "#666666"),
+            brightRed: readCssVar(cs, "--vscode-terminal-ansiBrightRed", "#f14c4c"),
+            brightGreen: readCssVar(cs, "--vscode-terminal-ansiBrightGreen", "#23d18b"),
+            brightYellow: readCssVar(cs, "--vscode-terminal-ansiBrightYellow", "#f5f543"),
+            brightBlue: readCssVar(cs, "--vscode-terminal-ansiBrightBlue", "#3b8eea"),
+            brightMagenta: readCssVar(cs, "--vscode-terminal-ansiBrightMagenta", "#d670d6"),
+            brightCyan: readCssVar(cs, "--vscode-terminal-ansiBrightCyan", "#29b8db"),
+            brightWhite: readCssVar(cs, "--vscode-terminal-ansiBrightWhite", isLight ? "#000000" : "#e5e5e5"),
+            selectionBackground: readCssVar(
+                cs,
+                "--vscode-terminal-selectionBackground",
+                isLight ? "rgba(0,0,0,0.25)" : "rgba(255,255,255,0.3)",
+            ),
+            selectionForeground: cs.getPropertyValue("--vscode-terminal-selectionForeground").trim() || undefined,
+            selectionInactiveBackground: readCssVar(
+                cs,
+                "--vscode-terminal-inactiveSelectionBackground",
+                isLight ? "rgba(0,0,0,0.15)" : "rgba(255,255,255,0.15)",
+            ),
+        };
     }
 
     function fitTerminal() {
@@ -245,28 +315,7 @@
         term = new Terminal({
             scrollback: 10_000,
             convertEol: true,
-            theme: {
-                background: readCssVar(cs, "--vscode-terminal-background", "#1e1e1e"),
-                foreground: readCssVar(cs, "--vscode-terminal-foreground", "#cccccc"),
-                cursor: readCssVar(cs, "--vscode-terminalCursor-foreground", "#aeafad"),
-                cursorAccent: readCssVar(cs, "--vscode-terminal-background", "#1e1e1e"),
-                black: readCssVar(cs, "--vscode-terminal-ansiBlack", "#000000"),
-                red: readCssVar(cs, "--vscode-terminal-ansiRed", "#cd3131"),
-                green: readCssVar(cs, "--vscode-terminal-ansiGreen", "#0dbc79"),
-                yellow: readCssVar(cs, "--vscode-terminal-ansiYellow", "#e5e510"),
-                blue: readCssVar(cs, "--vscode-terminal-ansiBlue", "#2472c8"),
-                magenta: readCssVar(cs, "--vscode-terminal-ansiMagenta", "#bc3fbc"),
-                cyan: readCssVar(cs, "--vscode-terminal-ansiCyan", "#11a8cd"),
-                white: readCssVar(cs, "--vscode-terminal-ansiWhite", "#e5e5e5"),
-                brightBlack: readCssVar(cs, "--vscode-terminal-ansiBrightBlack", "#666666"),
-                brightRed: readCssVar(cs, "--vscode-terminal-ansiBrightRed", "#f14c4c"),
-                brightGreen: readCssVar(cs, "--vscode-terminal-ansiBrightGreen", "#23d18b"),
-                brightYellow: readCssVar(cs, "--vscode-terminal-ansiBrightYellow", "#f5f543"),
-                brightBlue: readCssVar(cs, "--vscode-terminal-ansiBrightBlue", "#3b8eea"),
-                brightMagenta: readCssVar(cs, "--vscode-terminal-ansiBrightMagenta", "#d670d6"),
-                brightCyan: readCssVar(cs, "--vscode-terminal-ansiBrightCyan", "#29b8db"),
-                brightWhite: readCssVar(cs, "--vscode-terminal-ansiBrightWhite", "#e5e5e5"),
-            },
+            theme: buildXtermTheme(),
             fontFamily,
             fontSize,
         });
@@ -285,9 +334,30 @@
         terminalTextarea?.addEventListener("cut", handleClipboardCut);
         terminalTextarea?.addEventListener("paste", handleClipboardPaste);
 
-        requestAnimationFrame(fitTerminal);
+        // Re-read theme after first paint. VS Code may inject CSS custom
+        // properties asynchronously (e.g. after the webview script has already
+        // started), so a second read in the next animation frame catches that case.
+        requestAnimationFrame(() => {
+            if (term) {
+                term.options.theme = buildXtermTheme();
+            }
+            fitTerminal();
+        });
         resizeObserver = new ResizeObserver(fitTerminal);
         resizeObserver.observe(container);
+
+        // Watch for VS Code theme changes and re-apply xterm theme.
+        // VS Code updates body class when theme type changes (dark/light),
+        // and replaces/modifies a style element in head when theme colors change.
+        themeObserver = new MutationObserver(() => {
+            if (themeUpdateTimer !== null) clearTimeout(themeUpdateTimer);
+            themeUpdateTimer = setTimeout(() => {
+                themeUpdateTimer = null;
+                if (term) term.options.theme = buildXtermTheme();
+            }, 50);
+        });
+        themeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+        themeObserver.observe(document.head, { childList: true, subtree: true, characterData: true });
 
         // Flush data that arrived before xterm.js was ready
         if (earlyBuffer) {
@@ -313,7 +383,9 @@
 
     onDestroy(() => {
         if (flushTimer !== null) clearTimeout(flushTimer);
+        if (themeUpdateTimer !== null) clearTimeout(themeUpdateTimer);
         resizeObserver?.disconnect();
+        themeObserver?.disconnect();
         window.removeEventListener("message", messageHandler);
     });
 
