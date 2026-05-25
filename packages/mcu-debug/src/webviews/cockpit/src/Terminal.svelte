@@ -69,13 +69,11 @@
     function buildXtermTheme(): object {
         // VS Code adds vscode-light / vscode-dark / vscode-high-contrast* classes
         // to <body> so we can pick appropriate fallback colors without guessing.
-        const bodyClasses = document.body.classList;
-        const isLight =
-            bodyClasses.contains("vscode-light") ||
-            bodyClasses.contains("vscode-high-contrast-light");
+        // "vscode-light" matches both "vscode-light" and "vscode-high-contrast-light".
+        const isLight = document.body.className.includes("vscode-light");
 
-        // VS Code injects CSS vars on <body>. Reading from documentElement is
-        // equivalent because custom properties cascade, but we try both to be safe.
+        // CSS custom properties cascade, so reading from body picks up vars
+        // set anywhere in the tree (html, :root, or body itself).
         const cs = getComputedStyle(document.body);
 
         const fallbackBg = isLight ? "#ffffff" : "#1e1e1e";
