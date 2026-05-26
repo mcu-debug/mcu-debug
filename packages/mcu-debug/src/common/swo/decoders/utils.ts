@@ -37,22 +37,18 @@ export function parseUnsigned(buffer: Buffer): number {
     return result.value;
 }
 
-export function parseQ(buffer: Buffer, mask: number, shift: number) {
+export function parseQ(buffer: Buffer, _mask: number, shift: number) {
     const value = parseSigned(buffer);
 
-    const fractional = value & mask;
-    const integer = value >> shift;
-
-    return integer + fractional / mask;
+    // Qm.n fixed-point stores a signed 32-bit integer scaled by 2^n.
+    return value / 2 ** shift;
 }
 
-export function parseUQ(buffer: Buffer, mask: number, shift: number) {
+export function parseUQ(buffer: Buffer, _mask: number, shift: number) {
     const value = parseUnsigned(buffer);
 
-    const fractional = value & mask;
-    const integer = value >>> shift;
-
-    return integer + fractional / mask;
+    // UQm.n fixed-point uses the same scale as Qm.n without signed interpretation.
+    return value / 2 ** shift;
 }
 
 export const decoders: { [key: string]: (buf: Buffer) => number } = {

@@ -557,6 +557,10 @@ module.exports = {
                         description:
                             'Input mode for data sent to the serial port. "raw" = send as-is, immediately, "cooked" = buffer input until Enter is pressed and perform basic line editing (backspace, Ctrl+U to clear line).',
                     },
+                    label: {
+                        type: "string",
+                        description: "A label for this serial port bridge, used in the extension UI to identify it. E.g. 'Debug UART'. Optional but recommended when multiple ports are configured.",
+                    },
                 },
             },
         },

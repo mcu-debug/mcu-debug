@@ -173,3 +173,44 @@ export function tcpReachable(host: string, port: number, timeoutMs: number): Pro
         });
     });
 }
+
+export class LineBuffer {
+    private buf = '';
+    private timer: NodeJS.Timeout | null = null;
+
+    constructor(
+        private source: string,
+        private emit: (source: string, line: string) => void,
+        private readonly TIMEOUT_MS = 20
+    ) { }
+
+    push(chunk: string): void {
+        this.buf += chunk;
+        // Flush on every complete line
+        let nl: number;
+        while ((nl = this.buf.indexOf('\n')) !== -1) {
+            const line = this.buf.slice(0, nl).replace(/\r$/, ''); // strip \r from \r\n
+            this.buf = this.buf.slice(nl + 1);
+            if (line.length > 0) this.emit(this.source, line);
+        }
+        // Arm timer for trailing data without \n
+        if (this.buf.length > 0 && !this.timer) {
+            this.timer = setTimeout(() => {
+                this.timer = null;
+                if (this.buf.length > 0) {
+                    this.emit(this.source, this.buf);
+                    this.buf = '';
+                }
+            }, this.TIMEOUT_MS);
+        }
+    }
+
+    flush(): void {
+        if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+        if (this.buf.length > 0) { this.emit(this.source, this.buf); this.buf = ''; }
+    }
+}
+
+export function trimBrackets(str: string): string {
+    return str.replace(/^\s*[\[\{(]+/, '').replace(/[\]\}\)]+\s*$/, '');
+}

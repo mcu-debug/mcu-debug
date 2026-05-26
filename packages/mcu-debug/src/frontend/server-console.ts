@@ -42,7 +42,7 @@ export class GDBServerConsoleInstance {
         socket.setKeepAlive(true);
         socket.on("close", () => {
             this.debugMsg("onBackendConnect: gdb-server session closed");
-            magentaWrite("GDB server session ended. This terminal will be reused, waiting for next session to start...", this.terminal!);
+            magentaWrite("GDB server session ended. This terminal will be reused, waiting for next session to start...", (str: string) => this.terminal?.send(str));
             this.toBackend = null;
             this.freeTerminal();
         });
@@ -98,10 +98,10 @@ export class GDBServerConsoleInstance {
             this.sendToBackend(data);
         });
         if (this.toBackend === null) {
-            magentaWrite("Waiting for gdb server to start...\n", this.terminal);
+            magentaWrite("Waiting for gdb server to start...\n", (str: string) => this.terminal?.send(str));
             this.terminal.disableInput();
         } else {
-            magentaWrite("Resuming connection to gdb server...\n", this.terminal);
+            magentaWrite("Resuming connection to gdb server...\n", (str: string) => this.terminal?.send(str));
             this.terminal.enableInput();
         }
     }
@@ -189,7 +189,7 @@ export class GDBServerConsole {
         // console.log(msg);
         if (console) {
             msg += msg.endsWith("\n") ? "" : "\n";
-            magentaWrite(msg, console);
+            magentaWrite(msg, (str: string) => console.send(str));
         }
         GDBServerConsole.logDataStatic(msg);
     }

@@ -11,6 +11,7 @@ import { logger } from "../common/logger";
 import { GraphConfiguration } from "../common/swo/common";
 import JSONC from 'jsonc-simple-parser';
 import { TabState } from '@mcu-debug/shared/cockpit-protocol';
+import { LineBuffer, trimBrackets } from '../common/utils';
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
 // Return values match VS Code's remoteName strings so resolveProxyNetworkMode() works unchanged.
@@ -220,7 +221,7 @@ export class CLISerialPortView implements ISerialPortView {
             }
             return str;
         };
-        const label = serialConfig.label ? trimLeft(trimRight(serialConfig.label, ']'), '[') : path.basename(device);
+        const label = serialConfig.label ? trimBrackets(serialConfig.label) : path.basename(device);
         this.txtPrefix = `[${label}]`;
         if (this.tcpPort) {
             this.restartSocket();
@@ -229,12 +230,19 @@ export class CLISerialPortView implements ISerialPortView {
             this.setLogFile(this.serialConfig.log_file);
         }
         this.lineBuffer = new LineBuffer(this.txtPrefix, (source, line) => {
-            logger.info(`${source} ${line}`, { source: "serial", isConsole: true });
+            const str = `${source} ${line}`;
+            if (this.logFileStream) {
+                this.logFileStream.write(str + "\n");
+            }
+            logger.info(str, { source: "serial", isConsole: true });
         });
     }
 
     send(text: string): void {
         this.lineBuffer.push(text);
+    }
+    sendDA(text: string): void {
+        logger.info(text, { source: "DA", isConsole: true });
     }
 
     setState(state: TabState): void {
@@ -263,22 +271,22 @@ export class CLISerialPortView implements ISerialPortView {
     onUserClose(): void {
         // This should not happen but we will have it here in case we create a way to close from CLI
         this.destroySocket();
-        this.send(`\r\n\x1b[33m${this.txtPrefix} !!closed\x1b[0m\r\n`);
+        this.sendDA(`\r\n\x1b[33m${this.txtPrefix} !!closed\x1b[0m\r\n`);
     }
 
     public notifyConnected(reason: string) {
-        this.send(`\r\n\x1b[32m${this.txtPrefix} !!connected] ${reason}\x1b[0m\r\n`);
+        this.sendDA(`\r\n\x1b[32m${this.txtPrefix} !!connected] ${reason}\x1b[0m\r\n`);
         this.setState({ kind: "active" });
     }
 
     public notifyDisconnected(reason: string) {
         this.destroySocket();
-        this.send(`\r\n\x1b[33m${this.txtPrefix} !!disconnected: ${reason} — retrying...\x1b[0m\r\n`);
+        this.sendDA(`\r\n\x1b[33m${this.txtPrefix} !!disconnected: ${reason} — retrying...\x1b[0m\r\n`);
         this.setState({ kind: "inactive" });
     }
 
     public notifyReconnected() {
-        this.send(`\r\n\x1b[32m${this.txtPrefix} !!reconnected\x1b[0m\r\n`);
+        this.sendDA(`\r\n\x1b[32m${this.txtPrefix} !!reconnected\x1b[0m\r\n`);
         this.setState({ kind: "active" });
     }
 
@@ -335,9 +343,6 @@ export class CLISerialPortView implements ISerialPortView {
         });
         socket.on("data", (data) => {
             this.send(data.toString());
-            if (this.logFileStream) {
-                this.logFileStream.write(data);
-            }
         });
         socket.on("error", (err) => {
             getHostAdapter().debugMessage(`Error on serial port ${this.device} connection: ${err.message}`);
@@ -349,42 +354,5 @@ export class CLISerialPortView implements ISerialPortView {
             this.destroySocket();
             this.notifyDisconnected("Connection closed");
         });
-    }
-}
-
-class LineBuffer {
-    private buf = '';
-    private timer: NodeJS.Timeout | null = null;
-    private readonly TIMEOUT_MS = 50;  // covers 115200 baud USB packet batching
-
-    constructor(
-        private source: string,
-        private emit: (source: string, line: string) => void
-    ) { }
-
-    push(chunk: string): void {
-        this.buf += chunk;
-        // Flush on every complete line
-        let nl: number;
-        while ((nl = this.buf.indexOf('\n')) !== -1) {
-            const line = this.buf.slice(0, nl).replace(/\r$/, ''); // strip \r from \r\n
-            this.buf = this.buf.slice(nl + 1);
-            if (line.length > 0) this.emit(this.source, line);
-        }
-        // Arm timer for trailing data without \n
-        if (this.buf.length > 0 && !this.timer) {
-            this.timer = setTimeout(() => {
-                this.timer = null;
-                if (this.buf.length > 0) {
-                    this.emit(this.source, this.buf);
-                    this.buf = '';
-                }
-            }, this.TIMEOUT_MS);
-        }
-    }
-
-    flush(): void {
-        if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-        if (this.buf.length > 0) { this.emit(this.source, this.buf); this.buf = ''; }
     }
 }

@@ -32,6 +32,7 @@ import { logger } from '../common/logger';
 import { VscodeOutputChannelTransport } from './vscode-transport';
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "@mcu-debug/shared";
+import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
 interface SVDInfo {
     expression: RegExp;
     path: string;
@@ -736,63 +737,8 @@ export class MCUDebugExtension {
     }
 
     private receivedRTTConfigureEvent(e: vscode.DebugSessionCustomEvent) {
-        if (e.body.type === "socket") {
-            const decoder: RTTCommonDecoderOpts = e.body.decoder;
-            if (decoder.type === "console" || decoder.type === "binary") {
-                Reporting.sendEvent("RTT", { Source: "Socket= Console" });
-                this.rttCreateTerninal(e, decoder as RTTConsoleDecoderOpts);
-            } else {
-                Reporting.sendEvent("RTT", { Source: `Socket= ${decoder.type}` });
-                if (!decoder.ports) {
-                    this.createRTTSource(e, decoder.tcpPort, decoder.port);
-                } else {
-                    for (let ix = 0; ix < decoder.ports.length; ix = ix + 1) {
-                        // Hopefully ports and tcpPorts are a matched set
-                        this.createRTTSource(e, decoder.tcpPorts[ix], decoder.ports[ix]);
-                    }
-                }
-            }
-        } else {
-            MCUDebugChannel.debugMessage("Error: receivedRTTConfigureEvent: unknown type: " + e.body.type);
-        }
-    }
-
-    // The returned value is a connection source. It may still be in disconnected
-    // state.
-    private createRTTSource(e: vscode.DebugSessionCustomEvent, tcpPort: string, channel: number): Promise<SocketRTTSource> {
         const mySession = CDebugSession.GetSession(e.session);
-        return new Promise((resolve, reject) => {
-            let src = mySession.rttPortMap[channel];
-            if (src) {
-                resolve(src);
-                return;
-            }
-            let decoderSpec = mySession.config.rttConfig?.enabled && mySession.config.rttConfig?.pre_decoder;
-            if (decoderSpec && mySession.config.rttConfig?.useBuiltinRTT?.enabled) {
-                decoderSpec = undefined;
-            }
-            if (mySession.config.servertype === "jlink") {
-                src = new JLinkSocketRTTSource(channel, tcpPort, decoderSpec);
-            } else {
-                src = new SocketRTTSource(channel, tcpPort, decoderSpec);
-            }
-            mySession.rttPortMap[channel] = src; // Yes, we put this in the list even if start() can fail
-            resolve(src); // Yes, it is okay to resolve it even though the connection isn't made yet
-            src.start()
-                .then(() => {
-                    if (!mySession.config.rttConfig?.useBuiltinRTT?.enabled) {
-                        mySession.session.customRequest("rtt-poll");
-                    }
-                })
-                .catch((e) => {
-                    vscode.window.showErrorMessage(`Could not connect to RTT TCP port ${tcpPort} ${e}`);
-                    // reject(e);
-                });
-        });
-    }
-
-    private rttCreateTerninal(e: vscode.DebugSessionCustomEvent, decoder: RTTConsoleDecoderOpts) {
-        this.createRTTSource(e, decoder.tcpPort, decoder.port).then((src: SocketRTTSource) => {
+        handleRTTConfigureEvent(e.body, mySession, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
             const newTerminal = new IOTerminal(decoder, src);
             if (vscode.debug.activeDebugConsole) {
                 vscode.debug.activeDebugConsole.appendLine(`Created RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);

@@ -17,14 +17,14 @@ export function magentaFormat(msg: string) {
     return BR_MAGENTA_FG + msg + RESET;
 }
 
-export function magentaWrite(msg: string, pty: ManagedTab) {
-    if (pty) {
-        pty.send(magentaFormat(msg));
+export function magentaWrite(msg: string, cb: (str: string) => void) {
+    if (cb) {
+        cb(magentaFormat(msg));
     }
 }
 
-export function greenWrite(msg: string, pty: ManagedTab) {
-    if (pty) {
-        pty.send(greenFormat(msg));
+export function greenWrite(msg: string, cb: (str: string) => void) {
+    if (cb) {
+        cb(greenFormat(msg));
     }
 }

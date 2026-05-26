@@ -190,22 +190,22 @@ The resolution logic lives in `common/ConfigProvider` (moved from `frontend/conf
 Runs first thing in the Node process before any session logic.
 
 - [ ] **Read and select config**
-  - [ ] Open `launch.json` (from arg or `./launch.json`)
-  - [ ] Select config by name (case-insensitive match on `name` field)
+  - [x] Open `launch.json` (from arg or `./launch.json`)
+  - [x] Select config by name (case-insensitive or glob or index match on `name` field)
   - [ ] Error clearly if not found — list available names
 
 - [ ] **Load `envFile`(s)**
-  - [ ] Support single string or array in launch config
-  - [ ] Parse `name=value` format: skip blank lines, skip `#` comments, strip optional quotes
-  - [ ] In-file substitution: single pass top-to-bottom, `${VAR}` resolves from earlier lines then `process.env`
-  - [ ] Build `mergedEnv = { ...envFileVars, ...process.env }` — process.env wins, never mutate it
+  - [x] Support single string or array in launch config
+  - [x] Parse `name=value` format: skip blank lines, skip `#` comments, strip optional quotes
+  - [x] In-file substitution: single pass top-to-bottom, `${VAR}` resolves from earlier lines then `process.env`
+  - [x] Build `mergedEnv = { ...envFileVars, ...process.env }` — process.env wins, never mutate it
 
 - [ ] **Variable substitution pass** (our pass — before any VS Code pass)
-  - [ ] `${env:VAR}`        → `mergedEnv` lookup
-  - [ ] `${workspaceFolder}`→ directory containing `launch.json`
-  - [ ] `${userHome}`       → `os.homedir()`
+  - [x] `${env:VAR}`        → `mergedEnv` lookup
+  - [x] `${workspaceFolder}`→ directory containing `launch.json`
+  - [x] `${userHome}`       → `os.homedir()`
   - [ ] `${pathSeparator}`  → `path.sep`
-  - [ ] `${config:KEY}`     → `.vscode/mcu-debug-settings.json` then `~/.mcu-debug/settings.json`
+  - [x] `${config:KEY}`     → `.vscode/mcu-debug-settings.json` then `~/.mcu-debug/settings.json`
   - [ ] `${command:...}`    → always error: tell user to expand manually
   - [ ] Collect ALL unresolved — report together, exit non-zero, never partial
 
@@ -260,7 +260,7 @@ Only needed if topology is not `Local`.
 
 ---
 
-### Phase 5 — Session startup (Node — `cli/cli-driver.ts`)
+### Phase 5 — Session startup (Node — `cli/session-driver.ts`)
 
 Drives the session logic directly in-process. `GDBDebugSession` is NOT started via
 `GDBDebugSession.run()` (which starts the stdio DAP server). Instead the CLI Driver calls
@@ -271,27 +271,27 @@ Promise resolver in `sendResponse()`.
 
 - [ ] **Event interception** — override `sendEvent()` to route DAP events to the mux stream
       instead of a transport. No IHostAdapter needed at the session level.
-  - [ ] `OutputEvent{category:'console'}` → `[GDB]` mux channel
+  - [x] `OutputEvent{category:'console'}` → `[GDB]` mux channel
   - [ ] `OutputEvent{category:'important'}` → highlighted / TUI status bar
-  - [ ] `OutputEvent{category:'stdout'/'stderr'}` → target output mux channels
-  - [ ] `StoppedEvent` / `ContinuedEvent` → TUI status indicator
-  - [ ] `TerminatedEvent` → session teardown sequence
-  - [ ] `SWOConfigureEvent`, `UARTConfigureEvent` (custom) → configure mux channels
+  - [x] `OutputEvent{category:'stdout'/'stderr'}` → target output mux channels
+  - [x] `StoppedEvent` / `ContinuedEvent` → TUI status indicator
+  - [x] `TerminatedEvent` → session teardown sequence
+  - [x] `SWOConfigureEvent`, `UARTConfigureEvent` (custom) → configure mux channels
 - [ ] **No-op transport** — skip `super.sendEvent()` / `super.sendResponse()` calls so the
       uninitialized stdio transport is never touched
-- [ ] **Dispatch synthetic requests** via `dispatchRequest()` — the same sequence as the
+- [x] **Dispatch synthetic requests** via `dispatchRequest()` — the same sequence as the
       DAP `launch` handler flow, now driven directly:
-  - [ ] `initialize` request
-  - [ ] `launch` (or `attach`) request with fully-resolved config from Phase 2
-  - [ ] `configurationDone` request
-- [ ] Launch gdb-server (delegates to existing `servers/*.ts` controllers — untouched)
-- [ ] Wait for gdb-server ports to be ready
-- [ ] Launch GDB, connect to gdb-server (existing `gdb-session.ts` — untouched)
-- [ ] Run pre-launch / startup commands
-- [ ] RTT setup (existing `rtt-builtin.ts` or gdb-server TCP mode — untouched)
+  - [x] `initialize` request
+  - [x] `launch` (or `attach`) request with fully-resolved config from Phase 2
+  - [x] `configurationDone` request
+- [x] Launch gdb-server (delegates to existing `servers/*.ts` controllers — untouched)
+- [x] Wait for gdb-server ports to be ready
+- [x] Launch GDB, connect to gdb-server (existing `gdb-session.ts` — untouched)
+- [x] Run pre-launch / startup commands
+- [x] RTT setup (existing `rtt-builtin.ts` or gdb-server TCP mode — untouched)
 - [ ] SWO setup (existing sources — untouched after move to `common/`)
-- [ ] UART setup (existing serial client — untouched after move to `common/`)
-- [ ] Signal "session ready" to Rust bootstrap via TCP control channel
+- [x] UART setup (existing serial client — untouched after move to `common/`)
+- [x] Signal "session ready" to Rust bootstrap via TCP control channel
 
 ---
 
@@ -299,18 +299,18 @@ Promise resolver in `sendResponse()`.
 
 The live session. Rust TUI connects here; AI attachers connect here later.
 
-- [ ] Create `~/.mcu-debug/current.sock` (and `/tmp/mcu-debug-<pid>.sock` for explicit addressing)
+- [x] Create `~/.mcu-debug.sock.json` (and `/tmp/mcu-debug-<pid>.sock` for explicit addressing)
 - [ ] On each new attacher connection:
   - [ ] Send ring buffer snapshot (catch-up — same principle as serial ring buffer)
   - [ ] Then stream live mux frames
 - [ ] Receive commands from any attacher, route to GDB input
 - [ ] Meta-command handling:
-  - [ ] `!!SIGINT` → send SIGINT to target
-  - [ ] `!!RESET` → reset via gdb-server monitor command
+  - [x] `!!SIGINT` → send SIGINT to target
+  - [x] `!!RESET` → reset via gdb-server monitor command
   - [ ] `!!AI-REQUEST: <text>` → post to AI-REQUEST region (TUI) or tag on mux stream
   - [ ] `!!NOTE: <json-patch>` → patch session-notes sidecar file
 - [ ] Attacher disconnect: clean, does not kill session
-- [ ] Session teardown: gdb-server killed, GDB exited, socket removed, Rust bootstrap exits
+- [x] Session teardown: gdb-server killed, GDB exited, socket removed, Rust bootstrap exits
 
 ---
 
@@ -318,7 +318,7 @@ The live session. Rust TUI connects here; AI attachers connect here later.
 
 Late-attacher path for AI (Mode 1 via subprocess) and hybrid mode (Mode 3).
 
-- [ ] Auto-discover session: `~/.mcu-debug/current.sock` (well-known path)
+- [ ] Auto-discover session: `.mcu-debug.sock.json` (well-known path)
 - [ ] Explicit: `--socket /tmp/mcu-debug-<pid>.sock`
 - [ ] List: `mcu-debug list` — enumerate active sessions
 - [ ] Connect, receive snapshot, stream live — mux to stdout, commands from stdin
@@ -331,23 +331,23 @@ Late-attacher path for AI (Mode 1 via subprocess) and hybrid mode (Mode 3).
 The mechanical refactor that makes both VS Code and CLI share the same underlying code.
 Can proceed in parallel with phases above once the `common/` structure is defined.
 
-- [ ] Create `src/common/` with `tsconfig.common.json` (excludes `@types/vscode` only —
+- [x] Create `src/common/` with `tsconfig.common.json` (excludes `@types/vscode` only —
       `@vscode/debugprotocol` and `@vscode/debugadapter` are plain npm packages and ARE allowed)
-- [ ] Define `IHostAdapter` interface in `common/host-adapter.ts`
+- [x] Define `IHostAdapter` interface in `common/host-adapter.ts`
       (`getWorkspaceFolder`, `getSetting`, `showError`, `showWarning` — config resolution only)
-- [ ] Extract bulk of `frontend/configprovider.ts` → `common/config-provider.ts`
+- [x] Extract bulk of `frontend/configprovider.ts` → `common/config-provider.ts`
       (envFile, variable substitution, validation, defaults — all pure logic, no vscode deps)
-- [ ] Implement `VscodeAdapter` in `frontend/vscode-adapter.ts`
-- [ ] Implement `CliAdapter` in `cli/cli-adapter.ts`
+- [x] Implement `VscodeAdapter` in `frontend/vscode-adapter.ts`
+- [x] Implement `CliAdapter` in `cli/cli-adapter.ts`
       (reads `mcu-debug-settings.json`, workspaceFolder = dir containing launch.json)
-- [ ] Thin down `frontend/configprovider.ts` to: create VscodeAdapter, delegate to
+- [x] Thin down `frontend/configprovider.ts` to: create VscodeAdapter, delegate to
       common/ConfigProvider — VS Code lifecycle hooks stay, logic moves out
-- [ ] Move `frontend/swo/` → `common/swo/` (decoders + sources — no vscode deps)
-- [ ] Move `frontend/serial.ts` → `common/serial/`
-- [ ] Move `frontend/ansi-helpers.ts` → `common/`
-- [ ] Extract non-vscode utils from `frontend/utils.ts` → `common/utils.ts`
-- [ ] Update `frontend/` imports to use `common/` for moved files — mechanical, low risk
-- [ ] Update `extension.ts` imports for moved files — mechanical, minimum viable touch
+- [x] Move `frontend/swo/` → `common/swo/` (decoders + sources — no vscode deps)
+- [x] Move `frontend/serial.ts` → `common/serial/`
+- [x] Move `frontend/ansi-helpers.ts` → `common/`
+- [x] Extract non-vscode utils from `frontend/utils.ts` → `common/utils.ts`
+- [x] Update `frontend/` imports to use `common/` for moved files — mechanical, low risk
+- [x] Update `extension.ts` imports for moved files — mechanical, minimum viable touch
 - [ ] **Do not refactor `extension.ts` internals for v1** — multi-core and panel lifecycle
       stay as-is; convergence deferred until both paths are working
 
@@ -357,12 +357,12 @@ Can proceed in parallel with phases above once the `common/` structure is define
 
 See [cli-architecture.md §8](./cli-architecture.md) for full design rationale and wrapper code.
 
-- [ ] `cli-controller.js` bundled via existing esbuild pipeline (single file, no node_modules)
+- [x] `mcu-debug-cli.js` bundled via existing esbuild pipeline (single file, no node_modules)
 - [ ] Extension activation writes `~/.mcu-debug/config.json` → `{ extensionPath, version }`
       (stable pointer — recreated on every activation, absorbs version-path churn)
 - [ ] npm package (`mcu-debug` on npmjs.com) is a thin JS wrapper only — no binaries bundled
       Reads `config.json`, sets `MCU_DEBUG_NODE` + `MCU_DEBUG_CLI_JS`, spawns Rust binary
       Errors clearly with marketplace URL if extension not installed (Option 1 — no fallback)
-- [ ] Node.js >= 22 check in Rust bootstrap (GH Copilot CLI confirmed >= 22; Claude CLI >= 22)
+- [x] Node.js >= 22 check in Rust bootstrap (GH Copilot CLI confirmed >= 22; Claude CLI >= 22)
 - [ ] Distribution: `npx mcu-debug` for AI/CI use; `npm install -g` for terminal users;
       VS Code extension path unchanged — all assets in extension dir, config.json is the pointer

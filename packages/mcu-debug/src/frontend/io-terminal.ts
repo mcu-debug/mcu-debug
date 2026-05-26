@@ -1,13 +1,12 @@
-import * as vscode from "vscode";
-import * as fs from "fs";
-import { RTTConsoleDecoderOpts, TerminalInputMode, TextEncoding, BinaryEncoding, HrTimer } from "../adapter/servers/common";
-import { magentaWrite } from "../common/ansi-helpers";
-import { decoders as DECODER_MAP } from "../common/swo/decoders/utils";
+import * as fs from "fs"
+import { RTTConsoleDecoderOpts, TerminalInputMode, HrTimer } from "../adapter/servers/common";
+import { magentaWrite } from "../common/ansi-helpers"
 import { SocketIOSource } from "../common/swo/sources/socket";
 import { RESET } from "../common/ansi-helpers";
-import { createTerminalUniqueName, getUUidPrefixed, ManagedTab, ManagedTabConsole } from "./views/ManagedTab";
+import { createTerminalUniqueName, getUUidPrefixed, ManagedTabConsole } from "./views/ManagedTab";
 import { TabKind } from "@mcu-debug/shared";
 import { EventEmitter } from "stream";
+import { BinaryFormatter, getBinaryEncoding, getTextEncoding } from "../common/binary-encoding";
 
 export class IOTerminal extends EventEmitter {
     protected terminal: ManagedTabConsole | null = null;
@@ -45,9 +44,9 @@ export class IOTerminal extends EventEmitter {
                 // Server closed the connection. We are done with this session
             } else if (code === "ECONNREFUSED") {
                 // We expect 'ECONNREFUSED' if the server has not yet started after all the retries
-                magentaWrite(`${e}\n.`, this.terminal!);
+                magentaWrite(`${e}\n.`, (str) => this.terminal?.send(str));
             } else {
-                magentaWrite(`${e}\n`, this.terminal!);
+                magentaWrite(`${e}\n`, (str) => this.terminal?.send(str));
             }
             this.onClose();
         });
@@ -57,7 +56,7 @@ export class IOTerminal extends EventEmitter {
 
         if (src.connError) {
             this.source = src;
-            magentaWrite(`${src.connError.message}\n`, this.terminal!);
+            magentaWrite(`${src.connError.message}\n`, (str) => this.terminal?.send(str));
         } else if (src.connected) {
             this.source = src;
             this.openLogFile();
@@ -79,7 +78,7 @@ export class IOTerminal extends EventEmitter {
             this.startOfNewLine = true;
         }
         this.terminal?.send(RESET + "\n");
-        magentaWrite(`RTT connection on TCP port ${this.options.tcpPort} ended. Waiting for next connection...`, this.terminal!);
+        magentaWrite(`RTT connection on TCP port ${this.options.tcpPort} ended. Waiting for next connection...`, (str) => this.terminal?.send(str));
         this.terminal?.setState({ kind: "inactive" });
         this.terminal?.removeAllListeners();
         this.terminal = null;
@@ -94,7 +93,7 @@ export class IOTerminal extends EventEmitter {
                 this.writeNonBinary(data);
             }
         } catch (e) {
-            magentaWrite(`Error writing data: ${e}\n`, this.terminal!);
+            magentaWrite(`Error writing data: ${e}\n`, (str) => this.terminal?.send(str));
         }
     }
 
@@ -105,7 +104,7 @@ export class IOTerminal extends EventEmitter {
             } catch (e: any) {
                 const msg = `Could not open file ${this.options.logfile} for writing. ${e.toString()}`;
                 console.error(msg);
-                magentaWrite(msg, this.terminal!);
+                magentaWrite(msg, (str) => this.terminal?.send(str));
             }
         } else if (this.logFd >= 0 && !this.options.logfile) {
             // It is already open but new connection does not want logging anymore
@@ -251,7 +250,7 @@ export class IOTerminal extends EventEmitter {
             try {
                 fs.closeSync(this.logFd);
             } catch (e) {
-                magentaWrite(`Error: closing fille ${e}\n`, this.terminal!);
+                magentaWrite(`Error: closing fille ${e}\n`, (str) => this.terminal?.send(str));
             }
             this.logFd = -1;
             this.startOfNewLine = true;
@@ -272,76 +271,5 @@ export class IOTerminal extends EventEmitter {
     public dispose() {
         this.freeTerminal();
         this.closeLogFd(false);
-    }
-}
-
-function parseEncoded(buffer: Buffer, encoding: string) {
-    return DECODER_MAP[encoding] ? DECODER_MAP[encoding](buffer) : DECODER_MAP.unsigned(buffer);
-}
-
-function padLeft(str: string, len: number, chr = " "): string {
-    if (str.length >= len) {
-        return str;
-    }
-    str = str.padStart(len, chr);
-    return str;
-}
-
-function getBinaryEncoding(enc: string): BinaryEncoding {
-    enc = enc ? enc.toLowerCase() : "";
-    if (!(enc in BinaryEncoding)) {
-        enc = BinaryEncoding.UNSIGNED;
-    }
-    return enc as BinaryEncoding;
-}
-
-function getTextEncoding(enc: string): TextEncoding {
-    enc = enc ? enc.toLowerCase() : "";
-    if (!(enc in TextEncoding)) {
-        return TextEncoding.UTF8;
-    }
-    return enc as TextEncoding;
-}
-class BinaryFormatter {
-    private readonly bytesNeeded = 4;
-    private buffer = Buffer.alloc(4);
-    private bytesRead = 0;
-    private hrTimer = new HrTimer();
-
-    constructor(
-        protected ptyTerm: ManagedTab,
-        protected encoding: string,
-        protected scale: number,
-    ) {
-        this.bytesRead = 0;
-        this.encoding = getBinaryEncoding(encoding);
-        this.scale = scale || 1;
-    }
-
-    public writeBinary(input: string | Buffer) {
-        const data: Buffer = Buffer.from(input);
-        const timestamp = this.hrTimer.createDateTimestamp();
-        for (const chr of data) {
-            this.buffer[this.bytesRead] = chr;
-            this.bytesRead = this.bytesRead + 1;
-            if (this.bytesRead === this.bytesNeeded) {
-                let chars = "";
-                for (const byte of this.buffer) {
-                    if (byte <= 32 || (byte >= 127 && byte <= 159)) {
-                        chars += ".";
-                    } else {
-                        chars += String.fromCharCode(byte);
-                    }
-                }
-                const blah = this.buffer.toString();
-                const hexvalue = padLeft(this.buffer.toString("hex"), 8, "0");
-                const decodedValue = parseEncoded(this.buffer, this.encoding);
-                const decodedStr = padLeft(`${decodedValue}`, 12);
-                const scaledValue = padLeft(`${decodedValue * this.scale}`, 12);
-
-                this.ptyTerm.send(`${timestamp} ${chars}  0x${hexvalue} - ${decodedStr} - ${scaledValue}\n`);
-                this.bytesRead = 0;
-            }
-        }
     }
 }

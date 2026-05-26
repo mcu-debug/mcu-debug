@@ -1,17 +1,18 @@
 import * as net from "node:net";
 import * as os from "node:os";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as readline from "node:readline";
-import { ConfigurationArguments } from "../adapter/servers/common";
-import { IHostAdapter, ISerialPortView } from "../common/host-adapter";
+import { ConfigurationArguments, getNonce, RTTCommonDecoderOpts, RTTConsoleDecoderOpts } from "../adapter/servers/common";
+import { IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
 import { CustomTransport, logger } from "../common/logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import winston from "winston";
-import { EventEmitter } from "node:stream";
-import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { SerialPortManager } from "../common/serial-manager";
+import { CLIRTTTerminal } from "./cli-rtt";
+import { CDebugSession } from "../common/mcu-debug-session";
+import { handleRTTConfigureEvent } from "../common/rtt-source";
+import { SocketRTTSource } from "../common/swo/sources/socket";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -55,6 +56,7 @@ export class CliSessionDriver {
     private isPaused = false;
     private isInternalClose = false; // to distinguish user-initiated vs DA-initiated session close
     private serialManager = new SerialPortManager();
+    public debugSession: CDebugSession;
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
@@ -72,6 +74,15 @@ export class CliSessionDriver {
         this.mcuStdoutLogger = logger.child({ source: 'DA', color: 'orange', isConsole: true });
         this.gdbMiLogger = logger.child({ source: 'GDB-MI', isConsole: true });
         this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
+
+        const dbgSession: IDebugSession = {
+            id: getNonce(),
+            type: "mcu-debug",
+            name: this.config.name,
+            configuration: this.config,
+            customRequest: async (command: string, args?: any) => { }
+        };
+        this.debugSession = CDebugSession.GetSession(dbgSession, this.config);
     }
 
     async startSession(cliArgs: any) {
@@ -374,10 +385,12 @@ export class CliSessionDriver {
     private handleCustomEvent(event: DebugProtocol.Event): void {
         switch (event.event) {
             case "swo-configure":
-                // this.receivedSWOConfigureEvent(e);
+                // this.receivedSWOConfigureEvent(event);
                 break;
             case "rtt-configure":
-                //this.receivedRTTConfigureEvent(e);
+                handleRTTConfigureEvent(event.body, this.debugSession, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
+                    new CLIRTTTerminal(decoder, src);
+                });
                 break;
             case "uart-configure":
                 this.serialManager.createSerialPorts(this.config).catch((error) => {
@@ -434,6 +447,14 @@ export class CliSessionDriver {
                 break;
             }
             case 'initialized': break;
+            case "swo-configure":
+                // this.receivedSWOConfigureEvent(event);
+                break;
+            case "rtt-configure":
+                handleRTTConfigureEvent(event.body, this.debugSession, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
+                    new CLIRTTTerminal(decoder, src);
+                });
+                break;
             case 'uart-configure':
                 this.serialManager.createSerialPorts(this.config).catch((error) => {
                     logger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
@@ -636,3 +657,4 @@ export class CliSessionDriver {
         });
     }
 }
+
