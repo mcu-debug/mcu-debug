@@ -67,7 +67,7 @@ function selectConfiguration(configurations: any[], args: CliArgs): any {
         return selectedConfig;
     }
 
-    const isNumber = !isNaN(Number(args.config));
+    const isNumber = /\d+/.test(args.config) && !isNaN(Number(args.config));
     if (isNumber) {
         const index = Number(args.config);
         if (index >= 0 && index < configurations.length) {
@@ -88,13 +88,32 @@ function selectConfiguration(configurations: any[], args: CliArgs): any {
         process.exit(1);
     } else {
         logger.error(`Configuration with name "${args.config}" not found in ${args.json}`);
-        process.exit(1);
     }
+
+    // Lets prompt to get configuration
+    let ix = 0;
+    logger.info(`Available 'mcu-debug' configurations in ${args.json}:`);
+    for (const config of configurations) {
+        logger.info(`  [${ix}] ${config.name}`);
+        ix++;
+    }
+    // If stdin is a TTY or TUI, maybe we should promppt the user to select a configuration instead of just giving up?
+    // For now, we'll just give up since implementing a prompt is a bit more work and we want to get this out. We can
+    // always add a prompt later if users want it. We also don't know if we are in a TUI
+    logger.info(`Please specify a configuration name or index using the --config argument.`);
+    process.exit(1);
 }
 
+// TODO: Should we combine all types of variables and do substitution in one pass instead of doing built-in
+// vars first and then config vars? The main reason to do it in two passes is that it allows config vars to
+// reference built-in vars, but not the other way around. Doing it in one pass would allow more flexible
+// referencing between variables but would also be more complex and could potentially lead to circular
+// references. For now, we'll keep it as two passes since it's simpler and meets our current needs, but we
+// can consider changing it in the future if we find that users want more flexibility in variable referencing.
 function processVarSubstitutions(fileName: string, config: any, settings: { [key: string]: any }): any {
     const builtins = gatherBuiltins();
     const jsonContent = JSON.stringify(config);
+    // built-ins go first as they may be referenced by envFile or other values we need
     let substitutedContent = processVarSubstitution(jsonContent, builtins, '', (msg) => {
         logger.warn(`In built-in variable substitution for ${fileName}: ${msg}`);
     });
@@ -109,6 +128,18 @@ function processVarSubstitutions(fileName: string, config: any, settings: { [key
         config = substituteEnvVarsInConfig(config, (msg) => {
             logger.warn(`In environment variable substitution for ${fileName}: ${msg}`);
         }) as any;
+        // Now detect all variables that have not been substituted and warn about them since that likely
+        // indicates a mistake in the launch.json. We allow unsubstituted variables to remain since some
+        // of them might be intended to be substituted later by the debug adapter or by the user during
+        // the debug session, but we want to warn about any that look like they should have been substituted
+        // but weren't.
+        substitutedContent = JSON.stringify(config);
+        const varRegex = /\$\{[^\}]+\}/g;
+        const unsubstitutedVars = substitutedContent.match(varRegex);
+        if (unsubstitutedVars) {
+            const uniqueVars = Array.from(new Set(unsubstitutedVars));
+            logger.warn(`The following variables in ${fileName} were not substituted. This may indicate a mistake in the launch.json if these variables were intended to be substituted at this stage. If these variables are intended to be substituted later by the debug adapter or by the user during the debug session, then you can ignore this warning. Unsubstituted variables: ${uniqueVars.join(", ")}`);
+        }
         return config;
     } catch (error) {
         logger.error("Failed to process variable substitutions in launch.json: " + (error instanceof Error ? error.message : String(error)));
@@ -124,8 +155,8 @@ function gatherBuiltins(): { [key: string]: any } {
     builtins.workspaceFolder = process.cwd();
     builtins.workspaceFolderBasename = path.basename(builtins.workspaceFolder);
     builtins.cwd = process.cwd();
-    builtins.pathSeparator = path.sep;
-    builtins["/"] = path.sep; // Allow using ${/} as a platform-independent path separator in launch.json   
+    builtins.pathSeparator = '/'; // path.sep;
+    builtins["/"] = '/'; // Allow using ${/} as a platform-independent path separator in launch.json   
     return builtins;
 }
 

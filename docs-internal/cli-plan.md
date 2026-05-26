@@ -163,25 +163,24 @@ Entry point. Everything starts here.
 - [ ] **Arg parsing**
   - [ ] `-c` / `--config`     Required: debug configuration name (case-insensitive)
   - [ ] `-j` / `--json-file`  Optional: path to `launch.json` (default: `./launch.json`)
-  - [ ] `-s` / `--socket`     Optional: session socket path (default: `~/.mcu-debug/current.sock`)
   - [ ] `--no-tui`            Force headless even on a TTY (useful for testing)
 
 - [ ] **Node.js check**
   - [ ] Locate `node` on PATH
-  - [ ] Check version >= 22; if not: clear error with nodejs.org URL, exit non-zero
+  - [x] Check version >= 22; if not: clear error with nodejs.org URL, exit non-zero
   - [ ] If not found: clear error distinguishing "not installed" from "wrong version"
 
-- [ ] **Locate bundled `cli-controller.js`**
-  - [ ] Resolve relative to own executable: `current_exe().parent().join("cli-controller.js")`
-  - [ ] If not found: error — likely a broken installation
+- [x] **Locate bundled `mcu-debug-cli.js`**
+  - [x] Resolve relative to own executable: `current_exe().parent().join("dist/mcu-debug-cli.js")`
+  - [x] If not found: error — likely a broken installation
 
 - [ ] **TTY detection → choose mode**
-  - [ ] `stdout` is a TTY → **TUI mode**: allocate a TCP port, spawn Node with `--port <N>`, start ratatui TUI, connect to port N
+  - [ ] `stdout` is a TTY and no `-no-tui` → **TUI mode**: start node program with stdio piped
   - [ ] `stdout` is not a TTY → **headless mode**: spawn Node with inherited stdio (Unix: `exec`-replace; Windows: spawn-and-wait), forward exit code
 
 ---
 
-### Phase 2 — Config resolution (Node — `common/config-provider.ts` + `cli/config-resolver.ts`)
+### Phase 2 — Config resolution (Node — `common/config-provider.ts` + `cli/config-loader.ts`)
 
 The resolution logic lives in `common/ConfigProvider` (moved from `frontend/configprovider.ts`).
 `cli/config-resolver.ts` is thin: it instantiates `CliAdapter` and calls `ConfigProvider`.
@@ -189,35 +188,35 @@ The resolution logic lives in `common/ConfigProvider` (moved from `frontend/conf
 
 Runs first thing in the Node process before any session logic.
 
-- [ ] **Read and select config**
+- [x] **Read and select config**
   - [x] Open `launch.json` (from arg or `./launch.json`)
   - [x] Select config by name (case-insensitive or glob or index match on `name` field)
-  - [ ] Error clearly if not found — list available names
+  - [x] Error clearly if not found — list available names
 
-- [ ] **Load `envFile`(s)**
+- [x] **Load `envFile`(s)**
   - [x] Support single string or array in launch config
   - [x] Parse `name=value` format: skip blank lines, skip `#` comments, strip optional quotes
   - [x] In-file substitution: single pass top-to-bottom, `${VAR}` resolves from earlier lines then `process.env`
   - [x] Build `mergedEnv = { ...envFileVars, ...process.env }` — process.env wins, never mutate it
 
-- [ ] **Variable substitution pass** (our pass — before any VS Code pass)
+- [x] **Variable substitution pass** (our pass — before any VS Code pass)
   - [x] `${env:VAR}`        → `mergedEnv` lookup
   - [x] `${workspaceFolder}`→ directory containing `launch.json`
   - [x] `${userHome}`       → `os.homedir()`
-  - [ ] `${pathSeparator}`  → `path.sep`
+  - [x] `${pathSeparator}`  → `path.sep`
   - [x] `${config:KEY}`     → `.vscode/mcu-debug-settings.json` then `~/.mcu-debug/settings.json`
-  - [ ] `${command:...}`    → always error: tell user to expand manually
-  - [ ] Collect ALL unresolved — report together, exit non-zero, never partial
+  - [x] `${command:...}`    → always error: tell user to expand manually
+  - [x] Collect ALL unresolved — report together, exit non-zero, never partial
 
 - [ ] **Properties requiring resolution** (complete this list as you go):
   - [ ] `serverPath`, `armToolchainPath` / `gdbPath`
   - [ ] STLink: `cubeProgrammerPath`
   - [ ] `serverArgs`, `debuggerArgs`
-  - [ ] `type`: `launch` vs `attach`
-  - [ ] Pre/post/override launch and attach commands
-  - [ ] openOCD startup commands
-  - [ ] `rtt`, `swo`, `uart` config blocks
-  - [ ] `envFile` itself (resolve `${workspaceFolder}` in the path before loading)
+  - [x] `type`: `launch` vs `attach`
+  - [x] Pre/post/override launch and attach commands
+  - [x] openOCD startup commands
+  - [x] `rtt`, ~~`swo`~~, `uart` config blocks
+  - [x] `envFile` itself (resolve `${workspaceFolder}` in the path before loading)
 
 - [ ] **`dump-config` subcommand** (free once resolver exists)
   - [ ] Print fully-resolved config as JSON to stdout
@@ -349,7 +348,7 @@ Can proceed in parallel with phases above once the `common/` structure is define
 - [x] Update `frontend/` imports to use `common/` for moved files — mechanical, low risk
 - [x] Update `extension.ts` imports for moved files — mechanical, minimum viable touch
 - [ ] **Do not refactor `extension.ts` internals for v1** — multi-core and panel lifecycle
-      stay as-is; convergence deferred until both paths are working
+      stay as-is; convergence deferred until both paths are working. Refactor as you go
 
 ---
 

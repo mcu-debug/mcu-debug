@@ -9,16 +9,25 @@ import { LineBuffer, trimBrackets } from "../common/utils";
 export class CLIRTTTerminal {
     private hrTimer: HrTimer = new HrTimer();
     private binaryFormatter: BinaryFormatter | null = null;
-    private source: SocketIOSource | null = null;
     private prefix: string;
     private lineBuffer: LineBuffer;
     private logFd: number = -1;
+    private static existingPrefixes = new Set<string>();
 
-    constructor(public options: RTTConsoleDecoderOpts, src: SocketIOSource, private readonly kind: string = "RTT") {
+    constructor(public options: RTTConsoleDecoderOpts, private source: SocketIOSource, private readonly kind: string = "RTT") {
         this.prefix = trimBrackets(this.options.label || `RTT#${options.port}`);
+        let counter = 1;
+        const basePrefix = this.prefix;
+        while (CLIRTTTerminal.existingPrefixes.has(this.prefix)) {
+            this.prefix = `${basePrefix}-${counter}`;
+            counter++;
+        }
+        CLIRTTTerminal.existingPrefixes.add(this.prefix);
         this.prefix = `[${this.prefix}]`;
         if (this.options.iencoding !== TextEncoding.UTF8 && this.options.iencoding !== TextEncoding.ASCII && this.options.type !== "binary") {
-            logger.warn(`RTT Console ${this.options.label}: Ignoring text encoding ${this.options.iencoding} for CLI mode. Setting to UTF-8.`, { source: 'DA', isConsole: true });
+            if (this.options.iencoding) {
+                logger.warn(`RTT Console ${this.options.label}: Ignoring text encoding ${this.options.iencoding} for CLI mode. Setting to UTF-8.`, { source: 'DA', isConsole: true });
+            }
             this.options.iencoding = TextEncoding.UTF8;
         }
         this.lineBuffer = new LineBuffer(this.prefix, (source, line) => {
@@ -26,13 +35,20 @@ export class CLIRTTTerminal {
             logger.info(`${source} ${ts}${line}`, { source: this.kind, isConsole: true });
         });
         this.binaryFormatter = new BinaryFormatter(this!, this.options.encoding, this.options.scale);
-        this.connectToSource(src);
+        this.connectToSource(this.source);
+    }
+
+    public getStatus(): "connected" | "not-connected" {
+        return this.source.connected ? "connected" : "not-connected";
+    }
+
+    public getPrefix(): string {
+        return this.prefix;
     }
 
     private connectToSource(src: SocketIOSource) {
         const doConnected = () => {
             logger.info(`${this.prefix} connected to RTT source.`, { source: 'DA', isConsole: true });
-            this.source = src;
             this.openLogFile();
         }
         this.hrTimer = new HrTimer();
@@ -49,9 +65,9 @@ export class CLIRTTTerminal {
                 // Server closed the connection. We are done with this session
             } else if (code === "ECONNREFUSED") {
                 // We expect 'ECONNREFUSED' if the server has not yet started after all the retries
-                magentaWrite(`${e}\n.`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+                magentaWrite(`${e} for ${this.prefix}, will retry...`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
             } else {
-                magentaWrite(`${e}\n`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+                magentaWrite(`${e} for ${this.prefix}`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
             }
         });
         src.on("data", (data) => {
@@ -60,12 +76,13 @@ export class CLIRTTTerminal {
 
         if (src.connError) {
             this.source = src;
-            magentaWrite(`${src.connError.message}\n`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+            magentaWrite(`${src.connError.message} for ${this.prefix}`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
         } else if (src.connected) {
             this.source = src;
             this.openLogFile();
         } else {
             src.once("connected", () => {
+                magentaWrite(`RTT source for ${this.prefix} connected.`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
                 doConnected();
             });
         }
@@ -79,7 +96,7 @@ export class CLIRTTTerminal {
                 this.lineBuffer.push(data.toString(this.options.iencoding));
             }
         } catch (e) {
-            magentaWrite(`Error writing data: ${e}\n`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+            magentaWrite(`Error writing data for ${this.prefix}: ${e}\n`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
         }
     }
 
@@ -121,7 +138,7 @@ export class CLIRTTTerminal {
             try {
                 fs.closeSync(this.logFd);
             } catch (e) {
-                magentaWrite(`Error: closing file ${e}\n`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+                magentaWrite(`Error: closing file ${this.options.logfile} for ${this.prefix}: ${e}\n`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
             }
             this.logFd = -1;
         }

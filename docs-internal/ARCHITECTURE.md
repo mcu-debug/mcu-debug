@@ -492,6 +492,42 @@ With implementations for `SshTransport`, `DockerTransport` (via `docker exec`), 
 
 Multi-probe support (scanning USB bus, returning probe inventory) is deferred to a later phase. For v1, require `serialNumber` in `launch.json` when multiple probes are present. This is the correct approach for lab/CI environments where repeatability matters — users should explicitly specify which probe to use rather than relying on auto-detection.
 
+### 5. Overall snapshot of Architecture
+
+```text
+Developer machine / WSL / Docker container
+  Node process (dist/mcu-debug-cli.js)
+    ├── CLI session driver
+    ├── GDBDebugSession (DA)
+    │    ├── GDB #1 (child proc) ──► 127.0.0.1:35000 (local Funnel port)
+    │    ├── GDB #2 (child proc) ──► 127.0.0.1:35001 (local Funnel port)
+    │    ├── DA-helper (child proc) ← ELF/symbols (always local)
+    │    └── Funnel Protocol client ← owns the tunnel, muxes everything
+    │         ├── Stream 1: GDB RSP #1 ──────────────────────────────┐
+    │         ├── Stream 2: GDB RSP #2 ──────────────────────────────┤
+    │         ├── Stream 3: RTT data (inbound) ──────────────────────┤
+    │         ├── Stream 4: UART data (inbound) ───────────────-─────┤
+    │         └── Stream 0: JSON-RPC control ────────────────────────┤
+    ├── RTT TCP server              ← fed by Funnel stream 3         │
+    ├── Session socket server                                        │
+    ├── Winston logger                                               │
+    └── readline / TUI bridge                        SSH -L tunnel
+                                                     or direct TCP
+                                                    WSL/Docker/LAN)
+                                                                     │
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~─-─┘
+
+Probe host (lab server / Windows host / Docker host)
+  Rust proxy process (mcu-debug proxy)
+    ├── Funnel Protocol server      ← demuxes streams
+    ├── gdb-server (child proc)     ← OpenOCD/JLink, owns the probe
+    │    ├── GDB RSP port 35000 ────► Stream 1
+    │    └── GDB RSP port 35001 ────► Stream 2
+    │    └── RTT/SWO data     ──────► Stream 3, 4, ...
+    └── Serial/UART ports
+         └── UART data ─────────────► Stream 4
+```
+
 ---
 
 ## Implementation Phases

@@ -59,6 +59,7 @@ function calculateRemoteName(): string | undefined {
 export class CliAdapter implements IHostAdapter {
     private readonly remoteName: string | undefined;
     private settings: { [key: string]: any } = {};
+    private serialPortViews: CLISerialPortView[] = [];
     constructor(private cliArgs: { json: string; config: string; settings?: string; }) {
         logger.info("CLI adapter initialized with args: " + JSON.stringify(cliArgs));
         this.remoteName = calculateRemoteName();
@@ -130,7 +131,12 @@ export class CliAdapter implements IHostAdapter {
         return [];
     }
     createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, tcpPort: number): ISerialPortView {
-        return new CLISerialPortView(device, serialConfig, false, tcpPort);
+        const port = new CLISerialPortView(device, serialConfig, false, tcpPort);
+        this.serialPortViews.push(port);
+        return port;
+    }
+    getSerialPortViews(): CLISerialPortView[] {
+        return this.serialPortViews;
     }
 
     showQuickPick(items: { label: string; description?: string; detail?: string; }[], opts?: { title?: string; placeHolder?: string; }): Promise<string | undefined> {
@@ -206,7 +212,8 @@ export class CLISerialPortView implements ISerialPortView {
     private socket: net.Socket | null = null;
     private logFileStream: fs.WriteStream | null = null;
     private txtPrefix: string;
-    private lineBuffer: LineBuffer
+    private lineBuffer: LineBuffer;
+    private static existingPrefixes = new Set<string>();
 
     constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
         const trimLeft = (str: string, char: string) => {
@@ -221,7 +228,14 @@ export class CLISerialPortView implements ISerialPortView {
             }
             return str;
         };
-        const label = serialConfig.label ? trimBrackets(serialConfig.label) : path.basename(device);
+        let label = serialConfig.label ? trimBrackets(serialConfig.label) : path.basename(device);
+        let counter = 1;
+        const baseLabel = label;
+        while (CLISerialPortView.existingPrefixes.has(label)) {
+            label = `${baseLabel}-${counter}`;
+            counter++;
+        }
+        CLISerialPortView.existingPrefixes.add(label);
         this.txtPrefix = `[${label}]`;
         if (this.tcpPort) {
             this.restartSocket();
@@ -236,6 +250,14 @@ export class CLISerialPortView implements ISerialPortView {
             }
             logger.info(str, { source: "serial", isConsole: true });
         });
+    }
+
+    public getStatus(): "connected" | "not-connected" {
+        return this.socket && !this.socket.destroyed ? "connected" : "not-connected";
+    }
+
+    public getPrefix(): string {
+        return this.txtPrefix;
     }
 
     send(text: string): void {

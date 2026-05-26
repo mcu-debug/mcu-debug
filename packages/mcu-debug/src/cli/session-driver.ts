@@ -13,6 +13,7 @@ import { CLIRTTTerminal } from "./cli-rtt";
 import { CDebugSession } from "../common/mcu-debug-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
+import { CliAdapter } from "./cli-adapter";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -57,16 +58,30 @@ export class CliSessionDriver {
     private isInternalClose = false; // to distinguish user-initiated vs DA-initiated session close
     private serialManager = new SerialPortManager();
     public debugSession: CDebugSession;
+    public status: "not-started" | "starting" | "running" | "paused" | "terminated" = "not-started";
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
     private serverClients = new Set<net.Socket>();
     private server: net.Server | null = null;
+    private socketPath: string | null = null;
+    private rtts: CLIRTTTerminal[] = [];
 
     constructor(private cliArgs: any, private customTransport: CustomTransport, private adapter: IHostAdapter, private config: ConfigurationArguments) {
         // Initialize session driver
         config.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
-        config.liveWatch = undefined as any; // not used in CLI, but some code expects it to exist
+        if (config.liveWatch?.enabled) {
+            logger.warn("Live watch is not supported in CLI mode. Disabling live watch.", { source: 'DA', isConsole: true });
+            delete (config as any).liveWatch;
+        }
+        if (config.swoConfig?.enabled) {
+            logger.warn("SWO is not supported in CLI mode. Disabling SWO.", { source: 'DA', isConsole: true });
+            delete (config as any).swoConfig;
+        }
+        if (config.chainedConfigurations?.enabled) {
+            logger.warn("Chained configurations are not supported in CLI mode. Ignoring chained configurations.", { source: 'DA', isConsole: true });
+            delete (config as any).chainedConfigurations;
+        }
         this.gdbLogger = logger.child({ source: 'GDB', color: 'cyan', isConsole: true });
         this.stdoutLogger = logger.child({ source: 'DA', isConsole: true });
         this.stderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
@@ -94,6 +109,7 @@ export class CliSessionDriver {
         }
         // Start the debug session with the provided CLI arguments
         logger.info("Starting debug session with arguments:", cliArgs);
+        this.status = "starting";
 
         // Create and start the debug session
         logger.info("Creating debug session...");
@@ -119,10 +135,11 @@ export class CliSessionDriver {
          */
         this.doInitializeRequest().then(() => {
             logger.info("Initialization complete. Sending launch request...");
+            this.config.request = this.config.request === 'attach' ? 'attach' : 'launch'; // guard against invalid request types
             return this.sendRequest<DebugProtocol.LaunchResponse | DebugProtocol.AttachResponse>({
                 seq: 0,          // overwritten by sendRequest
                 type: 'request', // overwritten by sendRequest
-                command: (this.config as any)?.type === 'attach' ? 'attach' : 'launch',
+                command: this.config.request,
                 arguments: {
                     noDebug: cliArgs.noDebug,
                     ...this.config,
@@ -257,6 +274,9 @@ export class CliSessionDriver {
                 }
             });
             return true;
+        } else if (trimmedInput.toLowerCase() === 'status' || trimmedInput.toLowerCase() === '!!status') {
+            this.doStatus();
+            return true;
         } else if (trimmedInput.toLowerCase() === 'exit') {
             this.doExit(isTerminal);
             return true;
@@ -266,6 +286,35 @@ export class CliSessionDriver {
             return true;
         }
         return false;
+    }
+
+    private doStatus() {
+        // We summarize our current status
+        const serialPorts = (this.adapter as CliAdapter).getSerialPortViews().map((port) => {
+            const params: any = {
+                status: port.getStatus(),
+                prefix: port.getPrefix(),
+                ...port.serialConfig
+            };
+            return params;
+        });
+        const obj: any = {
+            'status': this.status,
+            'cwd': process.cwd(),
+            'pid': process.pid,
+            'targetCwd': this.config.cwd,
+            'configName': this.config.name,
+            'serverType': this.config.servertype,
+            'configType': this.config.request,
+            'rtts': this.rtts.map(rtt => ({
+                status: rtt.getStatus(), prefix: rtt.getPrefix(),
+                tcpPort: rtt.options.tcpPort, channel: rtt.options.port, type: rtt.options.type,
+            })),
+            'serialPorts': serialPorts,
+            'socketPath': this.socketPath,
+            'logFile': this.cliArgs.logFile,
+        };
+        logger.info(`Session summary: ${JSON.stringify(obj, null, 2)}`);
     }
 
     private doExit(isTerminal: boolean) {
@@ -382,24 +431,6 @@ export class CliSessionDriver {
         }
     }
 
-    private handleCustomEvent(event: DebugProtocol.Event): void {
-        switch (event.event) {
-            case "swo-configure":
-                // this.receivedSWOConfigureEvent(event);
-                break;
-            case "rtt-configure":
-                handleRTTConfigureEvent(event.body, this.debugSession, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
-                    new CLIRTTTerminal(decoder, src);
-                });
-                break;
-            case "uart-configure":
-                this.serialManager.createSerialPorts(this.config).catch((error) => {
-                    logger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
-                });
-                break;
-        }
-    }
-
     /** Handle events emitted by the DA (stopped, output, terminated, etc.). */
     private handleEvent(event: DebugProtocol.Event): void {
         if (event.event.startsWith('custom')) {
@@ -409,6 +440,7 @@ export class CliSessionDriver {
         }
         switch (event.event) {
             case 'stopped':
+                this.status = "paused";
                 this.optionalInfo.info(`Stopped: ${event.body?.reason}` +
                     (event.body?.description ? ` — ${event.body.description}` : ''));
                 this.isInternalClose = true;
@@ -419,6 +451,7 @@ export class CliSessionDriver {
                 this.isInternalClose = false;
                 break;
             case 'continued':
+                this.status = "running";
                 this.optionalInfo.info('Running');
                 this.isInternalClose = true;
                 this.rlPaused?.close();
@@ -428,6 +461,7 @@ export class CliSessionDriver {
                 this.isInternalClose = false;
                 break;
             case 'terminated':
+                this.status = "terminated";
                 logger.info('Session terminated');
                 this.rlPaused?.close();
                 this.rlPaused = null;
@@ -452,7 +486,7 @@ export class CliSessionDriver {
                 break;
             case "rtt-configure":
                 handleRTTConfigureEvent(event.body, this.debugSession, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
-                    new CLIRTTTerminal(decoder, src);
+                    this.rtts.push(new CLIRTTTerminal(decoder, src));
                 });
                 break;
             case 'uart-configure':
@@ -562,15 +596,15 @@ export class CliSessionDriver {
                     // Check if the process is still running
                     try {
                         process.kill(existing.pid, 0); // signal 0 doesn't actually kill, just checks if it exists
-                        logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running. Is another instance running?`, existing);
+                        logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running. Is another instance running?`, { source: 'DA', isConsole: true, ...existing });
                     } catch (err) {
-                        logger.warn(`Socket file ${socketJsonPath} already exists but process ${existing.pid} is not running. It will be overwritten.`, existing);
+                        logger.warn(`Socket file ${socketJsonPath} already exists but process ${existing.pid} is not running. It will be overwritten.`, { source: 'DA', isConsole: true, ...existing });
                     }
                 } else {
-                    logger.warn(`Socket file ${socketJsonPath} already exists but has unexpected content. It will be overwritten.`, { content: existing });
+                    logger.warn(`Socket file ${socketJsonPath} already exists but has unexpected content. It will be overwritten.`, { source: 'DA', isConsole: true, content: existing });
                 }
             } catch (err) {
-                logger.error(`Socket file ${socketJsonPath} already exists and could not be read. Is another instance running?`);
+                logger.error(`Socket file ${socketJsonPath} already exists and could not be read. Is another instance running?`, { source: 'DA', isConsole: true });
             }
         }
     }
@@ -601,29 +635,35 @@ export class CliSessionDriver {
                 conn.on('close', () => this.serverClients.delete(conn));
             });
             this.server.listen(socketPath, () => {
-                logger.info(`Socket server listening on ${socketPath}`);
+                this.socketPath = socketPath;
+                this.writeSockFile(socketPath);  // triggers Rust's wait_for_sock_file()
+                logger.info(`Socket server listening on ${socketPath}`, { source: 'DA', isConsole: true });
                 if (!this.cliArgs.waitForClient) {
                     resolve();
                 } else {
                     timeout = setTimeout(() => {
                         if (timeout && this.serverClients.size === 0) {
-                            logger.error('waitForClient is true but no client connected within timeout. Is the client side running and configured correctly?');
+                            logger.error('waitForClient is true but no client connected within timeout. Is the client side running and configured correctly?', { source: 'DA', isConsole: true });
                         }
                         timeout = null;
                     }, 5000); // arbitrary timeout to catch listen() failures in waitForClient mode
                 }
+                process.on('exit', () => {
+                    if (this.server) {
+                        this.server.close();
+                    }
+                });
             });
             this.server.on('error', (err) => {
-                logger.error(`Socket server error: ${err instanceof Error ? err.message : String(err)}`);
+                logger.error(`Socket server error: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
                 reject(err);
             });
-            this.writeSockFile(socketPath);  // triggers Rust's wait_for_sock_file()
         });
         return this.socketPromise;
     }
     private handleMetaCommand(cmd: string) {
         // Handle future meta-commands from the Rust side (e.g. !!RESET, !!NOTE:, etc.)
-        logger.info(`Unhandled meta-command from clients: ${cmd}`);
+        logger.info(`Unhandled meta-command from clients: ${cmd}`, { source: 'DA', isConsole: true });
     }
 
     private writeSockFile(socketPath: string) {
@@ -640,19 +680,21 @@ export class CliSessionDriver {
         try {
             fs.writeFileSync(socketPathJson, JSON.stringify(sockInfo, null, 2));
         } catch (err) {
-            logger.error(`Failed to write socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`);
+            logger.error(`Failed to write socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
             if (this.cliArgs.waitForClient) {
                 process.exit(1); // Rust side will detect absence of socket file and wait, so we can exit cleanly here and let Rust restart us when ready
             }
             return;
         }
-        logger.info(`Socket path written to ${socketPathJson}`);
+        logger.info(`Socket path written to ${socketPathJson}`, { source: 'DA', isConsole: true });
         process.on('exit', () => {
             try {
+                this.server?.close();
                 fs.unlinkSync(socketPathJson);
-                logger.info(`Cleaned up socket file ${socketPathJson}`);
+                try { fs.unlinkSync(socketPath); } catch (err) { } // also clean up the socket file itself
+                logger.info(`Cleaned up socket file ${socketPathJson}`, { source: 'DA', isConsole: true });
             } catch (err) {
-                logger.warn(`Failed to clean up socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`);
+                logger.warn(`Failed to clean up socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
             }
         });
     }
