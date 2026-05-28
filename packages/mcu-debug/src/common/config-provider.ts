@@ -55,7 +55,8 @@ export class McuDebugConfigurationProviderBase {
     }
 
     public async resolveDebugConfiguration(folderPath: string | undefined, config: ConfigOptions): Promise<ConfigOptions | undefined> {
-        if (this.host.getGdbServerConsolePort() <= 0) {
+        const port = await this.host.getGdbServerConsolePort();
+        if (port <= 0) {
             this.host.showError("GDB server console not yet ready. Please try again. Report this problem");
             return undefined;
         }
@@ -67,15 +68,8 @@ export class McuDebugConfigurationProviderBase {
             this.host.showError("Errors in environment variable substitution from env or envFile:\n" + errs.join("\n"));
             return undefined;
         }
-        config.gdbServerConsolePort = this.host.getGdbServerConsolePort();
+        config.gdbServerConsolePort = port;
         config.pvtAvoidPorts = this.host.getUsedPorts();
-
-        try {
-            await this.host.handleHostConfig(config.hostConfig, () => delete config.hostConfig);
-        } catch (error) {
-            // All errors should already be surfaced in handleHostConfig, so we just return here to avoid cascading failures. The user can fix the issue and try again.
-            return undefined; // Errors already surfaced in handleHostConfig
-        }
 
         // Flatten the platform specific stuff as it is not done by VSCode at this point.
         switch (os.platform()) {
@@ -256,7 +250,19 @@ export class McuDebugConfigurationProviderBase {
         return config;
     }
 
-    public resolveDebugConfigurationWithSubstitutedVariables(folderPath: string | undefined, config: ConfigOptions): ConfigOptions | undefined {
+    public async resolveDebugConfigurationWithSubstitutedVariables(folderPath: string | undefined, config: ConfigOptions): Promise<ConfigOptions | undefined> {
+        if (!config.hostConfig?.pvtResolved) {
+            try {
+                await this.host.handleHostConfig(config.hostConfig, () => delete (config as any).hostConfig);
+                if (config.hostConfig) {
+                    config.hostConfig.pvtResolved = true;
+                }
+            } catch (error) {
+                // All errors should already be surfaced in handleHostConfig, so we just return here to avoid cascading failures. The user can fix the issue and try again.
+                return undefined; // Errors already surfaced in handleHostConfig
+            }
+        }
+
         const wsFile = this.host.getWorkspaceFilePath();
         let cwd = config.cwd || folderPath || (wsFile ? path.dirname(wsFile) : ".");
         const isAbsCwd = path.isAbsolute(cwd);

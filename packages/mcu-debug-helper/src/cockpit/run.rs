@@ -101,14 +101,15 @@ pub fn run(args: DebugArgs) -> Result<()> {
     let mut child = spawn::spawn_node_cli_tui(&cli_js, &node_args)?;
     let stdin = child.stdin.take().expect("Failed to open stdin");
     let stdout = child.stdout.take().expect("Failed to open stdout");
+    let stderr = child.stderr.take().expect("Failed to open stderr");
 
     // Future `mcu-debug attach` path: connect via Unix socket instead of stdio.
     //   let sock_info = sock_file::wait_for_sock_file(SOCK_TIMEOUT)
     //       .context("node CLI did not create a socket file in time")?;
     //   let (reader, writer) = transport::connect(&sock_info)?;
 
-    let (reader, writer) = transport::from_child_stdio(stdout, stdin);
-    tui::run_tui(reader, writer)?;
+    let (out_reader, err_reader, writer) = transport::from_child_stdio(stdout, stderr, stdin);
+    tui::run_tui(out_reader, err_reader, writer)?;
 
     // TUI exited — give Node a moment to shut down gracefully, then kill it.
     // TODO: send a graceful shutdown command over the socket before closing

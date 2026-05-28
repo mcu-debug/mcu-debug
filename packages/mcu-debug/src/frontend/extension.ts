@@ -33,6 +33,7 @@ import { VscodeOutputChannelTransport } from './vscode-transport';
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "@mcu-debug/shared";
 import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
+import { AICockpit } from "./ai-cockpit";
 interface SVDInfo {
     expression: RegExp;
     path: string;
@@ -68,6 +69,7 @@ export class MCUDebugExtension {
         await this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
 
         this.cockpitPanel = new CockpitPanel(context.extensionUri);
+        AICockpit.getInstance(context);
         context.subscriptions.push(
             vscode.window.registerWebviewViewProvider(CockpitPanel.viewId, this.cockpitPanel),
             vscode.commands.registerCommand("mcu-debug.cockpit.addUart", () => {
@@ -103,6 +105,10 @@ export class MCUDebugExtension {
             vscode.commands.registerCommand("mcu-debug.liveWatch.addToLiveWatch", this.addToLiveWatch.bind(this)),
             vscode.commands.registerCommand("mcu-debug.liveWatch.moveUp", this.moveUpLiveWatchExpr.bind(this)),
             vscode.commands.registerCommand("mcu-debug.liveWatch.moveDown", this.moveDownLiveWatchExpr.bind(this)),
+
+            vscode.commands.registerCommand("mcu-debug.cockpit.startDebugSession", (arg: string | undefined) => {
+                AICockpit.getInstance(this.context)?.startDebugSession(arg);
+            }),
 
             vscode.workspace.onDidChangeConfiguration(this.settingsChanged.bind(this)),
             vscode.debug.onDidReceiveDebugSessionCustomEvent(this.receivedCustomEvent.bind(this)),

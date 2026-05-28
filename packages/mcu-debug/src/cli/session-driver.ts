@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as readline from "node:readline";
 import { ConfigurationArguments, getNonce, RTTCommonDecoderOpts, RTTConsoleDecoderOpts } from "../adapter/servers/common";
-import { IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
+import { CLISessionType, IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
 import { CustomTransport, logger } from "../common/logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
 import { DebugProtocol } from "@vscode/debugprotocol";
@@ -39,6 +39,7 @@ import { CliAdapter } from "./cli-adapter";
  *
  * We track in-flight request promises in pendingRequests keyed by seq so we can await each step.
  */
+
 export class CliSessionDriver {
     private session: GDBDebugSession | null = null;
     private rlPaused: readline.Interface | null = null;
@@ -52,13 +53,14 @@ export class CliSessionDriver {
     private mcuStderrLogger: winston.Logger;
     private mcuStdoutLogger: winston.Logger;
     private gdbMiLogger: winston.Logger;
+    private gdbServerLogger: winston.Logger;
     private optionalInfo: winston.Logger;
     private history: string[] = [];
     private isPaused = false;
     private isInternalClose = false; // to distinguish user-initiated vs DA-initiated session close
     private serialManager = new SerialPortManager();
     public debugSession: CDebugSession;
-    public status: "not-started" | "starting" | "running" | "paused" | "terminated" = "not-started";
+    public status: CLISessionType = "not-started";
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
@@ -69,26 +71,15 @@ export class CliSessionDriver {
 
     constructor(private cliArgs: any, private customTransport: CustomTransport, private adapter: IHostAdapter, private config: ConfigurationArguments) {
         // Initialize session driver
-        config.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
-        if (config.liveWatch?.enabled) {
-            logger.warn("Live watch is not supported in CLI mode. Disabling live watch.", { source: 'DA', isConsole: true });
-            delete (config as any).liveWatch;
-        }
-        if (config.swoConfig?.enabled) {
-            logger.warn("SWO is not supported in CLI mode. Disabling SWO.", { source: 'DA', isConsole: true });
-            delete (config as any).swoConfig;
-        }
-        if (config.chainedConfigurations?.enabled) {
-            logger.warn("Chained configurations are not supported in CLI mode. Ignoring chained configurations.", { source: 'DA', isConsole: true });
-            delete (config as any).chainedConfigurations;
-        }
         this.gdbLogger = logger.child({ source: 'GDB', color: 'cyan', isConsole: true });
         this.stdoutLogger = logger.child({ source: 'DA', isConsole: true });
         this.stderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
         this.mcuStderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
         this.mcuStdoutLogger = logger.child({ source: 'DA', color: 'orange', isConsole: true });
         this.gdbMiLogger = logger.child({ source: 'GDB-MI', isConsole: true });
+        this.gdbServerLogger = logger.child({ source: 'GDB-SERVER', isConsole: true });
         this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
+        config.isCli = true; // inform the DA that we are running in CLI mode
 
         const dbgSession: IDebugSession = {
             id: getNonce(),
@@ -98,18 +89,34 @@ export class CliSessionDriver {
             customRequest: async (command: string, args?: any) => { }
         };
         this.debugSession = CDebugSession.GetSession(dbgSession, this.config);
+        this.setState("not-started");
+    }
+
+    private setState(state: CLISessionType, reason?: string) {
+        if (this.status === state && state !== "not-started") {
+            return;
+        }
+        this.status = state;
+        const infoMsg = `status: ${state}` + (reason ? `: Reason — ${reason}` : '');
+        process.stderr.write(infoMsg + os.EOL);
+        logger.info(infoMsg, { source: 'DA', skipConsole: true });
     }
 
     async startSession(cliArgs: any) {
         try {
             await this.startSocketReader();
         } catch (error) {
-            logger.error("Failed to start socket reader: " + (error instanceof Error ? error.message : String(error)));
+            this.stderrLogger.error("Failed to start socket reader: " + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
+        }
+        if (this.config.servertype !== 'external') {
+            try {
+                await this.startGDBServerConsole("Starting GDB Server console...");
+            } catch (error) { }
         }
         // Start the debug session with the provided CLI arguments
         logger.info("Starting debug session with arguments:", cliArgs);
-        this.status = "starting";
+        this.setState("starting");
 
         // Create and start the debug session
         logger.info("Creating debug session...");
@@ -163,6 +170,28 @@ export class CliSessionDriver {
         }).catch((error: Error | unknown) => {
             logger.error("Failed to start debug session: " + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
+        });
+    }
+
+    private startGDBServerConsole(message: string): Promise<void> {
+        return new Promise<void>(async (resolve, reject) => {
+            const port = await this.adapter.getGdbServerConsolePort();
+            const server = net.createServer((socket) => {
+                socket.on('data', (data) => {
+                    const str = data.toString().trimEnd();
+                    if (str) {
+                        const prefix = this.config?.servertype ?? 'gdb-server';
+                        this.gdbServerLogger.info(`[${prefix}] ${data.toString()}`);
+                    }
+                });
+            });
+            server.listen(port, () => {
+                resolve();
+            });
+            server.on('error', (err) => {
+                this.mcuStderrLogger.error(`GDB Server console error: ${err.message}`);
+                reject(err);
+            });
         });
     }
 
@@ -440,9 +469,8 @@ export class CliSessionDriver {
         }
         switch (event.event) {
             case 'stopped':
-                this.status = "paused";
-                this.optionalInfo.info(`Stopped: ${event.body?.reason}` +
-                    (event.body?.description ? ` — ${event.body.description}` : ''));
+                const reason = `${event.body?.reason}` + (event.body?.description ? ` — ${event.body.description}` : '');
+                this.setState("paused", reason);
                 this.isInternalClose = true;
                 this.rlRunning?.close();
                 this.rlRunning = null;
@@ -451,8 +479,7 @@ export class CliSessionDriver {
                 this.isInternalClose = false;
                 break;
             case 'continued':
-                this.status = "running";
-                this.optionalInfo.info('Running');
+                this.setState("running");
                 this.isInternalClose = true;
                 this.rlPaused?.close();
                 this.rlPaused = null;
@@ -461,8 +488,7 @@ export class CliSessionDriver {
                 this.isInternalClose = false;
                 break;
             case 'terminated':
-                this.status = "terminated";
-                logger.info('Session terminated');
+                this.setState("terminated");
                 this.rlPaused?.close();
                 this.rlPaused = null;
                 this.rlRunning?.close();
@@ -480,7 +506,20 @@ export class CliSessionDriver {
                 this.routeOutput(category, output);
                 break;
             }
-            case 'initialized': break;
+            case 'initialized':
+                this.setState("initialized");
+                setTimeout(() => {
+                    if (this.status === "initialized" && this.session) {
+                        if (this.session.isRunning()) {
+                            this.setState("running");
+                            this.startReadlineRunning();
+                        } else {
+                            this.setState("paused");
+                            this.startReadlinePaused();
+                        }
+                    }
+                }, 2000);
+                break;
             case "swo-configure":
                 // this.receivedSWOConfigureEvent(event);
                 break;
@@ -491,7 +530,7 @@ export class CliSessionDriver {
                 break;
             case 'uart-configure':
                 this.serialManager.createSerialPorts(this.config).catch((error) => {
-                    logger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
+                    this.stderrLogger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
                 });
                 break;
             default:
@@ -579,7 +618,7 @@ export class CliSessionDriver {
         if (!response.success) {
             throw new Error(`initialize failed: ${response.message}`);
         }
-        logger.info("Debug session initialized. DA capabilities:", response.body);
+        logger.debug("Debug session initialized. DA capabilities:", response.body);
         return response;
     }
 

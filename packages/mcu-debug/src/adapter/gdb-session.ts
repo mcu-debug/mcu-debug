@@ -1216,14 +1216,18 @@ export class GDBDebugSession extends SeqDebugSession {
                 const doBuiltinRtt = !!this.args.pvtRttConfig;
                 const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
                 if (doStart) {
-                    this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
-                    if (doBuiltinRtt) {
-                        try {
-                            await this.rttManager.start(this.rttTcpServer);
-                        } catch (e) {
-                            this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${e instanceof Error ? e.message : String(e)}\n`);
+                    this.liveWatchMonitor.on("connected", async () => {
+                        if (doBuiltinRtt) {
+                            try {
+                                setTimeout(async () => {
+                                    await this.rttManager.start(this.rttTcpServer);
+                                }, 2000); // delay a bit to make sure we
+                            } catch (e) {
+                                this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${e instanceof Error ? e.message : String(e)}\n`);
+                            }
                         }
-                    }
+                    });
+                    this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
                 }
                 this.disassemblyAdapter?.initialize();
                 this.disassemblyAdapterNew?.initialize();

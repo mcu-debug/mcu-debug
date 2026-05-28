@@ -6,6 +6,10 @@ import { SWORTTGraphProcessor } from "./swo/decoders/graph";
 import { GraphConfiguration, GrapherMessage } from "./swo/common";
 import { EventEmitter } from "stream";
 
+export const CLI_SESSION_TYPES = ["not-started", "starting", "initialized", "running", "paused", "terminated"] as const;
+export type CLISessionType = typeof CLI_SESSION_TYPES[number];
+// export type CLISessionType = "not-started" | "starting" | "initialized" | "running" | "paused" | "terminated";
+
 /**
  * Platform-agnostic debug configuration — mirrors vscode.DebugConfiguration.
  * Both ConfigurationArguments and vscode.DebugConfiguration are structurally
@@ -123,7 +127,7 @@ export interface IHostAdapter {
 
     // ── Session management (port allocation) ─────────────────────────────────
     /** TCP port the GDB server console backend is listening on. ≤0 means not ready. */
-    getGdbServerConsolePort(): number;
+    getGdbServerConsolePort(): Promise<number>;
     /** Set of TCP ports already in use by active debug sessions. */
     getUsedPorts(): number[];
     /**

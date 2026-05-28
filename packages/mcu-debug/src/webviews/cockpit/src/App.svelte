@@ -59,6 +59,12 @@
                 if (!activeTabId) activeTabId = msg.tab.tabId;
                 break;
             }
+            case "tab-activate": {
+                if (findTab(msg.tabId)) {
+                    activeTabId = msg.tabId;
+                }
+                break;
+            }
             case "tab-set-state": {
                 const tab = findTab(msg.tabId);
                 if (tab) tab.state = msg.state;

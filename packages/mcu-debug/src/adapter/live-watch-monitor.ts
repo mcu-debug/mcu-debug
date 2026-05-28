@@ -5,7 +5,6 @@ import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { VariableContainer, VariableManager, VariableObject } from "./variables";
 import { GdbEventNames, Stderr, MIError, MINode, VarUpdateRecord, Stdout } from "./gdb-mi/mi-types";
-import { expandValue } from "./gdb-mi/gdb_expansion";
 import { VariableScope } from "./var-scopes";
 import {
     LiveConnectedEvent,
@@ -20,6 +19,7 @@ import {
 } from "./custom-requests";
 import { DebugFlags, formatHexValue } from "./servers/common";
 import { MemoryRequests } from "./memory";
+import EventEmitter from "events";
 
 function shortUuid(length = 16) {
     // Generate a random byte buffer and convert it to a URL-friendly base64 string
@@ -41,16 +41,20 @@ export class LiveClientSession {
         public container: VariableContainer,
     ) { }
 }
-export class LiveWatchMonitor {
+
+// Events emitted by LiveWatchMonitor: "started", "connected", "quit"
+// Dap events emitted: "custom-live-watch-updates", "custom-live-watch-connected", "rttServerStarted"
+export class LiveWatchMonitor extends EventEmitter {
     private sessionsByClientId = new Map<string, LiveClientSession>();
     private sessionsByPrefix = new Map<string, LiveClientSession>();
     public gdbInstance: GdbInstance;
     protected debugFlags: DebugFlags = {};
     protected varManager: VariableManager;
     protected memoryRequests: MemoryRequests;
-    protected liveWatchEnabled: boolean = false;
+    protected liveMonitorEnabled: boolean = false;
     protected handlingRequest: boolean = false;
     constructor(public mainSession: GDBDebugSession) {
+        super();
         this.gdbInstance = new GdbInstance();
         this.varManager = new VariableManager(this.gdbInstance, this.mainSession);
         this.memoryRequests = new MemoryRequests(mainSession, this.gdbInstance);
@@ -69,6 +73,7 @@ export class LiveWatchMonitor {
         this.gdbInstance
             .start(exe, args, process.cwd(), [], 10 * 1000, false)
             .then(() => {
+                this.emit("started");
                 this.handleMsg(Stderr, `Started GDB process ${exe} ${args.join(" ")}\n`);
                 // We disable queue processing to send commands immediately. Because we are well behaved with only a couple of clients
                 // making requests at a time, this improves latency. More importatly for RTT reads,
@@ -92,7 +97,7 @@ export class LiveWatchMonitor {
     }
 
     public enabled(): boolean {
-        return this.liveWatchEnabled;
+        return this.liveMonitorEnabled;
     }
 
     protected handleMsg(type: GdbEventNames, msg: string) {
@@ -116,7 +121,8 @@ export class LiveWatchMonitor {
         this.mainSession.gdbInstance.on(GdbEventNames.Stopped, this.onStopped.bind(this));
         this.mainSession.gdbInstance.on(GdbEventNames.Running, this.onRunning.bind(this));
         this.gdbInstance.on("connected", () => {
-            this.liveWatchEnabled = true;
+            this.emit("connected");
+            this.liveMonitorEnabled = true;
             this.handleMsg(Stderr, `Live GDB connected to target.\n`);
             this.mainSession.sendEvent(this.newLiveConnectedEvent());
         });
@@ -138,13 +144,14 @@ export class LiveWatchMonitor {
     }
 
     protected quitEvent() {
+        this.emit("quit");
         // this.miDebugger = undefined;
-        this.liveWatchEnabled = false;
+        this.liveMonitorEnabled = false;
     }
 
     public async evaluateRequestLive(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): Promise<void> {
         try {
-            if (this.liveWatchEnabled === false) {
+            if (this.liveMonitorEnabled === false) {
                 throw new Error("Live watch is not enabled (GDB not connected to target)");
             }
             this.handlingRequest = true;
@@ -169,7 +176,7 @@ export class LiveWatchMonitor {
 
     public async variablesRequestLive(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): Promise<void> {
         try {
-            if (this.liveWatchEnabled === false) {
+            if (this.liveMonitorEnabled === false) {
                 throw new Error("Live watch is not enabled (GDB not connected to target)");
             }
             this.handlingRequest = true;
@@ -195,7 +202,7 @@ export class LiveWatchMonitor {
     // Calling this will also enable caching for the future of the session
     public async deleteLiveGdbVariables(response: DebugProtocol.Response, args: DeleteLiveGdbVariables): Promise<void> {
         try {
-            if (this.liveWatchEnabled === false) {
+            if (this.liveMonitorEnabled === false) {
                 throw new Error("Live watch is not enabled (GDB not connected to target)");
             }
             this.handlingRequest = true;
@@ -226,7 +233,7 @@ export class LiveWatchMonitor {
 
     public async registerClientRequest(response: RegisterClientResponse, args: RegisterClientRequest): Promise<void> {
         try {
-            if (this.liveWatchEnabled === false) {
+            if (this.liveMonitorEnabled === false) {
                 throw new Error("Live watch is not enabled (GDB not connected to target)");
             }
             this.handlingRequest = true;
@@ -333,7 +340,7 @@ export class LiveWatchMonitor {
 
     public updateTimer: NodeJS.Timeout | undefined;
     public startTimer(): void {
-        if (this.liveWatchEnabled && !this.updateTimer) {
+        if (this.liveMonitorEnabled && this.mainSession.args.liveWatch?.enabled && !this.updateTimer) {
             const setting = Math.max(0.1, this.mainSession.args.liveWatch.samplesPerSecond ?? 4);
             const intervalMs = Math.max(100, 1000 / setting);
             this.updateTimer = setInterval(() => {
@@ -422,7 +429,7 @@ export class LiveWatchMonitor {
 
     public async setVariableRequest(response: SetVariableLiveResponse, args: SetVariableArgumentsLive): Promise<void> {
         let updateDone = false;
-        if (this.liveWatchEnabled === false) {
+        if (this.liveMonitorEnabled === false) {
             this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
             return;
         }
@@ -460,7 +467,7 @@ export class LiveWatchMonitor {
 
     public async setExpressionRequest(response: SetExpressionLiveResponse, args: SetExpressionArgumentsLive): Promise<void> {
         let updateDone = false;
-        if (this.liveWatchEnabled === false) {
+        if (this.liveMonitorEnabled === false) {
             this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
             return;
         }
@@ -496,7 +503,7 @@ export class LiveWatchMonitor {
     }
 
     public async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments): Promise<void> {
-        if (this.liveWatchEnabled === false) {
+        if (this.liveMonitorEnabled === false) {
             this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
             return;
         }
@@ -504,7 +511,7 @@ export class LiveWatchMonitor {
     }
 
     public async writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments): Promise<void> {
-        if (this.liveWatchEnabled === false) {
+        if (this.liveMonitorEnabled === false) {
             this.handleErrResponse(response, "Live watch is not enabled (GDB not connected to target)");
             return;
         }

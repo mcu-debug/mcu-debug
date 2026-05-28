@@ -83,6 +83,8 @@ struct App {
     output_height: u16,
     /// When true, a help overlay is rendered on top of all other content.
     show_help: bool,
+    /// current session status, as reported by `status: ` lines from the Node socket. Forwarded to the AI agent via `ai_request`.
+    status: String,
 }
 
 impl App {
@@ -99,7 +101,17 @@ impl App {
             history_draft: String::new(),
             output_height: 20,
             show_help: false,
+            status: String::new(),
         }
+    }
+
+    fn set_status(&mut self, status: String) {
+        // Status lines are emitted by session-driver.ts to report the current
+        // session state (e.g. "running", "paused", "no-session"). We display
+        // them in the TUI header for quick reference, and also forward to the
+        // AI agent via the `app.ai_request` field so it can adjust its behaviour
+        // accordingly.
+        self.status = status.clone();
     }
 
     /// Handle a raw line received from the mux socket.
@@ -556,10 +568,16 @@ fn render_output(
     let start = total.saturating_sub(visible_height + scroll);
     let visible: Vec<Line> = all_lines.into_iter().skip(start).collect();
 
-    let title = if app.scroll > 0 {
-        format!(" Output  ▲ +{} lines ", app.scroll)
+    let status_str = if app.status.is_empty() {
+        "".to_owned()
     } else {
-        " Output ".to_owned()
+        format!(": Status - {}", app.status)
+    };
+
+    let title = if app.scroll > 0 {
+        format!(" Output{} ▲ +{} lines ", status_str, app.scroll)
+    } else {
+        format!(" Output{} ", status_str).to_owned()
     };
 
     let block = Block::default().borders(Borders::ALL).title(title);
@@ -687,16 +705,22 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 // ── Public entry point ────────────────────────────────────────────────────────
 enum SocketMsg {
     Line(String),
+    Status(String),
     Eof,
 }
 
 /// Start the ratatui TUI. Blocks until the user quits or the socket closes.
-pub fn run_tui(reader: Box<dyn MuxReader>, mut writer: Box<dyn MuxWriter>) -> Result<()> {
+pub fn run_tui(
+    out_reader: Box<dyn MuxReader>,
+    err_reader: Box<dyn MuxReader>,
+    mut writer: Box<dyn MuxWriter>,
+) -> Result<()> {
     let (tx, rx) = mpsc::channel::<SocketMsg>();
+    let tx2 = tx.clone();
 
     // Background thread: stream lines from the mux socket into the channel.
     std::thread::spawn(move || {
-        let mut reader = reader;
+        let mut reader = out_reader;
         loop {
             match reader.read_line() {
                 Ok(Some(line)) => {
@@ -711,6 +735,35 @@ pub fn run_tui(reader: Box<dyn MuxReader>, mut writer: Box<dyn MuxWriter>) -> Re
                 Err(e) => {
                     let _ = tx.send(SocketMsg::Line(format!("[ERROR] {e}\n")));
                     let _ = tx.send(SocketMsg::Eof);
+                    break;
+                }
+            }
+        }
+    });
+
+    std::thread::spawn(move || {
+        let mut reader = err_reader;
+        loop {
+            match reader.read_line() {
+                Ok(Some(line)) => {
+                    // Look for /^status: .*$/ lines emitted by session-driver.ts to transmit session status
+                    if line.starts_with("status: ") {
+                        let status = line
+                            .trim_end()
+                            .strip_prefix("status: ")
+                            .unwrap_or("")
+                            .to_owned();
+                        if tx2.send(SocketMsg::Status(status)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    break;
+                }
+                Err(_) => {
+                    // let _ = tx.send(SocketMsg::Line(format!("[ERROR] {e}\n")));
+                    // let _ = tx.send(SocketMsg::Eof);
                     break;
                 }
             }
@@ -756,6 +809,9 @@ fn event_loop(
         loop {
             match rx.try_recv() {
                 Ok(SocketMsg::Line(line)) => app.push_line(line),
+                Ok(SocketMsg::Status(status)) => {
+                    app.set_status(status);
+                }
                 Ok(SocketMsg::Eof) => {
                     app.should_quit = true;
                     break;

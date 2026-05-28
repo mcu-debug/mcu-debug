@@ -82,6 +82,23 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         // Tabs are replayed when the webview sends { type: 'ready' } — see _handleFromUi.
     }
 
+    show(preserveFocus = true): void {
+        this._view?.show(preserveFocus);
+    }
+
+    activateTab(tabId: string, preserveFocus = true): void {
+        if (!this._tabs.has(tabId)) {
+            return;
+        }
+
+        this._activeTabId = tabId;
+        this.show(preserveFocus);
+
+        if (this._webviewReady) {
+            this.postToWebview({ type: "tab-activate", tabId });
+        }
+    }
+
     // -------------------------------------------------------------------------
     // CockpitPanelSink — called by ManagedTab instances
     // -------------------------------------------------------------------------
@@ -153,6 +170,9 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
             for (const tab of this._tabs.values()) {
                 tab._resetTerminalReady();
                 this._view?.webview.postMessage({ type: "tab-add", tab: tab.descriptor });
+            }
+            if (this._activeTabId && this._tabs.has(this._activeTabId)) {
+                this._view?.webview.postMessage({ type: "tab-activate", tabId: this._activeTabId });
             }
             return;
         }

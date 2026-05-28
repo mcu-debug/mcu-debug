@@ -31,6 +31,20 @@ export class VscodeAdapter implements IHostAdapter {
     }
 
     getSetting<T>(section: string, key: string, defaultValue?: T): T | undefined {
+        if (!section) {
+            const value = vscode.workspace.getConfiguration().get<any>(key, undefined);
+            if (value !== undefined) {
+                return value;
+            }
+            const parts = key.split(".");
+            if (parts.length >= 2) {
+                section = parts[0];
+                key = parts.slice(1).join(".");
+                // Fall through
+            } else {
+                return defaultValue !== undefined ? defaultValue : undefined;
+            }
+        }
         const cfg = vscode.workspace.getConfiguration(section);
         return defaultValue !== undefined ? cfg.get<T>(key, defaultValue) : cfg.get<T>(key);
     }
@@ -39,8 +53,8 @@ export class VscodeAdapter implements IHostAdapter {
         return this.context.extensionPath;
     }
 
-    getGdbServerConsolePort(): number {
-        return GDBServerConsole.BackendPort;
+    getGdbServerConsolePort(): Promise<number> {
+        return Promise.resolve(GDBServerConsole.BackendPort);
     }
 
     getUsedPorts(): number[] {

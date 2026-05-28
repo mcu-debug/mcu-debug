@@ -42,14 +42,27 @@ pub trait MuxWriter: Send {
 /// This is the primary transport for `mcu-debug debug` (TUI mode).
 pub fn from_child_stdio(
     stdout: std::process::ChildStdout,
+    stderr: std::process::ChildStderr,
     stdin: std::process::ChildStdin,
-) -> (Box<dyn MuxReader>, Box<dyn MuxWriter>) {
+) -> (Box<dyn MuxReader>, Box<dyn MuxReader>, Box<dyn MuxWriter>) {
     use std::io::{BufRead, BufReader, Write};
 
-    struct StdioReader(BufReader<std::process::ChildStdout>);
+    struct StdoutReader(BufReader<std::process::ChildStdout>);
+    struct StderrReader(BufReader<std::process::ChildStderr>);
     struct StdioWriter(std::process::ChildStdin);
 
-    impl MuxReader for StdioReader {
+    impl MuxReader for StdoutReader {
+        fn read_line(&mut self) -> Result<Option<String>> {
+            let mut line = String::new();
+            let n = self.0.read_line(&mut line)?;
+            if n == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(line))
+            }
+        }
+    }
+    impl MuxReader for StderrReader {
         fn read_line(&mut self) -> Result<Option<String>> {
             let mut line = String::new();
             let n = self.0.read_line(&mut line)?;
@@ -73,7 +86,8 @@ pub fn from_child_stdio(
     }
 
     (
-        Box::new(StdioReader(BufReader::new(stdout))),
+        Box::new(StdoutReader(BufReader::new(stdout))),
+        Box::new(StderrReader(BufReader::new(stderr))),
         Box::new(StdioWriter(stdin)),
     )
 }

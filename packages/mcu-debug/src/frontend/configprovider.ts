@@ -27,6 +27,6 @@ export class McuDebugConfigurationProvider implements vscode.DebugConfigurationP
         config: vscode.DebugConfiguration,
         _token?: vscode.CancellationToken,
     ): vscode.ProviderResult<vscode.DebugConfiguration> {
-        return this.base.resolveDebugConfigurationWithSubstitutedVariables(folder?.uri.fsPath, config as unknown as ConfigurationArguments & { [key: string]: any }) as vscode.DebugConfiguration | undefined;
+        return this.base.resolveDebugConfigurationWithSubstitutedVariables(folder?.uri.fsPath, config as unknown as ConfigurationArguments & { [key: string]: any }) as Promise<vscode.DebugConfiguration | undefined>;
     }
 }

@@ -266,7 +266,8 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
             serverargs.push("-c", cmd);
         }
 
-        if (this.args.liveWatch?.enabled) {
+        const usingRtt = !!this.args.pvtRttConfig || this.args.rttConfig?.enabled
+        if (this.args.liveWatch?.enabled || usingRtt) {
             serverargs.push("-c", "CDLiveWatchSetup");
         }
 

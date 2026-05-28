@@ -459,12 +459,14 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
             }
             this.ports.set(channel, portNum);
         }
-        helper.emitConfigures(this.config, this);
         const host = this.config?.useBuiltinRTT?.hostName || "127.0.0.1";
-        await this.start(host);
+        await this.start(host, helper);
+        setTimeout(() => {
+            helper.emitConfigures(this.config!, this);
+        }, 100);
     }
 
-    async start(host: string) {
+    async start(host: string, helper: RTTServerHelper) {
         for (const [channel, port] of this.ports) {
             const preDecoder = this.config?.pre_decoder;
             const usePredecoder = (preDecoder && !preDecoder?.channels?.length) || (preDecoder?.channels && preDecoder.channels.indexOf(channel) >= 0);

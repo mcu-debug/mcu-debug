@@ -49,7 +49,7 @@ pub fn spawn_node_cli_tui(cli_js: &PathBuf, extra_args: &[String]) -> Result<Chi
         .args(extra_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn node {}", cli_js.display()))
 }

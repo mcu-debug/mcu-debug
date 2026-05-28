@@ -1,6 +1,6 @@
 import { createTransports, CustomTransport, logger } from '../common/logger';
 import { CliArgs } from "./options";
-import { loadConfiguration } from './config-loader';
+import { CLIConfigLoader } from './config-loader';
 import { CliAdapter } from './cli-adapter';
 import { setHostAdapter } from '../common/host-adapter';
 import { CliSessionDriver } from './session-driver';
@@ -23,14 +23,15 @@ async function main() {
     logger.debug("Args: " + process.argv.join(' '));
     const adapter = new CliAdapter(cliArgs);
     setHostAdapter(adapter);
-    const config = await loadConfiguration(cliArgs, adapter.getSettings());
+    const configLoader = new CLIConfigLoader(logger, false);
+    const config = await configLoader.loadConfiguration(cliArgs);
+    if (!config) {
+        // Errors are already logged in loadConfiguration, so we just exit here.
+        process.exit(1);
+    }
 
     const session = new CliSessionDriver(cliArgs, customTransport, adapter, config);
     session.startSession(cliArgs);
-
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    // const { startDebugSession } = require("./debug-session");
-    // startDebugSession(cliArgs);
 }
 
 process.on("uncaughtException", (err) => {

@@ -4,7 +4,7 @@ import * as net from 'net';
 import { getHostAdapter } from '../common/host-adapter';
 import { EventEmitter } from 'events';
 import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
-import { HostConfig, ChainedConfig, ConfigurationArguments, processVarSubstitution } from "../adapter/servers/common";
+import { HostConfig, ChainedConfig, ConfigurationArguments, processVarSubstitution, getAnyFreePort } from "../adapter/servers/common";
 import { SymbolInformation } from "../adapter/symbols";
 import { IDebugSession, IHostAdapter, IOutputChannel, ISerialPortView, ISWORTTView } from "../common/host-adapter";
 import { logger } from "../common/logger";
@@ -60,6 +60,7 @@ export class CliAdapter implements IHostAdapter {
     private readonly remoteName: string | undefined;
     private settings: { [key: string]: any } = {};
     private serialPortViews: CLISerialPortView[] = [];
+    private consolePort: number = 0;
     constructor(private cliArgs: { json: string; config: string; settings?: string; }) {
         logger.info("CLI adapter initialized with args: " + JSON.stringify(cliArgs));
         this.remoteName = calculateRemoteName();
@@ -74,26 +75,23 @@ export class CliAdapter implements IHostAdapter {
     showInfo(msg: string): void {
         logger.info(msg);
     }
-    getSetting<T>(section: string, key: string, defaultValue: T): T;
-    getSetting<T>(section: string, key: string): T | undefined;
-    getSetting(section: unknown, key: unknown, defaultValue?: unknown): unknown {
-        if (typeof section !== 'string') {
-            logger.warn(`Invalid section type for getSetting: expected string but got ${typeof section}`);
-            return defaultValue;
-        }
-        if (typeof key !== 'string') {
-            logger.warn(`Invalid key type for getSetting: expected string but got ${typeof key}`);
-            return defaultValue;
-        }
-        const value = this.settings?.[`${section}.${key}`];
+    getSetting<T>(section: string, key: string, defaultValue?: T): T | undefined {
+        const fullKey = section ? `${section}.${key}` : key;
+        const value = this.settings?.[fullKey];
         return value !== undefined ? value : defaultValue;
     }
     getExtensionPath(): string {
         // The CLI bundle is emitted to dist/cli.js; __dirname is <extensionRoot>/dist at runtime.
         return path.resolve(__dirname, '..').replace(/\\/g, '/');
     }
-    getGdbServerConsolePort(): number {
-        return 5000;
+    getGdbServerConsolePort(): Promise<number> {
+        if (this.consolePort === 0) {
+            return getAnyFreePort(50500).then(port => {
+                this.consolePort = port;
+                return port;
+            });
+        }
+        return Promise.resolve(this.consolePort);
     }
     getUsedPorts(): number[] {
         return [];

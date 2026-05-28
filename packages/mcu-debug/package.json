@@ -435,6 +435,11 @@
         "icon": "$(plus)"
       },
       {
+        "command": "mcu-debug.cockpit.startDebugSession",
+        "title": "Start Debug Session from AI Cockpit",
+        "icon": "$(debug-start)"
+      },
+      {
         "category": "MCU-Debug",
         "command": "mcu-debug.examineMemory",
         "title": "View Memory"

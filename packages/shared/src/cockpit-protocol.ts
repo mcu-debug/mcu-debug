@@ -46,6 +46,7 @@ export type TabDescriptorPatch = Partial<Pick<TabDescriptor, 'direction' | 'plac
 export type ToUi =
     // --- Tab lifecycle (extension-driven) ---
     | { type: 'tab-add'; tab: TabDescriptor }
+    | { type: 'tab-activate'; tabId: string }
     | { type: 'tab-set-state'; tabId: string; state: TabState }
     | { type: 'tab-set-label'; tabId: string; label: string }
     | { type: 'tab-update'; tabId: string; patch: TabDescriptorPatch }

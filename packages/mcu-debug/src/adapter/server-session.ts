@@ -109,7 +109,9 @@ export class GDBServerSession extends EventEmitter {
 
             const argsStr = quoteShellCmdLine([executable]) + " " + args.map((a) => quoteShellCmdLine([a])).join(" ") + "\n ";
             this.session.handleMsg(GdbEventNames.Stderr, `Starting GDB-Server: ${argsStr}`);
-            this.consoleSocket?.write(greenFormat(argsStr));
+            if (!this.session.args.isCli) {
+                this.consoleSocket?.write(greenFormat(argsStr));
+            }
             const matchRegex = this.serverController.initMatch();
 
             if (this.proxyClient) {
@@ -196,8 +198,10 @@ export class GDBServerSession extends EventEmitter {
             }
 
             if (this.process) {
-                const handleOutput = (data: Buffer) => {
-                    this.writeToConsole(data);
+                const handleOutput = (data: Buffer, doConsole: boolean) => {
+                    if (doConsole) {
+                        this.writeToConsole(data);
+                    }
 
                     if (matchRegex && !resolved) {
                         const str = data.toString();
@@ -209,8 +213,11 @@ export class GDBServerSession extends EventEmitter {
                         }
                     }
                 };
-                this.process.stdout?.on("data", handleOutput);
-                this.process.stderr?.on("data", handleOutput);
+                // If we are in CLI mode, both gdb and servers output goes to the same console. So it would create
+                // duplicaes if we write both to console. So only write server output to console when not in CLI mode.
+                const doConsoleForStdout = this.session.args.isCli ? false : true;
+                this.process.stdout?.on("data", (data) => handleOutput(data, doConsoleForStdout));
+                this.process.stderr?.on("data", (data) => handleOutput(data, true));
 
                 this.process.on("error", (err) => {
                     killTimers();
@@ -331,7 +338,9 @@ export class GDBServerSession extends EventEmitter {
                             (ports: { [key: string]: TcpPortDef }) => {
                                 this.ports = ports;
                                 this.serverController.ports = ports;
-                                this.session.handleMsg(Stderr, `Allocated TCP ports for gdb-server via proxy: ${JSON.stringify(ports)}\n`);
+                                if (this.session.args.debugFlags.anyFlags) {
+                                    this.session.handleMsg(Stderr, `Allocated TCP ports for gdb-server via proxy: ${JSON.stringify(ports)}\n`);
+                                }
                                 resolve();
                             },
                             (e: any) => {
@@ -340,7 +349,9 @@ export class GDBServerSession extends EventEmitter {
                         );
                     } else {
                         this.serverController.ports = this.ports;
-                        this.session.handleMsg(Stderr, `Allocated TCP ports for gdb-server: ${JSON.stringify(this.ports)}\n`);
+                        if (this.session.args.debugFlags.anyFlags) {
+                            this.session.handleMsg(Stderr, `Allocated TCP ports for gdb-server: ${JSON.stringify(this.ports)}\n`);
+                        }
                         resolve();
                     }
                 },
