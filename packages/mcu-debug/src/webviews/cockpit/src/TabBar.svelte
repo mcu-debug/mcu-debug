@@ -130,7 +130,7 @@
         align-items: center;
         gap: 5px;
         padding: 0 10px;
-        height: 35px;
+        height: 30px;
         border: none;
         border-right: 1px solid var(--vscode-panel-border, #3c3c3c);
         background: transparent;
@@ -167,12 +167,12 @@
     }
 
     .kind-icon {
-        font-size: 11px;
+        font-size: 10px;
         opacity: 0.7;
     }
 
     .state-icon {
-        font-size: 10px;
+        font-size: 9px;
         margin-left: 2px;
     }
 
@@ -183,7 +183,7 @@
         margin-left: 4px;
         padding: 0 2px;
         border-radius: 3px;
-        font-size: 14px;
+        font-size: 13px;
         line-height: 1;
         opacity: 0.6;
         cursor: pointer;

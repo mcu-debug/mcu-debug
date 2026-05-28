@@ -214,18 +214,6 @@ export class CLISerialPortView implements ISerialPortView {
     private static existingPrefixes = new Set<string>();
 
     constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
-        const trimLeft = (str: string, char: string) => {
-            while (str.startsWith(char)) {
-                str = str.slice(1);
-            }
-            return str;
-        };
-        const trimRight = (str: string, char: string) => {
-            while (str.endsWith(char)) {
-                str = str.slice(0, -1);
-            }
-            return str;
-        };
         let label = serialConfig.label ? trimBrackets(serialConfig.label) : path.basename(device);
         let counter = 1;
         const baseLabel = label;
@@ -242,6 +230,7 @@ export class CLISerialPortView implements ISerialPortView {
             this.setLogFile(this.serialConfig.log_file);
         }
         this.lineBuffer = new LineBuffer(this.txtPrefix, (source, line) => {
+            line = line.trimEnd();
             const str = `${source} ${line}`;
             if (this.logFileStream) {
                 this.logFileStream.write(str + "\n");

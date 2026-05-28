@@ -19,7 +19,7 @@
     import TabBar from "./TabBar.svelte";
     import GlassCockpit from "./GlassCockpit.svelte";
     import SourceTab from "./SourceTab.svelte";
-    import type { ToUi, TabDescriptor, TabState } from "@mcu-debug/shared";
+    import type { CockpitUiState, ToUi, TabDescriptor, TabState } from "@mcu-debug/shared";
     import { postToExtension } from "./vscode";
 
     // -------------------------------------------------------------------------
@@ -29,7 +29,24 @@
     interface TabEntry extends TabDescriptor {
         aiRequestText: string;
         bufferLines: number;
+        cockpitUi: CockpitUiState;
     }
+
+    const defaultCockpitUi: CockpitUiState = {
+        availableConfigs: [],
+        selectedConfig: null,
+        statusText: "not-started",
+        buttonEnabled: {
+            continue: false,
+            pause: false,
+            "step-over": false,
+            "step-into": false,
+            "step-out": false,
+            restart: false,
+            reset: false,
+            stop: false,
+        },
+    };
 
     let tabs = $state<TabEntry[]>([]);
     let activeTabId = $state<string | null>(null);
@@ -53,7 +70,7 @@
             case "tab-add": {
                 // Prevent duplicates (idempotent)
                 if (findTab(msg.tab.tabId)) break;
-                const entry: TabEntry = { ...msg.tab, aiRequestText: "", bufferLines: 0 };
+                const entry: TabEntry = { ...msg.tab, aiRequestText: "", bufferLines: 0, cockpitUi: { ...defaultCockpitUi } };
                 tabs.push(entry);
                 // Auto-select if nothing is active
                 if (!activeTabId) activeTabId = msg.tab.tabId;
@@ -103,6 +120,11 @@
             case "ai-request-clear": {
                 const tab = findTab(msg.tabId);
                 if (tab) tab.aiRequestText = "";
+                break;
+            }
+            case "cockpit-ui-state": {
+                const tab = findTab(msg.tabId);
+                if (tab) tab.cockpitUi = msg.state;
                 break;
             }
             case "buffer-status": {
@@ -166,6 +188,7 @@
                             active={tab.tabId === activeTabId}
                             placeholderText={tab.placeholderText}
                             inputMode={tab.inputMode ?? "cooked"}
+                            cockpitUi={tab.cockpitUi}
                         />
                     {:else}
                         <SourceTab

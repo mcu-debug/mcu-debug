@@ -56,7 +56,11 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
 
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, "resources", "cockpit")],
+            localResourceRoots: [
+                vscode.Uri.joinPath(this._extensionUri, "resources", "cockpit"),
+                vscode.Uri.joinPath(this._extensionUri, "resources", "codicons"),
+                vscode.Uri.joinPath(this._extensionUri, "images"),
+            ],
         };
 
         webviewView.webview.html = this._buildHtml(webviewView.webview);
@@ -170,6 +174,7 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
             for (const tab of this._tabs.values()) {
                 tab._resetTerminalReady();
                 this._view?.webview.postMessage({ type: "tab-add", tab: tab.descriptor });
+                tab.onWebviewReady();
             }
             if (this._activeTabId && this._tabs.has(this._activeTabId)) {
                 this._view?.webview.postMessage({ type: "tab-activate", tabId: this._activeTabId });
@@ -192,6 +197,12 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
             case "user-input":
                 tab.onUserInput(msg.text);
                 break;
+            case "cockpit-toolbar-action":
+                tab.onCockpitToolbarAction(msg.action);
+                break;
+            case "cockpit-config-select":
+                tab.onCockpitConfigSelect(msg.configName);
+                break;
             case "tab-close":
                 tab.onUserClose();
                 this._tabs.delete(msg.tabId);
@@ -206,6 +217,12 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         const styleUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, "resources", "cockpit", "cockpit.css"),
         );
+        const codiconsUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this._extensionUri, "resources", "codicons", "codicon.css"),
+        );
+        const resetIconUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this._extensionUri, "images", "reset.svg"),
+        );
         const nonce = getNonce();
 
         return /* html */ `<!DOCTYPE html>
@@ -214,13 +231,15 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
     <meta charset="UTF-8">
     <meta http-equiv="Content-Security-Policy"
         content="default-src 'none';
+                 font-src ${webview.cspSource};
                  img-src ${webview.cspSource};
                  script-src 'nonce-${nonce}';
                  style-src ${webview.cspSource} 'unsafe-inline';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="${styleUri}">
+    <link rel="stylesheet" href="${codiconsUri}">
 </head>
-<body>
+<body data-reset-icon="${resetIconUri}">
     <div id="app"></div>
     <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>

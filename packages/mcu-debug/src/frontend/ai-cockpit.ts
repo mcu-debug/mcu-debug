@@ -23,7 +23,7 @@ import { magentaWrite } from "../common/ansi-helpers";
 import { logger } from "../common/logger";
 import { ConfigurationArguments } from "../adapter/servers/common";
 import { ManagedTab } from "./views/ManagedTab";
-import { TabKind, TabState } from "@mcu-debug/shared";
+import { CockpitToolbarAction, TabKind, TabState } from "@mcu-debug/shared";
 import { CLIConfigLoader, ConfigLoaderArgs } from "../cli/config-loader";
 import winston from "winston";
 import { Writable } from "stream";
@@ -32,6 +32,7 @@ import JSONC from "jsonc-simple-parser";
 
 /**
  * TODO: Task list for AI Cockpit:
+ * 
  * Button bar with debug controls:
  * 1. Create a button bar that has the same debug buttons as the VS Code debug toolbar (continue, step over, step into, step out, pause,
  *    stop, restart, reset). The reset button is an extra button for us. These buttons are for humans. AI will not use them but can send
@@ -42,8 +43,10 @@ import JSONC from "jsonc-simple-parser";
  *    Not for AI. For humans. Since we are watching files, we need a way to refresh the list of launch/attach configurations.
  *    See: enumerateLaunchConfigurations() - there is a TODO in there. When refreshing the list of configs, currently selected
  *    config should remain selected if it is still available. If the currently selected config is no longer available, select the first config
- * 3a. Need a way to determine currently selected launch/attach configuration for the session.
+ * 3b. Need a way to determine currently selected launch/attach configuration for the session.
  * 4. All button actions are determined by this tab's logic. The UI just sends the user interactions (button clicks, dropdown selection) to this tab, and this tab decides what to do with them.
+ * 5. We are currently displaying session status in the tab label. We want to move that to the end after the dropdown.
+ * 
  * History of commands and program state:
  * 1. The tab will maintain a history of all commands sent to the debug adapter.
  * 2. Users should be able to use the up/down buttons to select items in history and/or edit them.
@@ -107,7 +110,9 @@ import JSONC from "jsonc-simple-parser";
 
 export class AICockpit extends ManagedTab {
     private static _instance: AICockpit | null = null;
-    kind: TabKind = "ai-cockpit" as TabKind;
+    private static readonly AI_REQUEST_PREFIX = "!!AI-REQUEST:";
+    private static readonly AI_REQUEST_CLEAR = "!!AI-REQUEST-CLEAR";
+    kind: TabKind = "cockpit";
     direction: "rx" | "tx" | "both" | undefined = "both";
     private readonly fsPattern = "**/launch.json";
     private process: ChildProcess.ChildProcessWithoutNullStreams | null = null;
@@ -116,7 +121,10 @@ export class AICockpit extends ManagedTab {
     private addedToCockpitPanel = false;
     private firstErrorOfSession = true;
     private launchConfigCache: { [name: string]: vscode.DebugConfiguration } = {};
+    private selectedConfigName: string | null = null;
     private sessionState: CLISessionType = "not-started";
+    private stdoutPending = "";
+    private stderrPending = "";
 
     private constructor(private context: vscode.ExtensionContext) {
         // Private constructor to enforce singleton pattern
@@ -143,6 +151,7 @@ export class AICockpit extends ManagedTab {
             if (panel) {
                 panel.addTab(this);
                 this.addedToCockpitPanel = true;
+                this.postCockpitUiState();
             } else {
                 logger?.error("Failed to add AI Cockpit tab to the cockpit panel.");
                 return;
@@ -163,6 +172,8 @@ export class AICockpit extends ManagedTab {
         if (!config) {
             return;
         }
+        this.selectedConfigName = config.name ?? this.selectedConfigName;
+        this.postCockpitUiState();
         // (config as any).startedFromAICockpit = true;
         const configLoaderArgs: ConfigLoaderArgs = {
             json: "", // We are passing a parsed config already, so this a no-op
@@ -215,6 +226,8 @@ export class AICockpit extends ManagedTab {
             return;
         }
 
+        this.sessionState = "starting";
+        this.postCockpitUiState();
         this.launchDebugCLI(jsonFile, root);
     }
 
@@ -231,45 +244,52 @@ export class AICockpit extends ManagedTab {
         });
         this.process.on("spawn", () => {
             this.setState({ kind: 'active' });
+            this.postCockpitUiState();
         });
         this.process.stdout.on("data", (data) => {
             const str = data.toString();
-            this.send(str);
+            this.stdoutPending = this.handleProcessChunk(str, this.stdoutPending, false);
         });
         this.process.stderr.on("data", (data) => {
             const str = data.toString();
-            if (/^status: [a-z-]+/i.test(str)) {
-                const status = str.trim().split(":")[1].trim() as CLISessionType;
-                if (CLI_SESSION_TYPES.includes(status)) {
-                    if (status !== this.sessionState) {
-                        this.sessionState = status;
-                        if (status === "terminated") {
-                            this.setInactive();
-                        } else {
-                            this.setLabel(`AI Cockpit - ${status}`);
-                        }
-                    }
-                }
-            } else {
-                this.send(str);
-            }
+            this.stderrPending = this.handleProcessChunk(str, this.stderrPending, true);
         });
         this.process.on("close", (code) => {
+            this.process = null;
+            this.sessionState = "terminated";
             this.setInactive();
             this.send(`Debug session ended with code ${code}\n`);
-            this.process = null;
+            this.postCockpitUiState();
         });
         this.process.on("error", (err) => {
-            this.setInactive();
-            this.setLabel(`AI Cockpit`);
-            this.logger?.error(`Failed to start debug session: ${err}`);
             this.process = null;
+            this.sessionState = "not-started";
+            this.setInactive();
+            this.logger?.error(`Failed to start debug session: ${err}`);
+            this.postCockpitUiState();
         });
     }
 
     setInactive() {
         this.setState({ kind: 'inactive' });
         this.setLabel(`AI Cockpit`);
+        this.postCockpitUiState();
+    }
+
+    override onWebviewReady(): void {
+        this.postCockpitUiState();
+    }
+
+    override onCockpitToolbarAction(action: CockpitToolbarAction): void {
+        this.handleToolbarAction(action);
+    }
+
+    override onCockpitConfigSelect(configName: string): void {
+        if (!this.launchConfigCache[configName]) {
+            return;
+        }
+        this.selectedConfigName = configName;
+        this.postCockpitUiState();
     }
 
     onUserInput(text: string): void {
@@ -332,6 +352,153 @@ export class AICockpit extends ManagedTab {
         return this.logger;
     }
 
+    private parseSessionStatus(str: string): CLISessionType | null {
+        const [, rawStatus = ""] = str.trim().split(":", 2);
+        const status = rawStatus.trim();
+        return CLI_SESSION_TYPES.includes(status as CLISessionType) ? status as CLISessionType : null;
+    }
+
+    private handleProcessChunk(chunk: string, pending: string, isStderr: boolean): string {
+        const combined = pending + chunk;
+        const lines = combined.split(/\r?\n/);
+        const trailing = lines.pop() ?? "";
+
+        for (const line of lines) {
+            this.handleProcessLine(line, isStderr);
+        }
+
+        return trailing;
+    }
+
+    private handleProcessLine(line: string, isStderr: boolean): void {
+        if (line.startsWith(AICockpit.AI_REQUEST_PREFIX)) {
+            const text = line.slice(AICockpit.AI_REQUEST_PREFIX.length).trim();
+            CockpitPanel.instance?.postToWebview({ type: "ai-request", tabId: this.tabId, text });
+            return;
+        }
+        if (line.trim() === AICockpit.AI_REQUEST_CLEAR) {
+            CockpitPanel.instance?.postToWebview({ type: "ai-request-clear", tabId: this.tabId });
+            return;
+        }
+        if (isStderr && /^status: [a-z-]+/i.test(line)) {
+            const status = this.parseSessionStatus(line);
+            if (status && status !== this.sessionState) {
+                this.sessionState = status;
+                if (status === "terminated") {
+                    this.setInactive();
+                }
+                this.postCockpitUiState();
+            }
+            return;
+        }
+
+        this.send(line + "\n");
+    }
+
+    private handleToolbarAction(action: CockpitToolbarAction): void {
+        this.logger?.info(`Cockpit toolbar action requested: ${action}`);
+        switch (action) {
+            case "continue":
+                if (this.sessionState === "not-started" || this.sessionState === "terminated") {
+                    this.startDebugSession(this.selectedConfigName ?? undefined);
+                } else if (this.sessionState === "paused") {
+                    this.onUserInput("continue");
+                }
+                break;
+            case "pause":
+                if (this.sessionState === "running") {
+                    this.onUserInput("pause");
+                }
+                break;
+            case "step-over":
+                if (this.sessionState === "paused") {
+                    this.onUserInput("next");
+                }
+                break;
+            case "step-into":
+                if (this.sessionState === "paused") {
+                    this.onUserInput("step");
+                }
+                break;
+            case "step-out":
+                if (this.sessionState === "paused") {
+                    this.onUserInput("finish");
+                }
+                break;
+            case "restart":
+                if (this.process) {
+                    this.onUserInput("restart");
+                }
+                break;
+            case "reset":
+                if (this.process) {
+                    this.onUserInput("reset");
+                }
+                break;
+            case "stop":
+                if (this.process) {
+                    this.onUserInput("exit");
+                }
+                break;
+        }
+    }
+
+    private getButtonEnabledState(): Record<CockpitToolbarAction, boolean> {
+        const hasProcess = !!this.process;
+        switch (this.sessionState) {
+            case "paused":
+                return {
+                    "continue": hasProcess,
+                    "pause": false,
+                    "step-over": hasProcess,
+                    "step-into": hasProcess,
+                    "step-out": hasProcess,
+                    "restart": hasProcess,
+                    "reset": hasProcess,
+                    "stop": hasProcess,
+                };
+            case "running":
+            case "starting":
+            case "initialized":
+                return {
+                    "continue": false,
+                    "pause": hasProcess,
+                    "step-over": false,
+                    "step-into": false,
+                    "step-out": false,
+                    "restart": hasProcess,
+                    "reset": hasProcess,
+                    "stop": hasProcess,
+                };
+            case "terminated":
+            case "not-started":
+            default:
+                return {
+                    "continue": true,  // This is a run/continue button
+                    "pause": false,
+                    "step-over": false,
+                    "step-into": false,
+                    "step-out": false,
+                    "restart": false,
+                    "reset": false,
+                    "stop": false,
+                };
+        }
+    }
+
+    private postCockpitUiState(): void {
+        CockpitPanel.instance?.postToWebview({
+            type: "cockpit-ui-state",
+            tabId: this.tabId,
+            state: {
+                availableConfigs: Object.keys(this.launchConfigCache),
+                selectedConfig: this.selectedConfigName,
+                statusText: this.sessionState,
+                buttonEnabled: this.getButtonEnabledState(),
+            },
+        });
+    }
+
     private selectLaunchConfiguration(configName?: string): vscode.DebugConfiguration | undefined {
         let config: any = undefined;
         const configs = this.launchConfigCache;
@@ -376,6 +543,7 @@ export class AICockpit extends ManagedTab {
                 return undefined;
             }
         }
+        this.selectedConfigName = config.name ?? this.selectedConfigName;
         return config;
     }
 
@@ -412,15 +580,15 @@ export class AICockpit extends ManagedTab {
         const areConfigsDifferent = oldConfigNames.length !== newConfigNames.length ||
             oldConfigNames.some(name => !launchConfigs[name]) ||
             newConfigNames.some(name => !this.launchConfigCache[name]);
+        if (!this.selectedConfigName || !launchConfigs[this.selectedConfigName]) {
+            this.selectedConfigName = newConfigNames[0] ?? null;
+        }
         if (areConfigsDifferent) {
-            const instance = CockpitPanel.instance;
-            if (instance) {
-                // TODO: We are sending this to the panel. Not sure that is right - it needs to know which tab we are talking about
-                instance.postToWebview({ type: "update-launch-configs", configs: Object.keys(launchConfigs) });
-            }
+            this.postCockpitUiState();
         }
 
         this.launchConfigCache = launchConfigs; // Cache the configs for later use when user selects from quick pick
+        this.postCockpitUiState();
         return launchConfigs;
     }
 

@@ -14,6 +14,14 @@
 
 export type TabKind = 'uart' | 'rtt' | 'swo' | 'console' | 'cockpit';
 export type TabInputMode = 'raw' | 'cooked' | 'none';
+export type CockpitToolbarAction = 'continue' | 'pause' | 'step-over' | 'step-into' | 'step-out' | 'restart' | 'reset' | 'stop';
+
+export interface CockpitUiState {
+    availableConfigs: string[];
+    selectedConfig: string | null;
+    statusText: string;
+    buttonEnabled: Record<CockpitToolbarAction, boolean>;
+}
 
 /**
  * Visual/operational state of a tab. The extension drives all transitions.
@@ -59,6 +67,7 @@ export type ToUi =
     // --- Content: Glass Cockpit tab only ---
     | { type: 'ai-request'; tabId: string; text: string }
     | { type: 'ai-request-clear'; tabId: string }
+    | { type: 'cockpit-ui-state'; tabId: string; state: CockpitUiState }
 
     // --- Display throttle lag indicator on a tab's terminal ---
     | { type: 'buffer-status'; tabId: string; lines: number };
@@ -76,5 +85,9 @@ export type FromUi =
     | { type: 'terminal-ready'; tabId: string }
     /** Engineer typed a line in any tab's input bar. */
     | { type: 'user-input'; tabId: string; text: string }
+    /** Engineer clicked a cockpit toolbar control. */
+    | { type: 'cockpit-toolbar-action'; tabId: string; action: CockpitToolbarAction }
+    /** Engineer selected a launch configuration in the cockpit toolbar. */
+    | { type: 'cockpit-config-select'; tabId: string; configName: string }
     /** User clicked × on a tab. Extension handles actual teardown. */
     | { type: 'tab-close'; tabId: string };

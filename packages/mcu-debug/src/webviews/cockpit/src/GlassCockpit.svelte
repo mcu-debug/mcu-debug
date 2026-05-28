@@ -17,9 +17,10 @@
 <script lang="ts">
     import Terminal from "./Terminal.svelte";
     import AiRequest from "./AiRequest.svelte";
+    import CockpitToolbar from "./CockpitToolbar.svelte";
     import InputBar from "./InputBar.svelte";
     import { postToExtension } from "./vscode";
-    import type { TabInputMode } from "@mcu-debug/shared";
+    import type { CockpitToolbarAction, CockpitUiState, TabInputMode } from "@mcu-debug/shared";
 
     const {
         tabId,
@@ -27,6 +28,7 @@
         bufferLines,
         active,
         placeholderText,
+        cockpitUi,
         inputMode = "cooked",
     }: {
         tabId: string;
@@ -34,15 +36,30 @@
         bufferLines: number;
         active: boolean;
         placeholderText: string;
+        cockpitUi: CockpitUiState;
         inputMode?: TabInputMode;
     } = $props();
 
     function handleUserInput(text: string) {
         postToExtension({ type: "user-input", tabId, text });
     }
+
+    function handleToolbarAction(action: CockpitToolbarAction) {
+        postToExtension({ type: "cockpit-toolbar-action", tabId, action });
+    }
+
+    function handleConfigSelect(configName: string) {
+        postToExtension({ type: "cockpit-config-select", tabId, configName });
+    }
 </script>
 
 <div class="cockpit">
+    <CockpitToolbar
+        state={cockpitUi}
+        onAction={handleToolbarAction}
+        onConfigSelect={handleConfigSelect}
+    />
+
     <div class="terminal-region">
         <Terminal {tabId} {bufferLines} {active} allowKeyboardInput={false} />
     </div>

@@ -31,6 +31,7 @@ export class CLIRTTTerminal {
             this.options.iencoding = TextEncoding.UTF8;
         }
         this.lineBuffer = new LineBuffer(this.prefix, (source, line) => {
+            line = line.trimEnd();
             const ts = options.timestamp ? this.hrTimer.createDateTimestamp() + " " : "";
             logger.info(`${source} ${ts}${line}`, { source: this.kind, isConsole: true });
         });
@@ -106,15 +107,17 @@ export class CLIRTTTerminal {
         }
     }
 
+    /*
     writeToTerminal(data: string) {
         const str = `${this.prefix} ${data}`;
         this.writeLogFile(str + "\n");
         logger.info(str, { source: this.kind, isConsole: true });
     }
-
+    */
     send(data: string) {
-        const str = `${this.prefix} ${data}`
-        this.writeLogFile(str + "\n");
+        let str = `${this.prefix} ${data}`
+        this.writeLogFile(str);
+        str = str.trimEnd();
         logger.info(str, { source: this.kind, isConsole: true });
     }
 

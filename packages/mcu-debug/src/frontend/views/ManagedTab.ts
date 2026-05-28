@@ -15,7 +15,7 @@
 
 const EventEmitter = require('events');
 
-import type { TabDescriptor, TabInputMode, TabKind, TabState, ToUi, FromUi } from "@mcu-debug/shared";
+import type { CockpitToolbarAction, TabDescriptor, TabInputMode, TabKind, TabState, ToUi, FromUi } from "@mcu-debug/shared";
 import { CockpitPanel } from "./CockpitPanel";
 
 const allUUids = new Set<string>();
@@ -247,6 +247,21 @@ export abstract class ManagedTab {
         } else {
             this.echoInput(_text.replace(/\r(?!\n)/g, "\r\n"));
         }
+    }
+
+    /** Called when the cockpit webview is reloaded and ready for tab-specific state. */
+    onWebviewReady(): void {
+        // Default no-op.
+    }
+
+    /** Called when the engineer clicks a cockpit toolbar button. */
+    onCockpitToolbarAction(_action: CockpitToolbarAction): void {
+        // Default no-op.
+    }
+
+    /** Called when the engineer changes the cockpit launch configuration selection. */
+    onCockpitConfigSelect(_configName: string): void {
+        // Default no-op.
     }
 
     /**
