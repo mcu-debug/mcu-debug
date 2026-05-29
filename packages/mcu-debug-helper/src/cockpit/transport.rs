@@ -95,7 +95,7 @@ pub fn from_child_stdio(
 // ── Unix domain socket transport (for `mcu-debug attach`) ────────────────────
 
 /// Connect to the mux socket described by `info`.
-/// Used when attaching to an already-running session via `.mcu-debug.sock.json`.
+/// Used when attaching to an already-running session via `.mcu-debug/socket.json`.
 #[allow(dead_code)]
 pub fn connect(info: &SockInfo) -> Result<(Box<dyn MuxReader>, Box<dyn MuxWriter>)> {
     #[cfg(unix)]

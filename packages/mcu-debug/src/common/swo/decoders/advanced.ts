@@ -89,7 +89,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
     public displayOutput(output: string, timestamp: boolean = false) {
         if (this.output) {
             if (timestamp) {
-                output = this.timer.createDateTimestamp() + " " + output;
+                output = HrTimer.createDateTimestamp() + " " + output;
             }
             this.output.append(output);
         } else {

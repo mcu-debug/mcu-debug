@@ -24,6 +24,7 @@ import { getHostAdapter, ISerialPortView } from "../common/host-adapter";
 import { getUUidPrefixed, ManagedTab } from "./views/ManagedTab";
 import { CockpitPanel } from "./views/CockpitPanel";
 import type { TabKind } from "@mcu-debug/shared";
+import { AnsiHelpers } from "../common/ansi-helpers";
 
 export class SerialPortView extends ManagedTab implements ISerialPortView {
     public readonly emitter = new EventEmitter();
@@ -88,18 +89,18 @@ export class SerialPortView extends ManagedTab implements ISerialPortView {
     }
 
     public notifyConnected(reason: string) {
-        this.send(`\r\n\x1b[32m[${this.device} connected] ${reason}\x1b[0m\r\n`);
+        this.send(AnsiHelpers.greenFormat(`[${this.device} connected] ${reason}\r\n`));
         this.setState({ kind: "active" });
     }
 
     public notifyDisconnected(reason: string) {
         this.destroySocket();
-        this.send(`\r\n\x1b[33m[${this.device} disconnected: ${reason} — retrying...]\x1b[0m\r\n`);
+        this.send(AnsiHelpers.yellowFormat(`[${this.device} disconnected: ${reason} — retrying...]\r\n`));
         this.setState({ kind: "inactive" });
     }
 
     public notifyReconnected() {
-        this.send(`\r\n\x1b[32m[${this.device} reconnected]\x1b[0m\r\n`);
+        this.send(AnsiHelpers.greenFormat(`[${this.device} reconnected]\r\n`));
         this.setState({ kind: "active" });
     }
 

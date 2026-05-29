@@ -324,6 +324,10 @@ export interface SerialConfig {
     ports: SerialParams[];
 }
 
+export interface CliLaunchJasonOptions {
+    logFile?: string;
+}
+
 export type TcpPortDefMap = { [name: string]: TcpPortDef };
 export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArguments {
     name: string;
@@ -432,7 +436,8 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     linux: any;
     windows: any;
 
-    isCli?: boolean; // Whether this configuration is being used in the CLI (as opposed to the DA); set by the CLI session driver   
+    pvtIsCli?: boolean; // Whether this configuration is being used in the CLI (as opposed to the DA); set by the CLI session driver
+    cliOptions?: CliLaunchJasonOptions; // CLI-specific options; set by the CLI session driver   
 }
 
 export interface DisassemblyInstruction {
@@ -881,11 +886,16 @@ export class HrTimer {
         // ':' + pad(Math.abs(tzo) % 60);
     }
 
-    public createDateTimestamp(): string {
-        // const hrUs = this.createPaddedMs(6);
+    public static createDateTimestamp(): string {
         const date = new Date();
-        // const ret = `[${HrTimer.toLocalISOString(date)} +${hrUs}ms]`;
         const ret = `[${HrTimer.toLocalISOString(date)}]`;
+        return ret;
+    }
+
+    public createDateTimestampWithDelta(): string {
+        const hrUs = this.createPaddedMs(6);
+        const date = new Date();
+        const ret = `[${HrTimer.toLocalISOString(date)} +${hrUs}ms]`;
         return ret;
     }
 

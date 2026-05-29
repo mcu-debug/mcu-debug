@@ -1,8 +1,8 @@
 import fs from 'fs';
 import { BinaryFormatter } from "../common/binary-encoding";
 import { HrTimer, RTTConsoleDecoderOpts, TextEncoding } from "../adapter/servers/common";
-import { magentaWrite } from "../common/ansi-helpers";
-import { logger } from "../common/logger";
+import { AnsiHelpers } from "../common/ansi-helpers";
+import { logger } from "../common/cli-logger";
 import { SocketIOSource } from "../common/swo/sources/socket";
 import { LineBuffer, trimBrackets } from "../common/utils";
 
@@ -26,13 +26,13 @@ export class CLIRTTTerminal {
         this.prefix = `[${this.prefix}]`;
         if (this.options.iencoding !== TextEncoding.UTF8 && this.options.iencoding !== TextEncoding.ASCII && this.options.type !== "binary") {
             if (this.options.iencoding) {
-                logger.warn(`RTT Console ${this.options.label}: Ignoring text encoding ${this.options.iencoding} for CLI mode. Setting to UTF-8.`, { source: 'DA', isConsole: true });
+                logger.warn(`RTT Console ${this.options.label}: Ignoring text encoding ${this.options.iencoding} for CLI mode. Setting to UTF-8.`, { source: 'DA', isConsole: true, color: 'yellow' });
             }
             this.options.iencoding = TextEncoding.UTF8;
         }
         this.lineBuffer = new LineBuffer(this.prefix, (source, line) => {
             line = line.trimEnd();
-            const ts = options.timestamp ? this.hrTimer.createDateTimestamp() + " " : "";
+            const ts = options.timestamp ? HrTimer.createDateTimestamp() + " " : "";
             logger.info(`${source} ${ts}${line}`, { source: this.kind, isConsole: true });
         });
         this.binaryFormatter = new BinaryFormatter(this!, this.options.encoding, this.options.scale);
@@ -49,7 +49,7 @@ export class CLIRTTTerminal {
 
     private connectToSource(src: SocketIOSource) {
         const doConnected = () => {
-            logger.info(`${this.prefix} connected to RTT source.`, { source: 'DA', isConsole: true });
+            logger.info(`${this.prefix} type=${this.options.type} connected to RTT source.`, { source: 'DA', isConsole: true, color: 'green' });
             this.openLogFile();
         }
         this.hrTimer = new HrTimer();
@@ -58,7 +58,7 @@ export class CLIRTTTerminal {
             return;
         }
         src.once("disconnected", () => {
-            logger.info(`${this.prefix} disconnected from RTT source.`, { source: 'DA', isConsole: true });
+            logger.info(`${this.prefix} disconnected from RTT source.`, { source: 'DA', isConsole: true, color: 'yellow.bold' });
         });
         src.on("error", (e) => {
             const code: string = e.code;
@@ -66,9 +66,9 @@ export class CLIRTTTerminal {
                 // Server closed the connection. We are done with this session
             } else if (code === "ECONNREFUSED") {
                 // We expect 'ECONNREFUSED' if the server has not yet started after all the retries
-                magentaWrite(`${e} for ${this.prefix}, will retry...`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+                logger.error(`${e} for ${this.prefix}, will retry...`, { source: 'DA', isConsole: true, color: 'red' });
             } else {
-                magentaWrite(`${e} for ${this.prefix}`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+                logger.error(`${e} for ${this.prefix}`, { source: 'DA', isConsole: true, color: 'red' });
             }
         });
         src.on("data", (data) => {
@@ -77,13 +77,12 @@ export class CLIRTTTerminal {
 
         if (src.connError) {
             this.source = src;
-            magentaWrite(`${src.connError.message} for ${this.prefix}`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+            logger.error(`${src.connError.message} for ${this.prefix}`, { source: 'DA', isConsole: true, color: 'red' });
         } else if (src.connected) {
             this.source = src;
             this.openLogFile();
         } else {
             src.once("connected", () => {
-                magentaWrite(`RTT source for ${this.prefix} connected.`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
                 doConnected();
             });
         }
@@ -97,7 +96,7 @@ export class CLIRTTTerminal {
                 this.lineBuffer.push(data.toString(this.options.iencoding));
             }
         } catch (e) {
-            magentaWrite(`Error writing data for ${this.prefix}: ${e}\n`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+            logger.error(`Error writing data for ${this.prefix}: ${e}`, { source: 'DA', isConsole: true, color: 'red' });
         }
     }
 
@@ -107,13 +106,6 @@ export class CLIRTTTerminal {
         }
     }
 
-    /*
-    writeToTerminal(data: string) {
-        const str = `${this.prefix} ${data}`;
-        this.writeLogFile(str + "\n");
-        logger.info(str, { source: this.kind, isConsole: true });
-    }
-    */
     send(data: string) {
         let str = `${this.prefix} ${data}`
         this.writeLogFile(str);
@@ -128,7 +120,7 @@ export class CLIRTTTerminal {
             } catch (e: any) {
                 const msg = `Could not open file ${this.options.logfile} for writing. ${e.toString()}`;
                 console.error(msg);
-                magentaWrite(msg, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+                logger.error(msg, { source: 'DA', isConsole: true, color: 'red' });
             }
         } else if (this.logFd >= 0 && !this.options.logfile) {
             // It is already open but new connection does not want logging anymore
@@ -141,7 +133,7 @@ export class CLIRTTTerminal {
             try {
                 fs.closeSync(this.logFd);
             } catch (e) {
-                magentaWrite(`Error: closing file ${this.options.logfile} for ${this.prefix}: ${e}\n`, (str) => logger.error(str, { source: 'DA', isConsole: true }));
+                logger.error(`Error: closing file ${this.options.logfile} for ${this.prefix}: ${e}`, { source: 'DA', isConsole: true, color: 'red' });
             }
             this.logFd = -1;
         }

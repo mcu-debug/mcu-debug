@@ -110,23 +110,6 @@ export class GdbInstance extends EventEmitter {
                     ServerConsoleLog("Failed to get GDB version using $_gdb_major/minor variables");
                     reject(new Error("Failed to get GDB version using $_gdb_major/minor variables. GDB version 9.1 or higher is required."));
                 }
-                /*
-                this.sendCommand("-gdb-version", timeout)
-                    .then((output) => {
-                        this.log(GdbEventNames.Stdout, output.toString());
-                        const lines = output.outOfBandRecords.filter((rec) => rec.recordType === "stream" && rec.outputType === "console");
-                        this.parseVersionInfo(lines.map((rec) => rec.result));
-                        try {
-                            doInitCmds();
-                            resolve();
-                        } catch (e) {
-                            reject(e);
-                        }
-                    })
-                    .catch(() => {
-                        reject(new Error("GDB did not respond to -gdb-version command"));
-                    });
-                    */
             } else {
                 try {
                     await doInitCmds();

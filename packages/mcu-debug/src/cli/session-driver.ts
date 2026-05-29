@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as readline from "node:readline";
 import { ConfigurationArguments, getNonce, RTTCommonDecoderOpts, RTTConsoleDecoderOpts } from "../adapter/servers/common";
 import { CLISessionType, IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
-import { CustomTransport, logger } from "../common/logger";
+import { CustomTransport, logger } from "../common/cli-logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import winston from "winston";
@@ -14,6 +14,7 @@ import { CDebugSession } from "../common/mcu-debug-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
+import { AnsiHelpers } from "../common/ansi-helpers";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -71,15 +72,15 @@ export class CliSessionDriver {
 
     constructor(private cliArgs: any, private customTransport: CustomTransport, private adapter: IHostAdapter, private config: ConfigurationArguments) {
         // Initialize session driver
-        this.gdbLogger = logger.child({ source: 'GDB', color: 'cyan', isConsole: true });
+        this.gdbLogger = logger.child({ source: 'GDB', isConsole: true });
         this.stdoutLogger = logger.child({ source: 'DA', isConsole: true });
         this.stderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
         this.mcuStderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
-        this.mcuStdoutLogger = logger.child({ source: 'DA', color: 'orange', isConsole: true });
-        this.gdbMiLogger = logger.child({ source: 'GDB-MI', isConsole: true });
-        this.gdbServerLogger = logger.child({ source: 'GDB-SERVER', isConsole: true });
+        this.mcuStdoutLogger = logger.child({ source: 'DA', color: 'yellow', isConsole: true });
+        this.gdbMiLogger = logger.child({ source: 'GDB-MI', isConsole: true, color: 'blue.dim' });
+        this.gdbServerLogger = logger.child({ source: 'GDB-SERVER', isConsole: true, color: 'cyan.dim' });
         this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
-        config.isCli = true; // inform the DA that we are running in CLI mode
+        config.pvtIsCli = true; // inform the DA that we are running in CLI mode
 
         const dbgSession: IDebugSession = {
             id: getNonce(),
@@ -551,16 +552,14 @@ export class CliSessionDriver {
 
         if (category === 'stdout' && /^\d+[-~&@^]/.test(output)) {
             // GDB MI command sent by DA (gdbTraces mode) — log structured, never raw to terminal
-            this.gdbMiLogger.debug('mi:tx', { mi: text });
-            this.terminalWrite(`\x1b[2m[MI>] ${text}\x1b[0m\n`); // dim
+            this.gdbMiLogger.debug(`mi:tx [MI>] ${text}`);
             return;
         }
 
         if (category === 'console' && output.startsWith('-> ')) {
             // GDB MI response received — strip the '-> ' the DA added
             const mi = text.slice(3);
-            this.gdbMiLogger.debug('mi:rx', { mi });
-            this.terminalWrite(`\x1b[2m[MI<] ${mi}\x1b[0m\n`); // dim
+            this.gdbMiLogger.debug(`mi:rx [MI<] ${mi}`);
             return;
         }
 
@@ -623,7 +622,7 @@ export class CliSessionDriver {
     }
 
     private createSocketJsonPath() {
-        return `${process.cwd()}/.mcu-debug.sock.json`;
+        return `${process.cwd()}/.mcu-debug/socket.json`;
     }
 
     private checkSocketFree() {
@@ -670,7 +669,7 @@ export class CliSessionDriver {
                 }
                 // Also pipe mux output back to this connection
                 this.serverClients.add(conn);
-                this.customTransport.addStream(conn);
+                this.customTransport.addStream(conn, socketPath);
                 conn.on('close', () => this.serverClients.delete(conn));
             });
             this.server.listen(socketPath, () => {
@@ -706,7 +705,7 @@ export class CliSessionDriver {
     }
 
     private writeSockFile(socketPath: string) {
-        // Write the socket path to .mcu-debug.sock.json for the Rust side to pick up
+        // Write the socket path to .mcu-debug/socket.json for the Rust side to pick up
         const sockInfo = {
             pid: process.pid,
             socket: socketPath,
@@ -715,8 +714,9 @@ export class CliSessionDriver {
             startedAt: new Date().toISOString(),
             logFile: this.cliArgs.logFile
         };
-        const socketPathJson = `${process.cwd()}/.mcu-debug.sock.json`;
+        const socketPathJson = `${process.cwd()}/.mcu-debug/socket.json`;
         try {
+            fs.mkdirSync(`${process.cwd()}/.mcu-debug`, { recursive: true });
             fs.writeFileSync(socketPathJson, JSON.stringify(sockInfo, null, 2));
         } catch (err) {
             logger.error(`Failed to write socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });

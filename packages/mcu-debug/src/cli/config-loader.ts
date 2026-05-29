@@ -8,19 +8,22 @@ import { ConfigurationArguments, substituteEnvVarsInConfig } from "../adapter/se
 import { McuDebugConfigurationProviderBase } from "../common/config-provider";
 import { processVarSubstitution } from "../adapter/servers/common";
 import { getHostAdapter } from "../common/host-adapter";
+import { CliArgs } from "./options";
+import { CustomTransport } from "../common/cli-logger";
 
 export interface ConfigLoaderArgs {
     json?: string;           // JSON file if any
     config: string;         // Name of the launch configuration
     configParsed?: any;
     builtins?: { [key: string]: string };
+    logFile?: string;
 }
 
 // This file is responsible for loading the debug configuration from a JSON file specified in the CLI arguments,
 // processing variable substitutions, and providing the final configuration object to be used for starting the
 // debug session.
 export class CLIConfigLoader {
-    constructor(private logger: winston.Logger, private forVscode: boolean) { }
+    constructor(private cliArgs: ConfigLoaderArgs, private logger: winston.Logger, private forVscode: boolean) { }
 
     public async loadConfiguration(args: ConfigLoaderArgs): Promise<ConfigurationArguments | undefined> {
         try {
@@ -45,7 +48,15 @@ export class CLIConfigLoader {
                     return undefined;
                 }
             }
-            this.logger.info(`Loaded configuration "${selectedConfig.name}" from ${args.json}`);
+            const customTransport = CustomTransport.getInstance();
+            if (!this.forVscode && selectedConfig.cliOptions?.logFile && customTransport?.usingDefaultLogFile) {
+                CustomTransport.getInstance()?.replaceStream(customTransport.usingDefaultLogFile, selectedConfig.cliOptions.logFile);
+                try { fs.unlinkSync(customTransport.usingDefaultLogFile!); } catch (err) { /* ignore */ }
+                this.cliArgs.logFile = selectedConfig.cliOptions.logFile;
+            }
+
+            const configMsg = `Loaded configuration "${selectedConfig.name}"` + (args.json ? ` from ${args.json}` : "") + (this.forVscode ? " for VSCode" : " for CLI");
+            this.logger.info(configMsg, { source: 'DA' });
             selectedConfig.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
             if (selectedConfig.liveWatch?.enabled) {
                 getHostAdapter().showWarning("Live watch is not supported in CLI mode. Disabling live watch.");
@@ -60,27 +71,25 @@ export class CLIConfigLoader {
                 delete (selectedConfig as any).chainedConfigurations;
             }
 
-            while (true) {
-                const processedConfig = this.processVarSubstitutions(args, selectedConfig);
-                const provider = new CliConfigProvider(this.logger);
-                const folder = selectedConfig.cwd || process.cwd();
-                try {
-                    let resolvedConfig = await provider.resolveDebugConfiguration(folder, processedConfig);
-                    if (resolvedConfig) {
-                        resolvedConfig = await provider.resolveDebugConfigurationWithSubstitutedVariables(folder, resolvedConfig);
-                    }
-                    if (!resolvedConfig) {
-                        this.logger.error("Failed to resolve debug configuration.");
-                        return undefined;
-                    }
-                    // During resolution, it is possible some new variables were introduced that need substitution. They
-                    // can be introduced for server specific paths done in resolveDebugConfigurationWithSubstitutedVariables()
-                    resolvedConfig = this.processVarSubstitutions(args, resolvedConfig);
-                    return resolvedConfig as ConfigurationArguments;
-                } catch (error) {
-                    this.logger.error("Error in resolving debug configuration: " + (error instanceof Error ? error.message : String(error)));
+            const processedConfig = this.processVarSubstitutions(args, selectedConfig);
+            const provider = new CliConfigProvider(this.logger);
+            const folder = selectedConfig.cwd || process.cwd();
+            try {
+                let resolvedConfig = await provider.resolveDebugConfiguration(folder, processedConfig);
+                if (resolvedConfig) {
+                    resolvedConfig = await provider.resolveDebugConfigurationWithSubstitutedVariables(folder, resolvedConfig);
+                }
+                if (!resolvedConfig) {
+                    this.logger.error("Failed to resolve debug configuration.");
                     return undefined;
                 }
+                // During resolution, it is possible some new variables were introduced that need substitution. They
+                // can be introduced for server specific paths done in resolveDebugConfigurationWithSubstitutedVariables()
+                resolvedConfig = this.processVarSubstitutions(args, resolvedConfig);
+                return resolvedConfig as ConfigurationArguments;
+            } catch (error) {
+                this.logger.error("Error in resolving debug configuration: " + (error instanceof Error ? error.message : String(error)));
+                return undefined;
             }
         } catch (error) {
             this.logger.error("Failed to load configuration from launch.json: " + (error instanceof Error ? error.message : String(error)));

@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { createTerminalUniqueName, getUUidPrefixed, ManagedTabConsole } from "./views/ManagedTab";
-import { magentaWrite } from "../common/ansi-helpers";
+import { AnsiHelpers } from "../common/ansi-helpers";
 import { getAnyFreePort } from "../adapter/servers/common";
 
 //      vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: 'myName' });
@@ -42,7 +42,7 @@ export class GDBServerConsoleInstance {
         socket.setKeepAlive(true);
         socket.on("close", () => {
             this.debugMsg("onBackendConnect: gdb-server session closed");
-            magentaWrite("GDB server session ended. This terminal will be reused, waiting for next session to start...", (str: string) => this.terminal?.send(str));
+            this.terminal?.send(AnsiHelpers.magentaFormat("GDB server session ended. This terminal will be reused, waiting for next session to start..."));
             this.toBackend = null;
             this.freeTerminal();
         });
@@ -98,10 +98,10 @@ export class GDBServerConsoleInstance {
             this.sendToBackend(data);
         });
         if (this.toBackend === null) {
-            magentaWrite("Waiting for gdb server to start...\n", (str: string) => this.terminal?.send(str));
+            this.terminal?.send(AnsiHelpers.blueFormat("Waiting for gdb server to start...\n"));
             this.terminal.disableInput();
         } else {
-            magentaWrite("Resuming connection to gdb server...\n", (str: string) => this.terminal?.send(str));
+            this.terminal?.send(AnsiHelpers.greenFormat("Resuming connection to gdb server...\n"));
             this.terminal.enableInput();
         }
     }
@@ -189,7 +189,7 @@ export class GDBServerConsole {
         // console.log(msg);
         if (console) {
             msg += msg.endsWith("\n") ? "" : "\n";
-            magentaWrite(msg, (str: string) => console.send(str));
+            console.send(AnsiHelpers.magentaFormat(msg));
         }
         GDBServerConsole.logDataStatic(msg);
     }

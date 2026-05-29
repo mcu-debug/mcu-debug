@@ -74,7 +74,7 @@ export class LiveWatchMonitor extends EventEmitter {
             .start(exe, args, process.cwd(), [], 10 * 1000, false)
             .then(() => {
                 this.emit("started");
-                this.handleMsg(Stderr, `Started GDB process ${exe} ${args.join(" ")}\n`);
+                this.handleMsg(Stdout, `Started GDB process ${exe} ${args.join(" ")}\n`);
                 // We disable queue processing to send commands immediately. Because we are well behaved with only a couple of clients
                 // making requests at a time, this improves latency. More importatly for RTT reads,
                 this.gdbInstance.disableQueueProcessing();

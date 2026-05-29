@@ -298,7 +298,7 @@ Promise resolver in `sendResponse()`.
 
 The live session. Rust TUI connects here; AI attachers connect here later.
 
-- [x] Create `~/.mcu-debug.sock.json` (and `/tmp/mcu-debug-<pid>.sock` for explicit addressing)
+- [x] Create `~/.mcu-debug/socket.json` (and `/tmp/mcu-debug-<pid>.sock` for explicit addressing)
 - [ ] On each new attacher connection:
   - [ ] Send ring buffer snapshot (catch-up — same principle as serial ring buffer)
   - [ ] Then stream live mux frames
@@ -317,7 +317,7 @@ The live session. Rust TUI connects here; AI attachers connect here later.
 
 Late-attacher path for AI (Mode 1 via subprocess) and hybrid mode (Mode 3).
 
-- [ ] Auto-discover session: `.mcu-debug.sock.json` (well-known path)
+- [ ] Auto-discover session: `.mcu-debug/socket.json` (well-known path)
 - [ ] Explicit: `--socket /tmp/mcu-debug-<pid>.sock`
 - [ ] List: `mcu-debug list` — enumerate active sessions
 - [ ] Connect, receive snapshot, stream live — mux to stdout, commands from stdin

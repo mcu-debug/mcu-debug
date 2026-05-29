@@ -1,30 +1,50 @@
-import { ManagedTab } from "../frontend/views/ManagedTab";
-
-/* eslint-disable @stylistic/no-multi-spaces */
-export const ESC = "\x1b"; // ASCII escape character
-export const CSI = ESC + "["; // control sequence introducer
-export const BOLD = CSI + "1m";
-export const RESET = CSI + "0m";
-export const BR_MAGENTA_FG = CSI + "95m"; // Bright magenta foreground
-export const BR_GREEN_FG = CSI + "92m"; // Bright green foreground
-/* eslint-enable */
-
-export function greenFormat(msg: string) {
-    return BR_GREEN_FG + msg + RESET;
-}
-
-export function magentaFormat(msg: string) {
-    return BR_MAGENTA_FG + msg + RESET;
-}
-
-export function magentaWrite(msg: string, cb: (str: string) => void) {
-    if (cb) {
-        cb(magentaFormat(msg));
+import colors from 'ansi-colors';
+export namespace AnsiHelpers {
+    const invalidKeys = ['enabled', 'visible', 'strip', 'supportsColor', 'hasColor', 'has256', 'has16m', 'unstyle', 'ok'];
+    const colorNames = Object.keys(colors).filter(key => typeof (colors as any)[key] === 'function' && !invalidKeys.includes(key));
+    export type ColorName = typeof colorNames[number];
+    const colorMap: Record<string, (text: string) => string> = {};
+    for (const color of colorNames) {
+        colorMap[color] = (colors as any)[color];
     }
-}
 
-export function greenWrite(msg: string, cb: (str: string) => void) {
-    if (cb) {
-        cb(greenFormat(msg));
+    export function colorize(text: string, colors: string): string {
+        for (const color of colors.split('.').map(c => c.trim())) {
+            const colorFunc = colorMap[color];
+            if (colorFunc) {
+                try { text = colorFunc(text); } catch (err) {/* ignore errors from color functions */ }
+            }
+        }
+        return text;
+    }
+
+    export function greenFormat(msg: string) {
+        return colors.green(msg);
+    }
+
+    export function magentaFormat(msg: string) {
+        return colors.magenta(msg);
+    }
+    export function redFormat(msg: string) {
+        return colors.red(msg);
+    }
+    export function yellowFormat(msg: string) {
+        return colors.yellow(msg);
+    }
+    export function blueFormat(msg: string) {
+        return colors.blue(msg);
+    }
+    export function cyanFormat(msg: string) {
+        return colors.cyan(msg);
+    }
+
+    export function stripAnsiCodes(text: string): string {
+        return colors.unstyle(text);
+    }
+    export function hasAnsiCodes(text: string): boolean {
+        return colors.ansiRegex.test(text);
+    }
+    export function reset(): string {
+        return colors.reset('');
     }
 }

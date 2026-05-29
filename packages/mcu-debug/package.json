@@ -1236,6 +1236,20 @@
                 "description": "This is for 'XPERIPHERALS' window provided by 'mcu-debug.peripheral-viewer' and 'Embedded Tools' Extension from Microsoft.",
                 "type": "string"
               },
+              "cliOptions": {
+                "type": "object",
+                "description": "Options for the CLI output window (the 'Cockpit' or 'TUI' or 'Console'). These are not related to the GDB Server or GDB command line options, but rather options for how the CLI debugger displays the output from the debug session.",
+                "properties": {
+                  "logFile": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": ".mcu-debug/cli.log",
+                    "description": "Set the log file for the CLI output window (the 'Cockpit/TUI/Console', Setting to null disables logging). Command-line option overrides this setting if specified. Cannot use ${xxx} substitutions in the path because the CLI will use this path before it can perform substitutions, so the path is taken as-is. Absolute or relative to $cwd pf the CLI program."
+                  }
+                }
+              },
               "hostConfig": {
                 "type": "object",
                 "description": "Enables remote probe support. When present, the gdb-server runs on a host machine that has the USB debug probe attached. Omit this entirely for local debugging (the common case). The \"auto\" type detects the connection from the VS Code remote environment (WSL, Dev Container, VS Code Remote SSH, or plain local). The \"ssh\" type connects explicitly to a separate probe host machine via SSH, useful for lab setups where the probe is on a dedicated server.",
@@ -2799,6 +2813,20 @@
                 "description": "This is for 'XPERIPHERALS' window provided by 'mcu-debug.peripheral-viewer' and 'Embedded Tools' Extension from Microsoft.",
                 "type": "string"
               },
+              "cliOptions": {
+                "type": "object",
+                "description": "Options for the CLI output window (the 'Cockpit' or 'TUI' or 'Console'). These are not related to the GDB Server or GDB command line options, but rather options for how the CLI debugger displays the output from the debug session.",
+                "properties": {
+                  "logFile": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": ".mcu-debug/cli.log",
+                    "description": "Set the log file for the CLI output window (the 'Cockpit/TUI/Console', Setting to null disables logging). Command-line option overrides this setting if specified. Cannot use ${xxx} substitutions in the path because the CLI will use this path before it can perform substitutions, so the path is taken as-is. Absolute or relative to $cwd pf the CLI program."
+                  }
+                }
+              },
               "hostConfig": {
                 "type": "object",
                 "description": "Enables remote probe support. When present, the gdb-server runs on a host machine that has the USB debug probe attached. Omit this entirely for local debugging (the common case). The \"auto\" type detects the connection from the VS Code remote environment (WSL, Dev Container, VS Code Remote SSH, or plain local). The \"ssh\" type connects explicitly to a separate probe host machine via SSH, useful for lab setups where the probe is on a dedicated server.",
@@ -3933,6 +3961,7 @@
   },
   "dependencies": {
     "@vscode/codicons": "^0.0.44",
+    "ansi-colors": "^4.1.3",
     "commander": "^14.0.3",
     "glob": "^13.0.6",
     "jsonc-simple-parser": "^3.0.0",

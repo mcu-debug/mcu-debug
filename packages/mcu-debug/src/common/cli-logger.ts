@@ -1,29 +1,45 @@
-import fs from 'fs';
+import fs, { mkdirSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import winston from 'winston';
 import Transport from 'winston-transport';
 import { MESSAGE } from 'triple-beam';
 import { CliArgs } from '../cli/options';
+import { HrTimer } from '../adapter/servers/common';
+import { AnsiHelpers } from './ansi-helpers';
 
 /**
- * Central application logger. Platform-agnostic — no transports are added here.
- * Each entry point (CLI, VS Code extension) adds its own transports on startup.
+ * Central application logger for CLI. Platform-agnostic — no transports are added here.
+ * Transports are added dynamically by main and other modules, and can be accessed via
+ * CustomTransport.getInstance() if needed.
  *
  * Usage:
- *   import { logger } from '../common/logger';
+ *   import { logger } from '../common/cli-logger';
  *   logger.info('something happened', { key: 'value' });
  *   logger.error('failed', { error: e });
  */
 export const logger = winston.createLogger({
     level: 'info',
 });
+
+/**
+ * This is a custome transport that winston can write to, which then forwards the log messages to multiple
+ * streams. It can manage multiple streams and streams can be added, replaced, or removed at runtime w/o modifyimg
+ * winston transports.
+ */
 export class CustomTransport extends Transport {
+    private static _instance: CustomTransport | null = null;
     private callback: (info: winston.Logform.TransformableInfo) => void;
-    private streams: NodeJS.WritableStream[] = [];
+    private pathMap: { [path: string]: NodeJS.WritableStream } = {};
+    public usingDefaultLogFile: string | undefined;
     constructor(opts: Transport.TransportStreamOptions & { callback: (info: winston.Logform.TransformableInfo) => void }) {
         super(opts);
         this.callback = opts.callback;
+        CustomTransport._instance = this;
+    }
+
+    public static getInstance(): CustomTransport | null {
+        return CustomTransport._instance;
     }
 
     log(info: winston.Logform.TransformableInfo, callback: () => void) {
@@ -33,22 +49,50 @@ export class CustomTransport extends Transport {
         // deposits the final serialised string — no need to stringify yourself.
         // const str = (info[Symbol.for('message')] as string) + '\n';
         const str = (info[MESSAGE] as string) + '\n';
-        for (const stream of this.streams) {
+        for (const key of Object.keys(this.pathMap)) {
+            const stream = this.pathMap[key];
             try {
                 stream.write(str);
             } catch (err) {
-                this.streams = this.streams.filter(s => s !== stream);
+                delete this.pathMap[key];
                 logger.error(`Failed to write to log stream: ${err instanceof Error ? err.message : String(err)}`);
             }
         };
         callback();
     }
 
-    addStream(stream: NodeJS.WritableStream) {
-        this.streams.push(stream);
+    addStream(stream: NodeJS.WritableStream, path: string) {
+        this.pathMap[path] = stream;
         stream.on('close', () => {
-            this.streams = this.streams.filter(s => s !== stream);
+            delete this.pathMap[path];
         });
+    }
+
+    replaceStream(oldPath: string, newPath: string) {
+        if (oldPath && (oldPath === newPath)) {
+            return;
+        }
+        try {
+            mkdirSync(path.dirname(newPath), { recursive: true });
+            const newStream = fs.createWriteStream(newPath, { flags: 'w' });
+            newStream.on('error', (err) => {
+                logger.error(`Log file stream error: ${err instanceof Error ? err.message : String(err)}`);
+            });
+            this.addStream(newStream, newPath);
+        } catch (err) {
+            logger.error(`Failed to add log stream with ${newPath}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (oldPath && this.pathMap[oldPath]) {
+            this.pathMap[oldPath].end();
+            delete this.pathMap[oldPath];
+        }
+    }
+
+    removeStream(path: string) {
+        if (this.pathMap[path]) {
+            this.pathMap[path].end();
+            delete this.pathMap[path];
+        }
     }
 }
 
@@ -77,11 +121,7 @@ const stripConsoleFields = winston.format((info) => {
     return info;
 });
 
-const wrapInRed = (text: string) => `\x1b[31m${text}\x1b[0m`; // red for errors
-const wrapInOrange = (text: string) => `\x1b[33m${text}\x1b[0m`; // orange for warnings
-const wrapInGreen = (text: string) => `\x1b[32m${text}\x1b[0m`; // green for info
-
-export function createTransports(cliArgs: CliArgs, consoleLogLevel: string): CustomTransport {
+export function createInitialTransports(cliArgs: CliArgs, consoleLogLevel: string): CustomTransport {
     const consoleLevel = consoleLogLevel in winston.config.npm.levels ? consoleLogLevel : 'info';
     // Console: human-readable, only what the user needs to see
     logger.add(
@@ -94,10 +134,8 @@ export function createTransports(cliArgs: CliArgs, consoleLogLevel: string): Cus
                     if (meta.isConsole) {
                         const color = meta.color as string | undefined;
                         let msg: string = message as string;
-                        switch (color) {
-                            case 'red': msg = wrapInRed(msg); break;
-                            case 'orange': msg = wrapInOrange(msg); break;
-                            case 'green': msg = wrapInGreen(msg); break;
+                        if (typeof color === 'string') {
+                            msg = AnsiHelpers.colorize(msg, color);
                         }
                         return `${msg}`;   // for console transport, just return the message without level or meta
                     }
@@ -113,25 +151,13 @@ export function createTransports(cliArgs: CliArgs, consoleLogLevel: string): Cus
     const customTransport = createCustomTransport();
 
     if (!cliArgs.logFile) {
-        cliArgs.logFile = `${os.tmpdir()}/mcu-debug-logs/${process.pid}.log`;
+        cliArgs.logFile = `${process.cwd()}/.mcu-debug/cli.log`;
+        customTransport.usingDefaultLogFile = cliArgs.logFile;
     };
-    const logDir = path.dirname(cliArgs.logFile);
-    try {
-        fs.mkdirSync(logDir, { recursive: true });
-    } catch (err) {
-        logger.error(`Failed to create log directory ${logDir}: ${err instanceof Error ? err.message : String(err)}`);
-        return customTransport;
-    }
-    try {
-        const stream = fs.createWriteStream(cliArgs.logFile, { flags: 'w' });
-        customTransport.addStream(stream);
-        stream.on('error', (err) => {
-            logger.error(`Log file stream error: ${err instanceof Error ? err.message : String(err)}`);
-        });
-    } catch (err) {
-        logger.error(`Failed to create log file ${cliArgs.logFile}: ${err instanceof Error ? err.message : String(err)}`);
-        return customTransport;
-    }
+    customTransport.replaceStream('', cliArgs.logFile);
+
+    const archiveLog = `${process.cwd()}/.mcu-debug/archive/${HrTimer.createDateTimestamp()}.log`;
+    customTransport.replaceStream('', archiveLog);
     return customTransport;
 }
 

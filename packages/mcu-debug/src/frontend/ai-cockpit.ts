@@ -19,8 +19,8 @@ import * as path from "path";
 import * as os from "os";
 import * as ChildProcess from "child_process";
 import { CockpitPanel } from "./views/CockpitPanel";
-import { magentaWrite } from "../common/ansi-helpers";
-import { logger } from "../common/logger";
+import { AnsiHelpers } from "../common/ansi-helpers";
+import { logger } from "../common/cli-logger";
 import { ConfigurationArguments } from "../adapter/servers/common";
 import { ManagedTab } from "./views/ManagedTab";
 import { CockpitToolbarAction, TabKind, TabState } from "@mcu-debug/shared";
@@ -181,7 +181,7 @@ export class AICockpit extends ManagedTab {
             configParsed: config,
             builtins: CLIConfigLoader.gatherBuiltins(root.uri.fsPath),
         };
-        const configLoader = new CLIConfigLoader(this.logger!, false);
+        const configLoader = new CLIConfigLoader(configLoaderArgs, this.logger!, true);
         try {
             /**
              * We resolve using the CLIConfigLoader which is the same code path used by the CLI. This ensures that any config
@@ -217,26 +217,29 @@ export class AICockpit extends ManagedTab {
         } catch (error) {
             const err = `Failed to write AI Cockpit config file: ${error}`;
             this.logger?.error(err);
-            magentaWrite(`Failed to write AI Cockpit config file: ${error}\n`, (str) => this.logger?.error(str));
+            this.logger?.error(`Failed to write AI Cockpit config file: ${error}`);
             return;
         }
 
         if (!this.checkNodeInstalled()) {
-            magentaWrite(`Node.js version 22 or higher is required to run the AI Cockpit. Please install or update Node.js and make sure it's in your PATH.\n`, (str) => this.logger?.error(str));
+            this.logger?.error(`Node.js version 22 or higher is required to run the AI Cockpit. Please install or update Node.js and make sure it's in your PATH.`);
             return;
         }
 
         this.sessionState = "starting";
         this.postCockpitUiState();
-        this.launchDebugCLI(jsonFile, root);
+        this.launchDebugCLI(jsonFile, config, root);
     }
 
     private isNodeInstalled = false;
-    private launchDebugCLI(jsonFile: string, root: vscode.WorkspaceFolder) {
+    private launchDebugCLI(jsonFile: string, config: any, root: vscode.WorkspaceFolder) {
         const cmd = "node";
         const jsFile = path.join(this.context.extensionPath, "dist/mcu-debug-cli.js").replace(/\\/g, "/");
         const args = [jsFile, "--config", "0", "--json", jsonFile];
-        magentaWrite(`Starting AI Cockpit debug session with command: ${cmd} ${args.join(" ")}\n`, (str) => this.logger?.info(str));
+        if (config.cliOptions?.logFile) {
+            args.push("--log-file", config.cliOptions.logFile);
+        }
+        this.logger?.info(`Starting AI Cockpit debug session with command: ${cmd} ${args.join(" ")}`, { color: 'green.bold' });
         this.process = ChildProcess.spawn(cmd, args, {
             cwd: root.uri.fsPath,
             env: process.env,
@@ -396,7 +399,6 @@ export class AICockpit extends ManagedTab {
     }
 
     private handleToolbarAction(action: CockpitToolbarAction): void {
-        this.logger?.info(`Cockpit toolbar action requested: ${action}`);
         switch (action) {
             case "continue":
                 if (this.sessionState === "not-started" || this.sessionState === "terminated") {

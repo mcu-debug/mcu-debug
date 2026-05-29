@@ -28,7 +28,7 @@ import { IOTerminal } from "./io-terminal";
 import { GDBServerConsole } from "./server-console";
 import { CDebugSession, CDebugChainedSessionItem } from "../common/mcu-debug-session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
-import { logger } from '../common/logger';
+import { logger } from '../common/cli-logger';
 import { VscodeOutputChannelTransport } from './vscode-transport';
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "@mcu-debug/shared";

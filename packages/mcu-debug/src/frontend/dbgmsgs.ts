@@ -32,7 +32,7 @@ export class MCUDebugChannel {
     }
 
     public static debugMessage(msg: string): void {
-        const ts = MCUDebugChannel.globalHrTimer.createDateTimestamp();
+        const ts = HrTimer.createDateTimestamp();
         const line = ts + " " + msg;
         MCUDebugChannel.logStream?.write(line + "\n");
         MCUDebugChannel.vscodeDebugChannel?.appendLine(line/*.replace(/\n/g, ' ')*/);

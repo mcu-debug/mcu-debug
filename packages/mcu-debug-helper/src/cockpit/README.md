@@ -11,7 +11,7 @@ The workflow is as follows
 1. User launch the Rust program `mcu-debug debug`
 2. if no --no-tui is specified, we simply launch the node application detached and the Rust program has no role to play
 3. The Rust program has the same options as the cli version with the addition of --no-tui
-4. Otherwise, we launch the node application and wait for a socket being available in the current dir. (.mcu-debug.sock.json file)
+4. Otherwise, we launch the node application and wait for a socket being available in the current dir. (.mcu-debug/socket.json file)
 5. The TUI connects to the specified in the json file and away we go until the node program exits. Note that node program itself has no TTY, the Rust side pipes all the stdio and owns the TTY
 
 IMPORTANT: For our purposes the Cockpit design should have the AI section as optional. So the top and bottom parts always exist but the middle part (AI) will be optional

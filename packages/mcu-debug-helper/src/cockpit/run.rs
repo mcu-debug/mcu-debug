@@ -96,7 +96,7 @@ pub fn run(args: DebugArgs) -> Result<()> {
         return Ok(());
     }
 
-    // TUI mode: spawn Node (it will create .mcu-debug.sock.json when ready),
+    // TUI mode: spawn Node (it will create .mcu-debug/socket.json when ready),
     // wait for the socket file, connect, then hand off to the ratatui TUI.
     let mut child = spawn::spawn_node_cli_tui(&cli_js, &node_args)?;
     let stdin = child.stdin.take().expect("Failed to open stdin");

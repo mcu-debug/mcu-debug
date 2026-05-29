@@ -1,4 +1,4 @@
-import { createTransports, CustomTransport, logger } from '../common/logger';
+import { createInitialTransports, CustomTransport, logger } from '../common/cli-logger';
 import { CliArgs } from "./options";
 import { CLIConfigLoader } from './config-loader';
 import { CliAdapter } from './cli-adapter';
@@ -15,7 +15,7 @@ export function validateCliArgs(args: CliArgs): boolean {
 
 async function main() {
     const { cliArgs } = await import("./options");
-    const customTransport = createTransports(cliArgs, 'info');
+    const customTransport = createInitialTransports(cliArgs, 'info');
 
     if (!validateCliArgs(cliArgs)) {
         process.exit(1);
@@ -23,7 +23,7 @@ async function main() {
     logger.debug("Args: " + process.argv.join(' '));
     const adapter = new CliAdapter(cliArgs);
     setHostAdapter(adapter);
-    const configLoader = new CLIConfigLoader(logger, false);
+    const configLoader = new CLIConfigLoader(cliArgs, logger, false);
     const config = await configLoader.loadConfiguration(cliArgs);
     if (!config) {
         // Errors are already logged in loadConfiguration, so we just exit here.

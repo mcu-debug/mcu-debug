@@ -68,7 +68,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
 
     private createDateHeaderUs(): string {
         if (this.timestamp) {
-            return this.hrTimer.createDateTimestamp() + " ";
+            return HrTimer.createDateTimestamp() + " ";
         } else {
             return "";
         }

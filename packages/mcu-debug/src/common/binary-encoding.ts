@@ -53,7 +53,7 @@ export class BinaryFormatter {
 
     public writeBinary(input: string | Buffer) {
         const data: Buffer = Buffer.from(input);
-        const timestamp = this.hrTimer.createDateTimestamp();
+        const timestamp = HrTimer.createDateTimestamp();
         for (const chr of data) {
             this.buffer[this.bytesRead] = chr;
             this.bytesRead = this.bytesRead + 1;

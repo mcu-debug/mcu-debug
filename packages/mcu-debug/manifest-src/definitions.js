@@ -393,6 +393,24 @@ module.exports = {
         description: "This is for 'XPERIPHERALS' window provided by 'mcu-debug.peripheral-viewer' and 'Embedded Tools' Extension from Microsoft.",
         type: "string",
     },
+    cliOptions: {
+        type: "object",
+        description:
+            "Options for the CLI output window (the 'Cockpit' or 'TUI' or 'Console'). These are not related " +
+            "to the GDB Server or GDB command line options, but rather options for how the CLI debugger displays " +
+            "the output from the debug session.",
+        properties: {
+            logFile: {
+                type: ["string", "null"],
+                default: ".mcu-debug/cli.log",
+                description:
+                    "Set the log file for the CLI output window (the 'Cockpit/TUI/Console', Setting to null disables logging). " +
+                    "Command-line option overrides this setting if specified. Cannot use ${xxx} substitutions in the path because " +
+                    "the CLI will use this path before it can perform substitutions, so the path is taken as-is. Absolute or relative " +
+                    "to $cwd pf the CLI program.",
+            },
+        },
+    },
     hostConfig: {
         type: "object",
         description:

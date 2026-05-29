@@ -15,9 +15,8 @@
 
 import * as fs from "fs"
 import { RTTConsoleDecoderOpts, TerminalInputMode, HrTimer } from "../adapter/servers/common";
-import { magentaWrite } from "../common/ansi-helpers"
+import { AnsiHelpers } from "../common/ansi-helpers"
 import { SocketIOSource } from "../common/swo/sources/socket";
-import { RESET } from "../common/ansi-helpers";
 import { createTerminalUniqueName, getUUidPrefixed, ManagedTabConsole } from "./views/ManagedTab";
 import { TabKind } from "@mcu-debug/shared";
 import { EventEmitter } from "stream";
@@ -59,9 +58,9 @@ export class IOTerminal extends EventEmitter {
                 // Server closed the connection. We are done with this session
             } else if (code === "ECONNREFUSED") {
                 // We expect 'ECONNREFUSED' if the server has not yet started after all the retries
-                magentaWrite(`${e}\n.`, (str) => this.terminal?.send(str));
+                this.terminal?.send(AnsiHelpers.redFormat(`${e}\n.`));
             } else {
-                magentaWrite(`${e}\n`, (str) => this.terminal?.send(str));
+                this.terminal?.send(AnsiHelpers.redFormat(`${e}\n`));
             }
             this.onClose();
         });
@@ -71,7 +70,7 @@ export class IOTerminal extends EventEmitter {
 
         if (src.connError) {
             this.source = src;
-            magentaWrite(`${src.connError.message}\n`, (str) => this.terminal?.send(str));
+            this.terminal?.send(AnsiHelpers.redFormat(`${src.connError.message}\n`));
         } else if (src.connected) {
             this.source = src;
             this.openLogFile();
@@ -92,8 +91,8 @@ export class IOTerminal extends EventEmitter {
             this.writeLogFile(Buffer.from("\n"));
             this.startOfNewLine = true;
         }
-        this.terminal?.send(RESET + "\n");
-        magentaWrite(`RTT connection on TCP port ${this.options.tcpPort} ended. Waiting for next connection...`, (str) => this.terminal?.send(str));
+        this.terminal?.send(AnsiHelpers.reset());
+        this.terminal?.send(AnsiHelpers.redFormat(`RTT connection on TCP port ${this.options.tcpPort} ended. Waiting for next connection...`));
         this.terminal?.setState({ kind: "inactive" });
         this.terminal?.removeAllListeners();
         this.terminal = null;
@@ -108,7 +107,7 @@ export class IOTerminal extends EventEmitter {
                 this.writeNonBinary(data);
             }
         } catch (e) {
-            magentaWrite(`Error writing data: ${e}\n`, (str) => this.terminal?.send(str));
+            this.terminal?.send(AnsiHelpers.redFormat(`Error writing data: ${e}\n`));
         }
     }
 
@@ -119,7 +118,7 @@ export class IOTerminal extends EventEmitter {
             } catch (e: any) {
                 const msg = `Could not open file ${this.options.logfile} for writing. ${e.toString()}`;
                 console.error(msg);
-                magentaWrite(msg, (str) => this.terminal?.send(str));
+                this.terminal?.send(AnsiHelpers.redFormat(`${msg}\n`));
             }
         } else if (this.logFd >= 0 && !this.options.logfile) {
             // It is already open but new connection does not want logging anymore
@@ -176,7 +175,7 @@ export class IOTerminal extends EventEmitter {
             const now = HrTimer.getNow();
             if (now !== this.lastTime) {
                 this.lastTime = now;
-                this.lastTimeStr = this.hrTimer.createDateTimestamp() + " ";
+                this.lastTimeStr = HrTimer.createDateTimestamp() + " ";
             }
             time = this.lastTimeStr;
         }
@@ -265,7 +264,7 @@ export class IOTerminal extends EventEmitter {
             try {
                 fs.closeSync(this.logFd);
             } catch (e) {
-                magentaWrite(`Error: closing fille ${e}\n`, (str) => this.terminal?.send(str));
+                this.terminal?.send(AnsiHelpers.redFormat(`Error: closing file ${e}\n`));
             }
             this.logFd = -1;
             this.startOfNewLine = true;

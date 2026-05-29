@@ -48,7 +48,7 @@ export class SWOBinaryProcessor implements SWORTTDecoder {
         const hexvalue = packet.data.toString("hex");
         const decodedValue = parseEncoded(packet.data, this.encoding);
         const scaledValue = decodedValue * this.scale;
-        const timestamp = this.hrTimer.createDateTimestamp();
+        const timestamp = HrTimer.createDateTimestamp();
 
         const str = `${timestamp} ${hexvalue} - ${decodedValue} - ${scaledValue}`;
         this.terminal?.send(str + "\n");

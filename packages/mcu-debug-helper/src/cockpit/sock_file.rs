@@ -17,11 +17,11 @@ use serde::Deserialize;
 use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
-pub const SOCK_FILE: &str = ".mcu-debug.sock.json";
+pub const SOCK_FILE: &str = ".mcu-debug/socket.json";
 #[allow(dead_code)]
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Contents of `.mcu-debug.sock.json` written by the Node CLI when it is ready.
+/// Contents of `.mcu-debug/socket.json` written by the Node CLI when it is ready.
 #[allow(dead_code)] // config/started are informational; used once session display is wired up
 ///
 /// ```json
@@ -44,7 +44,7 @@ pub struct SockInfo {
     pub started: Option<String>,
 }
 
-/// Poll the current directory for `.mcu-debug.sock.json` until it appears and
+/// Poll the current directory for `.mcu-debug/socket.json` until it appears and
 /// is valid JSON, or until `timeout` elapses.
 #[allow(dead_code)]
 pub fn wait_for_sock_file(timeout: Duration) -> Result<SockInfo> {

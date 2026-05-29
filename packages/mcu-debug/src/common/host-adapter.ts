@@ -8,7 +8,6 @@ import { EventEmitter } from "stream";
 
 export const CLI_SESSION_TYPES = ["not-started", "starting", "initialized", "running", "paused", "terminated"] as const;
 export type CLISessionType = typeof CLI_SESSION_TYPES[number];
-// export type CLISessionType = "not-started" | "starting" | "initialized" | "running" | "paused" | "terminated";
 
 /**
  * Platform-agnostic debug configuration — mirrors vscode.DebugConfiguration.

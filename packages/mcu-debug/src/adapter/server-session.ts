@@ -15,7 +15,7 @@ import { GDBDebugSession } from "./gdb-session";
 import { createPortName, GDBServerController, GenericCustomEvent, quoteShellCmdLine, TcpPortDef, TcpPortDefMap } from "./servers/common";
 import { GdbEventNames, Stderr } from "./gdb-mi/mi-types";
 import { TcpPortScanner } from "@mcu-debug/shared";
-import { greenFormat } from "../common/ansi-helpers";
+import { AnsiHelpers } from "../common/ansi-helpers";
 import { ProxyClient } from "./proxy-client";
 import { ProbeRsServerController } from "./servers/probe-rs";
 
@@ -108,18 +108,18 @@ export class GDBServerSession extends EventEmitter {
             }
 
             const argsStr = quoteShellCmdLine([executable]) + " " + args.map((a) => quoteShellCmdLine([a])).join(" ") + "\n ";
-            this.session.handleMsg(GdbEventNames.Stderr, `Starting GDB-Server: ${argsStr}`);
-            if (!this.session.args.isCli) {
-                this.consoleSocket?.write(greenFormat(argsStr));
+            this.session.handleMsg(GdbEventNames.Stdout, `Starting GDB-Server: ${argsStr}`);
+            if (!this.session.args.pvtIsCli) {
+                this.consoleSocket?.write(AnsiHelpers.greenFormat(argsStr));
             }
             const matchRegex = this.serverController.initMatch();
 
             if (this.proxyClient) {
-                this.session.handleMsg(GdbEventNames.Stderr, "Starting gdb-server via proxy...\n");
+                this.session.handleMsg(GdbEventNames.Stdout, "Starting gdb-server via proxy...\n");
                 try {
                     this.proxyClient.on("streamStarted", (data: TcpPortDef) => {
                         if (data.name.startsWith("gdb")) {
-                            this.session.handleMsg(GdbEventNames.Stderr, `GDB-Server stream ready on port server ${data.remotePort}\n`);
+                            this.session.handleMsg(GdbEventNames.Stdout, `GDB-Server stream ready on port server ${data.remotePort}\n`);
                             resolved = true;
                             resolve();
                         }
@@ -215,7 +215,7 @@ export class GDBServerSession extends EventEmitter {
                 };
                 // If we are in CLI mode, both gdb and servers output goes to the same console. So it would create
                 // duplicaes if we write both to console. So only write server output to console when not in CLI mode.
-                const doConsoleForStdout = this.session.args.isCli ? false : true;
+                const doConsoleForStdout = this.session.args.pvtIsCli ? false : true;
                 this.process.stdout?.on("data", (data) => handleOutput(data, doConsoleForStdout));
                 this.process.stderr?.on("data", (data) => handleOutput(data, true));
 
