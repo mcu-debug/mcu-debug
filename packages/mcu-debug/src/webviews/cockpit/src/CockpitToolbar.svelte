@@ -23,7 +23,7 @@
         tooltip: string;
         codicon?: string;
         useResetIcon?: boolean;
-        accent?: "success" | "danger" | "warning";
+        accent?: "success" | "danger" | "warning" | "pause";
     };
 
     const {
@@ -40,7 +40,7 @@
 
     const primaryActions: Record<"continue" | "pause", ToolbarActionItem> = {
         continue: { action: "continue", label: "Continue", tooltip: "Continue", codicon: "debug-continue", accent: "success" },
-        pause: { action: "pause", label: "Pause", tooltip: "Pause", codicon: "debug-pause", accent: "warning" },
+        pause: { action: "pause", label: "Pause", tooltip: "Pause", codicon: "debug-pause", accent: "pause" },
     };
 
     const secondaryActions: ToolbarActionItem[] = [
@@ -53,7 +53,7 @@
     ];
 
     function getPrimaryAction(state: CockpitUiState): ToolbarActionItem {
-        return state.statusText === "running" ? primaryActions.pause : primaryActions.continue;
+        return state.statusText.toLowerCase().startsWith("running") ? primaryActions.pause : primaryActions.continue;
     }
 
     function handleSelect(event: Event) {
@@ -162,6 +162,10 @@
         color: var(--vscode-charts-orange, #e8a000);
     }
 
+    .tool-button.accent-pause {
+        color: var(--vscode-debugIcon-pauseForeground, var(--vscode-charts-blue, #3794ff));
+    }
+
     .tool-button:disabled {
         opacity: 0.45;
         cursor: default;
@@ -216,6 +220,5 @@
         color: var(--vscode-descriptionForeground, #9d9d9d);
         font-size: 12px;
         white-space: nowrap;
-        text-transform: lowercase;
     }
 </style>

@@ -196,6 +196,12 @@
     function handleTerminalKeyEvent(event: KeyboardEvent): boolean {
         if (!active) return true;
 
+        if (event.key === "F1") {
+            event.preventDefault();
+            postToExtension({ type: "special-key", tabId, key: "F1" });
+            return false;
+        }
+
         const lowerKey = event.key.toLowerCase();
         const primaryModifier = isMac ? event.metaKey : event.ctrlKey;
         const terminalCopyShortcut = !isMac && event.ctrlKey && event.shiftKey && lowerKey === "c";

@@ -254,6 +254,11 @@ export abstract class ManagedTab {
         // Default no-op.
     }
 
+    /** Called when the engineer presses a special key in the input bar. */
+    onSpecialKey(_key: string): void {
+        // Default no-op.
+    }
+
     /** Called when the engineer clicks a cockpit toolbar button. */
     onCockpitToolbarAction(_action: CockpitToolbarAction): void {
         // Default no-op.

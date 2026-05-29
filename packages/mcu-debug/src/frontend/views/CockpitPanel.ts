@@ -197,6 +197,9 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
             case "user-input":
                 tab.onUserInput(msg.text);
                 break;
+            case "special-key":
+                tab.onSpecialKey(msg.key);
+                break;
             case "cockpit-toolbar-action":
                 tab.onCockpitToolbarAction(msg.action);
                 break;

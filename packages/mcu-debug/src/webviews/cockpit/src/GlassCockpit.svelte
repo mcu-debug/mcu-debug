@@ -44,6 +44,10 @@
         postToExtension({ type: "user-input", tabId, text });
     }
 
+    function handleSpecialKey(key: string) {
+        postToExtension({ type: "special-key", tabId, key });
+    }
+
     function handleToolbarAction(action: CockpitToolbarAction) {
         postToExtension({ type: "cockpit-toolbar-action", tabId, action });
     }
@@ -68,7 +72,7 @@
         <AiRequest text={aiRequestText} />
     {/if}
 
-    <InputBar onSubmit={handleUserInput} {placeholderText} {inputMode} />
+    <InputBar onSubmit={handleUserInput} onSpecialKey={handleSpecialKey} {placeholderText} {inputMode} />
 </div>
 
 <style>

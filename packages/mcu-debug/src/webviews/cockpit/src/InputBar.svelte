@@ -20,10 +20,12 @@
 
     const {
         onSubmit,
+        onSpecialKey,
         placeholderText,
         inputMode = "cooked",
     }: {
         onSubmit: (text: string) => void;
+        onSpecialKey?: (key: string) => void;
         placeholderText: string;
         inputMode?: TabInputMode;
     } = $props();

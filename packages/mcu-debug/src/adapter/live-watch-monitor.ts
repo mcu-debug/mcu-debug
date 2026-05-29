@@ -4,7 +4,7 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import { GdbInstance } from "./gdb-mi/gdb-instance";
 import { GDBDebugSession } from "./gdb-session";
 import { VariableContainer, VariableManager, VariableObject } from "./variables";
-import { GdbEventNames, Stderr, MIError, MINode, VarUpdateRecord, Stdout } from "./gdb-mi/mi-types";
+import { GdbEventNames, Stderr, MIError, MINode, VarUpdateRecord, Stdout, Console } from "./gdb-mi/mi-types";
 import { VariableScope } from "./var-scopes";
 import {
     LiveConnectedEvent,
@@ -53,6 +53,7 @@ export class LiveWatchMonitor extends EventEmitter {
     protected memoryRequests: MemoryRequests;
     protected liveMonitorEnabled: boolean = false;
     protected handlingRequest: boolean = false;
+    protected disableConsoleMessages: boolean = true;      // We start out with Console as they are init. chatter with gdb
     constructor(public mainSession: GDBDebugSession) {
         super();
         this.gdbInstance = new GdbInstance();
@@ -101,7 +102,13 @@ export class LiveWatchMonitor extends EventEmitter {
     }
 
     protected handleMsg(type: GdbEventNames, msg: string) {
-        this.mainSession.handleMsg(type, "LiveGDB: " + msg);
+        if (this.disableConsoleMessages && !this.debugFlags.anyFlags && type === Console) {
+            return;
+        }
+        const doPrint = (type !== Stdout || this.debugFlags.gdbTraces);
+        if (doPrint) {
+            this.mainSession.handleMsg(type, "LiveGDB: " + msg);
+        }
     }
     protected handleErrResponse(response: DebugProtocol.Response, msg: string) {
         this.mainSession.handleErrResponse(response, "LiveGDB: " + msg);
@@ -122,8 +129,9 @@ export class LiveWatchMonitor extends EventEmitter {
         this.mainSession.gdbInstance.on(GdbEventNames.Running, this.onRunning.bind(this));
         this.gdbInstance.on("connected", () => {
             this.emit("connected");
+            this.disableConsoleMessages = false;
             this.liveMonitorEnabled = true;
-            this.handleMsg(Stderr, `Live GDB connected to target.\n`);
+            this.handleMsg(Stdout, `Live GDB connected to target.\n`);
             this.mainSession.sendEvent(this.newLiveConnectedEvent());
         });
     }
@@ -163,7 +171,7 @@ export class LiveWatchMonitor extends EventEmitter {
             args.frameId = undefined; // We don't have threads or frames here. We always evaluate in global context
             await this.varManager.evaluateExpression(response, args, clientSession.container);
             if (this.debugFlags.anyFlags) {
-                this.handleMsg(Stderr, `Evaluated ${args.expression}\n`);
+                this.handleMsg(Stdout, `Evaluated ${args.expression}\n`);
             }
             this.sendResponse(response);
         } catch (e: any) {
@@ -189,7 +197,7 @@ export class LiveWatchMonitor extends EventEmitter {
             response.body = { variables: vars };
             this.sendResponse(response);
             if (this.debugFlags.anyFlags) {
-                this.handleMsg(Stderr, `Retrieved ${vars.length} variables for reference ${args.variablesReference}\n`);
+                this.handleMsg(Stdout, `Retrieved ${vars.length} variables for reference ${args.variablesReference}\n`);
             }
         } catch (e: any) {
             this.handleErrResponse(response, `Error retrieving variables: ${e.toString()}\n`);
@@ -311,7 +319,7 @@ export class LiveWatchMonitor extends EventEmitter {
             return records;
         } catch (e: any) {
             if (this.debugFlags.anyFlags) {
-                this.handleMsg(GdbEventNames.Stderr, `mcu-debug: Error updating all variables: ${e}\n`);
+                this.handleMsg(Stderr, `mcu-debug: Error updating all variables: ${e}\n`);
             }
             return [];
         }

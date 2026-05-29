@@ -304,14 +304,14 @@ export class GdbInstance extends EventEmitter {
         } else if (reason === "exited") {
             // exit with error code != 0
             const result = record.result as { [key: string]: any };
-            this.log(Stderr, "Program exited with code " + result["exit-code"]);
+            this.log(Stdout, "Program exited with code " + result["exit-code"]);
             this.emit("exited-normally", record);
         } else if (reason === undefined && this.firstStop) {
             reason = "entry";
-            this.log(Stderr, "Program stopped, probably due to a reset and/or halt issued by debugger");
+            this.log(Stdout, "Program stopped, probably due to a reset and/or halt issued by debugger");
         } else {
             reason = reason || "unknown";
-            this.log(Stderr, "Not implemented stop reason (assuming exception): " + reason || "Unknown reason");
+            this.log(Stdout, "Not implemented stop reason (assuming exception): " + reason || "Unknown reason");
         }
         this.firstStop = false;
         this.emit(GdbEventNames.Stopped, record, reason);

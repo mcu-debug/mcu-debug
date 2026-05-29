@@ -50,9 +50,17 @@
 
     let tabs = $state<TabEntry[]>([]);
     let activeTabId = $state<string | null>(null);
+    let panelEl: HTMLDivElement | undefined;
 
     function findTab(tabId: string): TabEntry | undefined {
         return tabs.find((t) => t.tabId === tabId);
+    }
+
+    function dispatchSpecialKey(key: string) {
+        if (!activeTabId) {
+            return;
+        }
+        postToExtension({ type: "special-key", tabId: activeTabId, key });
     }
 
     function activateFirst() {
@@ -137,11 +145,23 @@
 
     onMount(() => {
         const handler = (e: MessageEvent) => handleToUi(e.data as ToUi);
+        const keyHandler = (e: KeyboardEvent) => {
+            if (e.key !== "F1") {
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            dispatchSpecialKey("F1");
+        };
         window.addEventListener("message", handler);
+        window.addEventListener("keydown", keyHandler, { capture: true });
         // Signal to the extension that the webview JS is loaded and ready.
         // The extension holds all tab-add messages until this arrives.
         postToExtension({ type: "ready" });
-        return () => window.removeEventListener("message", handler);
+        return () => {
+            window.removeEventListener("message", handler);
+            window.removeEventListener("keydown", keyHandler, { capture: true });
+        };
     });
 
     $effect(() => {
@@ -167,13 +187,24 @@
         }
     }
 
+    function focusPanelOnPointerDown(event: PointerEvent) {
+        const target = event.target as HTMLElement | null;
+        if (!panelEl || !target) {
+            return;
+        }
+        if (target.closest("button, input, select, textarea")) {
+            return;
+        }
+        panelEl.focus();
+    }
+
     // Keep activeTabId valid when tabs list changes
     $effect(() => {
         activateFirst();
     });
 </script>
 
-<div class="panel">
+<div class="panel" bind:this={panelEl} tabindex="-1" role="presentation" onpointerdown={focusPanelOnPointerDown}>
     <TabBar {tabs} {activeTabId} onSelect={selectTab} onClose={closeTab} />
 
     <div class="content">
@@ -223,6 +254,7 @@
         display: flex;
         flex-direction: column;
         height: 100vh;
+        outline: none;
     }
 
     .content {

@@ -19,7 +19,6 @@ import * as path from "path";
 import * as os from "os";
 import * as ChildProcess from "child_process";
 import { CockpitPanel } from "./views/CockpitPanel";
-import { AnsiHelpers } from "../common/ansi-helpers";
 import { logger } from "../common/cli-logger";
 import { ConfigurationArguments } from "../adapter/servers/common";
 import { ManagedTab } from "./views/ManagedTab";
@@ -115,7 +114,7 @@ export class AICockpit extends ManagedTab {
     kind: TabKind = "cockpit";
     direction: "rx" | "tx" | "both" | undefined = "both";
     private readonly fsPattern = "**/launch.json";
-    private process: ChildProcess.ChildProcessWithoutNullStreams | null = null;
+    private process: ChildProcess.ChildProcess | null = null;
     private logger: winston.Logger | null = null;
     private loggerWriter: Writable | null = null;
     private addedToCockpitPanel = false;
@@ -123,12 +122,13 @@ export class AICockpit extends ManagedTab {
     private launchConfigCache: { [name: string]: vscode.DebugConfiguration } = {};
     private selectedConfigName: string | null = null;
     private sessionState: CLISessionType = "not-started";
+    private reasonText = "";
     private stdoutPending = "";
     private stderrPending = "";
 
     private constructor(private context: vscode.ExtensionContext) {
         // Private constructor to enforce singleton pattern
-        super("ai-cockpit", "AI Cockpit", "Enter any GDB command or special commands status/reset/restart/pause/continue/exit", "cooked");
+        super("ai-cockpit", "AI Cockpit", "Enter GDB command or press F1 for help", "cooked");
         this.logger = this.createLogger();
         this.enumerateLaunchConfigurations().then(configs => {
             this.launchConfigCache = configs;
@@ -159,6 +159,21 @@ export class AICockpit extends ManagedTab {
         }
     }
 
+    private printHelp() {
+        this.send([
+            "AI Cockpit Help",
+            "  F1                       Show this help",
+            "  Enter                    Send current input to the session driver which forwards to gdb",
+            "  run/start                Start a new debug session with current selected launch/attach configuration",
+            "  continue                 Drive session execution (you can also use gdb aliases)",
+            "  next/step/finish         Step through code (next/step-over, step-into, step-out/finish)",
+            "  pause                    Pause execution",
+            "  reset/restart            Reset device or restart the session",
+            "  exit                     End the debug session (will do proper cleanup and then forward exit to gdb)",
+            "",
+        ].join("\n"));
+    }
+
     public async startDebugSession(configName?: string) {
         if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
             return {};
@@ -166,6 +181,7 @@ export class AICockpit extends ManagedTab {
         // Prepare for new session, clear old content
         this.clear();
         this.firstErrorOfSession = false;
+        this.reasonText = "";
 
         const root = vscode.workspace.workspaceFolders[0];
         let config = this.selectLaunchConfiguration(configName) as ConfigurationArguments | undefined;
@@ -249,11 +265,11 @@ export class AICockpit extends ManagedTab {
             this.setState({ kind: 'active' });
             this.postCockpitUiState();
         });
-        this.process.stdout.on("data", (data) => {
+        this.process.stdout?.on("data", (data) => {
             const str = data.toString();
             this.stdoutPending = this.handleProcessChunk(str, this.stdoutPending, false);
         });
-        this.process.stderr.on("data", (data) => {
+        this.process.stderr?.on("data", (data) => {
             const str = data.toString();
             this.stderrPending = this.handleProcessChunk(str, this.stderrPending, true);
         });
@@ -295,9 +311,20 @@ export class AICockpit extends ManagedTab {
         this.postCockpitUiState();
     }
 
+    override onSpecialKey(key: string): void {
+        if (key === "F1") {
+            this.printHelp();
+        }
+    }
+
     onUserInput(text: string): void {
-        if (this.process && this.process.stdin.writable) {
-            this.process.stdin.write(text + "\n");
+        const trimmed = text.trim();
+        if (!this.process && ((trimmed === "run" || trimmed === "start"))) {
+            this.startDebugSession(this.selectedConfigName ?? undefined);
+            return;
+        }
+        if (this.process && this.process.stdin?.writable) {
+            this.process.stdin?.write(text + "\n");
         }
     }
 
@@ -355,10 +382,10 @@ export class AICockpit extends ManagedTab {
         return this.logger;
     }
 
-    private parseSessionStatus(str: string): CLISessionType | null {
-        const [, rawStatus = ""] = str.trim().split(":", 2);
+    private parseSessionStatus(str: string): [CLISessionType, string] | null {
+        const [, rawStatus = "", reason = ""] = str.trim().split(":", 3);
         const status = rawStatus.trim();
-        return CLI_SESSION_TYPES.includes(status as CLISessionType) ? status as CLISessionType : null;
+        return CLI_SESSION_TYPES.includes(status as CLISessionType) ? [status as CLISessionType, reason.trim()] : null;
     }
 
     private handleProcessChunk(chunk: string, pending: string, isStderr: boolean): string {
@@ -384,7 +411,8 @@ export class AICockpit extends ManagedTab {
             return;
         }
         if (isStderr && /^status: [a-z-]+/i.test(line)) {
-            const status = this.parseSessionStatus(line);
+            const [status = "", reason = ""] = this.parseSessionStatus(line) ?? ["", ""];
+            this.reasonText = reason.trim();
             if (status && status !== this.sessionState) {
                 this.sessionState = status;
                 if (status === "terminated") {
@@ -489,13 +517,17 @@ export class AICockpit extends ManagedTab {
     }
 
     private postCockpitUiState(): void {
+        const capitalize = (s: string) => s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+        const reason = capitalize(this.reasonText);
+        const state = capitalize(this.sessionState);
+        const statusText = state + (reason ? `: ${reason}` : "");
         CockpitPanel.instance?.postToWebview({
             type: "cockpit-ui-state",
             tabId: this.tabId,
             state: {
                 availableConfigs: Object.keys(this.launchConfigCache),
                 selectedConfig: this.selectedConfigName,
-                statusText: this.sessionState,
+                statusText: statusText,
                 buttonEnabled: this.getButtonEnabledState(),
             },
         });

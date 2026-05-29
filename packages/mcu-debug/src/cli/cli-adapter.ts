@@ -12,6 +12,7 @@ import { GraphConfiguration } from "../common/swo/common";
 import JSONC from 'jsonc-simple-parser';
 import { TabState } from '@mcu-debug/shared/cockpit-protocol';
 import { LineBuffer, trimBrackets } from '../common/utils';
+import { AnsiHelpers } from '../common/ansi-helpers';
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
 // Return values match VS Code's remoteName strings so resolveProxyNetworkMode() works unchanged.
@@ -280,22 +281,22 @@ export class CLISerialPortView implements ISerialPortView {
     onUserClose(): void {
         // This should not happen but we will have it here in case we create a way to close from CLI
         this.destroySocket();
-        this.sendDA(`\r\n\x1b[33m${this.txtPrefix} !!closed\x1b[0m\r\n`);
+        this.sendDA(AnsiHelpers.yellowFormat(`[${this.device} closed]\r\n`));
     }
 
     public notifyConnected(reason: string) {
-        this.sendDA(`\r\n\x1b[32m${this.txtPrefix} !!connected] ${reason}\x1b[0m\r\n`);
+        this.sendDA(AnsiHelpers.greenFormat(`[${this.device} connected] ${reason}\r\n`));
         this.setState({ kind: "active" });
     }
 
     public notifyDisconnected(reason: string) {
         this.destroySocket();
-        this.sendDA(`\r\n\x1b[33m${this.txtPrefix} !!disconnected: ${reason} — retrying...\x1b[0m\r\n`);
+        this.sendDA(AnsiHelpers.yellowFormat(`[${this.device} disconnected: ${reason} — retrying...]\r\n`));
         this.setState({ kind: "inactive" });
     }
 
     public notifyReconnected() {
-        this.sendDA(`\r\n\x1b[32m${this.txtPrefix} !!reconnected\x1b[0m\r\n`);
+        this.sendDA(AnsiHelpers.greenFormat(`[${this.device} reconnected]\r\n`));
         this.setState({ kind: "active" });
     }
 

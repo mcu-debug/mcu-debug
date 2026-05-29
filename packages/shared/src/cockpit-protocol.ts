@@ -85,6 +85,8 @@ export type FromUi =
     | { type: 'terminal-ready'; tabId: string }
     /** Engineer typed a line in any tab's input bar. */
     | { type: 'user-input'; tabId: string; text: string }
+    /** Engineer pressed a special key in the input bar. */
+    | { type: 'special-key'; tabId: string; key: string }
     /** Engineer clicked a cockpit toolbar control. */
     | { type: 'cockpit-toolbar-action'; tabId: string; action: CockpitToolbarAction }
     /** Engineer selected a launch configuration in the cockpit toolbar. */
