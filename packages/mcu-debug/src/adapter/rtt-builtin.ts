@@ -95,6 +95,7 @@ export class RttBufferManager extends EventEmitter {
 
         this.mainSession.gdbInstance.on(GdbEventNames.Stopped, this.onStopped.bind(this));
         this.mainSession.gdbInstance.on(GdbEventNames.Running, this.onRunning.bind(this));
+        this.mainSession.gdbInstance.on(GdbEventNames.Exited, this.onExited.bind(this));
         this.throughputMonitor = new ThroughputMonitor(this.mainSession);
     }
 
@@ -381,16 +382,46 @@ export class RttBufferManager extends EventEmitter {
         }
     }
 
+    // Maybe we should never stop/start the poll, but just have the onStopped/onRunning logic gate the actual
+    // reading/writing of data. We are trying not do work while stopped and also debounce the stopped event because
+    // sometimes DA/gdb can send multiple stop events in a row. Fast start/stops also happen when setting breakpoints while running
     onRunning() {
         this.sessionStatus = "running";
+        if (this.onStoppedTimer) {
+            clearTimeout(this.onStoppedTimer);
+            this.onStoppedTimer = null;
+        }
         if (this.initialized) {
             this.startPoll();
             this.throughputMonitor = new ThroughputMonitor(this.mainSession);
         }
     }
 
+    private onStoppedTimer: NodeJS.Timeout | null = null;
     onStopped() {
-        this.sessionStatus = "stopped";
+        if (this.onStoppedTimer) {
+            clearTimeout(this.onStoppedTimer);
+            this.onStoppedTimer = null;
+        }
+        this.onStoppedTimer = setTimeout(() => {
+            if (this.onStoppedTimer) {
+                clearTimeout(this.onStoppedTimer);
+                this.onStoppedTimer = null;
+                this.sessionStatus = "stopped";
+            }
+        }, 1000);
+    }
+
+    onExited() {
+        this.sessionStatus = "none";
+        if (this.onStoppedTimer) {
+            clearTimeout(this.onStoppedTimer);
+            this.onStoppedTimer = null;
+        }
+        this.disableRtt = true;
+        if (this.transport) {
+            this.transport.dispose();
+        }
     }
 
     async doSearch(): Promise<void> {
@@ -565,6 +596,7 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
             }
             this.server.close();
             this.removeAllListeners();
+            this.server = null;
         }
     }
 }

@@ -1,6 +1,5 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
-import { Config } from "winston/lib/winston/config";
 import { InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEvent } from "@vscode/debugadapter";
 import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent, UARTConfigureEvent } from "./servers/common";
 import os from "os";
@@ -18,7 +17,6 @@ import { formatAddress, parseAddrVal } from "../common/utils";
 import { BreakpointManager } from "./breakpoints";
 import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
-import { ServerConsoleLog } from "./server-console-log";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
@@ -66,6 +64,7 @@ export class GDBDebugSession extends SeqDebugSession {
     private disassemblyAdapter: DisassemblyAdapter | undefined = undefined;
     private disassemblyAdapterNew: DisassemblyAdapterNew;
     public debugHelper: DebugHelper;
+    private restarting = false;
 
     protected varManager: VariableManager;
     protected bkptManager: BreakpointManager;
@@ -75,6 +74,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
     constructor() {
         super();
+        this.restarting = false;
         SessionCounter++;
         this.gdbInstance = new GdbInstance();
         this.gdbInstance.currentCommandTimeout = 0; // Disable timeouts by default until after launch/attach
@@ -184,7 +184,9 @@ export class GDBDebugSession extends SeqDebugSession {
             // Delay just a bit to allow any pending events/messages to be sent
             setTimeout(() => {
                 this.sendResponse(response);
-                this.sendEvent(new TerminatedEvent());
+                if (!this.restarting) {
+                    this.sendEvent(new TerminatedEvent());
+                }
             }, 20);
         };
         if (this.endSession) {
@@ -304,9 +306,16 @@ export class GDBDebugSession extends SeqDebugSession {
         };
         await this.finishSession(response, newArgs);
     }
-    protected restartRequest(response: DebugProtocol.RestartResponse, args: DebugProtocol.RestartArguments, request?: DebugProtocol.Request): void {
-        this.sendResponse(response);
+    protected async restartRequest(response: DebugProtocol.RestartResponse, args: DebugProtocol.RestartArguments, request?: DebugProtocol.Request): Promise<void> {
+        // This is never called by external clients. It is however called by our CLI session driver when the user requests a restart from the CLI.
+        // We don't do it for the VSCode session because VSCode itself will just terminate the current session and start a new one, so there is
+        // no need for us to do anything special here. But for the CLI, we want to reuse the same session and just restart it internally. So, we
+        // need to clean up everything and get ready for a new launch/attach sequence. VSCode builtin may also run a preLaunchTask so the semantics
+        // are not clear
+        this.restarting = true;
+        await this.finishSession(response, { terminateDebuggee: true });
     }
+
     protected async setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments, request?: DebugProtocol.Request): Promise<void> {
         try {
             response.body = { breakpoints: [] };
@@ -1533,6 +1542,8 @@ export class GDBDebugSession extends SeqDebugSession {
                 // Run to Entry Point -> Set Breakpoint. breakAfterReset is ignored in this case, we always want to run to
                 // the entry point and stop there, even if breakAfterReset is false. This mimics cortex-debug's behavior
                 commands = [`-break-insert -t ${this.args.runToEntryPoint}`];
+                const cmds = isReset ? (this.args.postResetSessionCommands?.map(COMMAND_MAP) ?? []) : (this.args.postStartSessionCommands?.map(COMMAND_MAP) ?? []);
+                commands.push(...cmds);
                 needsContinue = true;
             } else {
                 // Standard Debug
@@ -1625,7 +1636,9 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     quitEvent() {
-        this.sendEvent(new TerminatedEvent());
+        if (!this.restarting) {
+            this.sendEvent(new TerminatedEvent());
+        }
     }
 
     // Unlike in cortex-debug, we get the thread info here before sending the stop event

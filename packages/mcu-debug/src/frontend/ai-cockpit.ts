@@ -167,7 +167,7 @@ export class AICockpit extends ManagedTab {
             "  run/start                Start a new debug session with current selected launch/attach configuration",
             "  continue                 Drive session execution (you can also use gdb aliases)",
             "  next/step/finish         Step through code (next/step-over, step-into, step-out/finish)",
-            "  pause                    Pause execution",
+            "  pause / Ctrl+C           Pause execution",
             "  reset/restart            Reset device or restart the session",
             "  exit                     End the debug session (will do proper cleanup and then forward exit to gdb)",
             "",
@@ -314,6 +314,8 @@ export class AICockpit extends ManagedTab {
     override onSpecialKey(key: string): void {
         if (key === "F1") {
             this.printHelp();
+        } else if (key === "Ctrl+C") {
+            this.handleToolbarAction("pause");
         }
     }
 

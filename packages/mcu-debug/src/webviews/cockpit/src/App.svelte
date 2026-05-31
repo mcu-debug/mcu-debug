@@ -146,12 +146,23 @@
     onMount(() => {
         const handler = (e: MessageEvent) => handleToUi(e.data as ToUi);
         const keyHandler = (e: KeyboardEvent) => {
-            if (e.key !== "F1") {
+            if (e.key === "F1") {
+                e.preventDefault();
+                e.stopPropagation();
+                dispatchSpecialKey("F1");
                 return;
             }
-            e.preventDefault();
-            e.stopPropagation();
-            dispatchSpecialKey("F1");
+            // Ctrl+C when the xterm textarea does NOT have focus (e.g. panel
+            // background, tab bar).  When xterm is focused the terminal's own
+            // handleTerminalKeyEvent handles it, so we skip to avoid doubling.
+            if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "c") {
+                if (document.activeElement instanceof HTMLTextAreaElement) {
+                    return; // xterm textarea — let its handler fire
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                dispatchSpecialKey("Ctrl+C");
+            }
         };
         window.addEventListener("message", handler);
         window.addEventListener("keydown", keyHandler, { capture: true });

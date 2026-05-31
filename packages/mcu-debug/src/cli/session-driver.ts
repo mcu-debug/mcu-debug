@@ -14,7 +14,6 @@ import { CDebugSession } from "../common/mcu-debug-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
-import { AnsiHelpers } from "../common/ansi-helpers";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -60,8 +59,10 @@ export class CliSessionDriver {
     private isPaused = false;
     private isInternalClose = false; // to distinguish user-initiated vs DA-initiated session close
     private serialManager = new SerialPortManager();
-    public debugSession: CDebugSession;
+    public debugSession: CDebugSession | null = null;
     public status: CLISessionType = "not-started";
+    public bkptSaveFile: string | null = null; // used for restart command to save/restore breakpoints across a full teardown
+    private restarting = false; // track whether we're in the middle of a restart to suppress TerminatedEvent during teardown
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
@@ -82,6 +83,10 @@ export class CliSessionDriver {
         this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
         config.pvtIsCli = true; // inform the DA that we are running in CLI mode
 
+        this.setState("not-started");
+    }
+
+    private createCDebugSession() {
         const dbgSession: IDebugSession = {
             id: getNonce(),
             type: "mcu-debug",
@@ -90,7 +95,13 @@ export class CliSessionDriver {
             customRequest: async (command: string, args?: any) => { }
         };
         this.debugSession = CDebugSession.GetSession(dbgSession, this.config);
-        this.setState("not-started");
+    }
+
+    private removeCDebugSession() {
+        if (this.debugSession) {
+            CDebugSession.RemoveSession(this.debugSession.session);
+            this.debugSession = null as any; // we won't use this again, so just null it out to be safe
+        }
     }
 
     private setState(state: CLISessionType, reason?: string) {
@@ -105,7 +116,9 @@ export class CliSessionDriver {
 
     async startSession(cliArgs: any) {
         try {
-            await this.startSocketReader();
+            if (!this.restarting) {
+                await this.startSocketReader();
+            }
         } catch (error) {
             this.stderrLogger.error("Failed to start socket reader: " + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
@@ -115,12 +128,16 @@ export class CliSessionDriver {
                 await this.startGDBServerConsole("Starting GDB Server console...");
             } catch (error) { }
         }
+
+        this.setupBreakpointsFile(this.getBreakpointsFileName());
+
         // Start the debug session with the provided CLI arguments
         logger.info("Starting debug session with arguments:", cliArgs);
         this.setState("starting");
 
         // Create and start the debug session
         logger.info("Creating debug session...");
+        this.createCDebugSession();
         this.session = new GDBDebugSession();
 
         // Wire up the outbound message handler BEFORE any requests are sent.
@@ -197,6 +214,9 @@ export class CliSessionDriver {
     }
 
     private startReadlinePaused() {
+        if (this.rlPaused) {
+            return;
+        }
         this.rlPaused = readline.createInterface({
             input: process.stdin,
             output: process.stdout,
@@ -257,15 +277,7 @@ export class CliSessionDriver {
         } else {
             const save = this.rlPaused;
             // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest"
-            this.sendRequest<DebugProtocol.EvaluateResponse>({
-                seq: 0,          // overwritten by sendRequest
-                type: 'request', // overwritten by sendRequest
-                command: 'evaluate',
-                arguments: {
-                    expression: trimmedInput,
-                    context: 'repl',
-                },
-            }).then((response) => {
+            this.doReplCommand(trimmedInput).then((response) => {
                 if (!response.success) {
                     logger.warn(`Evaluate request failed: ${response.message}`);
                 }
@@ -307,6 +319,9 @@ export class CliSessionDriver {
         } else if (trimmedInput.toLowerCase() === 'status' || trimmedInput.toLowerCase() === '!!status') {
             this.doStatus();
             return true;
+        } else if (trimmedInput.toLowerCase() === 'restart' || trimmedInput.toLowerCase() === '!!restart') {
+            this.doRestart(isTerminal);
+            return true;
         } else if (trimmedInput.toLowerCase() === 'exit') {
             this.doExit(isTerminal);
             return true;
@@ -316,6 +331,111 @@ export class CliSessionDriver {
             return true;
         }
         return false;
+    }
+
+    private async doReplCommand(command: string) {
+        return this.sendRequest<DebugProtocol.EvaluateResponse>({
+            seq: 0,          // overwritten by sendRequest
+            type: 'request',
+            command: 'evaluate',
+            arguments: {
+                expression: command,
+                context: 'repl',
+            }
+        });
+    }
+
+    // We will try to save the breakpoints across the restart by saving them to a temp file and asking the DA
+    // to restore them after restart. But there are questions about how to do this.
+    // Note: we have a limited (small) number of breakpoints the HW allows. So be careful
+    // 1. if the user has runToEntryPoint, how is that handled
+    // A. These new breakpoints are come after the stop for that happens. This is so we don't burn a breakpoint for the
+    //    that. If we set the saved breakpoints after that bkpt is hit, then we save one bkpt for the user. Danger is
+    //    if the user bkpts affect pre runToEntryPoint code. But then they should use breakAfterReset.
+    // 2. If the does not have runToEntryPoint, then we should set these bkpts at the beginning of the session. Reset time
+    //    is the most likely time for bkpts to be lost, so we set them at the beginning and hope they survive the reset.
+    private savedPostStartCommands: string[] | undefined;
+    private savedPreStartCommands: string[] | undefined;
+    private setupBreakpointsFile(file: string) {
+        if ((!fs.existsSync(file) || fs.statSync(file).size === 0)) {
+            return;
+        }
+        if (this.config.runToEntryPoint) {
+            // Handle runToEntryPoint scenario
+            this.savedPostStartCommands = this.config.postStartSessionCommands;
+            const existingCommands = this.config.postStartSessionCommands || [];
+            this.config.postStartSessionCommands = [...existingCommands, `source ${file}`];
+        } else {
+            // No runToEntryPoint, set breakpoints at the beginning of the session
+            this.savedPreStartCommands = this.config.request === 'attach' ? this.config.preAttachCommands : this.config.preLaunchCommands;
+            const existingCommands = this.savedPreStartCommands || [];
+            if (this.config.request === 'attach') {
+                this.config.preAttachCommands = [...existingCommands, `source ${file}`];
+            } else {
+                this.config.preLaunchCommands = [...existingCommands, `source ${file}`];
+            }
+        }
+    }
+
+    private undoSetupBreakpointsFile() {
+        if (this.savedPostStartCommands) {
+            this.config.postStartSessionCommands = this.savedPostStartCommands;
+            this.savedPostStartCommands = undefined;
+        }
+        if (this.savedPreStartCommands) {
+            if (this.config.request === 'attach') {
+                this.config.preAttachCommands = this.savedPreStartCommands;
+            } else {
+                this.config.preLaunchCommands = this.savedPreStartCommands;
+            }
+            this.savedPreStartCommands = undefined;
+        }
+    }
+
+    private getBreakpointsFileName() {
+        if (this.cliArgs.breakpointsFile) {
+            return this.cliArgs.breakpointsFile;
+        }
+        const configNameSafe = this.config.name.replace(/[^a-zA-Z0-9-_]/g, '_');
+        return `${process.cwd()}/.mcu-debug/${configNameSafe}.bkpts`;
+    }
+
+    // Our DA does not support the 'restart' request , so we do a best-effort emulation by sending
+    // 'terminate' followed by a full teardown and re-launch of the session. This is not perfect —
+    // we may lose some state that the DA would have preserved across a restart — but it's the best
+    // we can do without native support.
+    private async doRestart(isTerminal: boolean) {
+        const bkptFile = this.getBreakpointsFileName();
+        await this.doReplCommand(`save breakpoints ${bkptFile}`);
+        for (const rtt of this.rtts) {
+            try { rtt.dispose(); } catch (e) { }
+        }
+        // We don't close the uarts, logfile or socket server because they are shared across sessions are not
+        // part of the DA. Actually not doing so provides continuity across the restart and also avoids potential
+        // issues with the clients attached to them.
+        this.rtts = [];
+        this.restarting = true;
+        // this.closeLineReaders();
+        // While a restart is not officially supported we have some rudimentary support to finish
+        // the previous session but not send a 'terminated' event which will exit our program. We kinda
+        // approximate what a VSCode like client would do for a restart.
+        try {
+            await this.sendRequest<DebugProtocol.TerminateResponse>({
+                seq: 0,          // overwritten by sendRequest
+                type: 'request', // overwritten by sendRequest
+                command: 'restart'
+            });
+        } catch (error) {
+            logger.error("Failed to restart session. Terminate failed: " + (error instanceof Error ? error.message : String(error)));
+            process.exit(1);
+        }
+        this.removeCDebugSession();
+        this.startSession(this.cliArgs).then(() => {
+            this.undoSetupBreakpointsFile();
+            this.restarting = false;
+        }).catch((error) => {
+            throw error;
+        });
     }
 
     private doStatus() {
@@ -377,6 +497,9 @@ export class CliSessionDriver {
     }
 
     private startReadlineRunning() {
+        if (this.rlRunning) {
+            return;
+        }
         this.rlRunning = readline.createInterface({
             input: process.stdin,
             output: process.stdout,
@@ -489,12 +612,11 @@ export class CliSessionDriver {
                 this.isInternalClose = false;
                 break;
             case 'terminated':
-                this.setState("terminated");
-                this.rlPaused?.close();
-                this.rlPaused = null;
-                this.rlRunning?.close();
-                this.rlRunning = null;
-                process.exit(0);
+                if (!this.restarting) {
+                    this.setState("terminated");
+                    this.closeLineReaders();
+                    process.exit(0);
+                }
                 break;
             case 'thread':
                 // threadId, reason ('started'|'exited') — mostly noise, log at debug
@@ -525,7 +647,7 @@ export class CliSessionDriver {
                 // this.receivedSWOConfigureEvent(event);
                 break;
             case "rtt-configure":
-                handleRTTConfigureEvent(event.body, this.debugSession, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
+                handleRTTConfigureEvent(event.body, this.debugSession!, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
                     this.rtts.push(new CLIRTTTerminal(decoder, src));
                 });
                 break;
@@ -536,11 +658,18 @@ export class CliSessionDriver {
                 break;
             default:
                 // Custom events (custom-event-ports-done, SWOConfigure, etc.)
-                this.optionalInfo.debug(`event:${event.event}`, { body: event.body });
+                this.optionalInfo.debug(`event:${event.event} `, { body: event.body });
                 break;
 
         }
         // TODO: route stopped/output/terminated events to the TUI / headless stream
+    }
+
+    private closeLineReaders() {
+        this.rlPaused?.close();
+        this.rlPaused = null;
+        this.rlRunning?.close();
+        this.rlRunning = null;
     }
 
     private routeOutput(category: string, output: string): void {
@@ -552,14 +681,14 @@ export class CliSessionDriver {
 
         if (category === 'stdout' && /^\d+[-~&@^]/.test(output)) {
             // GDB MI command sent by DA (gdbTraces mode) — log structured, never raw to terminal
-            this.gdbMiLogger.debug(`mi:tx [MI>] ${text}`);
+            this.gdbMiLogger.debug(`mi: tx[MI >] ${text} `);
             return;
         }
 
         if (category === 'console' && output.startsWith('-> ')) {
             // GDB MI response received — strip the '-> ' the DA added
             const mi = text.slice(3);
-            this.gdbMiLogger.debug(`mi:rx [MI<] ${mi}`);
+            this.gdbMiLogger.debug(`mi: rx[MI <] ${mi} `);
             return;
         }
 
@@ -615,14 +744,14 @@ export class CliSessionDriver {
         });
         // initialize is unrecoverable — throw so the caller's session setup aborts cleanly.
         if (!response.success) {
-            throw new Error(`initialize failed: ${response.message}`);
+            throw new Error(`initialize failed: ${response.message} `);
         }
         logger.debug("Debug session initialized. DA capabilities:", response.body);
         return response;
     }
 
     private createSocketJsonPath() {
-        return `${process.cwd()}/.mcu-debug/socket.json`;
+        return `${process.cwd()} /.mcu-debug/socket.json`;
     }
 
     private checkSocketFree() {
@@ -634,15 +763,15 @@ export class CliSessionDriver {
                     // Check if the process is still running
                     try {
                         process.kill(existing.pid, 0); // signal 0 doesn't actually kill, just checks if it exists
-                        logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running. Is another instance running?`, { source: 'DA', isConsole: true, ...existing });
+                        logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running.Is another instance running ? `, { source: 'DA', isConsole: true, ...existing });
                     } catch (err) {
-                        logger.warn(`Socket file ${socketJsonPath} already exists but process ${existing.pid} is not running. It will be overwritten.`, { source: 'DA', isConsole: true, ...existing });
+                        logger.warn(`Socket file ${socketJsonPath} already exists but process ${existing.pid} is not running.It will be overwritten.`, { source: 'DA', isConsole: true, ...existing });
                     }
                 } else {
-                    logger.warn(`Socket file ${socketJsonPath} already exists but has unexpected content. It will be overwritten.`, { source: 'DA', isConsole: true, content: existing });
+                    logger.warn(`Socket file ${socketJsonPath} already exists but has unexpected content.It will be overwritten.`, { source: 'DA', isConsole: true, content: existing });
                 }
             } catch (err) {
-                logger.error(`Socket file ${socketJsonPath} already exists and could not be read. Is another instance running?`, { source: 'DA', isConsole: true });
+                logger.error(`Socket file ${socketJsonPath} already exists and could not be read.Is another instance running ? `, { source: 'DA', isConsole: true });
             }
         }
     }

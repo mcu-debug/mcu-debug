@@ -10,7 +10,7 @@ export class CDebugSession {
     public rtt: RTTCore | null = null;
     public swoSource: SWORTTSource | null = null;
     public rttPortMap: { [channel: number]: SocketRTTSource } = {};
-    public rttUARTMap: { [path: string]: SocketUARTSource } = {};
+    // public rttUARTMap: { [path: string]: SocketUARTSource } = {};
     // Status can be 'none' before the session actually starts but this object
     // may have been created before that actually happens due to SWO, RTT, chained
     // launches, etc

@@ -248,6 +248,10 @@ export class CLISerialPortView implements ISerialPortView {
         return this.txtPrefix;
     }
 
+    public getDevice(): string {
+        return this.device;
+    }
+
     send(text: string): void {
         this.lineBuffer.push(text);
     }
@@ -315,7 +319,7 @@ export class CLISerialPortView implements ISerialPortView {
         }
     }
 
-    private destroyLogFile() {
+    private closeLogFile() {
         if (this.serialConfig.log_file) {
             this.logFileStream?.end(() => {
                 getHostAdapter().debugMessage(`Closed log file stream for ${this.serialConfig.log_file}`);
@@ -329,7 +333,7 @@ export class CLISerialPortView implements ISerialPortView {
             return;
         }
         this.serialConfig.log_file = log_file || "";
-        this.destroyLogFile();
+        this.closeLogFile();
         if (log_file) {
             this.logFileStream = fs.createWriteStream(log_file, { flags: "a" });
             if (!this.logFileStream) {
@@ -364,5 +368,11 @@ export class CLISerialPortView implements ISerialPortView {
             this.destroySocket();
             this.notifyDisconnected("Connection closed");
         });
+    }
+
+    dispose() {
+        this.destroySocket();
+        this.closeLogFile();
+        CLISerialPortView.existingPrefixes.delete(this.txtPrefix);
     }
 }

@@ -202,6 +202,21 @@
             return false;
         }
 
+        // Ctrl+C (bare, no shift/meta): copy if there is a selection, otherwise
+        // send a pause/interrupt request up to the extension.  This matches the
+        // pattern VS Code uses in its own integrated terminal so Windows users
+        // get copy-when-selected and interrupt-when-not.
+        if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "c") {
+            if (hasSelection()) {
+                event.preventDefault();
+                void writeSelectionToClipboard(false);
+            } else {
+                event.preventDefault();
+                postToExtension({ type: "special-key", tabId, key: "Ctrl+C" });
+            }
+            return false;
+        }
+
         const lowerKey = event.key.toLowerCase();
         const primaryModifier = isMac ? event.metaKey : event.ctrlKey;
         const terminalCopyShortcut = !isMac && event.ctrlKey && event.shiftKey && lowerKey === "c";

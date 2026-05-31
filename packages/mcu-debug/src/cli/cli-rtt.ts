@@ -36,7 +36,7 @@ export class CLIRTTTerminal {
             logger.info(`${source} ${ts}${line}`, { source: this.kind, isConsole: true });
         });
         this.binaryFormatter = new BinaryFormatter(this!, this.options.encoding, this.options.scale);
-        this.connectToSource(this.source);
+        this.connectToSource();
     }
 
     public getStatus(): "connected" | "not-connected" {
@@ -47,20 +47,21 @@ export class CLIRTTTerminal {
         return this.prefix;
     }
 
-    private connectToSource(src: SocketIOSource) {
+    private connectToSource() {
         const doConnected = () => {
             logger.info(`${this.prefix} type=${this.options.type} connected to RTT source.`, { source: 'DA', isConsole: true, color: 'green' });
             this.openLogFile();
         }
         this.hrTimer = new HrTimer();
-        if (src.connected) {
+        if (this.source.connected) {
             doConnected();
             return;
         }
-        src.once("disconnected", () => {
+        this.source.once("disconnected", () => {
             logger.info(`${this.prefix} disconnected from RTT source.`, { source: 'DA', isConsole: true, color: 'yellow.bold' });
+            this.dispose();
         });
-        src.on("error", (e) => {
+        this.source.on("error", (e) => {
             const code: string = e.code;
             if (code === "ECONNRESET") {
                 // Server closed the connection. We are done with this session
@@ -70,19 +71,18 @@ export class CLIRTTTerminal {
             } else {
                 logger.error(`${e} for ${this.prefix}`, { source: 'DA', isConsole: true, color: 'red' });
             }
+            this.dispose();
         });
-        src.on("data", (data) => {
+        this.source.on("data", (data) => {
             this.onData(data);
         });
 
-        if (src.connError) {
-            this.source = src;
-            logger.error(`${src.connError.message} for ${this.prefix}`, { source: 'DA', isConsole: true, color: 'red' });
-        } else if (src.connected) {
-            this.source = src;
+        if (this.source.connError) {
+            logger.error(`${this.source.connError.message} for ${this.prefix}`, { source: 'DA', isConsole: true, color: 'red' });
+        } else if (this.source.connected) {
             this.openLogFile();
         } else {
-            src.once("connected", () => {
+            this.source.once("connected", () => {
                 doConnected();
             });
         }
@@ -137,5 +137,17 @@ export class CLIRTTTerminal {
             }
             this.logFd = -1;
         }
+    }
+
+    private disposing = false;
+    public dispose() {
+        if (this.disposing) {
+            return;
+        }
+        this.disposing = true;
+        this.source.dispose();      // This will cause a disconnected event 
+        this.lineBuffer.flush();
+        this.closeLogFd();
+        CLIRTTTerminal.existingPrefixes.delete(this.prefix);
     }
 }
