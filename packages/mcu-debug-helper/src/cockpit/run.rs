@@ -14,15 +14,31 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
-use std::io::IsTerminal;
+use std::{io::IsTerminal, path::PathBuf};
 
 use super::{spawn, transport, tui};
 
 const MIN_NODE_MAJOR: u32 = 22; // Node v22+ is required for stable features we rely on (e.g. stable fetch API)
 
+pub fn get_node_program() -> String {
+    match std::env::var("MCU_DEBUG_NODE") {
+        Ok(val) => {
+            let path = PathBuf::from(val);
+            match path.canonicalize() {
+                Ok(canonical_path) if canonical_path.exists() => {
+                    canonical_path.to_string_lossy().to_string()
+                }
+                _ => "node".to_string(), // Fallback to "node" if the provided path is invalid
+            }
+        }
+        Err(_) => "node".to_string(), // Default to "node" if the environment variable is not set
+    }
+}
+
 /// Check that `node` is on PATH and is at least v`MIN_NODE_MAJOR`.
 fn check_node_version() -> Result<()> {
-    let output = std::process::Command::new("node")
+    let node_program = get_node_program();
+    let output = std::process::Command::new(node_program)
         .arg("--version")
         .output()
         .with_context(|| format!("node is not installed or not on PATH — install Node.js v{MIN_NODE_MAJOR}+ from https://nodejs.org"))?;
@@ -53,16 +69,42 @@ fn check_node_version() -> Result<()> {
 
 #[derive(Args, Debug)]
 pub struct DebugArgs {
+    /// Debug configuration to use.  Accepts a config name from launch.json, a
+    /// zero-based index into the configurations array, or a glob pattern that
+    /// matches exactly one configuration name.
+    #[arg(short = 'c', long = "config")]
+    pub config: Option<String>,
+
+    /// Path to the launch.json file.
+    #[arg(short = 'j', long = "json", default_value = ".vscode/launch.json")]
+    pub json: String,
+
+    /// Path to a custom settings JSON file.
+    #[arg(
+        short = 's',
+        long = "settings",
+        default_value = "mcu-debug-settings.json"
+    )]
+    pub settings: String,
+
+    /// Log file path.  When omitted, logs are written to $CWD/.mcu-debug/cli.log.
+    #[arg(short = 'l', long = "log-file")]
+    pub log_file: Option<String>,
+
+    /// Enable debug mode — more verbose logging.
+    #[arg(short = 'd', long = "debug")]
+    pub debug: bool,
+
+    /// Wait for a DAP client to connect before starting the debug session.
+    #[arg(long = "wait-for-client")]
+    pub wait_for_client: bool,
+
     /// Skip the TUI and stream the mux output directly to stdout.
     ///
     /// Use this flag when launching from an AI agent or CI pipeline that
     /// reads the tagged mux stream directly from stdout.
     #[arg(long)]
     pub no_tui: bool,
-
-    /// Arguments forwarded verbatim to the Node CLI (e.g. `-- --config "Launch PSoC6"`).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub pass_through: Vec<String>,
 }
 
 pub fn run(args: DebugArgs) -> Result<()> {
@@ -76,14 +118,22 @@ pub fn run(args: DebugArgs) -> Result<()> {
     // The flag remains useful as an explicit override when stdout IS a TTY.
     let headless = args.no_tui || !std::io::stdout().is_terminal();
 
-    // Strip --no-tui from the forwarded args. With trailing_var_arg, if the
-    // flag appears after any unknown argument it lands in pass_through instead
-    // of being parsed as no_tui=true, and Node would error on an unknown flag.
-    let node_args: Vec<String> = args
-        .pass_through
-        .into_iter()
-        .filter(|a| a != "--no-tui")
-        .collect();
+    // Build the args to forward to the Node CLI from the parsed Rust fields.
+    let mut node_args: Vec<String> = Vec::new();
+    if let Some(ref config) = args.config {
+        node_args.extend_from_slice(&["--config".to_string(), config.clone()]);
+    }
+    node_args.extend_from_slice(&["--json".to_string(), args.json.clone()]);
+    node_args.extend_from_slice(&["--settings".to_string(), args.settings.clone()]);
+    if let Some(ref log_file) = args.log_file {
+        node_args.extend_from_slice(&["--log-file".to_string(), log_file.clone()]);
+    }
+    if args.debug {
+        node_args.push("--debug".to_string());
+    }
+    if args.wait_for_client {
+        node_args.push("--wait-for-client".to_string());
+    }
 
     if headless {
         // Headless mode: Node inherits our stdio. The mux stream goes directly

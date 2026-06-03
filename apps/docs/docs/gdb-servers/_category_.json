@@ -1,0 +1,5 @@
+{
+  "label": "GDB Servers",
+  "position": 3,
+  "link": { "type": "doc", "id": "gdb-servers/index" }
+}

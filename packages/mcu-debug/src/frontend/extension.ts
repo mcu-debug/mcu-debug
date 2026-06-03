@@ -4,6 +4,7 @@
 
 import * as vscode from "vscode";
 import * as path from "path";
+import * as os from "os";
 
 import { MCUDebugChannel } from "./dbgmsgs";
 import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
@@ -34,6 +35,7 @@ import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "@mcu-debug/shared";
 import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
 import { AICockpit } from "./ai-cockpit";
+import { mkdirSync, writeFileSync } from "fs";
 interface SVDInfo {
     expression: RegExp;
     path: string;
@@ -67,6 +69,19 @@ export class MCUDebugExtension {
         const context: vscode.ExtensionContext = this.context;
         const config = vscode.workspace.getConfiguration("mcu-debug");
         await this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
+
+        try {
+            const fileName = path.join(os.homedir(), ".mcu-debug", "config.json");
+            const obj: any = {
+                extensionVersion: context.extension.packageJSON.version,
+                extensionId: context.extension.id,
+                extensionPath: context.extension.extensionPath.replace(/\\/g, "/"),
+            }
+            mkdirSync(path.dirname(fileName), { recursive: true });
+            writeFileSync(fileName, JSON.stringify(obj, null, 2) + "\n");
+        } catch (error) {
+            console.error("Failed to read config file:", error);
+        }
 
         this.cockpitPanel = new CockpitPanel(context.extensionUri);
         AICockpit.getInstance(context);

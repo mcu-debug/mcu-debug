@@ -100,7 +100,7 @@
 			"name": "Debug Rust mcu-debug TUI",
 			"type": "lldb",
 			"request": "launch",
-            "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug",
+            "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
 			"args": ["debug", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log"],
             // "cwd": "/Users/hdm/mtw37/Hello_World",
 			"cwd": "/Users/hdm/rtt/Hello_RTT",
@@ -128,7 +128,7 @@
 		{
             "type": "lldb",
             "request": "launch",
-            "name": "Launch mcu-debug",
+            "name": "Launch mdbg",
             "cargo": {
 				"cwd": "${workspaceFolder}/packages/mcu-debug",
                 "args": [
@@ -147,9 +147,9 @@
         {
             "type": "lldb",
             "request": "attach",
-            "name": "Attach mcu-debug",
+            "name": "Attach mdbg",
             "pid": "${command:pickMyProcess}",
-			"program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug",
+			"program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
             "sourceLanguages": ["rust"]
         }
 	],

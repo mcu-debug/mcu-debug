@@ -395,7 +395,7 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
 export function activate(context: vscode.ExtensionContext) {
     console.log("[mcu-debug-proxy] Activating MCU Debug Proxy extension");
     const platform = process.platform;
-    const exeName = "mcu-debug" + (platform === "win32" ? ".exe" : "");
+    const exeName = "mdbg" + (platform === "win32" ? ".exe" : "");
     const devPath = context.asAbsolutePath(`bin/${exeName}`);
     if (fs.existsSync(devPath) && binaryMatchesPlatform(devPath, platform, process.arch)) {
         proxyPath = devPath;

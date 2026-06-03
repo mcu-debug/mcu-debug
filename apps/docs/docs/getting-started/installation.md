@@ -1,0 +1,74 @@
+---
+sidebar_position: 2
+title: Installation
+---
+
+# Installation
+
+## VS Code Extension
+
+Install mcu-debug from the VS Code Marketplace:
+
+1. Open VS Code
+2. Open the Extensions panel (`Ctrl+Shift+X` / `Cmd+Shift+X`)
+3. Search for **mcu-debug**
+4. Click **Install**
+
+Or install from the command line:
+
+```sh
+code --install-extension mcu-debug.mcu-debug
+```
+
+## Prerequisites
+
+### GDB
+
+mcu-debug requires GDB for your target architecture. For ARM Cortex-M targets:
+
+- **Arm GNU Toolchain** (recommended): download from [developer.arm.com](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads). Provides `arm-none-eabi-gdb`.
+- **xPack DevTools**: `npm install -g @xpack-dev-tools/arm-none-eabi-gcc`
+
+After installation, verify GDB is accessible:
+
+```sh
+arm-none-eabi-gdb --version
+```
+
+The `gdbPath` or `toolchainPrefix` properties in `launch.json` let you specify the path explicitly if GDB is not on `PATH`.
+
+### GDB Server
+
+Choose the gdb-server that matches your debug probe:
+
+| Probe | Recommended Server |
+|-------|--------------------|
+| Most probes (ST-Link, CMSIS-DAP, JLink, etc.) | [OpenOCD](../gdb-servers/openocd.md) |
+| JLink probes | [JLink GDB Server](../gdb-servers/jlink.md) |
+| CMSIS-DAP probes | [pyOCD](../gdb-servers/pyocd.md) |
+| ST-Link probes | [STLink GDB Server](../gdb-servers/stlink.md) |
+
+See the [GDB Servers](../gdb-servers/index.md) section for installation instructions for each server.
+
+### Node.js (for CLI features)
+
+The mcu-debug CLI tool requires Node.js >= 22. Download from [nodejs.org](https://nodejs.org) or install via a version manager:
+
+```sh
+# Using nvm
+nvm install 22
+nvm use 22
+```
+
+The VS Code extension itself does not require Node.js to be on your `PATH` — it uses the Node.js bundled with VS Code.
+
+## Verification
+
+To verify the installation:
+
+1. Open a firmware project folder in VS Code
+2. Create `.vscode/launch.json` (see [Quick Start](./quick-start.md) for an example)
+3. Open the **Run and Debug** panel (`Ctrl+Shift+D` / `Cmd+Shift+D`)
+4. Your configuration should appear in the dropdown
+
+The extension activates when a `launch.json` with `"type": "mcu-debug"` is opened.

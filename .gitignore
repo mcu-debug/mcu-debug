@@ -188,3 +188,4 @@ packages/mcu-debug/resources/codicons/
 
 # Cockpit webview build output (derived from src/webviews/cockpit/ via Vite)
 packages/mcu-debug/resources/cockpit/
+packages/mcu-debug-npm/mcu-debug*.tgz

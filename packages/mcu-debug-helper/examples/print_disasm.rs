@@ -1,7 +1,7 @@
-use mcu_debug::da_helper::get_assembly::AssemblyLine;
-use mcu_debug::da_helper::get_assembly::AssemblyListing;
-use mcu_debug::da_helper::helper_requests::DisasmResponse;
-use mcu_debug::da_helper::helper_requests::SerInstruction;
+use mdbg::da_helper::get_assembly::AssemblyLine;
+use mdbg::da_helper::get_assembly::AssemblyListing;
+use mdbg::da_helper::helper_requests::DisasmResponse;
+use mdbg::da_helper::helper_requests::SerInstruction;
 use std::collections::HashMap;
 
 fn main() {

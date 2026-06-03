@@ -15,15 +15,15 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use mcu_debug::cockpit::run::DebugArgs;
-use mcu_debug::da_helper::run::DaHelperArgs;
-use mcu_debug::proxy_helper::run::ProxyArgs;
+use mdbg::cockpit::run::DebugArgs;
+use mdbg::da_helper::run::DaHelperArgs;
+use mdbg::proxy_helper::run::ProxyArgs;
 
 #[derive(Parser, Debug)]
 #[command(
     author,
     version,
-    about = "MCU Debug Helper — ELF analysis, probe agent, and Glass Cockpit TUI"
+    about = "MCU Debug Helper — ELF analysis, probe agent, and TUI"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -32,7 +32,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Launch a debug session with an optional ratatui Glass Cockpit TUI
+    /// Launch a debug CLI session with an optional ratatui TUI (Terminal UI).
     #[command(name = "debug")]
     Debug(DebugArgs),
 
@@ -81,8 +81,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse_from(&args);
 
     match cli.command {
-        Commands::Debug(args) => mcu_debug::cockpit::run::run(args),
-        Commands::DaHelper(args) => mcu_debug::da_helper::run::run(args),
-        Commands::Proxy(args) => mcu_debug::proxy_helper::run::run(args),
+        Commands::Debug(args) => mdbg::cockpit::run::run(args),
+        Commands::DaHelper(args) => mdbg::da_helper::run::run(args),
+        Commands::Proxy(args) => mdbg::proxy_helper::run::run(args),
     }
 }

@@ -16,6 +16,8 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
+use crate::cockpit::run::get_node_program;
+
 /// Locate the Node CLI JS file relative to the current executable.
 ///
 /// Search order (first match wins):
@@ -44,7 +46,8 @@ pub fn find_node_cli() -> Option<PathBuf> {
 /// agent reading our stdout) will not see the Node CLI's tagged stream directly. They can either use
 /// the log file or the socket interface to get the tagged stream data.
 pub fn spawn_node_cli_tui(cli_js: &PathBuf, extra_args: &[String]) -> Result<Child> {
-    Command::new("node")
+    let node_program = get_node_program();
+    Command::new(node_program)
         .arg(cli_js)
         .args(extra_args)
         .stdin(Stdio::piped())
@@ -59,7 +62,8 @@ pub fn spawn_node_cli_tui(cli_js: &PathBuf, extra_args: &[String]) -> Result<Chi
 /// Node's stdout is the mux stream; it is inherited so the caller (or an AI
 /// agent reading our stdout) receives the tagged stream directly.
 pub fn spawn_node_cli_headless(cli_js: &PathBuf, extra_args: &[String]) -> Result<Child> {
-    Command::new("node")
+    let node_program = get_node_program();
+    Command::new(node_program)
         .arg(cli_js)
         .args(extra_args)
         .stdin(Stdio::inherit())

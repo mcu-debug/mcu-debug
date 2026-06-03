@@ -10,7 +10,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$ROOT_DIR/packages/mcu-debug-helper"
 BINDIR="$ROOT_DIR/packages/mcu-debug/bin"
 PROXY_BINDIR="$ROOT_DIR/packages/mcu-debug-proxy/bin"
-BIN_NAME="mcu-debug"
+BIN_NAME="mdbg"
 
 mkdir -p "$BINDIR"
 
