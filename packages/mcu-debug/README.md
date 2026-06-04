@@ -52,6 +52,16 @@ Support for debugging multiple cores on the same target. It can also support deb
 
 ---
 
+## Companion Extensions (DAP-Compatible)
+
+To keep the core debugger lightweight and modular, we have factored out several key visualization components into **standalone companion extensions**. Because they leverage standard Debug Adapter Protocol (DAP) memory and variable APIs, they are fully decoupled and can be used with **any** DAP-compatible debugger (such as `cppdbg` or `cspy`), as well as with MCU-Debug:
+
+*   **[Peripheral Viewer](https://marketplace.visualstudio.com/items?itemName=mcu-debug.peripheral-viewer):** An interactive SVD (System View Description) viewer to inspect microcontroller peripheral registers during a debug session.
+*   **[RTOS Views](https://marketplace.visualstudio.com/items?itemName=mcu-debug.rtos-views):** A popular, community-driven real-time monitor for RTOS tasks, queues, semaphores, and kernel states. Backed by a active contributor base (including ARM), this extension features a framework supporting a wide variety of RTOSes.
+*   **[MemoryView](https://marketplace.visualstudio.com/items?itemName=mcu-debug.memory-view):** A high-performance memory inspector for raw hex dumps and direct memory reads/writes.
+
+---
+
 ## Supported GDB Servers & Targets
 
 MCU-Debug is vendor-agnostic and includes built-in configurations for:
