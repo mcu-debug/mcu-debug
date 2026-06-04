@@ -44,7 +44,7 @@ No more missing early boot diagnostic prints:
 *   A built-in ring buffer captures firmware output *before* your console tab is even opened.
 *   Tunnel remote serial ports from your lab server to your local machine using the Funnel Protocol.
 
-### 5. Live Watch & ~~~Real-time Graphing~~~
+### 5. Live Watch & ~~Real-time Graphing~~
 Subscribe to named variables and get streaming updates pushed directly to the UI, enabling live telemetry and graphing without manual polling loops. (Real-time graphing is coming soon).
 
 ### 6. Multi-core Debug Support
