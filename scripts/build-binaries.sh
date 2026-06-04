@@ -7,7 +7,7 @@ set -euo pipefail
 # - prod: attempt release builds for multiple targets and place them under packages/mcu-debug/bin/<platform>/
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RUST_DIR="$ROOT_DIR/packages/mcu-debug-helper"
+RUST_DIR="$ROOT_DIR/packages/mdbg"
 BINDIR="$ROOT_DIR/packages/mcu-debug/bin"
 PROXY_BINDIR="$ROOT_DIR/packages/mcu-debug-proxy/bin"
 BIN_NAME="mdbg"

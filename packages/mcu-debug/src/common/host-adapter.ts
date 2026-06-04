@@ -116,7 +116,7 @@ export interface IHostAdapter {
 
     // ── Settings bridge ──────────────────────────────────────────────────────
     // VS Code: vscode.workspace.getConfiguration(section).get(key[, defaultValue])
-    // CLI:     .vscode/mcu-debug-settings.json → ~/.mcu-debug/settings.json
+    // CLI:     .vscode/settings.json → ~/.mcu-debug/settings.json
     getSetting<T>(section: string, key: string, defaultValue: T): T;
     getSetting<T>(section: string, key: string): T | undefined;
 

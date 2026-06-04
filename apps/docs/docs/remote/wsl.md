@@ -64,6 +64,7 @@ If auto-detection fails, explicitly configure the host:
 
 ```json
 "hostConfig": {
+z "enabled": true,
   "type": "wsl",
   "host": "127.0.0.1"
 }

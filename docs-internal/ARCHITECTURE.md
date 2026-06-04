@@ -416,9 +416,9 @@ When present in `launch.json`, enables remote proxy mode. When absent, everythin
 When a debug session starts with `hostConfig` present:
 
 1. **Connect:** Extension spawns `ssh` as a child process to the configured host
-2. **Deploy:** Check if `mcu-debug-helper` exists and is the correct version on the host. If not, SCP the correct binary for the host architecture (detected via `uname -m`) to `~/.mcu-debug/bin/`
-3. **Launch proxy manually:** `ssh user@host "~/.mcu-debug/bin/mcu-debug-helper proxy --port 0"` — proxy prints discovery JSON to stdout with its assigned port
-4. **Launch proxy by Extention:** This is done by the the extension running on host side. The client side can get the port & token using an API. The client can then do `ssh -L local-port:remote-host:remote-port user@server` automatically
+2. **Deploy:** Check if `mdbg` exists and is the correct version on the host. If not, SCP the correct binary for the host architecture (detected via `uname -m`) to `~/.mcu-debug/bin/`
+3. **Launch proxy manually:** `ssh user@host "~/.mcu-debug/bin/mdbg proxy --port 0"` — proxy prints discovery JSON to stdout with its assigned port
+4. **Launch proxy by Extention:** This is done by the extension running on host side. The client side can get the port & token using an API. The client can then do `ssh -L local-port:remote-host:remote-port user@server` automatically
 5. **Tunnel:** Extension sets up SSH port forwarding (`-L`) to the proxy port
 6. **Stage files:** If `syncFiles` is configured, send workspace files to the proxy via the Funnel Protocol
 7. **Debug:** Normal debug session proceeds through the tunnel
@@ -534,9 +534,9 @@ Probe host (lab server / Windows host / Docker host)
 
 ### Phase 1: Unified Rust Binary with Proxy Subcommand
 
-**Goal:** A single `mcu-debug-helper` binary that can run as both the DA helper (existing) and the Probe Agent (new), selected via subcommand.
+**Goal:** A single `mdbg` binary that can run as both the DA helper (existing) and the Probe Agent (new), selected via subcommand.
 
-- Refactor `mcu-debug-helper` into subcommand structure: `mcu-debug-helper da-helper [args]` and `mcu-debug-helper proxy [args]`
+- Refactor `mdbg` into subcommand structure: `mdbg da-helper [args]` and `mdbg proxy [args]`
 - Implement the Funnel Protocol framing in Rust (5-byte header parser: stream ID + payload length)
 - Implement the JSON-RPC control channel on Stream ID 0 (`initialize`, `startStream`, `streamStatus`, `heartbeat`)
 - Test locally: Debug Adapter ↔ Proxy on localhost via TCP
@@ -559,10 +559,10 @@ Probe host (lab server / Windows host / Docker host)
 **Goal:** The VS Code extension can transparently start and connect to a Proxy on a remote host.
 
 - Implement the "Probe-and-Deploy" flow from [Proxy-Plan.md](./Proxy-Plan.md):
-  - Version check via SSH (`mcu-debug-helper proxy --version`)
+  - Version check via SSH (`mdbg proxy --version`)
   - ~Auto-deploy binary via SCP for detected architecture (`uname -m`)~
   - Generally launched by the UI side of the extension
-  - Can by manually launched or a servery or via SSH (`ssh user@host "~/.mcu-debug/bin/mcu-debug-helper proxy --port 0 --token <secret>"`)
+  - Can by manually launched or a servery or via SSH (`ssh user@host "~/.mcu-debug/bin/mdbg proxy --port 0 --token <secret>"`)
 - ~Parse Discovery JSON from Proxy stdout~The launcher decides the launch parameters so no discovery is required, but available if needed from JSON on stdout
 - Set up SSH tunnel (`-L` forwarding to Proxy port)
 - Implement the state machine in TypeScript: Connecting → Checking → Deploying → Starting → Tunneling → Ready

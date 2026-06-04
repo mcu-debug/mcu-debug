@@ -1,6 +1,6 @@
 # Building Cross-Platform Binaries
 
-This guide explains how to build the `mcu-debug-helper` Rust binary for multiple platforms.
+This guide explains how to build the `mdbg` Rust binary for multiple platforms.
 
 ## Quick Start
 
@@ -10,7 +10,7 @@ This guide explains how to build the `mcu-debug-helper` Rust binary for multiple
 ./scripts/build-binaries.sh dev
 ```
 
-Produces debug binary at `packages/mcu-debug/bin/mcu-debug-helper`
+Produces debug binary at `packages/mcu-debug/bin/mdbg`
 
 ### Production Build (All Platforms)
 
@@ -32,12 +32,12 @@ This configures:
 Produces release binaries in:
 ```
 packages/mcu-debug/bin/
-├── darwin-arm64/mcu-debug-helper
-├── darwin-x64/mcu-debug-helper
-├── linux-arm64/mcu-debug-helper
-├── linux-x64/mcu-debug-helper
-├── win32-arm64/mcu-debug-helper.exe
-└── win32-x64/mcu-debug-helper.exe
+├── darwin-arm64/mdbg
+├── darwin-x64/mdbg
+├── linux-arm64/mdbg
+├── linux-x64/mdbg
+├── win32-arm64/mdbg.exe
+└── win32-x64/mdbg.exe
 ```
 
 ## Target Details
@@ -105,7 +105,7 @@ Windows Defender SmartScreen will flag **unsigned executables** as untrusted. Us
 
 **Signing command** (requires certificate):
 ```powershell
-signtool sign /f certificate.pfx /p password /tr http://timestamp.digicert.com /td sha256 /fd sha256 mcu-debug-helper.exe
+signtool sign /f certificate.pfx /p password /tr http://timestamp.digicert.com /td sha256 /fd sha256 mdbg.exe
 ```
 
 #### macOS
@@ -114,12 +114,12 @@ macOS Gatekeeper will quarantine unsigned binaries and show "unidentified develo
 **Solutions**:
 1. **Apple Developer Account** ($99/year) + code signing + notarization
 2. **For distribution**: Users must right-click → "Open" on first launch
-3. **For development**: `xattr -d com.apple.quarantine mcu-debug-helper` removes quarantine
+3. **For development**: `xattr -d com.apple.quarantine mdbg` removes quarantine
 
 **Signing command** (requires Apple Developer certificate):
 ```bash
-codesign --sign "Developer ID Application: Your Name" --timestamp mcu-debug-helper
-xcrun notarytool submit mcu-debug-helper.zip --keychain-profile "AC_PASSWORD"
+codesign --sign "Developer ID Application: Your Name" --timestamp mdbg
+xcrun notarytool submit mdbg.zip --keychain-profile "AC_PASSWORD"
 ```
 
 #### Linux
@@ -131,21 +131,21 @@ Check dependencies on any platform:
 
 ```bash
 # macOS - check dynamic libraries
-otool -L packages/mcu-debug/bin/darwin-arm64/mcu-debug-helper
+otool -L packages/mcu-debug/bin/darwin-arm64/mdbg
 
 # Linux - check shared object dependencies  
-ldd packages/mcu-debug/bin/linux-x64/mcu-debug-helper
+ldd packages/mcu-debug/bin/linux-x64/mdbg
 # or from macOS:
-x86_64-unknown-linux-musl-objdump -p packages/mcu-debug/bin/linux-x64/mcu-debug-helper | grep NEEDED
+x86_64-unknown-linux-musl-objdump -p packages/mcu-debug/bin/linux-x64/mdbg | grep NEEDED
 
 # Windows - check DLL dependencies
 # (from macOS with mingw-w64 installed)
-x86_64-w64-mingw32-objdump -p packages/mcu-debug/bin/win32-x64/mcu-debug-helper.exe | grep "DLL Name"
+x86_64-w64-mingw32-objdump -p packages/mcu-debug/bin/win32-x64/mdbg.exe | grep "DLL Name"
 ```
 
 ## Linker Configuration
 
-Cross-compilation linkers are configured in `packages/mcu-debug-helper/.cargo/config.toml`:
+Cross-compilation linkers are configured in `packages/mdbg/.cargo/config.toml`:
 - Linux release targets use MUSL triples (`*-unknown-linux-musl`)
 - `cross` is preferred for Linux/Windows to avoid local linker friction
 - Windows targets remain GNU ABI (`x86_64-pc-windows-gnu`)

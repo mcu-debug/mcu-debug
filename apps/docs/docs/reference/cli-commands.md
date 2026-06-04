@@ -15,14 +15,14 @@ Start a debug session.
 mcu-debug debug [options]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `-c, --config <name\|index>` | Configuration name or index from `launch.json` (required) |
-| `-j, --json-file <path>` | Path to `launch.json` (default: `.vscode/launch.json` in current directory) |
-| `--no-tui` | Force terminal mode even when running on a TTY |
-| `-s, --settings <path>` | Path to mcu-debug settings file (alternative to `.vscode/mcu-debug-settings.json`) |
-| `-l, --log <path>` | Override default log file path |
-| `--script <path>` | GDB script file to run at session start (for automated use) |
+| Option                       | Description                                                                 |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| `-c, --config <name\|index>` | Configuration name or index from `launch.json` (required)                   |
+| `-j, --json-file <path>`     | Path to `launch.json` (default: `.vscode/launch.json` in current directory) |
+| `--no-tui`                   | Force terminal mode even when running on a TTY                              |
+| `-s, --settings <path>`      | Path to mcu-debug settings file (alternative to `.vscode/settings.json`)    |
+| `-l, --log <path>`           | Override default log file path                                              |
+| `--script <path>`            | GDB script file to run at session start (for automated use)                 |
 
 Examples:
 
@@ -74,8 +74,8 @@ Resolve and print a `launch.json` configuration with all variables substituted.
 mcu-debug dump-config <config-name> [launch-json-path]
 ```
 
-| Option | Description |
-|--------|-------------|
+| Option   | Description                                            |
+| -------- | ------------------------------------------------------ |
 | `--diff` | Show which variables were substituted (before → after) |
 
 ```sh
@@ -94,10 +94,10 @@ Start the mcu-debug probe agent for remote debugging.
 mcu-debug proxy [options]
 ```
 
-| Option | Description |
-|--------|-------------|
+| Option       | Description                                |
+| ------------ | ------------------------------------------ |
 | `--port <n>` | Port to listen on (default: auto-assigned) |
-| `--daemon` | Run as a background daemon |
+| `--daemon`   | Run as a background daemon                 |
 
 The proxy binary is also deployed automatically by the SSH remote mode — you typically only run this manually for WSL and Docker setups where automatic deployment doesn't apply.
 
@@ -107,12 +107,12 @@ The proxy binary is also deployed automatically by the SSH remote mode — you t
 
 During a debug session (in terminal mode or TUI mode), all GDB commands are accepted directly. Special session commands:
 
-| Command | Description |
-|---------|-------------|
+| Command  | Description                                                            |
+| -------- | ---------------------------------------------------------------------- |
 | `status` | Show session summary as JSON — config name, state, sources, file paths |
-| `help` | Show key bindings (TUI) or command reference (terminal) |
-| `exit` | Graceful session exit — disconnect GDB, stop gdb-server, clean up |
-| `quit` | Alias for `exit` |
+| `help`   | Show key bindings (TUI) or command reference (terminal)                |
+| `exit`   | Graceful session exit — disconnect GDB, stop gdb-server, clean up      |
+| `quit`   | Alias for `exit`                                                       |
 
 GDB commands can be any valid GDB command: `break`, `continue`, `step`, `next`, `print`, `x`, `backtrace`, `info registers`, `monitor`, etc.
 

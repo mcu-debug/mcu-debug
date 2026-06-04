@@ -607,7 +607,7 @@ module.exports = {
             searchSize: { type: "number", description: "Number of bytes to search for the RTT control block.", multipleOf: 1, minimum: 16, default: 16 },
             searchId: { type: "string", description: "A string to search for to find the RTT control block.", default: "SEGGER RTT" },
             useBuiltinRTT: {
-                type: "object",
+                type: ["boolean", "object"],
                 description:
                     "Use the built-in RTT support (recommended) especially with servers no native RTT support. If false, use gdb-server's RTT support, which may have better performance, but harder to setup.",
                 properties: {
@@ -615,7 +615,7 @@ module.exports = {
                     hostName: { type: "string", description: "Host name to use for built-in RTT server.", default: "127.0.0.1" },
                     tcpPort: {
                         type: ["number", "null"],
-                        description: "Fixed port number to use for built-in RTT server. If not set, a free port is chosen automatically.",
+                        description: "Optional fixed port number to use for built-in RTT server. If not set, a free port is chosen automatically.",
                         default: null,
                         minimum: 1024,
                         maximum: 65535,

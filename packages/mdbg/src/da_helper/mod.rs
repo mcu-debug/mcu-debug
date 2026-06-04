@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Debug Adapter helper — ELF parsing, disassembly, symbol lookup.
-//! This is the existing mcu-debug-helper functionality, now behind the `da-helper` subcommand.
+//! This is the existing mdbg da-helper functionality, now behind the `da-helper` subcommand.
 
 pub mod disasm_worker;
 pub mod elf_items;

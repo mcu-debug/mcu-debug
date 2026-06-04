@@ -36,11 +36,11 @@
       "problemMatcher": [
         {
           "base": "$rustc",
-          "fileLocation": ["relative", "${workspaceFolder}/packages/mcu-debug-helper"]
+          "fileLocation": ["relative", "${workspaceFolder}/packages/mdbg"]
         }
       ],
       "options": {
-        "cwd": "${workspaceFolder}/packages/mcu-debug-helper",
+        "cwd": "${workspaceFolder}/packages/mdbg",
         "env": {
           "RUSTFLAGS": "-C debuginfo=2"
         }

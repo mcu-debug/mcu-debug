@@ -5,17 +5,19 @@ title: Variable Substitution
 
 # Variable Substitution
 
-mcu-debug processes `launch.json` values through variable substitution before use. This lets you write portable configurations that work across machines and users.
+mcu-debug processes `launch.json` values through variable substitution before use. This lets you write portable configurations that work across machines and users. Most of the variable substiution is done by VSCode, except the variables that come from the `envFile`
 
 ## Supported Variables
 
-| Variable | Source | Example |
-|----------|--------|---------|
-| `${workspaceFolder}` | Directory containing `.vscode/` | `/home/user/my-project` |
-| `${env:VAR}` | Environment variable or `envFile` entry | `${env:TOOLCHAIN_PATH}/bin` |
-| `${config:mcu-debug.KEY}` | VS Code setting value | `${config:mcu-debug.armToolchainPath}` |
-| `${userHome}` | User home directory | `/home/user` or `C:\Users\user` |
-| `${pathSeparator}` | Platform path separator | `/` on Linux/macOS, `\` on Windows |
+| Variable                  | Source                                  | Example                                |
+| ------------------------- | --------------------------------------- | -------------------------------------- |
+| `${workspaceFolder}`      | Directory containing `.vscode/`         | `/home/user/my-project`                |
+| `${env:VAR}`              | Environment variable or `envFile` entry | `${env:TOOLCHAIN_PATH}/bin`            |
+| `${config:mcu-debug.KEY}` | VS Code setting value                   | `${config:mcu-debug.armToolchainPath}` |
+| `${userHome}`             | User home directory                     | `/home/user` or `C:\Users\user`        |
+| `${pathSeparator}`        | Platform path separator                 | `/` on Linux/macOS, `\` on Windows     |
+
+The variables above are supported in both CLI and VSCode environments. VSCode may support additional variables that are not available outside VSCode
 
 ## The `envFile` Property
 
@@ -53,16 +55,17 @@ When running the CLI tool, variable substitution works the same way with one dif
 - `${workspaceFolder}` resolves to the directory containing `launch.json` (not `.vscode/launch.json`'s parent — the `launch.json` file's own directory)
 - `${command:...}` is **not supported** in CLI mode — this requires the VS Code extension runtime. Expand these values manually.
 - `${input:...}` is **not supported** in CLI mode — this requires VS Code UI prompts. Expand these values manually.
+- `${config:...}` has **limited support** via a cli-option `--settings json-file` for providing the settings. You can use `.vscode/settings.json' for this purpose
 
 ## The `${config:mcu-debug.KEY}` Variable
 
 This reads from VS Code workspace or user settings. For example:
 
 ```json
-"toolchainPrefix": "${config:mcu-debug.armToolchainPath}"
+"armToolchainPath": "${config:mcu-debug.armToolchainPath}"
 ```
 
-In CLI mode, this reads from `.vscode/mcu-debug-settings.json` in the project, or `~/.mcu-debug/settings.json` for user-level settings. See [Configuration Outside VS Code](../cli/configuration.md) for details.
+In CLI mode, this reads from `.vscode/ettings.json` in the project, or `~/.mcu-debug/settings.json` for user-level settings. See [Configuration Outside VS Code](../cli/configuration.md) for details.
 
 ## Tips
 

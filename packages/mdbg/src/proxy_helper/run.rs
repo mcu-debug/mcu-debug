@@ -96,11 +96,11 @@ pub struct ProxyArgs {
 }
 
 fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
-    let log_dir = args.log_dir.clone().map(PathBuf::from).unwrap_or_else(|| {
-        std::env::temp_dir()
-            .join("mcu-debug-helper")
-            .join("proxy-logs")
-    });
+    let log_dir = args
+        .log_dir
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("mdbg").join("proxy-logs"));
 
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)

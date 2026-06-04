@@ -13,20 +13,20 @@ The CLI reads the same `launch.json` as VS Code. Most configurations work withou
 
 Variables resolved by the CLI:
 
-| Variable | Resolves to |
-|----------|------------|
-| `${workspaceFolder}` | Directory containing `launch.json` |
-| `${env:VAR}` | Environment variable, or `envFile` entry |
-| `${userHome}` | User home directory |
-| `${pathSeparator}` | `/` on Linux/macOS, `\` on Windows |
-| `${config:KEY}` | Value from `.vscode/mcu-debug-settings.json` or `~/.mcu-debug/settings.json` |
+| Variable             | Resolves to                              |
+| -------------------- | ---------------------------------------- |
+| `${workspaceFolder}` | Directory containing `launch.json`       |
+| `${env:VAR}`         | Environment variable, or `envFile` entry |
+| `${userHome}`        | User home directory                      |
+| `${pathSeparator}`   | `/` on Linux/macOS, `\` on Windows       |
+| `${config:KEY}`      | Value from `.vscode/settings.json`       |
 
 Variables **not** supported in CLI mode:
 
-| Variable | Reason |
-|----------|--------|
+| Variable         | Reason                                                            |
+| ---------------- | ----------------------------------------------------------------- |
 | `${command:...}` | Requires VS Code extension runtime. Expand manually before using. |
-| `${input:...}` | Requires VS Code UI prompt. Expand manually before using. |
+| `${input:...}`   | Requires VS Code UI prompt. Expand manually before using.         |
 
 ## envFile
 
@@ -49,9 +49,9 @@ OPENOCD=/usr/bin/openocd
 
 The `envFile` is loaded first, so its variables are available throughout the configuration.
 
-## mcu-debug-settings.json
+## settings.json
 
-For `${config:mcu-debug.KEY}` references, create `.vscode/mcu-debug-settings.json` in the project:
+For `${config:mcu-debug.KEY}` references, use your `.vscode/settings.json` in the project or create your own JSON file:
 
 ```json
 {

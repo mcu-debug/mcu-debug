@@ -48,11 +48,11 @@ Multiple UARTs are supported:
 
 ## Port Naming
 
-| Platform | Format | Example |
-|----------|--------|---------|
-| Linux | `/dev/ttyUSBn` or `/dev/ttyACMn` | `/dev/ttyUSB0` |
-| macOS | `/dev/cu.usbmodem*` | `/dev/cu.usbmodem1101` |
-| Windows | `COMn` | `COM3` |
+| Platform | Format                           | Example                |
+| -------- | -------------------------------- | ---------------------- |
+| Linux    | `/dev/ttyUSBn` or `/dev/ttyACMn` | `/dev/ttyUSB0`         |
+| macOS    | `/dev/cu.usbmodem*`              | `/dev/cu.usbmodem1101` |
+| Windows  | `COMn`                           | `COM3`                 |
 
 **macOS note**: use `cu.*` ports, not `tty.*` ports. The `tty.*` variant hangs on open until a carrier is detected, which many USB-UART adapters never assert.
 

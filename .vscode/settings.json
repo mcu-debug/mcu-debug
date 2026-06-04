@@ -14,7 +14,7 @@
         "excludeDirectories": ["**/node_modules"]
     },
     "rust-analyzer.linkedProjects": [
-        "packages/mcu-debug-helper/Cargo.toml"
+        "packages/mdbg/Cargo.toml"
     ],
     // Rust debugging configuration
     "rust-analyzer.debug.engine": "vadimcn.vscode-lldb",

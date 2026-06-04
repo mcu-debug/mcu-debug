@@ -63,7 +63,7 @@ export class CliAdapter implements IHostAdapter {
     private serialPortViews: CLISerialPortView[] = [];
     private consolePort: number = 0;
     constructor(private cliArgs: { json: string; config: string; settings?: string; }) {
-        logger.info("CLI adapter initialized with args: " + JSON.stringify(cliArgs));
+        logger.debug("CLI adapter initialized with args: " + JSON.stringify(cliArgs));
         this.remoteName = calculateRemoteName();
         this.initSettings();
     }
@@ -147,28 +147,31 @@ export class CliAdapter implements IHostAdapter {
 
     private initSettings() {
         const settingsFile = this.cliArgs.settings;
-        if (settingsFile && fs.existsSync(settingsFile)) {
-            let content: string;
-            try {
-                content = fs.readFileSync(settingsFile, "utf8");
-                this.settings = JSONC.parse(content) as { [key: string]: any };
-            } catch (error) {
-                logger.error("Failed to load configuration from settings file: " + (error instanceof Error ? error.message : String(error)));
-                process.exit(1);
-            }
-            const substitutedContent = processVarSubstitution(content, this.settings as any, 'config:', (msg) => {
-                logger.warn(`In config: variable substitution for ${settingsFile}: ${msg}`);
-            });
-            if (substitutedContent !== content) {
+        const settingsFiles = [os.homedir() + '/.mcu-debug/settings.json', settingsFile].filter(f => f !== undefined) as string[];
+        for (const file of settingsFiles) {
+            if (fs.existsSync(file)) {
+                let content: string;
                 try {
-                    this.settings = JSONC.parse(substitutedContent) as { [key: string]: any };
+                    content = fs.readFileSync(file, "utf8");
+                    this.settings = JSONC.parse(content) as { [key: string]: any };
                 } catch (error) {
-                    logger.error("Failed to parse configuration after variable substitution: " + (error instanceof Error ? error.message : String(error)));
-                    // process.exit(1);
+                    logger.error("Failed to load configuration from settings file: " + (error instanceof Error ? error.message : String(error)));
+                    process.exit(1);
                 }
+                const substitutedContent = processVarSubstitution(content, this.settings as any, 'config:', (msg) => {
+                    logger.warn(`In config: variable substitution for ${file}: ${msg}`);
+                });
+                if (substitutedContent !== content) {
+                    try {
+                        this.settings = JSONC.parse(substitutedContent) as { [key: string]: any };
+                    } catch (error) {
+                        logger.error("Failed to parse configuration after variable substitution: " + (error instanceof Error ? error.message : String(error)));
+                        // process.exit(1);
+                    }
+                }
+            } else if (file !== settingsFiles[0]) { // Don't warn about the default settings file if it doesn't exist
+                logger.warn(`Settings file ${file} does not exist.`);
             }
-        } else if (settingsFile) {
-            logger.warn(`Settings file ${settingsFile} does not exist.`);
         }
     }
 

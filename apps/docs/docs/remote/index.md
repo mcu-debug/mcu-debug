@@ -9,11 +9,11 @@ mcu-debug supports debugging scenarios where the debug probe is on a different m
 
 ## Supported Topologies
 
-| Topology | Use Case | Setup |
-|----------|----------|-------|
-| [WSL](./wsl.md) | Linux dev environment, probe physically on Windows host | Auto-detected via `WSL_DISTRO_NAME`; minimal config |
-| [Docker](./docker.md) | Dev container, probe on Docker host machine | Auto-detected via `/.dockerenv`; set `hostConfig.type: "auto"` |
-| [SSH / Lab Server](./ssh.md) | Probe on remote server, developer on laptop | Explicit `hostConfig` with host name |
+| Topology                     | Use Case                                                | Setup                                                          |
+| ---------------------------- | ------------------------------------------------------- | -------------------------------------------------------------- |
+| [WSL](./wsl.md)              | Linux dev environment, probe physically on Windows host | Auto-detected via `WSL_DISTRO_NAME`; minimal config            |
+| [Docker](./docker.md)        | Dev container, probe on Docker host machine             | Auto-detected via `/.dockerenv`; set `hostConfig.type: "auto"` |
+| [SSH / Lab Server](./ssh.md) | Probe on remote server, developer on laptop             | Explicit `hostConfig` with host name                           |
 
 ## The `hostConfig` Property
 
@@ -21,6 +21,7 @@ All remote topologies are configured via the `hostConfig` block in `launch.json`
 
 ```json
 "hostConfig": {
+  "enabled": true,
   "type": "auto"
 }
 ```
@@ -29,6 +30,7 @@ For explicit SSH configuration:
 
 ```json
 "hostConfig": {
+  "enabled": true,
   "type": "ssh",
   "host": "lab-server"
 }

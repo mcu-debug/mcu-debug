@@ -33,11 +33,11 @@ The debug adapter is **not** a single TypeScript process. It has three cooperati
 
 1. **TypeScript DA** (`packages/mcu-debug/src/adapter/`) — The DAP server. Talks to VS Code, manages sessions, orchestrates GDB via stdio.
 
-2. **`da_helper`** (Rust, `packages/mcu-debug-helper/src/da_helper/`) — A Rust binary invoked by the TS DA as a subprocess. Responsible for ELF parsing, symbol table lookup, and disassembly (via objdump + Capstone). The TS side does **not** parse ELF directly. Any feature that requires symbol information goes through this helper.
+2. **`da_helper`** (Rust, `packages/mdbg/src/da_helper/`) — A Rust binary invoked by the TS DA as a subprocess. Responsible for ELF parsing, symbol table lookup, and disassembly (via objdump + Capstone). The TS side does **not** parse ELF directly. Any feature that requires symbol information goes through this helper.
 
-3. **Proxy client** (`packages/mcu-debug-helper/src/proxy_helper/`) — Also Rust. Implements the client side of the Funnel Protocol for reaching a Probe Agent on a remote/host machine. Used when the probe is not accessible directly from the DA process (WSL, Dev Container, or LAB topology).
+3. **Proxy client** (`packages/mdbg/src/proxy_helper/`) — Also Rust. Implements the client side of the Funnel Protocol for reaching a Probe Agent on a remote/host machine. Used when the probe is not accessible directly from the DA process (WSL, Dev Container, or LAB topology).
 
-The `mcu-debug-helper` binary is a single Rust binary with subcommands (`da-helper`, `proxy`, …). Do not assume these are separate binaries.
+The `mdbg` binary is a single Rust binary with subcommands (`da-helper`, `proxy`, …). Do not assume these are separate binaries.
 
 ---
 
@@ -57,7 +57,7 @@ There are two distinct scenarios. See [Proxy-Plan.md](docs-internal/Proxy-Plan.m
 - The DA sees "ghost ports" on `127.0.0.1` that tunnel through to the lab server's Probe Agent.
 - No inbound firewall rules are needed on the lab server.
 
-**Probe Agent** (`mcu-debug-helper proxy`) always runs on the machine physically attached to the probe. It manages gdb-server lifecycle and implements the Funnel Protocol.
+**Probe Agent** (`mdbg proxy`) always runs on the machine physically attached to the probe. It manages gdb-server lifecycle and implements the Funnel Protocol.
 
 ---
 
@@ -131,7 +131,7 @@ This debugger has a **push/subscription model for variable values** that is not 
 ```text
 packages/
   mcu-debug/            # VS Code extension (TypeScript) — DAP server + UI
-  mcu-debug-helper/     # Rust binary — da_helper + proxy_helper subcommands
+  mdbg/                 # Rust binary — da_helper + proxy_helper subcommands
   mcu-debug-proxy/      # Proxy-related extension packaging
   shared/               # Shared TypeScript types and protocol definitions
   shared/proxy-protocol # GENERATED files by ts_rs. DO NOT EDIT
@@ -141,7 +141,7 @@ packages/
 
 Some directories in the `packages/shared` dir. are generated files and the script `scripts/build-binaries.sh` contains the code to generate and prettify them
 
-The `mcu-debug-helper` binary is pre-built and checked in under `packages/mcu-debug/bin/` and `packages/mcu-debug-proxy/bin` for each platform. It is also built locally via the `Build Helper` task.
+The `mdbg` binary is pre-built and checked in under `packages/mcu-debug/bin/` and `packages/mcu-debug-proxy/bin` for each platform. It is also built locally via the `Build Helper` task.
 
 ## Building
 
@@ -158,8 +158,8 @@ dev  - development builds builds just the current OS+arch for
 **How to apply:** When Rust structs change, regenerate the generated TS files with:
 
 ```bash
-  cd packages/mcu-debug-helper && cargo test --lib da_helper::helper_requests::tests::ensure_ts_exports --quiet
-  cd packages/mcu-debug-helper && cargo test --lib proxy_helper::proxy_server::tests::ensure_ts_exports --quiet
+  cd packages/mdbg && cargo test --lib da_helper::helper_requests::tests::ensure_ts_exports --quiet
+  cd packages/mdbg && cargo test --lib proxy_helper::proxy_server::tests::ensure_ts_exports --quiet
 ```
 
 Or do a full dev build: `./scripts/build-binaries.sh dev` -- this is fast in most cases

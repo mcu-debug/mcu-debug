@@ -18,7 +18,7 @@ const program = new Command();
 program
     .option('-c, --config <string>', 'Debug configuration to use. Can be the name of a configuration in launch.json, the index of the configuration in launch.json, or a glob pattern to match the name of the configuration in launch.json')
     .option('-j, --json <string>', 'launch.json file to use', '.vscode/launch.json')
-    .option('-s, --settings <string>', 'Use custom settings JSON file', 'mcu-debug-settings.json')
+    .option('-s, --settings <string>', 'Use custom settings JSON file', '.vscode/settings.json')
     .option('-l, --log-file <string>', 'Log file path. Default path is $TMPDIR/mcu-debug-logs/<pid>.log', '')
     .option('-d, --debug', 'Enable debug mode - more verbose logging')
     .option('--wait-for-client', 'Wait for a client to connect before starting the debug session')

@@ -6,7 +6,7 @@ Related: [cli-config.md](cli-config.md) (launch.json resolution), [uart-manageme
 
 ---
 
-## 1. Binary Rename: `mcu-debug-helper` → `mcu-debug`
+## 1. Binary Rename: `mdbg` → `mcu-debug`
 
 The original name reflected the binary's original role: a helper subprocess to the TypeScript Debug Adapter. It parsed ELF files and handled disassembly on behalf of the TS side.
 
@@ -21,9 +21,9 @@ That role has expanded beyond recognition:
 ### Rename mechanics
 
 - `Cargo.toml`: `[[bin]] name = "mcu-debug"` — one line
-- Package directory `packages/mcu-debug-helper/` — keep as-is (internal, not user-facing)
+- Package directory `packages/mdbg/` — keep as-is (internal, not user-facing)
 - Pre-built binaries: `packages/mcu-debug/bin/mcu-debug`, `packages/mcu-debug-proxy/bin/mcu-debug` — no collision; the extension *contains* the binary
-- TS DA invocation: `mcu-debug da-helper ...` instead of `mcu-debug-helper da-helper ...`
+- TS DA invocation: `mcu-debug da-helper ...` instead of `mdbg da-helper ...`
 - Update AGENTS.md, any other docs that reference the binary name
 
 ---
@@ -327,7 +327,7 @@ Benefits:
 - Funnel Protocol client lives in **one place** (Rust), not two (Rust + TS)
 - TS proxy-client code deleted — meaningful reduction in TS DA surface area
 - Bug fixes and topology improvements (new WSL modes, new Docker variants) benefit both CLI and VS Code in one change
-- The TS DA's existing `mcu-debug-helper` subprocess model extends naturally — same binary, new subcommand
+- The TS DA's existing `mdbg` subprocess model extends naturally — same binary, new subcommand
 
 The interface is the same discovery-JSON-on-stdout pattern already used in the proxy launch flow (ARCHITECTURE.md). The heartbeat is stdin-based, matching the existing proxy heartbeat in `proxy_helper/run.rs`.
 

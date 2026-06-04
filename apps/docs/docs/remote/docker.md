@@ -24,6 +24,7 @@ Add `hostConfig` to your `launch.json`:
   "executable": "${workspaceFolder}/build/firmware.elf",
   "configFiles": ["interface/stlink.cfg", "target/stm32f4x.cfg"],
   "hostConfig": {
+    "enabled": true,
     "type": "auto"
   }
 }
@@ -33,10 +34,10 @@ With `"type": "auto"`, mcu-debug detects the container environment and chooses t
 
 ## Host Address Resolution
 
-| Docker Setup | Host Address |
-|-------------|-------------|
-| Docker Desktop (macOS/Windows) | `host.docker.internal` |
-| Linux Docker (no Desktop) | Default gateway IP (detected from routing table) |
+| Docker Setup                   | Host Address                                     |
+| ------------------------------ | ------------------------------------------------ |
+| Docker Desktop (macOS/Windows) | `host.docker.internal`                           |
+| Linux Docker (no Desktop)      | Default gateway IP (detected from routing table) |
 
 mcu-debug detects which situation applies and resolves the host address accordingly.
 

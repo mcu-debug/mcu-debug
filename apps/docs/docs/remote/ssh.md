@@ -18,6 +18,7 @@ Debugging when the probe is physically connected to a remote server — for exam
   "executable": "${workspaceFolder}/build/firmware.elf",
   "configFiles": ["interface/stlink.cfg", "target/stm32f4x.cfg"],
   "hostConfig": {
+    "enabled": true,
     "type": "ssh",
     "host": "lab-server"
   }

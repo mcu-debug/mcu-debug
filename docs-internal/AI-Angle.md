@@ -385,12 +385,12 @@ Existing collision-resolution logic (already in place for RTT/SWO labels) handle
 
 #### **Implementation**
 
-* The Rust `mcu-debug-helper serial` subcommand opens the port and streams data — same pattern as `da_helper`, `proxy_helper`. No native Node modules required.
+* The Rust `mdbg serial` subcommand opens the port and streams data — same pattern as `da_helper`, `proxy_helper`. No native Node modules required.
 * `direction` controls whether the input dropdown in the Glass Cockpit / TUI offers this UART as a write target.
 * Bidirectional model matches RTT — the human (or AI) can send menu selections, commands, etc. to interactive UART shells.
 
 #### **Discovery helper (optional)**
 
-`mcu-debug-helper serial list` enumerates available ports with VID/PID, useful when first authoring `uartConfig`. Not required to use UARTs, but lowers the "what port am I on?" friction.
+`mdbg serial list` enumerates available ports with VID/PID, useful when first authoring `uartConfig`. Not required to use UARTs, but lowers the "what port am I on?" friction.
 
 ---

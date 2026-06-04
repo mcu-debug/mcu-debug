@@ -140,6 +140,13 @@ export class McuDebugConfigurationProviderBase {
         } else if (!config.rttConfig.decoders) {
             config.rttConfig.decoders = [];
         }
+        if (config.rttConfig?.enabled && typeof config.rttConfig.useBuiltinRTT === "boolean") {
+            if (config.rttConfig.useBuiltinRTT) {
+                config.rttConfig.useBuiltinRTT = { enabled: true };
+            } else {
+                delete config.rttConfig.useBuiltinRTT;
+            }
+        }
 
         if (!config.graphConfig) {
             config.graphConfig = [];

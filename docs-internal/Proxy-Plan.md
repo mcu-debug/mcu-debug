@@ -8,7 +8,7 @@
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Engineer Machine**   | The physical machine the engineer sits at. Runs VS Code UI. Has source code.                                                                                                                                                         |
 | **Probe Host**         | The machine the USB debug probe and target hardware are physically attached to. Runs the Probe Agent and gdb-server. May be the same as Engineer Machine (local case) or a completely different machine across a network (LAB case). |
-| **Probe Agent**        | `mcu-debug-helper proxy` — the Rust binary that manages gdb-server lifecycle and implements the Funnel Protocol. Always runs on the **Probe Host**.                                                                                  |
+| **Probe Agent**        | `mdbg proxy` — the Rust binary that manages gdb-server lifecycle and implements the Funnel Protocol. Always runs on the **Probe Host**.                                                                                  |
 | **Debug Adapter (DA)** | The TypeScript core of `mcu-debug`. Communicates with GDB and with the Probe Agent. Runs on the Engineer Machine (or VS Code's workspace extension host, which may be WSL/container on the Engineer Machine).                        |
 
 ---
@@ -27,7 +27,7 @@ The engineer's source code and toolchain live inside WSL, a Dev Container, or on
 ┌──────── Engineer Machine ───────────────────────────────────────┐
 │  VS Code UI process                                             │
 │  mcu-debug UI extension  ──► spawns/manages Probe Agent         │
-│  Probe Agent (mcu-debug-helper proxy)  ◄─────────────────────-─┐│
+│  Probe Agent (mdbg proxy)  ◄─────────────────────-─┐│
 │  GDB Server (OpenOCD, J-Link, etc.)  ◄── USB ──► Probe/Target  ││
 │                                                                ││
 │  ┌── WSL / Dev Container / VS Code Remote SSH ───────────────┐ ││
@@ -59,7 +59,7 @@ The probe and target hardware are on a **physically separate machine** — a lab
          │  ssh -L 127.0.0.1:<localPort>:127.0.0.1:<sshProxyPort> user@lab
          ▼
 ┌──────── Lab Server (probe attached here) ────────────────────────┐
-│  Probe Agent (mcu-debug-helper proxy)  — started by extension    │
+│  Probe Agent (mdbg proxy)  — started by extension    │
 │  OR manually launched as a persistent daemon                     │
 │  GDB Server (OpenOCD, J-Link, etc.)  ← spawned by Probe Agent    │
 │  USB Probe ──────────────────────────────────► Target Hardware   │
@@ -132,7 +132,7 @@ This is the `type: "ssh"` case.
 
 ## Probe Agent Responsibilities
 
-`mcu-debug-helper proxy` (the Probe Agent) always runs on the **Probe Host** regardless of scenario:
+`mdbg proxy` (the Probe Agent) always runs on the **Probe Host** regardless of scenario:
 - Allocates TCP ports on the Probe Host for gdb-server channels
 - Spawns and manages the gdb-server process lifecycle
 - Implements the Funnel Protocol (multiplexed binary framing over one TCP connection)
@@ -240,11 +240,11 @@ Only two user-facing types. Everything else is an implementation detail.
         // specific ports. Not needed for WSL Mirrored mode. Ignored for all other auto sub-modes.
         "wslProxyPort": 54320,
 
-        // Optional — per-session mode: path to a pre-installed mcu-debug-helper binary on
+        // Optional — per-session mode: path to a pre-installed mdbg binary on
         // the remote host. When set, the extension skips binary deployment entirely and
         // uses this path to launch the Probe Agent. Use this when macOS Gatekeeper, Windows
         // SmartScreen, or lab policy prevents running a freshly-copied executable.
-        "sshProxyServerPath": "/usr/local/bin/mcu-debug-helper",
+        "sshProxyServerPath": "/usr/local/bin/mdbg",
 
         // Optional for both types: workspace files to copy to the probe host
         // before gdb-server launch (e.g. OpenOCD .cfg files). Use relative paths and you can reference
@@ -283,7 +283,7 @@ Windows Firewall and the WSL NAT case work without any manual setup in the commo
 
 **The typical path — zero friction**
 
-When the Probe Agent (`mcu-debug-helper.exe`) listens for the first time, Windows shows a Security Alert. Clicking **"Allow access"** creates an application-level inbound firewall rule that permits the executable on any port, for both Private and Public networks. No `wslProxyPort` is needed, and no manual firewall commands are required. The extension uses OS-assigned ports and everything works.
+When the Probe Agent (`mdbg.exe`) listens for the first time, Windows shows a Security Alert. Clicking **"Allow access"** creates an application-level inbound firewall rule that permits the executable on any port, for both Private and Public networks. No `wslProxyPort` is needed, and no manual firewall commands are required. The extension uses OS-assigned ports and everything works.
 
 You can verify the rule exists with:
 
@@ -294,7 +294,7 @@ Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like "*mcu-debug*"
 To remove the rule (e.g. to re-test the first-run Security Alert flow), run elevated in PowerShell:
 
 ```powershell
-Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like "*mcu-debug-helper*" } | Get-NetFirewallRule | Remove-NetFirewallRule
+Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like "*mdbg*" } | Get-NetFirewallRule | Remove-NetFirewallRule
 ```
 
 **Option A — Switch to WSL Mirrored mode (Windows 11 only)**
@@ -338,10 +338,10 @@ This is the LAB scenario (Topology B above). The Probe Agent runs on the **Lab S
 
 ### Per-session flow (per-session mode)
 
-1. **Version check:** `ssh user@lab "mcu-debug-helper --version"` — is binary present and current?
-2. **Deploy if needed:** Stream binary over SSH stdin: `ssh user@lab "mkdir -p ~/.mcu-debug/bin && cat > ~/.mcu-debug/bin/mcu-debug-helper && chmod +x ..."` — arch detected via `uname -sm` first. **Skipped entirely** when `sshProxyServerPath` is set in `hostConfig` (binary already installed and permissions already granted by the user).
+1. **Version check:** `ssh user@lab "mdbg --version"` — is binary present and current?
+2. **Deploy if needed:** Stream binary over SSH stdin: `ssh user@lab "mkdir -p ~/.mcu-debug/bin && cat > ~/.mcu-debug/bin/mdbg && chmod +x ..."` — arch detected via `uname -sm` first. **Skipped entirely** when `sshProxyServerPath` is set in `hostConfig` (binary already installed and permissions already granted by the user).
 3. **Generate token:** Extension generates `token = crypto.randomBytes(16).toString('hex')`
-4. **Launch Probe Agent on lab server:** `ssh user@lab "~/.mcu-debug/bin/mcu-debug-helper proxy --port 0 --token <token>"` — token is an input, not an output
+4. **Launch Probe Agent on lab server:** `ssh user@lab "~/.mcu-debug/bin/mdbg proxy --port 0 --token <token>"` — token is an input, not an output
 5. **Parse Discovery JSON:** `{ "status": "ready", "port": 54321, "pid": 9876 }` — no token in output; extension already has it
 6. **Open SSH tunnel from Engineer Machine to lab server:** `ssh -L 127.0.0.1:<localPort>:127.0.0.1:54321 -N user@lab` with keepalives (`ServerAliveInterval=15 ServerAliveCountMax=3`)
 7. **Inject into args:** `pvtProxyHost = "127.0.0.1"`, `pvtProxyPort = localPort`, `pvtProxyToken = token`
@@ -353,18 +353,18 @@ This is the LAB scenario (Topology B above). The Probe Agent runs on the **Lab S
 
 ### Starting the Probe Agent manually (daemon mode)
 
-The Probe Agent binary (`mcu-debug-helper`) is not distributed separately — it ships inside the VS Code extension installation and can be found at:
+The Probe Agent binary (`mdbg`) is not distributed separately — it ships inside the VS Code extension installation and can be found at:
 
 ```
-~/.vscode/extensions/mcu-debug.mcu-debug-<version>/bin/mcu-debug-helper
+~/.vscode/extensions/mcu-debug.mcu-debug-<version>/bin/mdbg
 ```
 
-Pick the appropriate subdirectory for the Lab Server's architecture (e.g. `linux-x64/`, `linux-arm64/`). Copy or symlink it to a convenient location such as `~/.mcu-debug/bin/mcu-debug-helper` — the extension does this automatically in per-session mode.
+Pick the appropriate subdirectory for the Lab Server's architecture (e.g. `linux-x64/`, `linux-arm64/`). Copy or symlink it to a convenient location such as `~/.mcu-debug/bin/mdbg` — the extension does this automatically in per-session mode.
 
 **Minimal launch (auto-assigned port):**
 
 ```bash
-mcu-debug-helper proxy --token my-secret-token
+mdbg proxy --token my-secret-token
 ```
 
 Prints a single line to stdout and then runs silently:
@@ -378,13 +378,13 @@ Note the `port` value — you'll need it in `hostConfig.sshProxyPort` in `launch
 **Fixed port (easier for persistent lab machines):**
 
 ```bash
-mcu-debug-helper proxy --port 54321 --token my-secret-token
+mdbg proxy --port 54321 --token my-secret-token
 ```
 
 **With logging (recommended for daemon mode):**
 
 ```bash
-mcu-debug-helper proxy --port 54321 --token my-secret-token --log-dir ~/.mcu-debug/logs
+mdbg proxy --port 54321 --token my-secret-token --log-dir ~/.mcu-debug/logs
 ```
 
 Log files are always written when `--log-dir` is set. Add `--log-stderr` to also echo log lines to stderr (useful when running under a system service that captures stderr).
@@ -392,13 +392,13 @@ Log files are always written when `--log-dir` is set. Add `--log-stderr` to also
 **Listen on all interfaces** (required for non-SSH access; not needed when the extension always uses an SSH tunnel):
 
 ```bash
-mcu-debug-helper proxy --host 0.0.0.0 --port 54321 --token my-secret-token
+mdbg proxy --host 0.0.0.0 --port 54321 --token my-secret-token
 ```
 
 **Run as a background daemon** (simple backgrounding; use a system service for production):
 
 ```bash
-nohup mcu-debug-helper proxy --port 54321 --token my-secret-token \
+nohup mdbg proxy --port 54321 --token my-secret-token \
     --log-dir ~/.mcu-debug/logs >> ~/.mcu-debug/logs/proxy.out 2>&1 &
 echo $! > ~/.mcu-debug/proxy.pid
 ```
@@ -416,7 +416,7 @@ echo $! > ~/.mcu-debug/proxy.pid
 "hostConfig": {
     "type": "ssh",
     "sshHost": "lab-server",
-    "sshProxyServerPath": "/usr/local/bin/mcu-debug-helper"  // binary already installed on the remote
+    "sshProxyServerPath": "/usr/local/bin/mdbg"  // binary already installed on the remote
 }
 
 // Daemon mode (proxy server started manually or as a service)
@@ -520,7 +520,7 @@ See `ARCHITECTURE.md` for full packet format details and fragmentation handling.
 ## Implementation Phases
 
 ### Phase 1 — Funnel Protocol in Rust (local only)
-- `mcu-debug-helper proxy` subcommand with the 5-byte frame parser
+- `mdbg proxy` subcommand with the 5-byte frame parser
 - JSON-RPC control channel: `initialize`, `allocatePorts`, `launchServer`, `endSession`, `heartbeat`
 - Binary stream forwarding for GDB channel
 - Test: DA ↔ Proxy on `127.0.0.1`, `type: "local"`, no SSH

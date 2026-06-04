@@ -37,6 +37,7 @@ Channel 0 is the default console channel and is what most firmware uses.
 ```json
 "rttConfig": {
   "enabled": true,
+  "useBuiltinRTT": true,
   "decoders": [
     { "port": 0, "type": "console" }
   ]
@@ -48,6 +49,7 @@ Full example with multiple channels:
 ```json
 "rttConfig": {
   "enabled": true,
+  "useBuiltinRTT": true,
   "decoders": [
     { "port": 0, "type": "console", "label": "Console" },
     { "port": 1, "type": "console", "label": "Diagnostics" }
@@ -55,13 +57,21 @@ Full example with multiple channels:
 }
 ```
 
+## Builtin RTT
+
+`mcu-debug` has its own RTT service available that works as well or better than RTT support builtin to various gdb-servers. The requirement is that the gdb-server has to support multiple gdb connections. This is the same requirement for `liveWatch`. Known gdb-servers are (OpenOCD, pyOCD, JLink). The builtin decode is much more flexible and supports multiple channels with ease. [More about builtin RTT](builtin-rtt.md)
+
 ## Decoder Types
 
-| Type | Description |
-|------|-------------|
-| `"console"` | UTF-8 text, displayed in the output panel. Default for most firmware. |
-| `"binary"` | Raw bytes. Provides the raw data stream for custom processing. |
+| Type              | Description                                                                   |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `"console"`       | UTF-8 text, displayed in the output panel. Default for most firmware.         |
+| `"binary"`        | Raw bytes. Provides the raw data stream for custom processing.                |
 | JavaScript plugin | Custom decoder via a JS file. Specify with `"decoder": "/path/to/plugin.js"`. |
+
+## Pre-decoder
+
+You can use the `pre_decoder` property to specify a custom decoder program written in any language. It should accept input on stdin and decode output to stdout. The output of this program can then become input to all the decoders.
 
 ## defmt Support
 
@@ -70,7 +80,33 @@ Full example with multiple channels:
 To use defmt with RTT:
 
 1. Use the `defmt-rtt` crate in your Rust firmware
-2. Add a decoder with `"type": "console"` and specify the defmt flag in your `rttConfig`
+2. You can use the `pre_decoder` option to process the defmt formatted stream that can then funnel to all the other decoders
+3. Add at least one decoder to display the output of the pre_decoder
+
+Example of using a `pre_decoder`
+
+```json
+"rttConfig": {
+    "enabled": true,
+    "address": "auto",
+    "useBuiltinRTT": {
+        "enabled": true,
+        // "port": 9001
+    },
+    "pre_decoder": {
+        "program": "defmt-print",
+        "args": ["-e", "${executable}"],  // You can specify any ELF file here
+        "channels": [0]         // You can have defmt on multiple channels
+    },
+    "decoders": [
+        {
+          "label": "Rust Logs",
+          "port": 0,
+          "type": "console"
+        }
+    ]
+}
+```
 
 The ELF file provides the format string table — no separate parsing step or host-side tool is needed.
 
