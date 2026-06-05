@@ -289,7 +289,7 @@ module.exports = {
         properties: {
             enabled: { default: true, description: "Enable/Disable entire set of chained configurations", type: "boolean" },
             detached: { default: false, description: "Related or independent server sessions.", type: "boolean" },
-            lifecycleManagedByParent: { default: true, description: "Are Restart/Reset/Stop/Disconnect shared?", type: "boolean" },
+            lifecycleManagedByParent: { default: true, description: "Are Reset/Stop/Disconnect shared?", type: "boolean" },
             waitOnEvent: { enum: ["postStart", "postInit"], default: "postInit", description: "Event to wait for.", type: "string" },
             delayMs: { type: "number", description: "Default delay in milliseconds.", multipleOf: 1, minimum: 0, default: 5 },
             overrides: { default: {}, description: "Values to override/set in this child configuration.", type: "object" },
@@ -304,7 +304,7 @@ module.exports = {
                         detached: { default: false, description: "Related or independent server sessions.", type: "boolean" },
                         waitOnEvent: { enum: ["postStart", "postInit"], default: "postInit", description: "Wait for an event.", type: "string" },
                         delayMs: { type: "number", description: "Delay in milliseconds.", multipleOf: 1, minimum: 0, default: 5 },
-                        lifecycleManagedByParent: { default: true, description: "Are Restart/Reset/Stop/Disconnect shared?", type: "boolean" },
+                        lifecycleManagedByParent: { default: true, description: "Are Reset/Stop/Disconnect shared?", type: "boolean" },
                         overrides: { default: {}, description: "Values to override/set in this child configuration.", type: "object" },
                         inherits: { default: [], description: "List of properties to inherit from parent.", type: "array", items: { type: "string" } },
                     },

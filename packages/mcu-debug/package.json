@@ -945,7 +945,7 @@
                   },
                   "lifecycleManagedByParent": {
                     "default": true,
-                    "description": "Are Restart/Reset/Stop/Disconnect shared?",
+                    "description": "Are Reset/Stop/Disconnect shared?",
                     "type": "boolean"
                   },
                   "waitOnEvent": {
@@ -1019,7 +1019,7 @@
                         },
                         "lifecycleManagedByParent": {
                           "default": true,
-                          "description": "Are Restart/Reset/Stop/Disconnect shared?",
+                          "description": "Are Reset/Stop/Disconnect shared?",
                           "type": "boolean"
                         },
                         "overrides": {
@@ -2525,7 +2525,7 @@
                   },
                   "lifecycleManagedByParent": {
                     "default": true,
-                    "description": "Are Restart/Reset/Stop/Disconnect shared?",
+                    "description": "Are Reset/Stop/Disconnect shared?",
                     "type": "boolean"
                   },
                   "waitOnEvent": {
@@ -2599,7 +2599,7 @@
                         },
                         "lifecycleManagedByParent": {
                           "default": true,
-                          "description": "Are Restart/Reset/Stop/Disconnect shared?",
+                          "description": "Are Reset/Stop/Disconnect shared?",
                           "type": "boolean"
                         },
                         "overrides": {

@@ -5,9 +5,7 @@ title: launch.json Schema
 
 # launch.json Schema
 
-:::note
-Full schema reference coming soon. The complete property list is being documented. For now, see [All Properties](../configuration/properties.md) for a categorized listing.
-:::
+The complete property list is being documented. For now, see [All Properties](./launch-properties.md) for a categorized listing.
 
 ## IntelliSense
 
@@ -32,16 +30,6 @@ Find the extension directory:
 - Linux/macOS: `~/.vscode/extensions/mcu-debug.mcu-debug-<version>/`
 - Windows: `%USERPROFILE%\.vscode\extensions\mcu-debug.mcu-debug-<version>\`
 
-## Property Categories
+## Full Property Listings
 
-Properties are organized into groups in the [All Properties](../configuration/properties.md) reference:
-
-- Required properties
-- GDB Server configuration
-- GDB configuration
-- Session behavior
-- GDB command hooks
-- Environment
-- RTT, UART, SWO tracing
-- Remote debugging
-- Peripheral view and other features
+Properties are organized into groups in the [launch.json Properties](./launch-properties.md) reference:
