@@ -32,4 +32,4 @@ Find the extension directory:
 
 ## Full Property Listings
 
-Properties are organized into groups in the [launch.json Properties](./launch-properties.md) reference:
+See the [launch.json Properties](./launch-properties.md) reference for a full list of properties and their descriptions.
