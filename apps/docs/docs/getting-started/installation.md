@@ -24,18 +24,19 @@ code --install-extension mcu-debug.mcu-debug
 
 ### GDB
 
-mcu-debug requires GDB for your target architecture. For ARM Cortex-M targets:
+mcu-debug requires GDB for your target architecture. For ARM Cortex-M and other embedded targets:
 
 - **Arm GNU Toolchain** (recommended): download from [developer.arm.com](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads). Provides `arm-none-eabi-gdb`.
-- **xPack DevTools**: `npm install -g @xpack-dev-tools/arm-none-eabi-gcc`
+- **xPack DevTools**: `npm install -g @xpack-dev-tools/arm-none-eabi-gcc`. Also other xpack architectures like `npm install -g @xpack-dev-tools/riscv-none-elf-gcc`
+- You can use other gdb distributions as well (RISC-V, Xtensa, Zephyr, etc.). Just make sure you specify `armToolchainPath` or `gdbPath` or `toolchainPrefix` appropriately. Setting `gdbPath` removes any guesswork
 
-After installation, verify GDB is accessible:
+After installation, verify GDB is accessible and that you can run GDB from the commaind-line:
 
 ```sh
 arm-none-eabi-gdb --version
 ```
 
-The `gdbPath` or `toolchainPrefix` properties in `launch.json` let you specify the path explicitly if GDB is not on `PATH`.
+The `gdbPath` or `toolchainPrefix` properties in `launch.json` let you specify the path explicitly if GDB is not on `PATH`. Very often GDB installation is missing cricical libraries and causes a hang instead of a proper error message.
 
 ### GDB Server
 
