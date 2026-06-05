@@ -1,47 +1,41 @@
 ---
 sidebar_position: 1
+slug: /
+title: MCU-Debug Overview
 ---
 
-# Tutorial Intro
+# MCU-Debug Extension Family
 
-Let's discover **Docusaurus in less than 5 minutes**.
+Welcome to the **MCU-Debug** documentation. MCU-Debug is a modern, high-performance, and modular debugging ecosystem for microcontrollers and embedded targets in Visual Studio Code. 
 
-## Getting Started
+Instead of a single monolithic extension, the MCU-Debug ecosystem is built as a **cooperative family of extensions** powered by the standard Debug Adapter Protocol (DAP). This modular design allows visualizers (like SVD or RTOS monitors) to work with **any** DAP-compatible debugger (e.g. `cppdbg`, `cspy`, or `mcu-debug`).
 
-Get started by **creating a new site**.
+---
 
-Or **try Docusaurus immediately** with **[docusaurus.new](https://docusaurus.new)**.
+## 1. MCU-Debug (The Core Debugger)
+The main driver of the ecosystem. It is a modern successor and drop-in replacement for the classic `cortex-debug` extension.
 
-### What you'll need
+*   **Zero-Friction Remote Debugging:** Develop inside WSL2, Dev Containers, or remote SSH servers while your debug probe remains connected locally.
+*   **Dual-Mode RTT:** Reads RTT blocks directly from target memory at up to 40 Hz, bypassing slow TCP servers.
+*   **Workspace-Scoped UARTs:** Keep serial ports open during target resets and IDE restarts, capturing early boot logs in a local ring buffer.
+*   **Standalone CLI & TUI:** Run debug sessions entirely outside of VS Code using a terminal-based dashboard (`mcu-debug`) for headless CI/CD or AI agent workflows.
 
-- [Node.js](https://nodejs.org/en/download/) version 20.0 or above:
-    - When installing Node.js, you are recommended to check all checkboxes related to dependencies.
+👉 **[Get Started with MCU-Debug](./getting-started/index.md)**
 
-## Generate a new site
+---
 
-Generate a new Docusaurus site using the **classic template**.
+## 2. Companion Extensions (DAP-Compatible)
 
-The classic template will automatically be added to your project after you run the command:
+These visualization tools are fully decoupled. They connect to the active debug session using standard DAP APIs, allowing them to work with MCU-Debug or any other debugger:
 
-```bash
-npm init docusaurus@latest my-website classic
-```
+### 🧩 [Peripheral Viewer](https://marketplace.visualstudio.com/items?itemName=mcu-debug.peripheral-viewer)
+*   **Extension ID:** `mcu-debug.peripheral-viewer`
+*   **Description:** Inspect microcontroller peripheral registers using standard SVD (System View Description) files. Check register fields, monitor changes, and modify values directly during a debug session.
 
-You can type this command into Command Prompt, Powershell, Terminal, or any other integrated terminal of your code editor.
+### 📊 [RTOS Views](https://marketplace.visualstudio.com/items?itemName=mcu-debug.rtos-views)
+*   **Extension ID:** `mcu-debug.rtos-views`
+*   **Description:** A popular, community-supported monitor for tracking RTOS tasks, queues, semaphores, mutexes, and kernel states. Backed by a healthy set of contributors (including ARM).
 
-The command also installs all necessary dependencies you need to run Docusaurus.
-
-## Start your site
-
-Run the development server:
-
-```bash
-cd my-website
-npm run start
-```
-
-The `cd` command changes the directory you're working with. In order to work with your newly created Docusaurus site, you'll need to navigate the terminal there.
-
-The `npm run start` command builds your website locally and serves it through a development server, ready for you to view at http://localhost:3000/.
-
-Open `docs/intro.md` (this page) and edit some lines: the site **reloads automatically** and displays your changes.
+### 💾 [MemoryView](https://marketplace.visualstudio.com/items?itemName=mcu-debug.memory-view)
+*   **Extension ID:** `mcu-debug.memory-view`
+*   **Description:** A high-performance memory inspector displaying target memory in interactive hex/ASCII formats with raw read/write capabilities.

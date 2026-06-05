@@ -23,6 +23,10 @@ This shows all GDB MI transactions in the output panel. It is verbose but essent
 
 ## Startup Failures
 
+### "ENOENT" or spawn failed
+
+This means that the system could not find an exucutable to run. Depending the path make sure that your gdb or gdb-server paths are valid and can be run from the command-line successfully. Use the exact path shown in the error message when possible. Typos or missing settings are a frequent cause of this.
+
 ### "Server exited with code 1"
 
 The gdb-server failed to start or connect to the probe. This is the most common first-run error.

@@ -11,32 +11,50 @@ type FeatureItem = {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: 'Easy to Use',
+    title: 'The MCU-Debug Core',
     Svg: require('@site/static/img/undraw_docusaurus_mountain.svg').default,
     description: (
       <>
-        Docusaurus was designed from the ground up to be easily installed and
-        used to get your website up and running quickly.
+        A modern, drop-in replacement for <code>cortex-debug</code>. Offers transparent remote probe support (WSL2/containers/SSH), dual-mode RTT polling, workspace-scoped UARTs, and a standalone CLI/TUI.
       </>
     ),
   },
   {
-    title: 'Focus on What Matters',
+    title: 'Companion Extensions',
     Svg: require('@site/static/img/undraw_docusaurus_tree.svg').default,
     description: (
       <>
-        Docusaurus lets you focus on your docs, and we&apos;ll do the chores. Go
-        ahead and move your docs into the <code>docs</code> directory.
+        Extend your environment with dedicated visualizers: SVD{' '}
+        <a
+          href="https://marketplace.visualstudio.com/items?itemName=mcu-debug.peripheral-viewer"
+          target="_blank"
+          rel="noopener noreferrer">
+          Peripheral Viewer
+        </a>
+        , community-driven{' '}
+        <a
+          href="https://marketplace.visualstudio.com/items?itemName=mcu-debug.rtos-views"
+          target="_blank"
+          rel="noopener noreferrer">
+          RTOS Views
+        </a>{' '}
+        (with contributions from ARM), and the high-performance{' '}
+        <a
+          href="https://marketplace.visualstudio.com/items?itemName=mcu-debug.memory-view"
+          target="_blank"
+          rel="noopener noreferrer">
+          MemoryView
+        </a>
+        .
       </>
     ),
   },
   {
-    title: 'Powered by React',
+    title: 'DAP-Compatible & Modular',
     Svg: require('@site/static/img/undraw_docusaurus_react.svg').default,
     description: (
       <>
-        Extend or customize your website layout by reusing React. Docusaurus can
-        be extended while reusing the same header and footer.
+        Built using the standard Debug Adapter Protocol. The companion extensions are fully decoupled and can be used with MCU-Debug or <b>any</b> other DAP-compliant debug adapter.
       </>
     ),
   },

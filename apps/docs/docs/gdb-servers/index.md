@@ -20,8 +20,8 @@ The `servertype` property in `launch.json` selects which gdb-server mcu-debug ma
 
 ## Choosing a GDB Server
 
-- **#1 Rule**: Use the gdb server provided by your silicon vendor even if it is openocd. They have customizations not available in public releases
-- **If you have an ST-Link, JLink, CMSIS-DAP, or FTDI probe and need maximum target support**: use OpenOCD
+- **Rule #1**: Use the gdb server provided by your silicon vendor even if it is openocd. They have customizations not available in public releases
+- **If you have an KitProg3, ST-Link, JLink, CMSIS-DAP, or FTDI probe and need maximum target support**: use OpenOCD
 - **If you have a JLink probe and performance is important**: use JLink GDB Server
 - **If you have a CMSIS-DAP probe and prefer Python tooling**: use pyOCD
 - **If you have an ST Nucleo/Discovery board and are using STM32CubeIDE**: use STLink GDB Server
