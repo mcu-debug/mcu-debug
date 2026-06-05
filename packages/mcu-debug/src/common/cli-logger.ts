@@ -4,7 +4,7 @@ import path from 'path';
 import winston from 'winston';
 import Transport from 'winston-transport';
 import { MESSAGE } from 'triple-beam';
-import { CliArgs } from '../cli/options';
+import { CliArgs } from '../cli/cli-options';
 import { HrTimer } from '../adapter/servers/common';
 import { AnsiHelpers } from './ansi-helpers';
 

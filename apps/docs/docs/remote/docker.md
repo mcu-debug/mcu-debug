@@ -22,6 +22,7 @@ Add `hostConfig` to your `launch.json`:
   "name": "Debug from Container",
   "servertype": "openocd",
   "executable": "${workspaceFolder}/build/firmware.elf",
+  "serverpath": "<path-to-gdb-server-on-remote>",
   "configFiles": ["interface/stlink.cfg", "target/stm32f4x.cfg"],
   "hostConfig": {
     "enabled": true,

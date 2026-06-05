@@ -1,5 +1,8 @@
 {
-  "label": "Tracing",
+  "label": "Tracing (RTT, SWO, UART)",
   "position": 5,
-  "link": { "type": "doc", "id": "tracing/index" }
+  "link": {
+    "type": "doc",
+    "id": "tracing/index"
+  }
 }

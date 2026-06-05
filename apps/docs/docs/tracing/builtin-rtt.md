@@ -25,6 +25,6 @@ flowchart LR
 
 - The "pre-decoder" can be something like Rust's [defmt-print](https://crates.io/crates/defmt-print) which is super efficient and increases the throughput  by an order of magnititude for some use cases. In **MCU Debug**, you can specify any number of pre-decoders or none at all. There can be one optional pre-decoder per RTT channel
 - The "Final Presentation" layer can also have multiple ways to present data. This can be useful for logging while viewing data, offline examination, or even debugging the presentation layers.
-- Final note is that all the channels can be birectional depending you how your FW is configured. It also depends on what the final user interface looks like. A Terminal could provide that bi-directionality.
+- Final note is that all the channels can be birectional depending you how your FW is configured. It also depends on what the final user interface looks like. A Terminal could provide that bi-directionality. A file may not.
 
 The TCP interface can handle several megabytes per second and most of our operations are pipelined. So, SWD is still our limiting factor. It is true that the roundrip to see if any new data is available is much slower compared what a gdb-server can do, in practice, we can still poll every 10ms. We have seen good results even at 40Hz. So, speed/throughput is important. You can use `rttConfig.polling_interval` to control polling speed.

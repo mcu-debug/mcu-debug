@@ -7,13 +7,29 @@ title: WSL
 
 Debugging from WSL (Windows Subsystem for Linux) when the debug probe is physically connected to the Windows host.
 
+```
+┌──────── Engineer Machine ───────────────────────────────────────┐
+│  VS Code UI process                                             │
+│  mcu-debug UI extension  ──► spawns/manages Probe Agent         │
+│  Probe Agent (mdbg proxy)  ◄─────────────────────-─┐            │
+│  GDB Server (OpenOCD, J-Link, etc.)  ◄── USB ──► Probe/Target  ││
+│                                                                ││
+│  ┌── WSL / Dev Container / VS Code Remote SSH ───────────────┐ ││
+│  │  VS Code Workspace Extension Host                         │ ││
+│  │  mcu-debug DA (Debug Adapter)  ───────────────────────────┘ │|
+│  │  GDB                                                        │|
+│  │  Source code, ELF files                                     │|
+│  └─────────────────────────────────────────────────────────────┘|
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## How It Works
 
-When you run VS Code Remote - WSL, the mcu-debug extension runs inside the WSL instance. But USB devices (including debug probes) attach to Windows. mcu-debug detects this situation and automatically routes the gdb-server through a proxy on the Windows side.
+When you run VS Code Remote - WSL, the mcu-debug extension runs inside the WSL instance. But USB devices (including debug probes) attach to Windows. mcu-debug detects this situation and automatically routes the gdb-server through a proxy on the Windows side via another helper extension "mch-debug-proxy also called the UI extension.
 
 ## Auto-Detection
 
-mcu-debug detects WSL via the `WSL_DISTRO_NAME` environment variable. When this variable is set, remote mode is activated automatically — no `hostConfig` needed in most cases.
+When being used inside VSCode, its APIs tell use if you are running in a WSL environment. For CLI mcu-debug detects WSL via the `WSL_DISTRO_NAME` environment variable. When this variable is set, remote mode is activated automatically — no complicated `hostConfig` needed in most cases.
 
 ## Networking Modes
 
@@ -63,8 +79,9 @@ The CLI auto-discovers the proxy via the WSL gateway address.
 If auto-detection fails, explicitly configure the host:
 
 ```json
+"serverpath": "<path-to-gdb-server-on-remote>",
 "hostConfig": {
-z "enabled": true,
+  "enabled": true,
   "type": "wsl",
   "host": "127.0.0.1"
 }

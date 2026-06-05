@@ -11,6 +11,21 @@ RTT (Real-Time Transfer) is SEGGER's protocol for bidirectional communication ov
 
 mcu-debug implements its own RTT server built directly into the debug adapter. It works with any gdb-server that supports multiple simultaneous GDB connections: OpenOCD, JLink, and pyOCD all qualify.
 
+## RTT: Two Modes
+
+This project supports RTT in two ways. Most other debuggers only support the first.
+
+**Standard mode (gdb-server TCP)**
+- gdb-server (OpenOCD, JLink, etc.) handles RTT polling and exposes TCP ports.
+- Limitations: JLink server allows only one channel; OpenOCD requires manual polling or a breakpoint to start RTT.
+
+**Builtin - Alternate mode (GDB memory I/O)**
+- mcu-debug adapter uses GDB to directly read/write the RTT control block in target memory.
+- Bypasses the gdb-server for RTT data entirely.
+- Supports up to 16 bidirectional RTT channels.
+- Has an optional per-channel **pre-decoder** pipeline (e.g., `defmt-print` for Rust's defmt format).
+- Performance bottleneck is the SWD interface, not the memory I/O round-trip; polling at 40 Hz is possible.
+
 ## Firmware Setup
 
 Add an RTT library to your firmware. Options:
@@ -79,7 +94,7 @@ You can use the `pre_decoder` property to specify a custom decoder program writt
 
 To use defmt with RTT:
 
-1. Use the `defmt-rtt` crate in your Rust firmware
+1. Use the [`defmt-print`](https://crates.io/crates/defmt-print) crate in your Rust firmware
 2. You can use the `pre_decoder` option to process the defmt formatted stream that can then funnel to all the other decoders
 3. Add at least one decoder to display the output of the pre_decoder
 
@@ -139,6 +154,14 @@ RTT channels are bidirectional. You can send data to the firmware's down-buffer 
 - Verify `rttConfig.enabled: true` in `launch.json`
 - Ensure RTT is initialized in firmware **before** mcu-debug connects. Use `runToEntryPoint: "main"` so the firmware initializes before RTT polling starts.
 - Verify the gdb-server supports multiple GDB connections (OpenOCD default: yes)
+
+### RTT data contains data from previous session
+
+- This can happen because a soft reset does not clear memory and thus can have remnants of the old RTT data until RTT is re-initialized after a reset
+
+### RTT missing data
+
+- When the server (builtin or other) inspects the memory RTT may have alrady started and if in non-blocking mode, may have circled around in the ring buffer.
 
 ### Output appears garbled
 

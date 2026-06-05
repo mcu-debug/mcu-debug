@@ -1,6 +1,6 @@
 import { createInitialTransports, CustomTransport, logger } from '../common/cli-logger';
-import { CliArgs } from "./options";
-import { CLIConfigLoader } from './config-loader';
+import { CliArgs } from "./cli-options";
+import { CLIConfigLoader } from './cli-config-loader';
 import { CliAdapter } from './cli-adapter';
 import { setHostAdapter } from '../common/host-adapter';
 import { CliSessionDriver } from './session-driver';
@@ -14,7 +14,7 @@ export function validateCliArgs(args: CliArgs): boolean {
 }
 
 async function main() {
-    const { cliArgs } = await import("./options");
+    const { cliArgs } = await import("./cli-options");
     const customTransport = createInitialTransports(cliArgs, 'info');
 
     if (!validateCliArgs(cliArgs)) {

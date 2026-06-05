@@ -6,12 +6,24 @@ title: SWO
 # SWO
 
 :::caution
-SWO support is limited and may not work with all targets. RTT is recommended as a more reliable alternative for most use cases.
+SWO support is limited and may not work with all targets. RTT is recommended as a more reliable alternative for most use cases. SWO is currently not supported in CLI mode
 :::
 
 ## Overview
 
 SWO (Single Wire Output) uses the ITM (Instrumentation Trace Macrocell) and TPIU (Trace Port Interface Unit) peripherals built into Cortex-M3, M4, and M7 to output trace data over a dedicated SWO pin on the debug connector.
+
+## Customizations
+
+We try to initialize SWO from the outside with GDB commands. But if the adderess don't match your Silicon it may not work. Clocking topoloties also may not be standard. There may be other HW that needs to be inilized besides the standard ARM ones. In the installation directory `~/.vscode/extensions/mcu-debug.mcu-debug.#.#.#/support` directory there is a `gdbsupport.init` file. You can copy and modify this file and added add it to `launch.json` the `preLaunchCommands`. It will override existing definitions.
+
+```json
+"preLaunchCommands": [
+  "source \"mygdbsupport.init\""
+]
+```
+
+Doing the SWO setup in firmware is another alternative.
 
 ## Limitations
 
@@ -27,14 +39,14 @@ Before choosing SWO, consider these limitations:
 
 RTT is strongly preferred for new projects:
 
-| | RTT | SWO |
-|-|-----|-----|
-| Extra pins | None | SWO pin |
-| Cortex-M0/M0+ | Yes | No |
-| Multi-core | Yes | No |
-| Throughput | High | Low |
-| Clock dependency | None | Yes |
-| Probe support | All | Probe and PCB dependent |
+|                  | RTT  | SWO                     |
+| ---------------- | ---- | ----------------------- |
+| Extra pins       | None | SWO pin                 |
+| Cortex-M0/M0+    | Yes  | No                      |
+| Multi-core       | Yes  | No                      |
+| Throughput       | High | Low                     |
+| Clock dependency | None | Yes                     |
+| Probe support    | All  | Probe and PCB dependent |
 
 ## launch.json Configuration
 
@@ -57,11 +69,11 @@ If SWO is the only option for your setup:
 
 ### Key Properties
 
-| Property | Description |
-|----------|-------------|
+| Property       | Description                                                                                    |
+| -------------- | ---------------------------------------------------------------------------------------------- |
 | `cpuFrequency` | CPU clock in Hz at the time the debug session starts. Must match the actual running frequency. |
-| `swoFrequency` | Desired SWO output frequency in Hz. Lower values are more reliable. |
-| `decoders` | ITM stimulus port decoders — each ITM channel (0–31) can have its own decoder. |
+| `swoFrequency` | Desired SWO output frequency in Hz. Lower values are more reliable.                            |
+| `decoders`     | ITM stimulus port decoders — each ITM channel (0–31) can have its own decoder.                 |
 
 ## Firmware Setup
 

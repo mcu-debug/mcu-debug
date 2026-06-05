@@ -16,6 +16,7 @@ Debugging when the probe is physically connected to a remote server — for exam
   "name": "Debug via SSH",
   "servertype": "openocd",
   "executable": "${workspaceFolder}/build/firmware.elf",
+  "serverpath": "<path-to-gdb-server-on-remote>",
   "configFiles": ["interface/stlink.cfg", "target/stm32f4x.cfg"],
   "hostConfig": {
     "enabled": true,

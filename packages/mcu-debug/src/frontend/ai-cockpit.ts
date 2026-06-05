@@ -23,7 +23,7 @@ import { logger } from "../common/cli-logger";
 import { ConfigurationArguments } from "../adapter/servers/common";
 import { ManagedTab } from "./views/ManagedTab";
 import { CockpitToolbarAction, TabKind, TabState } from "@mcu-debug/shared";
-import { CLIConfigLoader, ConfigLoaderArgs } from "../cli/config-loader";
+import { CLIConfigLoader, ConfigLoaderArgs } from "../cli/cli-config-loader";
 import winston from "winston";
 import { Writable } from "stream";
 import { CLI_SESSION_TYPES, CLISessionType, getHostAdapter } from "../common/host-adapter";

@@ -8,7 +8,7 @@ import { ConfigurationArguments, substituteEnvVarsInConfig } from "../adapter/se
 import { McuDebugConfigurationProviderBase } from "../common/config-provider";
 import { processVarSubstitution } from "../adapter/servers/common";
 import { getHostAdapter } from "../common/host-adapter";
-import { CliArgs } from "./options";
+import { CliArgs } from "./cli-options";
 import { CustomTransport } from "../common/cli-logger";
 
 export interface ConfigLoaderArgs {
@@ -175,7 +175,9 @@ export class CLIConfigLoader {
     // references. For now, we'll keep it as two passes since it's simpler and meets our current needs, but we
     // can consider changing it in the future if we find that users want more flexibility in variable referencing.
     private processVarSubstitutions(args: ConfigLoaderArgs, config: any): any {
-        const builtins = args.builtins || CLIConfigLoader.gatherBuiltins();
+        const builtins = Object.assign({}, args.builtins || CLIConfigLoader.gatherBuiltins());  // Make a copy.
+        // This is a special built-in variable that we want to make available for substitution because we allow that in rttConfig
+        builtins.executable = config.executable ?? "";
         const fileName = args.json;
         const jsonContent = JSON.stringify(config);
         // built-ins go first as they may be referenced by envFile or other values we need
