@@ -31,7 +31,7 @@ try {
 // ---------------------------------------------------------------------------
 
 const isWindows = process.platform === "win32";
-const binName = isWindows ? "mcu-debug.exe" : "mcu-debug";
+const binName = isWindows ? "mdbg.exe" : "mdbg";
 const arch = process.arch === "x64" ? "x64" : "arm64";
 const platform = isWindows ? "windows" : process.platform;
 const binPath = join(config.extensionPath, "bin", `${platform}-${arch}`, binName);

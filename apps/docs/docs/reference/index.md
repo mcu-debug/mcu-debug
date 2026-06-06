@@ -7,9 +7,9 @@ title: Reference
 
 Technical reference documentation for mcu-debug.
 
-| Reference | Description |
-|-----------|-------------|
+| Reference                                        | Description                                                          |
+| ------------------------------------------------ | -------------------------------------------------------------------- |
 | [launch.json Properties](./launch-properties.md) | Complete flattened list of all properties supported in `launch.json` |
-| [launch.json Schema](./launch-json-schema.md) | Complete property reference for `launch.json` configuration |
-| [CLI Commands](./cli-commands.md) | All `mcu-debug` subcommands and their options |
-| [Meta-Commands](./meta-commands.md) | The `!!` command set for session control and AI integration |
+| [CLI Commands](./cli-commands.md)                | All `mcu-debug` subcommands and their options                        |
+| [Meta-Commands](./meta-commands.md)              | The `!!` command set for session control and AI integration          |
+| [launch.json Schema](./launch-json-schema.md)    | Complete property reference for `launch.json` configuration          |

@@ -388,7 +388,7 @@ try {
   process.exit(1);
 }
 
-const bin = join(config.extensionPath, "bin", "mcu-debug" + (process.platform === "win32" ? ".exe" : ""));
+const bin = join(config.extensionPath, "bin", "mdbg" + (process.platform === "win32" ? ".exe" : ""));
 const result = spawnSync(bin, process.argv.slice(2), {
   stdio: "inherit",
   env: {
@@ -402,10 +402,10 @@ process.exit(result.status ?? 1);
 
 The two env vars it injects:
 
-| Env var              | Value                                            | Purpose                                                                      |
-| -------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `MCU_DEBUG_NODE`     | `process.execPath`                               | Rust bootstrap uses this path to spawn `cli-controller.js` — same Node binary, no PATH search |
-| `MCU_DEBUG_CLI_JS`   | `<extensionPath>/dist/cli-controller.js`         | Rust bootstrap uses this path to locate the bundled Node controller          |
+| Env var            | Value                                    | Purpose                                                                                       |
+| ------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `MCU_DEBUG_NODE`   | `process.execPath`                       | Rust bootstrap uses this path to spawn `cli-controller.js` — same Node binary, no PATH search |
+| `MCU_DEBUG_CLI_JS` | `<extensionPath>/dist/cli-controller.js` | Rust bootstrap uses this path to locate the bundled Node controller                           |
 
 `process.execPath` is the key. It is the absolute path to the Node binary that is currently running the wrapper. The Rust bootstrap does not need to search PATH for `node`, deal with nvm shims, or worry about version. It uses exactly the same Node version that found the binary in the first place.
 
@@ -447,24 +447,24 @@ Version check in Rust bootstrap:
 
 ### Distribution channels
 
-| Channel                     | Audience                           | How they get `mcu-debug`                                     |
-| --------------------------- | ---------------------------------- | ------------------------------------------------------------ |
-| **npx mcu-debug**           | AI skills (Copilot, Claude), CI/CD | `npx mcu-debug debug ...` — no install, no PATH changes      |
-| **npm install -g mcu-debug**| Terminal users who want it in PATH | Standard npm global install; wrapper becomes `mcu-debug` cmd |
-| **VS Code extension**       | VS Code users (existing path)      | Extension bundles the binary; no npm needed at all           |
+| Channel                      | Audience                           | How they get `mcu-debug`                                     |
+| ---------------------------- | ---------------------------------- | ------------------------------------------------------------ |
+| **npx mcu-debug**            | AI skills (Copilot, Claude), CI/CD | `npx mcu-debug debug ...` — no install, no PATH changes      |
+| **npm install -g mcu-debug** | Terminal users who want it in PATH | Standard npm global install; wrapper becomes `mcu-debug` cmd |
+| **VS Code extension**        | VS Code users (existing path)      | Extension bundles the binary; no npm needed at all           |
 
 The VS Code extension path is **completely unchanged** — it continues to invoke its own bundled binary from `packages/mcu-debug/bin/` exactly as it does today. The npm packaging is a parallel distribution channel, not a replacement.
 
 ### What lives in the extension, what lives in npm
 
-| Asset                         | Location                                    | Found via                  |
-| ----------------------------- | ------------------------------------------- | -------------------------- |
-| Rust binary (`mcu-debug`)     | `<extensionPath>/bin/`                      | `config.json` → binary     |
-| CLI controller (`cli-controller.js`) | `<extensionPath>/dist/`            | `MCU_DEBUG_CLI_JS` env var |
-| SVD files                     | `<extensionPath>/svd/`                      | `config.json` → extensionPath |
-| OpenOCD scripts, server data  | `<extensionPath>/resources/`                | `config.json` → extensionPath |
-| `~/.mcu-debug/config.json`    | Written by extension on activation          | Well-known stable path     |
-| npm package (`mcu-debug`)     | npmjs.com — wrapper only, no assets         | `npx` or `npm install -g`  |
+| Asset                                | Location                            | Found via                     |
+| ------------------------------------ | ----------------------------------- | ----------------------------- |
+| Rust binary (`mcu-debug`)            | `<extensionPath>/bin/`              | `config.json` → binary        |
+| CLI controller (`cli-controller.js`) | `<extensionPath>/dist/`             | `MCU_DEBUG_CLI_JS` env var    |
+| SVD files                            | `<extensionPath>/svd/`              | `config.json` → extensionPath |
+| OpenOCD scripts, server data         | `<extensionPath>/resources/`        | `config.json` → extensionPath |
+| `~/.mcu-debug/config.json`           | Written by extension on activation  | Well-known stable path        |
+| npm package (`mcu-debug`)            | npmjs.com — wrapper only, no assets | `npx` or `npm install -g`     |
 
 The npm package version is kept in sync with the extension version. A version mismatch between the wrapper and the extension is harmless — the wrapper is stateless; only the extension assets matter.
 
@@ -472,13 +472,13 @@ The npm package version is kept in sync with the extension version. A version mi
 
 ## 9. What the CLI Does Not Have
 
-| Missing vs VS Code                   | Reason / mitigation                                                   |
-| ------------------------------------ | --------------------------------------------------------------------- |
-| VS Code as DAP client                | Replaced by `mcu-debug debug` acting as DAP client (§2)               |
-| `vscode.env.remoteName`              | Replaced by OS-level detection (§6)                                   |
-| VS Code settings store               | Replaced by `mcu-debug-settings.json` + `envFile` (see cli-config.md) |
-| Workspace state (Memento)            | UART config and session state from `launch.json` + `~/.mcu-debug/`    |
-| Auto-start Probe Agent on probe host | v1: require pre-running for WSL/Docker; SSH auto-deploy for LAB       |
-| Webview / xterm.js Cockpit           | Replaced by ratatui TUI (Mode 2) or headless stream (Mode 1)          |
+| Missing vs VS Code                   | Reason / mitigation                                                    |
+| ------------------------------------ | ---------------------------------------------------------------------- |
+| VS Code as DAP client                | Replaced by `mcu-debug debug` acting as DAP client (§2)                |
+| `vscode.env.remoteName`              | Replaced by OS-level detection (§6)                                    |
+| VS Code settings store               | Replaced by `mcu-debug-settings.json` + `envFile` (see cli-config.md)  |
+| Workspace state (Memento)            | UART config and session state from `launch.json` + `~/.mcu-debug/`     |
+| Auto-start Probe Agent on probe host | v1: require pre-running for WSL/Docker; SSH auto-deploy for LAB        |
+| Webview / xterm.js Cockpit           | Replaced by ratatui TUI (Mode 2) or headless stream (Mode 1)           |
 | Zero-install single binary           | Node.js >= 22 prerequisite; `npx mcu-debug` covers most cases (see §8) |
-| Extension marketplace updates        | Distributed as a standalone binary; updated independently             |
+| Extension marketplace updates        | Distributed as a standalone binary; updated independently              |

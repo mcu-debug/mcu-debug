@@ -37,7 +37,7 @@ Reset the target via the gdb-server's monitor reset command. Does not require th
 !!RESET
 ```
 
-This sends the appropriate monitor reset command for the configured gdb-server (e.g. `monitor reset halt` for OpenOCD).
+This sends the appropriate monitor reset command for the configured gdb-server (e.g. `monitor reset halt` for OpenOCD). Reset commands are customizable in launch configuration. Reset does not re-program the device nor does it restart the gdb-server. The breakpoints remain as they are
 
 ---
 
@@ -57,12 +57,12 @@ Multiple operations in one patch:
 
 Common operations:
 
-| Operation | Example |
-|-----------|---------|
-| Replace a string field | `[{"op":"replace","path":"/working_theory","value":"New theory"}]` |
-| Append to an array | `[{"op":"add","path":"/ruled_out/-","value":"Clock config verified"}]` |
-| Add a new field | `[{"op":"add","path":"/custom_field","value":"some value"}]` |
-| Remove a field | `[{"op":"remove","path":"/open_questions/0"}]` |
+| Operation              | Example                                                                |
+| ---------------------- | ---------------------------------------------------------------------- |
+| Replace a string field | `[{"op":"replace","path":"/working_theory","value":"New theory"}]`     |
+| Append to an array     | `[{"op":"add","path":"/ruled_out/-","value":"Clock config verified"}]` |
+| Add a new field        | `[{"op":"add","path":"/custom_field","value":"some value"}]`           |
+| Remove a field         | `[{"op":"remove","path":"/open_questions/0"}]`                         |
 
 If the patch fails, mcu-debug reports:
 
@@ -88,7 +88,7 @@ The request appears as a highlighted banner in the human's TUI until cleared.
 
 ### !!AI-REQUEST-CLEAR
 
-Clear the AI-REQUEST display. Use after the AI has received and processed the human's response.
+Clear the AI-REQUEST display area. Used after the AI has received and processed the human's response.
 
 ```
 !!AI-REQUEST-CLEAR
@@ -113,9 +113,9 @@ process.stdin.flush()
 
 ## Meta-Command vs GDB Command Comparison
 
-| Task | Meta-command | GDB equivalent | Notes |
-|------|-------------|----------------|-------|
-| Interrupt running target | `!!SIGINT` | `interrupt` | Meta preferred in remote topologies |
-| Reset target | `!!RESET` | `monitor reset halt` | Correct command auto-selected per gdb-server |
-| Update notes | `!!NOTE: [...]` | — | No GDB equivalent |
-| Request human input | `!!AI-REQUEST: ...` | — | No GDB equivalent |
+| Task                     | Meta-command        | GDB equivalent       | Notes                                        |
+| ------------------------ | ------------------- | -------------------- | -------------------------------------------- |
+| Interrupt running target | `!!SIGINT`          | `interrupt`          | Meta preferred in remote topologies          |
+| Reset target             | `!!RESET`           | `monitor reset halt` | Correct command auto-selected per gdb-server |
+| Update notes             | `!!NOTE: [...]`     | —                    | No GDB equivalent                            |
+| Request human input      | `!!AI-REQUEST: ...` | —                    | No GDB equivalent                            |
