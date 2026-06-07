@@ -494,7 +494,7 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
         await this.start(host, helper);
         setTimeout(() => {
             helper.emitConfigures(this.config!, this);
-        }, 100);
+        }, 20);
     }
 
     async start(host: string, helper: RTTServerHelper) {

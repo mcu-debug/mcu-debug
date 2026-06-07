@@ -325,9 +325,25 @@ export class CliSessionDriver {
         } else if (trimmedInput.toLowerCase() === 'exit') {
             this.doExit(isTerminal);
             return true;
+        } else if (trimmedInput.startsWith('!!AI-REQUEST-RESET')) {
+            // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
+            // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
+            // to the UI to clear/display something
+            logger.info('!!AI-REQUEST-RESET', { isConsole: true, source: 'AI' });
+            return true;
+        } else if (trimmedInput.startsWith('!!AI-REQUEST:')) {
+            // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
+            // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
+            // to the UI to clear/display something
+            logger.info(trimmedInput, { isConsole: true, source: 'AI' });
+            return true;
+        } else if (isTerminal && trimmedInput.startsWith('!!')) {
+            process.stdout?.write(`Sent to any connected AI: ${trimmedInput.substring(2)}\n`);
+            logger.info(trimmedInput.substring(2), { skipConsole: true, source: 'USER-REQUEST' });
+            return true;
         } else if (trimmedInput.toLowerCase().startsWith('!!')) {
             // Future meta-commands (!!RESET, !!NOTE:, etc.)
-            this.handleMetaCommand(trimmedInput);
+            this.unknowMetaCommand(trimmedInput);
             return true;
         }
         return false;
@@ -586,11 +602,6 @@ export class CliSessionDriver {
 
     /** Handle events emitted by the DA (stopped, output, terminated, etc.). */
     private handleEvent(event: DebugProtocol.Event): void {
-        if (event.event.startsWith('custom')) {
-            // Custom events are for DA → CLI communication, not user-facing. Log at debug.
-            // TODO: Handle these later. We are only interested in a few
-            return;
-        }
         switch (event.event) {
             case 'stopped':
                 const reason = `${event.body?.reason}` + (event.body?.description ? ` — ${event.body.description}` : '');
@@ -630,9 +641,9 @@ export class CliSessionDriver {
                 break;
             }
             case 'initialized':
-                this.setState("initialized");
-                setTimeout(() => {
-                    if (this.status === "initialized" && this.session) {
+                if (this.status === "starting") {
+                    this.setState("initialized");
+                    if (this.session) {
                         if (this.session.isRunning()) {
                             this.setState("running");
                             this.startReadlineRunning();
@@ -641,7 +652,7 @@ export class CliSessionDriver {
                             this.startReadlinePaused();
                         }
                     }
-                }, 2000);
+                }
                 break;
             case "swo-configure":
                 // this.receivedSWOConfigureEvent(event);
@@ -658,7 +669,11 @@ export class CliSessionDriver {
                 break;
             default:
                 // Custom events (custom-event-ports-done, SWOConfigure, etc.)
-                this.optionalInfo.debug(`event:${event.event} `, { body: event.body });
+                if (event.event.startsWith('custom-event-')) {
+                    this.optionalInfo.debug(`custom event:${event.event} `, { body: event.body });
+                } else {
+                    this.optionalInfo.debug(`event:${event.event} `, { body: event.body });
+                }
                 break;
 
         }
@@ -828,8 +843,7 @@ export class CliSessionDriver {
         });
         return this.socketPromise;
     }
-    private handleMetaCommand(cmd: string) {
-        // Handle future meta-commands from the Rust side (e.g. !!RESET, !!NOTE:, etc.)
+    private unknowMetaCommand(cmd: string) {
         logger.info(`Unhandled meta-command from clients: ${cmd}`, { source: 'DA', isConsole: true });
     }
 

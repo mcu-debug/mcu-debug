@@ -2,7 +2,7 @@ import { GdbInstance } from "./gdb-instance";
 import { GdbMiFrameIF, GdbMiOutput, GdbMiRecord, GdbMiThreadIF } from "./mi-types";
 
 export class MiCommands {
-    constructor(public readonly gdbInstance: GdbInstance) {}
+    constructor(public readonly gdbInstance: GdbInstance) { }
 
     sendContinue(threadGroup: number | undefined): Promise<GdbMiOutput> {
         const cmd = "-exec-continue" + (threadGroup !== undefined ? ` --thread-group ${threadGroup}` : "");
@@ -299,7 +299,7 @@ export async function DataEvaluateExpression(gdbInstance: GdbInstance, expr: str
         if (record && record["value"]) {
             return record["value"];
         }
-    } catch (e) {}
+    } catch (e) { }
     return null;
 }
 
@@ -324,7 +324,13 @@ export async function GdbMiOrCliCommandForOob(gdbInstance: GdbInstance, cmd: str
     if (!cmd.startsWith("-")) {
         cmd = `-interpreter-exec console "${cmd}"`;
     }
+
+    const isDebug = gdbInstance.debugFlags.anyFlags;
+    const save = gdbInstance.suppressConsoleOutput;
+    gdbInstance.suppressConsoleOutput = isDebug ? false : true;
     const miOutput = await gdbInstance.sendCommand(cmd);
+    gdbInstance.suppressConsoleOutput = save;
+
     const outputLines: string[] = [];
     if (miOutput.outOfBandRecords) {
         for (const oob of miOutput.outOfBandRecords) {

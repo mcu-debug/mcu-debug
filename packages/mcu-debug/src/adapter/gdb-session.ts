@@ -1212,6 +1212,38 @@ export class GDBDebugSession extends SeqDebugSession {
         this.rttTcpServer.on("event", this.serverControllerEvent.bind(this));
     }
 
+    private postInitlizedEvent(): Promise<void> {
+        return new Promise(async (resolve) => {
+            const doBuiltinRtt = !!this.args.pvtRttConfig;
+            const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
+            if (doStart) {
+                this.liveWatchMonitor.once("connected", async () => {
+                    if (doBuiltinRtt) {
+                        try {
+                            await this.rttManager.start(this.rttTcpServer);
+                        } catch (e) {
+                            this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${e instanceof Error ? e.message : String(e)}\n`);
+                        }
+                    }
+                });
+                this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
+            }
+            // The disassmbly adapter relies on target info for various things like source mappings,
+            // so we need to wait for it to be initialized before we can use the disassembly adapter.
+            // It should have been started by the time we get here, but just in case, we wait for it
+            // to be initialized before initializing the disassembly adapter. Disassmbly is very low
+            // priority, so it doesn't matter if it is delayed a bit.
+            try {
+                await TargetInfo.Instance?.initialize();
+                this.disassemblyAdapter?.initialize();
+                this.disassemblyAdapterNew?.initialize();
+            } catch (e) {
+                this.handleMsg(Stderr, `ERROR: Failed to initialize target info and disassembly adapter: ${e instanceof Error ? e.message : String(e)}\n`);
+            }
+            resolve();
+        });
+    }
+
     private async launchAttachRequest(response: DebugProtocol.LaunchResponse, noDebug: boolean): Promise<void> {
         let sentResponse = false;
         const finishWithError = (message: string) => {
@@ -1221,37 +1253,20 @@ export class GDBDebugSession extends SeqDebugSession {
             }
         };
         try {
-            this.on("configurationDone", async () => {
-                const doBuiltinRtt = !!this.args.pvtRttConfig;
-                const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
-                if (doStart) {
-                    this.liveWatchMonitor.on("connected", async () => {
-                        if (doBuiltinRtt) {
-                            try {
-                                setTimeout(async () => {
-                                    await this.rttManager.start(this.rttTcpServer);
-                                }, 2000); // delay a bit to make sure we
-                            } catch (e) {
-                                this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${e instanceof Error ? e.message : String(e)}\n`);
-                            }
-                        }
-                    });
-                    this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
-                }
-                this.disassemblyAdapter?.initialize();
-                this.disassemblyAdapterNew?.initialize();
-            });
-            this.handleMsg(Stdout, `MCU-Debug: Embedded MCU debug adapter version ${pkgJsonVersion} (${gitCommitHash}). ` + "Usage info: https://github.com/mcu-debug/mcu-debug#usage");
+            // this.on("configurationDone", async () => {
+            //     await this.postInitlizedEvent();
+            // });
+            this.handleMsg(Stdout, `MCU-Debug: Embedded MCU debug adapter version ${pkgJsonVersion} (${gitCommitHash}). ` + "Usage info: https://mcu-debug.github.io/mcu-debug/");
             if (this.args.debugFlags.anyFlags) {
-                this.handleMsg(Stderr, "Debug Flags Enabled. launch.json after processing by VSCode and MCU-Debug:\n");
+                this.handleMsg(Stdout, "Debug Flags Enabled. launch.json after processing by VSCode and MCU-Debug:\n");
                 const jsonStr = JSON.stringify(this.args, null, 2);
-                this.handleMsg(Stderr, jsonStr + "\n");
+                this.handleMsg(Stdout, jsonStr + "\n");
             }
 
             const showTimes = this.args.debugFlags.timestamps || this.args.debugFlags.gdbTraces;
             const reportTime = (stage: string) => {
                 if (showTimes) {
-                    this.handleMsg(Stderr, `Debug Time: ${stage} - ${Date.now() - this.timeStart} ms\n`);
+                    this.handleMsg(Stdout, `Debug Time: ${stage} - ${Date.now() - this.timeStart} ms\n`);
                 }
             };
             this.getSymbolAndLoadCommands();
@@ -1310,6 +1325,7 @@ export class GDBDebugSession extends SeqDebugSession {
             // and we are ready to go. However, the program may be running depending on the session mode and settings
             // So, we now inform VSCode that the debugger has started. It will in turn set breakpoints, etc.
             this.sendEvent(new InitializedEvent()); // This is when we tell that the debugger has really started
+            const postInitPromise = this.postInitlizedEvent();
 
             // After the above, VSCode will set various kinds of breakpoints, watchpoints, etc. When all those things
             // happen, it will finally send a configDone request and now everything should be stable
@@ -1335,13 +1351,14 @@ export class GDBDebugSession extends SeqDebugSession {
             if (this.debugHelperPromise) {
                 try {
                     await this.debugHelperPromise;
-                    this.handleMsg(Stderr, "Debug helper initialized successfully.\n");
+                    this.handleMsg(Stdout, "Debug helper initialized successfully.\n");
                 } catch (e) {
                     this.handleMsg(Stderr, `WARNING: Debug helper initialization failed. Please report this issue. Debugging may still work ${e}\n`);
                 }
             }
             this.gdbInstance.currentCommandTimeout = GdbInstance.DefaultCommandTimeout;
             reportTime("Ready for full debugging");
+            await postInitPromise;
         } catch (e) {
             return finishWithError(`Launch/Attach request failed: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -1361,7 +1378,6 @@ export class GDBDebugSession extends SeqDebugSession {
             if (rttConfig?.enabled) {
                 const symName = this.symbolTable.rttSymbolName;
                 if (!rttConfig.address) {
-                    this.handleMsg(Stderr, 'INFO: "rttConfig.address" not specified. Defaulting to "auto"\n');
                     rttConfig.address = "auto";
                 }
                 if (rttConfig.address === "auto") {

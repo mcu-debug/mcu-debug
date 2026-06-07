@@ -56,6 +56,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::transport::{MuxReader, MuxWriter};
+use tui_textarea::{CursorMove, TextArea};
 
 const MAX_LINES: usize = 2000;
 const POLL_TIMEOUT: Duration = Duration::from_millis(50);
@@ -66,7 +67,7 @@ struct App {
     output: VecDeque<String>,
     /// Active AI request text. `None` means the section is hidden.
     ai_request: Option<String>,
-    input: String,
+    textarea: TextArea<'static>,
     /// Number of lines scrolled up from the bottom (0 = pinned to bottom).
     scroll: u16,
     /// When true, new output lines automatically pull the view to the bottom.
@@ -87,12 +88,31 @@ struct App {
     status: String,
 }
 
+/// Create a styled single-line `TextArea` for the input bar.
+///
+/// `initial` pre-populates the line (used when restoring history entries).
+/// The cursor is placed at the end of the text.
+fn styled_textarea(initial: &str) -> TextArea<'static> {
+    let mut ta = TextArea::new(vec![initial.to_owned()]);
+    // No whole-line background highlight.
+    ta.set_cursor_line_style(Style::default());
+    // Reverse-video block cursor.
+    ta.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+    // Placeholder shown when the box is empty.
+    ta.set_placeholder_text("Enter 'gdb' command — F1 for help");
+    ta.set_placeholder_style(Style::default().fg(Color::DarkGray));
+    if !initial.is_empty() {
+        ta.move_cursor(CursorMove::End);
+    }
+    ta
+}
+
 impl App {
     fn new() -> Self {
         Self {
             output: VecDeque::new(),
             ai_request: None,
-            input: String::new(),
+            textarea: styled_textarea(""),
             scroll: 0,
             auto_follow: true,
             should_quit: false,
@@ -119,7 +139,7 @@ impl App {
         let trimmed = line.trim_end();
 
         // Meta-commands emitted by the AI — intercept and don't show in output.
-        if let Some(rest) = trimmed.strip_prefix("!!AI-REQUEST: ") {
+        if let Some(rest) = trimmed.strip_prefix("!!AI-REQUEST:") {
             self.ai_request = Some(rest.to_owned());
             return;
         }
@@ -194,7 +214,7 @@ impl App {
         match self.history_pos {
             None => {
                 // Save whatever the user was typing and jump to the most recent entry.
-                self.history_draft = std::mem::take(&mut self.input);
+                self.history_draft = self.textarea.lines().first().cloned().unwrap_or_default();
                 self.history_pos = Some(self.history.len() - 1);
             }
             Some(0) => return, // already at the oldest entry
@@ -202,7 +222,8 @@ impl App {
                 self.history_pos = Some(i - 1);
             }
         }
-        self.input = self.history[self.history_pos.unwrap()].clone();
+        let text = self.history[self.history_pos.unwrap()].clone();
+        self.textarea = styled_textarea(&text);
     }
 
     fn history_down(&mut self) {
@@ -211,11 +232,13 @@ impl App {
             Some(i) if i + 1 >= self.history.len() => {
                 // Past the newest entry → restore the saved draft.
                 self.history_pos = None;
-                self.input = std::mem::take(&mut self.history_draft);
+                let draft = std::mem::take(&mut self.history_draft);
+                self.textarea = styled_textarea(&draft);
             }
             Some(i) => {
                 self.history_pos = Some(i + 1);
-                self.input = self.history[i + 1].clone();
+                let text = self.history[i + 1].clone();
+                self.textarea = styled_textarea(&text);
             }
         }
     }
@@ -246,7 +269,7 @@ impl App {
             // DAP `pause` request — same path as `startReadlineRunning`'s
             // SIGINT handler in session-driver.ts.
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                self.input.clear();
+                self.textarea = styled_textarea("");
                 let _ = writer.write_line("!!SIGINT");
             }
 
@@ -256,7 +279,6 @@ impl App {
             // Ctrl-D: EOF convention — send "exit" to Node for a graceful shutdown.
             // Ctrl-X: emergency escape hatch when the socket is hung (kills Node).
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                self.input.clear();
                 // TODO: if the target is running, Node's readline is in "running" mode
                 // and discards plain input. A !!QUIT meta-command will be needed once
                 // the Node socket reader handles all session states.
@@ -276,22 +298,20 @@ impl App {
             (KeyCode::End, _) => self.jump_to_bottom(),
 
             // ── Input editing ─────────────────────────────────────────────────
-            (KeyCode::Backspace, _) => {
-                self.input.pop();
-            }
+            // Enter submits; all other editing (Ctrl-A/E/K/U/W, Alt-F/B, arrows,
+            // Backspace, Delete, …) is handled by tui-textarea (emacs/bash style).
             (KeyCode::Enter, _) => {
-                let line = std::mem::take(&mut self.input);
+                let line = self.textarea.lines().first().cloned().unwrap_or_default();
+                self.textarea = styled_textarea("");
                 if !line.is_empty() {
                     self.history_push(&line);
-                    // TODO: prefix with [USER-REQUEST] tag once the wire protocol is confirmed
                     let _ = writer.write_line(&line);
                 }
             }
-            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                self.input.push(c);
+            // Pass everything else to the textarea for emacs/bash-style editing.
+            _ => {
+                self.textarea.input(event);
             }
-
-            _ => {}
         }
     }
 }
@@ -517,7 +537,7 @@ fn ansi256(n: u8) -> Color {
     }
 }
 
-fn render(frame: &mut ratatui::Frame, app: &App, output_height: &Cell<u16>) {
+fn render(frame: &mut ratatui::Frame, app: &mut App, output_height: &Cell<u16>) {
     let has_ai = app.ai_request.is_some();
 
     // Build vertical layout: output | [ai request] | input
@@ -606,41 +626,25 @@ fn render_ai_request(frame: &mut ratatui::Frame, app: &App, area: ratatui::layou
     frame.render_widget(para, area);
 }
 
-fn render_input(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect) {
-    // While navigating history, dim the prompt and show [pos/total] in the title.
-    let (prompt_style, title) = match app.history_pos {
+fn render_input(frame: &mut ratatui::Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let (border_style, title) = match app.history_pos {
         Some(i) => (
             Style::default().fg(Color::Cyan),
             format!(" History [{}/{}] ", i + 1, app.history.len()),
         ),
         None => (Style::default().fg(Color::Green), " Input ".to_owned()),
     };
-
-    let line = if app.input.is_empty() && app.history_pos.is_none() {
-        // Placeholder hint when the input bar is empty — cursor still visible at left.
-        Line::from(vec![
-            Span::styled("> ", prompt_style),
-            Span::styled("█", prompt_style),
-            Span::styled(
-                "Enter 'gdb' command. F1 for terminal help",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("> ", prompt_style),
-            Span::raw(&app.input),
-            Span::styled("█", prompt_style),
-        ])
-    };
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let para = Paragraph::new(line).block(block);
-    frame.render_widget(para, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(border_style);
+    app.textarea.set_block(block);
+    frame.render_widget(&app.textarea, area);
 }
 
 fn render_help(frame: &mut ratatui::Frame) {
-    const ROWS: u16 = 18;
-    const COLS: u16 = 52;
+    const ROWS: u16 = 27;
+    const COLS: u16 = 56;
 
     let area = centered_rect(COLS, ROWS, frame.area());
     frame.render_widget(Clear, area);
@@ -651,18 +655,28 @@ fn render_help(frame: &mut ratatui::Frame) {
     let dim = Style::default().fg(Color::DarkGray);
 
     let rows: &[(&str, &str)] = &[
-        ("  ↑ / ↓          ", "Navigate command history"),
-        ("  PgUp / PgDn    ", "Scroll output (90 % page)"),
-        ("  End            ", "Jump to bottom / resume auto-follow"),
-        ("  Enter          ", "Submit command"),
-        ("  Backspace      ", "Delete last character"),
-        ("                 ", ""),
-        ("  Ctrl-C         ", "Interrupt target if running"),
-        ("  Ctrl-D         ", "Graceful exit"),
-        ("  Ctrl-X         ", "Emergency exit"),
-        ("                 ", ""),
-        ("  F1             ", "Show / hide this help"),
-        ("                 ", ""),
+        ("  ↑ / ↓            ", "Navigate command history"),
+        ("  PgUp / PgDn      ", "Scroll output (90 % page)"),
+        ("  End              ", "Jump output to bottom"),
+        ("  Enter            ", "Submit command"),
+        ("                   ", ""),
+        ("  Ctrl-A / Home    ", "Beginning of line"),
+        ("  Ctrl-E           ", "End of line"),
+        ("  Ctrl-F / →       ", "Forward char"),
+        ("  Ctrl-B / ←       ", "Backward char"),
+        ("  Alt-F / Alt-B    ", "Forward / backward word"),
+        ("  Ctrl-K           ", "Kill to end of line"),
+        ("  Ctrl-U           ", "Kill to beginning of line"),
+        ("  Ctrl-W           ", "Kill previous word"),
+        ("  Backspace        ", "Delete char before cursor"),
+        ("  Delete           ", "Delete char at cursor"),
+        ("                   ", ""),
+        ("  Ctrl-C           ", "Interrupt target"),
+        ("  Ctrl-D           ", "Graceful exit"),
+        ("  Ctrl-X           ", "Emergency exit"),
+        ("                   ", ""),
+        ("  F1               ", "Show / hide this help"),
+        ("                   ", ""),
         ("  Press any key to close", ""),
     ];
 
@@ -825,7 +839,7 @@ fn event_loop(
         }
 
         let output_height_cell = Cell::new(app.output_height);
-        terminal.draw(|frame| render(frame, &app, &output_height_cell))?;
+        terminal.draw(|frame| render(frame, &mut app, &output_height_cell))?;
         app.output_height = output_height_cell.get();
 
         if app.should_quit {

@@ -104,9 +104,8 @@
 			"args": ["debug", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log"],
             // "cwd": "/Users/hdm/mtw37/Hello_World",
 			"cwd": "/Users/hdm/rtt/Hello_RTT",
-            "console": "externalTerminal",
+            "console": "integratedTerminal",
 			"preLaunchTask": "Build Helper",
-			"initCommands": ["process handle SIGHUP -p false -s false -n false"],
             "sourceLanguages": ["rust"],
 			"presentation": {
 			  "reveal": "always",

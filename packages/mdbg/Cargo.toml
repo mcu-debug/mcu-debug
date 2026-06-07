@@ -31,6 +31,7 @@ flexi_logger = "0.29"
 serialport = { version = "4.9.0", default-features = false }
 notify = "8.2.0"
 ratatui = "0.29"
+tui-textarea = { version = "0.7", features = ["crossterm"] }
 crossterm = "0.28"
 libc = "0.2"
 

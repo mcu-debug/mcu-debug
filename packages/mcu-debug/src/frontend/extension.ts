@@ -80,7 +80,8 @@ export class MCUDebugExtension {
             mkdirSync(path.dirname(fileName), { recursive: true });
             writeFileSync(fileName, JSON.stringify(obj, null, 2) + "\n");
         } catch (error) {
-            console.error("Failed to read config file:", error);
+            MCUDebugChannel.debugMessage("Failed to write config file needed by CLI tools: " + error);
+            vscode.window.showWarningMessage("Failed to write config file needed by CLI tools: " + error);
         }
 
         this.cockpitPanel = new CockpitPanel(context.extensionUri);

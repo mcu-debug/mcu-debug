@@ -90,7 +90,7 @@ export class DisassemblyAdapterNew {
     }
 
     // This should be called after the symbol table and the target info are initialized
-    initialize(): void {
+    initialize() {
         const archType = TargetInfo.Instance!.getArchitectureType();
         this.instrInfo = InstructionSizes.get(archType);
         this.debugDisassembly = this.session.args.debugFlags?.debugDisassembly ?? false;

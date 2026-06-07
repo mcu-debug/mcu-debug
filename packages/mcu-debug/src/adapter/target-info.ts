@@ -158,6 +158,7 @@ export class TargetInfo {
     private targetMemoryRegions: TargetMemoryRegions | undefined;
     private PointerSize: number = 4; // default to 32-bit pointers
     private archType: TargetArchitecture = TargetArchitecture.UNKNOWN;
+    private archPromise: Promise<void> | null = null;
 
     public getArchitectureType(): TargetArchitecture {
         return this.archType;
@@ -177,40 +178,59 @@ export class TargetInfo {
         return this.PointerSize;
     }
 
+    private initPromise: Promise<void> | null = null;
     public async initialize(): Promise<void> {
-        try {
-            const obj = (await GdbMiOrCliCommandForOob(this.gdbInstance, "show endian")) as Object;
-            const output = (typeof obj === "string" ? obj : (Array.isArray(obj) ? obj.join(" ") : ((obj as any)["value"] as string)));
-            if (typeof output !== "string") {
-                throw new Error("Invalid endian output");
-            } else if (output.toLowerCase().includes("little")) {
-                this.endianness = "little";
-            } else if (output.toLowerCase().includes("big")) {
-                this.endianness = "big";
-            } else {
-                throw new Error("Unknown endianness");
-            }
-            this.session.handleMsg(Stderr, `Target endianness: ${this.endianness}\n`);
-        } catch {
-            this.session.handleMsg(Stderr, "Warning: Unable to determine target endianness. Defaulting to little endian.\n");
+        if (this.initPromise) {
+            return this.initPromise;
         }
-        try {
-            await this._getMemoryRegions();
-        } catch (e) {
-            this.session.handleMsg(Stderr, `Warning: Unable to determine target memory regions. ${e}\n`);
-        }
-        try {
-            const tmp = await DataEvaluateExpressionAsNumber(this.gdbInstance, `sizeof(void*)`);
-            this.PointerSize = tmp !== null ? tmp : 4;
-        } catch {
+        this.initPromise = new Promise<void>(async (resolve) => {
             try {
-                const tmp = await DataEvaluateExpressionAsNumber(this.gdbInstance, `sizeof(*const ())`); // Try Rust style
+                const obj = (await GdbMiOrCliCommandForOob(this.gdbInstance, "show endian")) as Object;
+                const output = (typeof obj === "string" ? obj : (Array.isArray(obj) ? obj.join(" ") : ((obj as any)["value"] as string)));
+                if (typeof output !== "string") {
+                    throw new Error("Invalid endian output");
+                } else if (output.toLowerCase().includes("little")) {
+                    this.endianness = "little";
+                } else if (output.toLowerCase().includes("big")) {
+                    this.endianness = "big";
+                } else {
+                    throw new Error("Unknown endianness");
+                }
+                this.session.handleMsg(Stdout, `Target endianness: ${this.endianness}\n`);
+            } catch {
+                this.session.handleMsg(Stderr, "Warning: Unable to determine target endianness. Defaulting to little endian.\n");
+            }
+            try {
+                await this._getMemoryRegions();
+            } catch (e) {
+                this.session.handleMsg(Stderr, `Warning: Unable to determine target memory regions. ${e}\n`);
+            }
+            try {
+                const tmp = await DataEvaluateExpressionAsNumber(this.gdbInstance, `sizeof(void*)`);
                 this.PointerSize = tmp !== null ? tmp : 4;
             } catch {
-                this.session.handleMsg(Stderr, "Warning: Unable to determine target pointer size. Defaulting to 4 bytes.\n");
+                try {
+                    const tmp = await DataEvaluateExpressionAsNumber(this.gdbInstance, `sizeof(*const ())`); // Try Rust style
+                    this.PointerSize = tmp !== null ? tmp : 4;
+                } catch {
+                    this.session.handleMsg(Stderr, "Warning: Unable to determine target pointer size. Defaulting to 4 bytes.\n");
+                }
             }
+            try {
+                await this.determineArchitecture();
+            } catch {
+                this.session.handleMsg(Stderr, "Warning: Unable to determine target architecture.\n");
+            }
+            resolve();
+        });
+        return this.initPromise;
+    }
+
+    private async determineArchitecture(): Promise<void> {
+        if (this.archPromise) {
+            return this.archPromise;
         }
-        try {
+        this.archPromise = new Promise<void>(async (resolve) => {
             const lines = (await GdbMiOrCliCommandForOob(this.gdbInstance, "show architecture")) as string[];
             for (const line of lines) {
                 let match = /.*architecture.*currently \"(.+)\"/.exec(line);
@@ -223,7 +243,7 @@ export class TargetInfo {
                         }
                     }
                     this.architecture = arch;
-                    this.session.handleMsg(Stderr, `Target architecture: ${arch}\n`);
+                    this.session.handleMsg(Stdout, `Target architecture: ${arch}\n`);
                     break;
                 }
             }
@@ -234,9 +254,9 @@ export class TargetInfo {
             } else {
                 this.archType = getTargetArchitecture(this.architecture);
             }
-        } catch {
-            this.session.handleMsg(Stderr, "Warning: Unable to determine target architecture.\n");
-        }
+            resolve();
+        });
+        return this.archPromise;
     }
 
     private async _getMemoryRegions(): Promise<void> {

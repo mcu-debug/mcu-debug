@@ -307,6 +307,7 @@ The live session. Rust TUI connects here; AI attachers connect here later.
   - [x] `!!SIGINT` → send SIGINT to target
   - [x] `!!RESET` → reset via gdb-server monitor command
   - [ ] `!!AI-REQUEST: <text>` → post to AI-REQUEST region (TUI) or tag on mux stream
+  - [ ] `!!AI-REQUEST-CLEAR` → post to (TUI) to clear the AI-REQUEST area
   - [ ] `!!NOTE: <json-patch>` → patch session-notes sidecar file
 - [ ] Attacher disconnect: clean, does not kill session
 - [x] Session teardown: gdb-server killed, GDB exited, socket removed, Rust bootstrap exits

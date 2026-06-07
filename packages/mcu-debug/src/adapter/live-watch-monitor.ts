@@ -128,11 +128,11 @@ export class LiveWatchMonitor extends EventEmitter {
         this.mainSession.gdbInstance.on(GdbEventNames.Stopped, this.onStopped.bind(this));
         this.mainSession.gdbInstance.on(GdbEventNames.Running, this.onRunning.bind(this));
         this.gdbInstance.on("connected", () => {
-            this.emit("connected");
             this.disableConsoleMessages = false;
             this.liveMonitorEnabled = true;
             this.handleMsg(Stdout, `Live GDB connected to target.\n`);
             this.mainSession.sendEvent(this.newLiveConnectedEvent());
+            this.emit("connected");
         });
     }
 
