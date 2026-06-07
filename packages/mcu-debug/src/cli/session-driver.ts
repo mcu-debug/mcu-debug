@@ -42,8 +42,9 @@ import { CliAdapter } from "./cli-adapter";
 
 export class CliSessionDriver {
     private session: GDBDebugSession | null = null;
-    private rlPaused: readline.Interface | null = null;
-    private rlRunning: readline.Interface | null = null;
+    private rl: readline.Interface | null = null;
+    private inRedraw = false;
+    private stdoutWriteOrig: typeof process.stdout.write | null = null;
     private nextSeq = 1;
     // Keyed by the seq we assign to each request; resolved when the matching response arrives.
     private pendingRequests = new Map<number, (response: DebugProtocol.Response) => void>();
@@ -213,44 +214,121 @@ export class CliSessionDriver {
         });
     }
 
-    private startReadlinePaused() {
-        if (this.rlPaused) {
+    /**
+     * Create the single readline interface the first time it is needed.
+     * Subsequent calls are no-ops — the same interface is reused for the
+     * entire session lifetime so partial input and history survive
+     * paused ↔ running state transitions.
+     */
+    private ensureReadline() {
+        if (this.rl) {
             return;
         }
-        this.rlPaused = readline.createInterface({
+        this.rl = readline.createInterface({
             input: process.stdin,
             output: process.stdout,
-            terminal: true,
+            terminal: !!process.stdin.isTTY,
             prompt: 'gdb> ',
             historySize: 1000,
             history: this.history || [],
         });
 
-        this.rlPaused.prompt();
-
-        this.rlPaused.on('line', (input: string) => {
+        // Single line handler — dispatches based on current session state.
+        this.rl.on('line', (input: string) => {
             if (!input.trim()) {
-                this.rlPaused?.prompt();
+                if (this.isPaused) this.rl?.prompt();
                 return;
             }
-            this.handleInputLinePaused(input, true);
+            if (this.isPaused) {
+                this.handleInputLinePaused(input, true);
+            } else {
+                this.handleInputLineRunning(input, true);
+            }
         });
 
-        this.rlPaused.on('history', (history) => {
+        this.rl.on('history', (history) => {
             this.history = history;
         });
 
-        this.rlPaused.on('SIGINT', () => {
-            logger.info('SIGINT ignored while paused. Type "continue" to resume or "exit" to terminate the session.');
+        // Single SIGINT handler — behaviour depends on current session state.
+        this.rl.on('SIGINT', () => {
+            if (this.isPaused) {
+                logger.info('SIGINT ignored while paused. Type "continue" to resume or "exit" to terminate the session.');
+            } else {
+                logger.info('SIGINT received, sending interrupt to debug session...');
+                this.doInterrupt();
+            }
         });
 
-        this.rlPaused.on('close', () => {
-            // logger.info('Exiting debug session.');
+        this.rl.on('close', () => {
             if (!this.isInternalClose) {
                 this.doExit(true);
             }
             this.isInternalClose = false;
         });
+
+        this.installStdoutProxy();
+    }
+
+    /** True only when stdin is an interactive terminal. */
+    private get isTTY(): boolean {
+        return !!process.stdin.isTTY;
+    }
+
+    /**
+     * Update the prompt string and redraw the input line in place.
+     * Called whenever the session transitions between paused and running.
+     * Because we keep one rl instance, the user's partial input is preserved.
+     */
+    private setReadlineState(paused: boolean) {
+        this.ensureReadline();
+        if (!this.isTTY) {
+            return; // TUI / VS Code panel — no prompt, no redraw needed
+        }
+        this.rl!.setPrompt(paused ? 'gdb> ' : '');
+        if (paused) {
+            // Redraws prompt + any partial input already in the buffer.
+            this.rl!.prompt(true);
+        } else {
+            // Clear the prompt glyph but leave any partial input visible.
+            if (this.isTTY) {
+                (this.rl as any)._refreshLine?.();
+            }
+        }
+    }
+
+    /**
+     * Wrap process.stdout.write so that any async output (RTT, UART, DA events)
+     * printed while a gdb> prompt is showing:
+     *   1. Erases the current prompt+partial-input line.
+     *   2. Prints the output.
+     *   3. Redraws prompt+partial-input via readline's internal _refreshLine.
+     *
+     * This keeps the user's partial command intact and visible after every
+     * async write, regardless of source (logger, RTT, UART socket, etc.).
+     */
+    private installStdoutProxy() {
+        if (!this.isTTY) {
+            return; // TUI / VS Code panel — stdout is a pipe, no prompt to protect
+        }
+        const orig = process.stdout.write.bind(process.stdout) as typeof process.stdout.write;
+        this.stdoutWriteOrig = orig;
+        (process.stdout.write as any) = (chunk: any, encoding?: any, callback?: any): boolean => {
+            // Guard against re-entrant calls from clearLine / cursorTo / _refreshLine.
+            if (this.inRedraw || !this.isPaused || !(this.rl as any)?._refreshLine) {
+                return orig(chunk, encoding, callback);
+            }
+            this.inRedraw = true;
+            try {
+                readline.clearLine(process.stdout, 0);
+                readline.cursorTo(process.stdout, 0);
+                orig(chunk, encoding, callback);
+                (this.rl as any)._refreshLine();
+            } finally {
+                this.inRedraw = false;
+            }
+            return true;
+        };
     }
 
     private handleInputLinePaused(input: string, isTerminal: boolean) {
@@ -275,7 +353,6 @@ export class CliSessionDriver {
         } else if (this.handleSpecialCommands(trimmedInput, isTerminal)) {
             // Special commands handled
         } else {
-            const save = this.rlPaused;
             // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest"
             this.doReplCommand(trimmedInput).then((response) => {
                 if (!response.success) {
@@ -284,8 +361,10 @@ export class CliSessionDriver {
             }).finally(() => {
                 if (isTerminal) {
                     setTimeout(() => {
-                        if (this.rlPaused === save) {
-                            this.rlPaused?.prompt();
+                        // Only re-prompt if still paused — a continued/stopped event
+                        // may have changed state while the command was in-flight.
+                        if (this.isPaused) {
+                            this.rl?.prompt();
                         }
                     }, 250);
                 }
@@ -493,8 +572,9 @@ export class CliSessionDriver {
                 logger.warn(`Terminate request failed: ${response.message}`);
             }
             if (isTerminal) {
-                this.rlPaused?.close();
-                this.rlPaused = null;
+                // The rl may already be closed (user pressed Ctrl-D) or will be closed
+                // when the terminated event arrives via closeLineReaders().
+                this.closeLineReaders();
             }
         });
     }
@@ -512,37 +592,9 @@ export class CliSessionDriver {
         });
     }
 
-    private startReadlineRunning() {
-        if (this.rlRunning) {
-            return;
-        }
-        this.rlRunning = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-            terminal: true,
-        });
-        // Don't call pause() — a paused readline won't read stdin and won't detect Ctrl-C.
-        // When terminal:true puts stdin in raw mode, ISIG is cleared so the OS no longer
-        // generates SIGINT for Ctrl-C; readline must read the \x03 byte itself to emit 'SIGINT'.
-        this.rlRunning.on('line', (input) => {
-            this.handleInputLineRunning(input, true);
-        }); // discard any accidental input while running
-        this.rlRunning.on('SIGINT', () => {
-            logger.info('SIGINT received, sending interrupt to debug session...');
-            this.sendRequest<DebugProtocol.PauseResponse>({
-                seq: 0,
-                type: 'request',
-                command: 'pause',
-            });
-        });
-        this.rlRunning.on('close', () => {
-            // logger.info('Exiting debug session.');
-            if (!this.isInternalClose) {
-                this.doExit(true);
-            }
-            this.isInternalClose = false;
-        });
-    }
+    // startReadlineRunning() has been merged into ensureReadline() / setReadlineState().
+    // The single this.rl interface handles both paused and running states, dispatching
+    // input via this.isPaused at the point each line arrives.
 
     private handleInputLineRunning(input: string, isTerminal: boolean) {
         const trimmedInput = input.trim();
@@ -603,24 +655,17 @@ export class CliSessionDriver {
     /** Handle events emitted by the DA (stopped, output, terminated, etc.). */
     private handleEvent(event: DebugProtocol.Event): void {
         switch (event.event) {
-            case 'stopped':
+            case 'stopped': {
                 const reason = `${event.body?.reason}` + (event.body?.description ? ` — ${event.body.description}` : '');
-                this.setState("paused", reason);
-                this.isInternalClose = true;
-                this.rlRunning?.close();
-                this.rlRunning = null;
                 this.isPaused = true;
-                this.startReadlinePaused();
-                this.isInternalClose = false;
+                this.setState("paused", reason);
+                this.setReadlineState(true);
                 break;
+            }
             case 'continued':
-                this.setState("running");
-                this.isInternalClose = true;
-                this.rlPaused?.close();
-                this.rlPaused = null;
                 this.isPaused = false;
-                this.startReadlineRunning();
-                this.isInternalClose = false;
+                this.setState("running");
+                this.setReadlineState(false);
                 break;
             case 'terminated':
                 if (!this.restarting) {
@@ -645,11 +690,13 @@ export class CliSessionDriver {
                     this.setState("initialized");
                     if (this.session) {
                         if (this.session.isRunning()) {
+                            this.isPaused = false;
                             this.setState("running");
-                            this.startReadlineRunning();
+                            this.setReadlineState(false);
                         } else {
+                            this.isPaused = true;
                             this.setState("paused");
-                            this.startReadlinePaused();
+                            this.setReadlineState(true);
                         }
                     }
                 }
@@ -681,10 +728,15 @@ export class CliSessionDriver {
     }
 
     private closeLineReaders() {
-        this.rlPaused?.close();
-        this.rlPaused = null;
-        this.rlRunning?.close();
-        this.rlRunning = null;
+        this.isInternalClose = true;
+        this.rl?.close();
+        this.rl = null;
+        this.isInternalClose = false;
+        // Restore the original process.stdout.write now that readline is torn down.
+        if (this.stdoutWriteOrig) {
+            process.stdout.write = this.stdoutWriteOrig;
+            this.stdoutWriteOrig = null;
+        }
     }
 
     private routeOutput(category: string, output: string): void {
