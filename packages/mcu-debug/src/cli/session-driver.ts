@@ -45,6 +45,7 @@ export class CliSessionDriver {
     private rl: readline.Interface | null = null;
     private inRedraw = false;
     private stdoutWriteOrig: typeof process.stdout.write | null = null;
+    private stderrWriteOrig: typeof process.stderr.write | null = null;
     private nextSeq = 1;
     // Keyed by the seq we assign to each request; resolved when the matching response arrives.
     private pendingRequests = new Map<number, (response: DebugProtocol.Response) => void>();
@@ -268,6 +269,36 @@ export class CliSessionDriver {
         });
 
         this.installStdoutProxy();
+        this.installStderrProxy();
+    }
+
+    /**
+     * Re-render the prompt and partial input after async output has overwritten it.
+     *
+     * Prefers the private `_refreshLine()` method (stable since Node v0.4, used by
+     * inquirer/ora/listr2) because it handles edge cases like multi-line wrapping and
+     * ANSI prompt widths correctly.  Falls back to a public-API reconstruction using
+     * the documented `rl.line` and `rl.cursor` getters (stable since Node v0.1.98)
+     * so the feature degrades gracefully if Node ever removes the private method.
+     */
+    private refreshLine(): void {
+        if (!this.rl) { return; }
+        if (typeof (this.rl as any)._refreshLine === 'function') {
+            (this.rl as any)._refreshLine();
+        } else {
+            // Public-API fallback: replicate what _refreshLine does.
+            // This does not handle multi-line prompts or inputs or escape sequences, but it's better than
+            // leaving the prompt blank with no input after every async log.
+            const prompt: string = this.rl.getPrompt();
+            const line: string = this.rl.line ?? '';
+            const cursor: number = this.rl.cursor ?? 0;
+            readline.clearLine(process.stdout, 0);
+            readline.cursorTo(process.stdout, 0);
+            process.stdout.write(prompt + line);
+            if (cursor < line.length) {
+                readline.cursorTo(process.stdout, prompt.length + cursor);
+            }
+        }
     }
 
     /** True only when stdin is an interactive terminal. */
@@ -292,7 +323,7 @@ export class CliSessionDriver {
         } else {
             // Clear the prompt glyph but leave any partial input visible.
             if (this.isTTY) {
-                (this.rl as any)._refreshLine?.();
+                this.refreshLine();
             }
         }
     }
@@ -314,21 +345,36 @@ export class CliSessionDriver {
         const orig = process.stdout.write.bind(process.stdout) as typeof process.stdout.write;
         this.stdoutWriteOrig = orig;
         (process.stdout.write as any) = (chunk: any, encoding?: any, callback?: any): boolean => {
-            // Guard against re-entrant calls from clearLine / cursorTo / _refreshLine.
-            if (this.inRedraw || !this.isPaused || !(this.rl as any)?._refreshLine) {
-                return orig(chunk, encoding, callback);
-            }
-            this.inRedraw = true;
-            try {
-                readline.clearLine(process.stdout, 0);
-                readline.cursorTo(process.stdout, 0);
-                orig(chunk, encoding, callback);
-                (this.rl as any)._refreshLine();
-            } finally {
-                this.inRedraw = false;
-            }
-            return true;
+            return this.proxyWrite(orig, chunk, encoding, callback);
         };
+    }
+
+    private installStderrProxy() {
+        if (!this.isTTY) {
+            return; // TUI / VS Code panel — stderr is a pipe, no prompt to protect
+        }
+        const orig = process.stderr.write.bind(process.stderr) as typeof process.stderr.write;
+        this.stderrWriteOrig = orig;
+        (process.stderr.write as any) = (chunk: any, encoding?: any, callback?: any): boolean => {
+            return this.proxyWrite(orig, chunk, encoding, callback);
+        };
+    }
+
+    private proxyWrite(orig: typeof process.stdout.write | typeof process.stderr.write, chunk: any, encoding?: any, callback?: any): boolean {
+        // Guard against re-entrant calls from clearLine / cursorTo / refreshLine.
+        if (this.inRedraw || !this.isPaused) {
+            return orig(chunk, encoding, callback);
+        }
+        this.inRedraw = true;
+        try {
+            readline.clearLine(process.stdout, 0);
+            readline.cursorTo(process.stdout, 0);
+            orig(chunk, encoding, callback);
+            this.refreshLine();
+        } finally {
+            this.inRedraw = false;
+        }
+        return true;
     }
 
     private handleInputLinePaused(input: string, isTerminal: boolean) {
@@ -404,11 +450,11 @@ export class CliSessionDriver {
         } else if (trimmedInput.toLowerCase() === 'exit') {
             this.doExit(isTerminal);
             return true;
-        } else if (trimmedInput.startsWith('!!AI-REQUEST-RESET')) {
+        } else if (trimmedInput.startsWith('!!AI-REQUEST-CLEAR')) {
             // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
             // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
             // to the UI to clear/display something
-            logger.info('!!AI-REQUEST-RESET', { isConsole: true, source: 'AI' });
+            logger.info('!!AI-REQUEST-CLEAR', { isConsole: true, source: 'AI' });
             return true;
         } else if (trimmedInput.startsWith('!!AI-REQUEST:')) {
             // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
