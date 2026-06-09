@@ -11,7 +11,8 @@
 				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug",
 				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy",
 				// "/Users/hdm/mtw37/Dual-CPU_Empty_PSOC6_App/Dual-CPU_Empty_PSOC6_App.code-workspace"
-				"/Users/hdm/rtt/Hello_RTT/mtb-example-hal-hello-world.code-workspace"
+				// "/Users/hdm/rtt/Hello_RTT/mtb-example-hal-hello-world.code-workspace"
+				"/Users/hdm/mtw37/Hello_World"
 			],
 			"sourceMaps": true,
 			"outFiles": [
@@ -78,14 +79,15 @@
 			"request": "launch",
 			// "cwd": "${workspaceFolder}",
 			// "cwd": "/Users/hdm/mtw37/Hello_World",
-			"cwd": "/Users/hdm/rtt/Hello_RTT",
+			// "cwd": "/Users/hdm/rtt/Hello_RTT",
+			"cwd": "/Users/hdm/mtw37/Hello_World",
 			"runtimeArgs": [ "--nolazy", "--trace-warnings"],//, "--unhandled-rejections=strict" ],
 			"program": "${workspaceFolder}/packages/mcu-debug/dist/mcu-debug-cli.js",
 			// "console": "internalConsole",
 			"console": "integratedTerminal",
 			"stopOnEntry": false,
 			"outputCapture": "std",
-			"args": [ "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log" ],
+			"args": [ "-d", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log" ],
 			"env": {
 				"RUST_BACKTRACE": "1",
 				"PROD_MCU_DEBUG_HELPER": "0"

@@ -19,10 +19,12 @@
 //! debounced full-snapshot updates whenever the list changes.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::Path;
 
 use crate::proxy_helper::proxy_server::ProxyEvent;
 use crate::serial::AvailablePort;
@@ -160,6 +162,17 @@ impl SerialAvailabilityHub {
     }
 }
 
+/// Marker trait for the platform-specific watcher guard.
+/// Both `notify::RecommendedWatcher` (Unix) and `PollingWatcher` (Windows)
+/// implement this so they can be held as `Box<dyn PlatformWatcher>`.
+trait PlatformWatcher: Send + 'static {}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl PlatformWatcher for notify::RecommendedWatcher {}
+
+#[cfg(target_os = "windows")]
+impl PlatformWatcher for PollingWatcher {}
+
 /// Start the OS-backed serial-availability watcher thread.
 ///
 /// The thread blocks on native FS notifications (no polling loop) and emits a
@@ -177,19 +190,20 @@ pub fn start_serial_available_watcher(hub: Arc<SerialAvailabilityHub>) -> Sender
             let _ = stop_bridge_tx.send(WatchSignal::Stop);
         });
 
-        let watcher = match create_platform_watcher(signal_tx.clone()) {
-            Ok(w) => {
-                log::info!("Serial availability watcher initialized successfully");
-                Some(w)
-            }
-            Err(e) => {
-                log::warn!(
-                    "Serial availability watcher disabled on this platform/session: {}",
-                    e
-                );
-                None
-            }
-        };
+        let watcher: Option<Box<dyn PlatformWatcher>> =
+            match create_platform_watcher(signal_tx.clone()) {
+                Ok(w) => {
+                    log::info!("Serial availability watcher initialized successfully");
+                    Some(Box::new(w))
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Serial availability watcher disabled on this platform/session: {}",
+                        e
+                    );
+                    None
+                }
+            };
 
         // Keep watcher alive for this thread's lifetime.
         let _watcher_guard = watcher;
@@ -225,9 +239,7 @@ pub fn start_serial_available_watcher(hub: Arc<SerialAvailabilityHub>) -> Sender
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn create_platform_watcher(
-    signal_tx: Sender<WatchSignal>,
-) -> anyhow::Result<notify::RecommendedWatcher> {
+fn create_platform_watcher(signal_tx: Sender<WatchSignal>) -> anyhow::Result<impl PlatformWatcher> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
     let mut watcher = RecommendedWatcher::new(
@@ -259,10 +271,59 @@ fn create_platform_watcher(
 }
 
 #[cfg(target_os = "windows")]
-fn create_platform_watcher(
-    _signal_tx: Sender<WatchSignal>,
-) -> anyhow::Result<notify::RecommendedWatcher> {
-    anyhow::bail!(
-        "Windows serial hotplug watcher is not implemented yet in proxy-helper (CM_Register_Notification backend pending)"
-    )
+fn create_platform_watcher(signal_tx: Sender<WatchSignal>) -> anyhow::Result<impl PlatformWatcher> {
+    Ok(PollingWatcher::new(signal_tx, Duration::from_millis(750)))
+}
+
+/// A drop-based guard that owns a background polling thread.
+///
+/// Used on Windows (and any platform where native FS events are unavailable)
+/// to periodically send `Trigger` signals into the watcher loop. The outer
+/// loop's 2-second `recv_timeout` already handles the case where no native
+/// watcher exists, but `PollingWatcher` fires at a tighter interval so the
+/// UI feels responsive when a device is plugged in.
+///
+/// Dropping this value sends `Stop` and joins the thread.
+#[cfg(target_os = "windows")]
+pub struct PollingWatcher {
+    stop_tx: Option<mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "windows")]
+impl PollingWatcher {
+    fn new(signal_tx: Sender<WatchSignal>, interval: Duration) -> Self {
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            log::info!(
+                "Serial availability polling watcher started (interval={:?})",
+                interval
+            );
+            loop {
+                match stop_rx.recv_timeout(interval) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if signal_tx.send(WatchSignal::Trigger).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            log::info!("Serial availability polling watcher stopped");
+        });
+        Self {
+            stop_tx: Some(stop_tx),
+            thread: Some(thread),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for PollingWatcher {
+    fn drop(&mut self) {
+        drop(self.stop_tx.take()); // closing the channel wakes recv_timeout
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }

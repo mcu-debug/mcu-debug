@@ -57,7 +57,7 @@ export class CLIConfigLoader {
 
             const configMsg = `Loaded configuration "${selectedConfig.name}"` + (args.json ? ` from ${args.json}` : "") + (this.forVscode ? " for VSCode" : " for CLI");
             this.logger.info(configMsg, { source: 'DA' });
-            selectedConfig.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
+            // selectedConfig.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
             if (selectedConfig.liveWatch?.enabled) {
                 getHostAdapter().showWarning("Live watch is not supported in CLI mode. Disabling live watch.");
                 delete (selectedConfig as any).liveWatch;

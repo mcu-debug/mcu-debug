@@ -166,7 +166,7 @@ export class DebugHelper {
             });
 
             this.helperProcess.on("close", (code) => {
-                this.session.handleMsg(Stderr, `Helper process exited with code ${code}`);
+                // this.session.handleMsg(Stderr, `Helper process exited with code ${code}`);
             });
             this.helperProcess.on("spawn", () => {
                 this.startTime = Date.now();

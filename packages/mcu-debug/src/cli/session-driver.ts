@@ -14,6 +14,7 @@ import { CDebugSession } from "../common/mcu-debug-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
+import test from "node:test";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -161,7 +162,7 @@ export class CliSessionDriver {
          * for the CLI and can be skipped.
          */
         this.doInitializeRequest().then(() => {
-            logger.info("Initialization complete. Sending launch request...");
+            logger.debug("Initialization complete. Sending launch request...");
             this.config.request = this.config.request === 'attach' ? 'attach' : 'launch'; // guard against invalid request types
             return this.sendRequest<DebugProtocol.LaunchResponse | DebugProtocol.AttachResponse>({
                 seq: 0,          // overwritten by sendRequest
@@ -176,7 +177,7 @@ export class CliSessionDriver {
             if (!launchResponse.success) {
                 throw new Error(`Launch failed: ${launchResponse.message}`);
             }
-            logger.info("Launch successful. Sending configurationDone...");
+            logger.debug("Launch successful. Sending configurationDone...");
             return this.sendRequest<DebugProtocol.ConfigurationDoneResponse>({
                 seq: 0,          // overwritten by sendRequest
                 type: 'request', // overwritten by sendRequest
@@ -186,7 +187,7 @@ export class CliSessionDriver {
             if (!configDoneResponse.success) {
                 throw new Error(`configurationDone failed: ${configDoneResponse.message}`);
             }
-            logger.info("Debug session started successfully.");
+            logger.debug("Debug session started successfully.");
         }).catch((error: Error | unknown) => {
             logger.error("Failed to start debug session: " + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
@@ -787,8 +788,7 @@ export class CliSessionDriver {
 
     private routeOutput(category: string, output: string): void {
         const text = output.trimEnd();
-        if (!text || text === '^done') {
-            // this.terminalWrite('\n'); // preserve blank lines, no need to log them
+        if (!text) {
             return;
         }
 

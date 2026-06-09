@@ -1561,6 +1561,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 const cmds = isReset ? (this.args.postResetSessionCommands?.map(COMMAND_MAP) ?? []) : (this.args.postStartSessionCommands?.map(COMMAND_MAP) ?? []);
                 commands.push(...cmds);
                 needsContinue = true;
+                needsDelay = cmds.length > 0;
             } else {
                 // Standard Debug
                 // If breakAfterReset is true -> Stay Stopped (needsContinue = false)
@@ -1589,14 +1590,14 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         this.suppressStoppedEvents = false;
 
+        if (needsDelay) {
+            await new Promise((resolve) => setTimeout(resolve, 100)); // Small delay to allow GDB to process commands
+        }
         if (needsContinue) {
             this.sendContinueWhenPossible().catch((e) => {
                 this.handleMsg(Stderr, `mcu-debug: Failed to continue after session mode commands: ${e instanceof Error ? e.message : String(e)}\n`);
             });
             return;
-        }
-        if (needsDelay) {
-            await new Promise((resolve) => setTimeout(resolve, 100)); // Small delay to allow GDB to process commands
         }
         try {
             await this.gdbMiCommands.sendFlushRegs();

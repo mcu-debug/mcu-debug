@@ -83,12 +83,6 @@ __debug_bin
 *.iml
 .idea/
 
-# VS Code Go plugin
-.vscode/
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
 
 # Air (live reload for Go)
 tmp/
