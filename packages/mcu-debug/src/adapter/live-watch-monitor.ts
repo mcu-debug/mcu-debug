@@ -65,7 +65,7 @@ export class LiveWatchMonitor extends EventEmitter {
         this.debugFlags = { ...this.mainSession.args.debugFlags };
         this.debugFlags.gdbTraces = this.debugFlags.liveGdbTraces;
         this.debugFlags.gdbTracesParsed = this.debugFlags.liveGdbTracesParsed;
-        this.gdbInstance.debugFlags = this.debugFlags;
+        this.gdbInstance.debugFlags = this.debugFlags ?? this.gdbInstance.debugFlags ?? {};
         const exe = this.mainSession.gdbInstance.gdbPath;
         const args = this.mainSession.gdbInstance.gdbArgs;
         gdbCommands.push('interpreter-exec console "set stack-cache off"');

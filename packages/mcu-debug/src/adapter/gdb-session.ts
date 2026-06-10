@@ -1417,7 +1417,7 @@ export class GDBDebugSession extends SeqDebugSession {
     private async startGdb(): Promise<void> {
         const gdbPath = this.getGdbPath();
         const gdbArgs = ["-q", "--interpreter=mi3", ...(this.args.debuggerArgs || [])];
-        this.gdbInstance.debugFlags = this.args.debugFlags;
+        this.gdbInstance.debugFlags = this.args.debugFlags ?? this.gdbInstance.debugFlags ?? {};
         this.handleMsg(GdbEventNames.Stderr, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
         this.subscribeToGdbEvents();
         await this.gdbInstance.start(gdbPath, gdbArgs, this.args.cwd, this.getGdbStartCommands());

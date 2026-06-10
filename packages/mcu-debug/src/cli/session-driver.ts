@@ -113,7 +113,9 @@ export class CliSessionDriver {
         }
         this.status = state;
         const infoMsg = `status: ${state}` + (reason ? `: Reason — ${reason}` : '');
-        process.stderr.write(infoMsg + os.EOL);
+        if (!this.isTTY) {
+            process.stderr.write(infoMsg + os.EOL);
+        }
         logger.info(infoMsg, { source: 'DA', skipConsole: true });
     }
 

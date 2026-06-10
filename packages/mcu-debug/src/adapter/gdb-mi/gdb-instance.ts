@@ -1,11 +1,8 @@
 import { ChildProcess, spawn } from "child_process";
 import { EventEmitter } from "events";
 import { parseGdbMiOut } from "./mi-parser";
-import { GdbEventNames, GdbMiOutputType, GdbMiRecord, Stderr, Stdout, Console, GdbMiOutput, MINode } from "./mi-types";
-import { GdbMiRecordType } from "./mi-types";
+import { GdbEventNames, GdbMiRecord, Stderr, Stdout, Console, GdbMiOutput } from "./mi-types";
 import { ServerConsoleLog } from "../server-console-log";
-import { receiveMessageOnPort } from "worker_threads";
-import { VariableObject } from "../variables";
 import { DebugFlags } from "../servers/common";
 import { MiCommands } from "./mi-commands";
 
@@ -76,6 +73,32 @@ export class GdbInstance extends EventEmitter {
                 }
             };
 
+            let timer: NodeJS.Timeout | undefined;
+            if (checkVers) {
+                // Why such a long timeout? Because some GDB versions are really slow to start up, especially if they have to
+                // load a lot of pretty-printers. We want to give them enough time, but also provide feedback to the user that
+                // something is happening and we're not just hanging indefinitely. Another reason on Windows is that antivirus
+                // software can cause significant delays in process startup, so we want to be tolerant of that as well.
+                // One user measured 20 (+/- 2) seconds startup time for GDB on Windows with IT forced antivirus, which is
+                // unfortunately not uncommon, other have reported > 10 secs
+                const maxSeconds = 60;
+                const start = Date.now();
+                let msgTime = start;
+                timer = setInterval(() => {
+                    const now = Date.now();
+                    if (now - msgTime > 5000) {
+                        ServerConsoleLog(`Waiting for GDB process to start... (${Math.floor((now - start) / 1000)}s)`);
+                        msgTime = now;
+                    }
+                    const elapsed = now - start;
+                    if (elapsed > maxSeconds * 1000) {
+                        clearInterval(timer);
+                        timer = undefined;
+                        reject(new Error(`GDB process failed to start within ${maxSeconds} seconds. Check your gdb installation by running '${gdbPath} --version' in a terminal. If your gdb is very slow to start, you can try disabling antivirus software or switching to a faster gdb version.`));
+                    }
+                }, 250);
+            }
+
             ServerConsoleLog(`Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}, cwd=${cwd}`);
             const child = spawn(gdbPath, gdbArgs, { cwd: cwd, env: process.env });
             this.process = child;
@@ -90,9 +113,20 @@ export class GdbInstance extends EventEmitter {
 
             if (checkVers) {
                 try {
+                    // This very first command is super important. An improperly installed gdb hangs forever and does not respond to anything,
+                    // so we need to know as soon as possible if we can talk to it. While we disable the sendCommand timeout for this first command,
+                    // we also have an overall startup timer that will reject if we don't get a response within a reasonable time
+                    const save = this.debugFlags.disableGdbTimeouts;
+                    this.debugFlags.disableGdbTimeouts = true; // Disable timeouts for these version check commands, as GDB can be very slow to start up
                     const major = await this.miCommands.sendDataEvaluateExpression<string>("$_gdb_major");
-                    const minor = await this.miCommands.sendDataEvaluateExpression<string>("$_gdb_minor");
+                    this.debugFlags.disableGdbTimeouts = save;
                     this.gdbMajorVersion = parseInt(major);
+                    clearInterval(timer);       // First command succeeded, so we know GDB is up and responsive, stop the startup timer
+                    timer = undefined;
+
+                    // From now on it should be safe to use the normal command timeout, as we know GDB is responsive. If the version is old,
+                    // some commands might not work, but at least we won't hang indefinitely.
+                    const minor = await this.miCommands.sendDataEvaluateExpression<string>("$_gdb_minor");
                     this.gdbMinorVersion = parseInt(minor);
                     if (this.gdbMajorVersion < 9 || (this.gdbMajorVersion === 9 && this.gdbMinorVersion < 1)) {
                         this.log(GdbEventNames.Stderr, `ERROR: GDB version ${this.gdbMajorVersion}.${this.gdbMinorVersion} is not supported. Please upgrade to GDB version 9.1 or higher.`);
@@ -106,6 +140,10 @@ export class GdbInstance extends EventEmitter {
                     }
                     return;
                 } catch (e) {
+                    if (timer) {
+                        clearInterval(timer);
+                        timer = undefined;
+                    }
                     // these convenience variables don't exist in older GDB versions
                     ServerConsoleLog("Failed to get GDB version using $_gdb_major/minor variables");
                     reject(new Error("Failed to get GDB version using $_gdb_major/minor variables. GDB version 9.1 or higher is required."));
