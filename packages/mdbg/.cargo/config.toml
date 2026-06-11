@@ -2,9 +2,9 @@
 TS_RS_EXPORT_DIR = { value = "../shared", relative = true }
 TS_RS_LARGE_INT = "number"
 
-# Cross-compilation linker configuration for building on macOS
+# Cross-compilation linker configuration for building on macOS/Linux
 # Linux release binaries use MUSL targets for static-friendly outputs.
-# Install dependencies:
+# Example install dependencies on macOS:
 #   brew tap messense/macos-cross-toolchains
 #   brew install x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 #   brew install mingw-w64

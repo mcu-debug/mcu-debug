@@ -175,51 +175,117 @@ fi
 if [[ "$mode" == "prod" ]]; then
   echo "Production build: release builds for multiple targets"
 
-  # All cross-compilation toolchains (messense MUSL, mingw-w64) are macOS-only
-  # Homebrew packages. Production builds must run on macOS.
-  if [[ "$(uname -s)" != "Darwin" ]]; then
-    echo "Error: production builds are only supported on macOS."
-    echo "All cross-compilation toolchains (messense MUSL, mingw-w64) are installed via Homebrew."
+  host_os="$(uname -s)"
+  if [[ "$host_os" != "Darwin" && "$host_os" != "Linux" ]]; then
+    echo "Error: production builds are only supported on macOS and Linux."
+    echo "Current host OS: $host_os"
     exit 1
   fi
 
   cd "$RUST_DIR"
 
-  # Verify all required cross-compilation toolchains are present before starting.
-  # Install with:
-  #   brew tap messense/macos-cross-toolchains
-  #   brew install x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-  #   brew install mingw-w64
-  missing=()
-  command -v x86_64-unknown-linux-musl-gcc  >/dev/null 2>&1 || missing+=("x86_64-unknown-linux-musl-gcc  (brew install x86_64-unknown-linux-musl)")
-  command -v aarch64-unknown-linux-musl-gcc >/dev/null 2>&1 || missing+=("aarch64-unknown-linux-musl-gcc (brew install aarch64-unknown-linux-musl)")
-  command -v x86_64-w64-mingw32-gcc         >/dev/null 2>&1 || missing+=("x86_64-w64-mingw32-gcc         (brew install mingw-w64)")
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    echo "Error: missing required cross-compilation toolchains:"
-    for m in "${missing[@]}"; do
-      echo "  - $m"
-    done
-    echo ""
-    echo "On macOS, install all prerequisites with:"
-    echo "  brew tap messense/macos-cross-toolchains"
-    echo "  brew install x86_64-unknown-linux-musl aarch64-unknown-linux-musl mingw-w64"
-    exit 1
+  # Resolve commonly-used toolchain aliases on Linux distributions.
+  # .cargo/config.toml uses the canonical *-unknown-* names, but several
+  # distros provide equivalent binaries with slightly different names.
+  linux_x64_musl_gcc="x86_64-unknown-linux-musl-gcc"
+  linux_arm64_musl_gcc="aarch64-unknown-linux-musl-gcc"
+
+  if command -v musl-gcc >/dev/null 2>&1; then
+    linux_x64_musl_gcc="musl-gcc"
   fi
+  if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+    linux_x64_musl_gcc="x86_64-linux-musl-gcc"
+  fi
+  if command -v x86_64-unknown-linux-musl-gcc >/dev/null 2>&1; then
+    linux_x64_musl_gcc="x86_64-unknown-linux-musl-gcc"
+  fi
+
+  if command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
+    linux_arm64_musl_gcc="aarch64-linux-musl-gcc"
+  fi
+  if command -v aarch64-unknown-linux-musl-gcc >/dev/null 2>&1; then
+    linux_arm64_musl_gcc="aarch64-unknown-linux-musl-gcc"
+  fi
+
+  # Override linker selection so rustc/cc-rs use resolved toolchains.
+  export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$linux_x64_musl_gcc"
+  export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$linux_arm64_musl_gcc"
+  export CC_x86_64_unknown_linux_musl="$linux_x64_musl_gcc"
+  export CC_aarch64_unknown_linux_musl="$linux_arm64_musl_gcc"
+
+  if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32-gcc"
+    export CC_x86_64_pc_windows_gnu="x86_64-w64-mingw32-gcc"
+  fi
+  if command -v x86_64-w64-mingw32-ar >/dev/null 2>&1; then
+    export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_AR="x86_64-w64-mingw32-ar"
+  fi
+
+  has_linux_x64_musl="false"
+  has_linux_arm64_musl="false"
+  has_win_x64_gnu="false"
+  command -v "$linux_x64_musl_gcc" >/dev/null 2>&1 && has_linux_x64_musl="true"
+  command -v "$linux_arm64_musl_gcc" >/dev/null 2>&1 && has_linux_arm64_musl="true"
+  if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 && command -v x86_64-w64-mingw32-ar >/dev/null 2>&1; then
+    has_win_x64_gnu="true"
+  fi
+
+  skipped=()
 
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   ensure_ts_exports
   format_ts_exports
 
   # platform|target_triple|exe_ext
-  # Linux targets use MUSL for fully static binaries.
-  # Note: aarch64-pc-windows-gnu not yet in stable Rust, omitted for now
-  targets=(
-    "darwin-arm64|aarch64-apple-darwin|"
-    "darwin-x64|x86_64-apple-darwin|"
-    "linux-arm64|aarch64-unknown-linux-musl|"
-    "linux-x64|x86_64-unknown-linux-musl|"
-    "win32-x64|x86_64-pc-windows-gnu|.exe"
-  )
+  # Linux targets use MUSL for static-friendly binaries.
+  # Note: aarch64-pc-windows-gnu not yet in stable Rust, omitted for now.
+  targets=()
+
+  # Native Apple targets are only practical when building on macOS.
+  if [[ "$host_os" == "Darwin" ]]; then
+    targets+=("darwin-arm64|aarch64-apple-darwin|")
+    targets+=("darwin-x64|x86_64-apple-darwin|")
+  else
+    skipped+=("darwin-arm64 (non-macOS host)")
+    skipped+=("darwin-x64 (non-macOS host)")
+  fi
+
+  if [[ "$has_linux_arm64_musl" == "true" ]]; then
+    targets+=("linux-arm64|aarch64-unknown-linux-musl|")
+  else
+    skipped+=("linux-arm64 (missing $linux_arm64_musl_gcc)")
+  fi
+
+  if [[ "$has_linux_x64_musl" == "true" ]]; then
+    targets+=("linux-x64|x86_64-unknown-linux-musl|")
+  else
+    skipped+=("linux-x64 (missing $linux_x64_musl_gcc)")
+  fi
+
+  if [[ "$has_win_x64_gnu" == "true" ]]; then
+    targets+=("win32-x64|x86_64-pc-windows-gnu|.exe")
+  else
+    skipped+=("win32-x64 (missing x86_64-w64-mingw32-gcc/ar)")
+  fi
+
+  if [[ ${#skipped[@]} -gt 0 ]]; then
+    echo "Skipping unavailable targets:"
+    for s in "${skipped[@]}"; do
+      echo "  - $s"
+    done
+    echo ""
+  fi
+
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    echo "Error: no buildable production targets found on this host."
+    if [[ "$host_os" == "Darwin" ]]; then
+      echo "Install with: brew tap messense/macos-cross-toolchains && brew install x86_64-unknown-linux-musl aarch64-unknown-linux-musl mingw-w64"
+    else
+      echo "Install on Debian/Ubuntu with: sudo apt-get update && sudo apt-get install -y musl-tools gcc-mingw-w64 binutils-mingw-w64"
+      echo "For linux-arm64, install a cross toolchain that provides aarch64-unknown-linux-musl-gcc (or aarch64-linux-musl-gcc)."
+    fi
+    exit 1
+  fi
 
   for entry in "${targets[@]}"; do
     IFS='|' read -r platform triple ext <<< "$entry"

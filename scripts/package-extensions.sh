@@ -2,6 +2,8 @@
 # scripts/package-extensions.sh
 
 set -e
+node ./scripts/require-macos.js
+
 mkdir -p dist
 rm -f dist/*.vsix
 
