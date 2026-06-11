@@ -6,6 +6,7 @@
     "license": "APACHE-2.0",
     "scripts": {
         "dev": "vite",
+        "compile": "vite build",
         "build": "vite build",
         "preview": "vite preview",
         "typecheck": "svelte-check --tsconfig ./tsconfig.json"
