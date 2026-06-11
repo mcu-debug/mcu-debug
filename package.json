@@ -10,7 +10,7 @@
   "scripts": {
     "watch": "npm run watch --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
-    "compile": "npm run version:sync && npm run compile --workspace=packages/shared --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy --workspace=packages/mcu-debug/src/webviews/cockpit",
+    "compile": "npm run version:sync && npm run compile --workspaces --if-present",
     "check:shared-package:exports": "node scripts/check-shared-package-exports.js",
     "check:shared-package": "npm run compile --workspace=packages/shared && npm run check:shared-package:exports && npm run update-commit-hash --workspace=packages/mcu-debug && npm run check-types --workspace=packages/mcu-debug && npm run check-types --workspace=packages/mcu-debug-proxy",
     "version:sync": "node ./scripts/sync-versions.js",
