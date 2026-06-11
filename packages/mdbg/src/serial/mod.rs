@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod bridge;
+pub mod cmd;
 pub mod port;
 pub mod ring;
 
@@ -38,15 +39,22 @@ pub struct AvailablePort {
 
 /// Resolve a port selector to a concrete device path.
 ///
-/// Priority for matching: `serial` → `vid`/`pid` → `path` glob. A plain
-/// (non-glob) `path` with no other filters is returned immediately without
-/// enumerating hardware. Returns an error if nothing matches or if the selector
-/// is ambiguous (multiple ports matched).
+/// Priority for matching: `serial` → `vid`/`pid` → `path` glob → `desc`
+/// substring. A plain (non-glob) `path` with no other filters is returned
+/// immediately without enumerating hardware. Returns an error if nothing
+/// matches or if the selector is ambiguous (multiple ports matched).
+///
+/// `desc` is matched case-insensitively as a substring of the port description.
+/// `filter_callout` — when `true`, macOS `/dev/tty.*` callout variants are
+/// excluded from enumeration (see [`list_available`]). Has no effect on other
+/// platforms, or when an exact (non-glob) `path` is supplied.
 pub fn resolve_port(
     path: Option<&str>,
     serial: Option<&str>,
     vid: Option<&str>,
     pid: Option<&str>,
+    desc: Option<&str>,
+    filter_callout: bool,
 ) -> anyhow::Result<String> {
     fn is_glob(s: &str) -> bool {
         s.contains('*') || s.contains('?') || s.contains('[')
@@ -60,15 +68,15 @@ pub fn resolve_port(
         }
     }
 
-    // Fast path: plain path with no additional filters.
+    // Fast path: plain path with no additional filters — skip enumeration entirely.
     if let Some(p) = path {
-        if !is_glob(p) && serial.is_none() && vid.is_none() && pid.is_none() {
+        if !is_glob(p) && serial.is_none() && vid.is_none() && pid.is_none() && desc.is_none() {
             return Ok(p.to_string());
         }
     }
 
-    if path.is_none() && serial.is_none() && vid.is_none() && pid.is_none() {
-        anyhow::bail!("no port selector specified — provide path, serial, or vid/pid");
+    if path.is_none() && serial.is_none() && vid.is_none() && pid.is_none() && desc.is_none() {
+        anyhow::bail!("no port selector specified — provide path, serial, vid/pid, or --match");
     }
 
     let want_vid = vid.and_then(parse_u16);
@@ -90,7 +98,7 @@ pub fn resolve_port(
         regex::Regex::new(&re).expect("valid glob-derived regex")
     });
 
-    let ports = list_available();
+    let ports = list_available(filter_callout);
     let matched: Vec<&AvailablePort> = ports
         .iter()
         .filter(|p| {
@@ -118,17 +126,23 @@ pub fn resolve_port(
                     return false;
                 }
             }
+            if let Some(d) = desc {
+                if !p.description.to_lowercase().contains(&d.to_lowercase()) {
+                    return false;
+                }
+            }
             true
         })
         .collect();
 
     match matched.len() {
         0 => anyhow::bail!(
-            "no serial port matched selector (path={:?} serial={:?} vid={:?} pid={:?})",
+            "no serial port matched selector (path={:?} serial={:?} vid={:?} pid={:?} match={:?})",
             path,
             serial,
             vid,
-            pid
+            pid,
+            desc
         ),
         1 => Ok(matched[0].path.clone()),
         n => anyhow::bail!(
@@ -143,19 +157,28 @@ pub fn resolve_port(
 }
 
 /// List available serial ports on the current platform.
-#[cfg(target_os = "linux")]
-pub fn list_available() -> Vec<AvailablePort> {
-    enumerate_linux::list()
+///
+/// When `filter_callout` is `true`, macOS `/dev/tty.*` callout variants are
+/// excluded — each USB-serial device appears as both `/dev/cu.*` (call-up,
+/// opens without waiting for carrier-detect) and `/dev/tty.*` (blocks until
+/// carrier-detect). For outgoing connections to microcontrollers the `cu`
+/// variant is always correct. On Linux and Windows `filter_callout` is ignored.
+pub fn list_available(filter_callout: bool) -> Vec<AvailablePort> {
+    let ports = list_all();
+    if filter_callout && cfg!(target_os = "macos") {
+        ports.into_iter().filter(|p| !p.path.starts_with("/dev/tty.")).collect()
+    } else {
+        ports
+    }
 }
-#[cfg(target_os = "windows")]
-pub fn list_available() -> Vec<AvailablePort> {
-    enumerate_windows::list()
-}
-#[cfg(target_os = "macos")]
-pub fn list_available() -> Vec<AvailablePort> {
-    enumerate_macos::list()
-}
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-pub fn list_available() -> Vec<AvailablePort> {
-    Vec::new()
+
+fn list_all() -> Vec<AvailablePort> {
+    #[cfg(target_os = "linux")]
+    { enumerate_linux::list() }
+    #[cfg(target_os = "windows")]
+    { enumerate_windows::list() }
+    #[cfg(target_os = "macos")]
+    { enumerate_macos::list() }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    { Vec::new() }
 }

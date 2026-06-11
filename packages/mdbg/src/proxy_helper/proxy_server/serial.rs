@@ -84,6 +84,8 @@ impl ProxyServer {
             params.serial.as_deref(),
             params.vid.as_deref(),
             params.pid.as_deref(),
+            None,
+            false,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -324,7 +326,7 @@ impl ProxyServer {
 
     /// `serial.listAvailable` — enumerate physical ports on this machine.
     pub(super) fn handle_serial_list_available(&mut self, seq: u64) {
-        let ports: Vec<AvailablePort> = crate::serial::list_available();
+        let ports: Vec<AvailablePort> = crate::serial::list_available(true);
         let data = ControlResponseData::SerialListAvailable { ports };
         ControlResponse::success(seq, Some(data))
             .send(&self.writer)

@@ -18,6 +18,7 @@ use clap::{Parser, Subcommand};
 use mdbg::cockpit::run::DebugArgs;
 use mdbg::da_helper::run::DaHelperArgs;
 use mdbg::proxy_helper::run::ProxyArgs;
+use mdbg::serial::cmd::SerialArgs;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -43,6 +44,10 @@ enum Commands {
     /// Probe Agent: remote gdb-server orchestration via the Funnel Protocol
     #[command(name = "proxy")]
     Proxy(ProxyArgs),
+
+    /// Serial port utilities: list ports or bridge a port over TCP.
+    #[command(name = "serial")]
+    Serial(SerialArgs),
 }
 
 // Maps executable names to their implicit subcommand.
@@ -84,5 +89,6 @@ fn main() -> Result<()> {
         Commands::Debug(args) => mdbg::cockpit::run::run(args),
         Commands::DaHelper(args) => mdbg::da_helper::run::run(args),
         Commands::Proxy(args) => mdbg::proxy_helper::run::run(args),
+        Commands::Serial(args) => mdbg::serial::cmd::run(args),
     }
 }

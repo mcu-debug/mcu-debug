@@ -50,7 +50,7 @@ pub struct SerialAvailabilityHub {
 
 impl SerialAvailabilityHub {
     pub fn new() -> Self {
-        let mut ports = crate::serial::list_available();
+        let mut ports = crate::serial::list_available(true);
         ports.sort_by(|a, b| a.path.cmp(&b.path));
         log::info!(
             "Serial availability hub initialized with {} port(s)",
@@ -94,7 +94,7 @@ impl SerialAvailabilityHub {
     }
 
     pub fn refresh_and_broadcast_if_changed(&self) {
-        let mut new_ports = crate::serial::list_available();
+        let mut new_ports = crate::serial::list_available(true);
         new_ports.sort_by(|a, b| a.path.cmp(&b.path));
 
         let (revision, snapshot, subscribers) = {
