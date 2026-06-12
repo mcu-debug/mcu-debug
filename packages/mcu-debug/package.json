@@ -3936,7 +3936,7 @@
     "vscode:prepublish": "npm run build-all",
     "build-rust-prod": "node scripts/build-rust.js prod",
     "build-all": "npm run build-rust-prod && npm run generate-manifest && npm run update-commit-hash && npm run build-cockpit && npm run check-types && node esbuild.js --production",
-    "package": "node ../../scripts/require-macos.js && vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@flatten-js/interval-tree": "^2.0.3",
