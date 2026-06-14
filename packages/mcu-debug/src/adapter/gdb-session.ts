@@ -1502,15 +1502,20 @@ export class GDBDebugSession extends SeqDebugSession {
         return cmds;
     }
     protected getConnectCommands(): string[] {
-        const commands = this.getServerConnectCommands();
-
+        const commands: string[] = [];
         if (this.args.pvtSessionMode === SessionMode.Attach) {
             commands.push(...(this.args.preAttachCommands?.map(COMMAND_MAP) ?? []));
+        } else {
+            commands.push(...(this.args.preLaunchCommands?.map(COMMAND_MAP) ?? []));
+        }
+
+        commands.push(...this.getServerConnectCommands());
+
+        if (this.args.pvtSessionMode === SessionMode.Attach) {
             const attachCommands = this.args.overrideAttachCommands != null ? this.args.overrideAttachCommands.map(COMMAND_MAP) : this.serverSession.serverController.attachCommands();
             commands.push(...attachCommands);
             commands.push(...(this.args.postAttachCommands?.map(COMMAND_MAP) ?? []));
         } else {
-            commands.push(...(this.args.preLaunchCommands?.map(COMMAND_MAP) ?? []));
             const launchCommands = this.args.overrideLaunchCommands != null ? this.args.overrideLaunchCommands.map(COMMAND_MAP) : this.serverSession.serverController.launchCommands();
             commands.push(...launchCommands);
             commands.push(...(this.args.postLaunchCommands?.map(COMMAND_MAP) ?? []));
