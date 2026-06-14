@@ -18,7 +18,9 @@
       "Bash(xargs ls *)",
       "Bash(npx tsc *)",
       "Bash(xargs cat -n)",
-      "Bash(git fetch *)"
+      "Bash(git fetch *)",
+      "WebFetch(domain:probe.rs)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }
