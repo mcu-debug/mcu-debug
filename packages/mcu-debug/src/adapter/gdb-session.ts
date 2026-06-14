@@ -153,10 +153,10 @@ export class GDBDebugSession extends SeqDebugSession {
         // current session and starting a new one from scratch. But, we still have to support the launch.json
         // properties related to Restart but for Reset. This way, we don't break functionality.
         response.body.supportsRestartRequest = false;
-        response.body.supportsTerminateRequest = true;
+        response.body.supportSuspendDebuggee = true;
+        response.body.supportTerminateDebuggee = true;
 
         response.body.supportsGotoTargetsRequest = true;
-        response.body.supportSuspendDebuggee = true;
         response.body.supportsValueFormattingOptions = true;
         // response.body.supportTerminateDebuggee = true;
         response.body.supportsDataBreakpoints = true;
@@ -202,17 +202,25 @@ export class GDBDebugSession extends SeqDebugSession {
             this.endSession = true;
             this.debugHelper.dispose();
             this.rttManager.dispose();
-            this.liveWatchMonitor.stop();
+            this.suppressStoppedEvents = true;
+            if (this.liveWatchMonitor.enabled()) {
+                await this.liveWatchMonitor.stop();
+                await new Promise((resolve) => setTimeout(resolve, 50)); // Just to ensure all pending events from the live watch monitor are processed before we stop the GDB instance   
+            }
             const doTerminate = !!args.terminateDebuggee;
-            this.handleMsg(Stdout, `Ending debug session...${JSON.stringify(args)}\n`);
+            const doContinue = !doTerminate && !args.suspendDebuggee;
+            if (this.args.debugFlags.anyFlags) {
+                this.handleMsg(Stdout, `Client (vscode?) requested end of debug session: ${JSON.stringify(args)}\n`);
+            }
             if (this.gdbInstance) {
-                this.suppressStoppedEvents = true;
                 if (this.isRunning()) {
                     try {
+                        // We need to pause to delete braokpoints and detach cleanly and to issue other commands.
+                        // gdb doesnt accept many commnds unless target is halted
                         await this.gdbInstance.sendCommand("-exec-interrupt", 100);
-                        await this.waitForCompletion(5, () => !this.isRunning(), 5);
+                        await this.waitForCompletion(5, () => !this.isRunning(), 5); // Yield to node to get all events out
                         if (this.isRunning()) {
-                            this.handleMsg(Stderr, "Target is still running during disconnect. Trying to halt it again...\n");
+                            this.handleMsg(Stderr, "Target is still running during disconnect despite issuing an 'interrupt' command, continuing trying to end session...\n");
                         }
                     } catch (e) {
                         // Ignore errors
@@ -235,13 +243,12 @@ export class GDBDebugSession extends SeqDebugSession {
                     await new Promise((resolve) => setTimeout(resolve, 50));
                 }
 
-                if (!doTerminate && !this.isRunning()) {
+                if (doContinue) {
                     try {
-                        // Try to exit GDB nicely
                         await this.gdbInstance.sendCommand("-exec-continue", 200);
                         await this.waitForCompletion(5, () => this.isRunning(), 5);
                         if (!this.isRunning()) {
-                            this.handleMsg(Stderr, "Target is not running depite issuing a continue command again...\n");
+                            this.handleMsg(Stderr, "Target is not running despite issuing a 'continue' command...\n");
                         }
                     } catch (e) {
                         this.handleMsg(Stderr, "Error continuing target before exit: " + (e ? e.toString() : "Unknown error") + "\n");
@@ -250,7 +257,12 @@ export class GDBDebugSession extends SeqDebugSession {
 
                 try {
                     // Give GDB a chance to detach nicely, but don't wait forever
-                    await this.gdbInstance.sendCommand("-target-disconnect", 250);
+                    if (doContinue) {
+                        await this.gdbInstance.sendCommand("-target-detach", 250);
+                    } else {
+                        // terminate or suspend — stay halted, disconnect cleanly
+                        await this.gdbInstance.sendCommand("-target-disconnect", 250);
+                    }
                 } catch (e) {
                     // Ignore errors
                 }

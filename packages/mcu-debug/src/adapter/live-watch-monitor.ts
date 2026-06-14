@@ -92,9 +92,9 @@ export class LiveWatchMonitor extends EventEmitter {
             });
     }
 
-    public stop(): void {
+    public async stop(): Promise<void> {
         this.stopTimer();
-        this.quit().catch(() => { });
+        await this.quit().catch(() => { });
     }
 
     public enabled(): boolean {
