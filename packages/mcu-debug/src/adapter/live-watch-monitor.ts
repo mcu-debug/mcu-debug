@@ -534,21 +534,28 @@ export class LiveWatchMonitor extends EventEmitter {
     }
 
     private quitting = false;
-    public async quit() {
+    private async quit() {
         try {
             if (!this.quitting && this.gdbInstance.IsGdbRunning()) {
                 this.quitting = true;
                 try {
-                    // Give GDB a chance to detach nicely, but don't wait forever
-                    await this.gdbInstance.sendCommand("-target-detach", 100);
+                    // Give GDB a chance to disconnect nicely, but don't wait forever. Note that we do not `detach`
+                    // which causes a continue in the target. Not doing anything will cause an implicit detach by gdb
+                    await this.gdbInstance.sendCommand("-target-disconnect", 100);
                 } catch (e) {
+                    if (this.debugFlags.anyFlags) {
+                        this.handleMsg(Stderr, `Error during live watch GDB exit command: ${e}\n`);
+                    }
                     // Ignore errors
                 } finally {
                     await this.gdbInstance.sendCommand("-gdb-exit", 100);
                 }
             }
         } catch (e: any) {
-            console.error("LiveWatchMonitor.quit", e);
+            if (this.debugFlags.anyFlags) {
+                this.handleMsg(Stderr, `LiveWatchMonitor.quit: ${e}\n`);
+            }
+            // Ignore errors
         }
     }
 }

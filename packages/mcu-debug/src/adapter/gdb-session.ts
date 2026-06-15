@@ -200,6 +200,8 @@ export class GDBDebugSession extends SeqDebugSession {
             }, 100);
 
             this.endSession = true;
+            const doTerminate = !!args.terminateDebuggee;
+            const doContinue = !doTerminate && !args.suspendDebuggee;
             this.debugHelper.dispose();
             this.rttManager.dispose();
             this.suppressStoppedEvents = true;
@@ -207,8 +209,6 @@ export class GDBDebugSession extends SeqDebugSession {
                 await this.liveWatchMonitor.stop();
                 await new Promise((resolve) => setTimeout(resolve, 50)); // Just to ensure all pending events from the live watch monitor are processed before we stop the GDB instance   
             }
-            const doTerminate = !!args.terminateDebuggee;
-            const doContinue = !doTerminate && !args.suspendDebuggee;
             if (this.args.debugFlags.anyFlags) {
                 this.handleMsg(Stdout, `Client (vscode?) requested end of debug session: ${JSON.stringify(args)}\n`);
             }
