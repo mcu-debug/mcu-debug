@@ -1,6 +1,7 @@
 import * as net from "node:net";
 import * as os from "node:os";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import * as readline from "node:readline";
 import { ConfigurationArguments, getNonce, RTTCommonDecoderOpts, RTTConsoleDecoderOpts } from "../adapter/servers/common";
 import { CLISessionType, IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
@@ -14,7 +15,7 @@ import { CDebugSession } from "../common/mcu-debug-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
-import test from "node:test";
+import { BinaryRingBuffer } from "../common/ring-buffer";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -866,7 +867,31 @@ export class CliSessionDriver {
     }
 
     private createSocketJsonPath() {
-        return `${process.cwd()} /.mcu-debug/socket.json`;
+        return `${process.cwd()}/.mcu-debug/socket.json`;
+    }
+
+    private createSocketPath(): string {
+        let count = 0;
+        const getName = (): string => {
+            return `${os.tmpdir()}/mcu-debug-${process.pid}-${count++}.sock`;
+        }
+        let sockPath: string;
+        switch (process.platform) {
+            case 'win32':
+                // Windows named pipe path format \\.\pipe\pipename
+                return `\\\\.\\pipe\\mcu-debug-${process.pid}`;
+            default:
+                sockPath = getName(); // filesystem socket (visible in /tmp, should be cleaned up on exit)
+                break;
+        }
+        while (fs.existsSync(sockPath)) {
+            sockPath = getName();
+        }
+        if (sockPath.length > 100) {
+            // Unix socket path length limit is usually around 108 chars, but can be as low as 88 on some distros with long temp dir paths. Check to avoid hard-to-diagnose errors from net.createServer.
+            logger.error(`Generated socket path is too long (${sockPath.length} chars): ${sockPath}. This may cause the socket server to fail. Consider setting TMPDIR to a shorter path and/or using a RAM disk for /tmp.`, { source: 'DA', isConsole: true });
+        }
+        return sockPath;
     }
 
     private checkSocketFree() {
@@ -894,7 +919,7 @@ export class CliSessionDriver {
     // In session-driver.ts — to be implemented when Node socket is wired up
     private startSocketReader(): Promise<void> {
         this.checkSocketFree();
-        const socketPath = `${os.tmpdir()}/.mcu-debug-${process.pid}.sock`;
+        const socketPath = this.createSocketPath();     // Will have backslashes and .sock suffix on Windows, normal .sock file on Unix
         let timeout: NodeJS.Timeout | null = null;
         this.socketPromise = new Promise((resolve, reject) => {
             this.server = net.createServer((conn) => {
@@ -906,6 +931,9 @@ export class CliSessionDriver {
                         this.handleInputLineRunning(line, false);
                     }
                 });
+                if (!this.customTransport.getRingBuffer().isEmpty()) {
+                    conn.write(this.customTransport.getRingBuffer().snapshot());
+                }
                 if (this.cliArgs.waitForClient && this.serverClients.size == 0) {
                     // First client connected, resolve the promise to let session setup continue
                     resolve();
@@ -934,6 +962,7 @@ export class CliSessionDriver {
                     if (this.server) {
                         this.server.close();
                     }
+                    try { fs.unlinkSync(socketPath); } catch (err) { }
                 });
             });
             this.server.on('error', (err) => {
@@ -957,9 +986,10 @@ export class CliSessionDriver {
             startedAt: new Date().toISOString(),
             logFile: this.cliArgs.logFile
         };
-        const socketPathJson = `${process.cwd()}/.mcu-debug/socket.json`;
+        const socketPathJson = this.createSocketJsonPath();
         try {
-            fs.mkdirSync(`${process.cwd()}/.mcu-debug`, { recursive: true });
+            const dir = path.dirname(socketPathJson);
+            fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(socketPathJson, JSON.stringify(sockInfo, null, 2));
         } catch (err) {
             logger.error(`Failed to write socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
@@ -968,13 +998,13 @@ export class CliSessionDriver {
             }
             return;
         }
-        logger.info(`Socket path written to ${socketPathJson}`, { source: 'DA', isConsole: true });
+        logger.debug(`Socket path written to ${socketPathJson}`, { source: 'DA', isConsole: true });
         process.on('exit', () => {
             try {
                 this.server?.close();
                 fs.unlinkSync(socketPathJson);
                 try { fs.unlinkSync(socketPath); } catch (err) { } // also clean up the socket file itself
-                logger.info(`Cleaned up socket file ${socketPathJson}`, { source: 'DA', isConsole: true });
+                logger.debug(`Cleaned up socket file ${socketPathJson}`, { source: 'DA', isConsole: true });
             } catch (err) {
                 logger.warn(`Failed to clean up socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
             }

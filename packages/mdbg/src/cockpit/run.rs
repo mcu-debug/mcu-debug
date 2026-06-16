@@ -99,6 +99,10 @@ pub struct DebugArgs {
     #[arg(long = "wait-for-client")]
     pub wait_for_client: bool,
 
+    /// Dump the configuration and exit.
+    #[arg(long = "dump-config")]
+    pub dump_config: bool,
+
     /// Skip the TUI and stream the mux output directly to stdout.
     ///
     /// Use this flag when launching from an AI agent or CI pipeline that
@@ -133,6 +137,9 @@ pub fn run(args: DebugArgs) -> Result<()> {
     }
     if args.wait_for_client {
         node_args.push("--wait-for-client".to_string());
+    }
+    if args.dump_config {
+        node_args.push("--dump-config".to_string());
     }
 
     if headless {

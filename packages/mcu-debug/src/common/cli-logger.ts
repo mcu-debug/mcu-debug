@@ -7,6 +7,7 @@ import { MESSAGE } from 'triple-beam';
 import { CliArgs } from '../cli/cli-options';
 import { HrTimer } from '../adapter/servers/common';
 import { AnsiHelpers } from './ansi-helpers';
+import { BinaryRingBuffer } from './ring-buffer';
 
 /**
  * Central application logger for CLI. Platform-agnostic — no transports are added here.
@@ -32,6 +33,7 @@ export class CustomTransport extends Transport {
     private callback: (info: winston.Logform.TransformableInfo) => void;
     private pathMap: { [path: string]: NodeJS.WritableStream } = {};
     public usingDefaultLogFile: string | undefined;
+    private binaryRingBuffer = new BinaryRingBuffer(1024 * 10); // 1MB buffer for binary data from the target (e.g. GDB, RTT, SWO)
     constructor(opts: Transport.TransportStreamOptions & { callback: (info: winston.Logform.TransformableInfo) => void }) {
         super(opts);
         this.callback = opts.callback;
@@ -40,6 +42,10 @@ export class CustomTransport extends Transport {
 
     public static getInstance(): CustomTransport | null {
         return CustomTransport._instance;
+    }
+
+    public getRingBuffer(): BinaryRingBuffer {
+        return this.binaryRingBuffer;
     }
 
     log(info: winston.Logform.TransformableInfo, callback: () => void) {
@@ -58,6 +64,7 @@ export class CustomTransport extends Transport {
                 logger.error(`Failed to write to log stream: ${err instanceof Error ? err.message : String(err)}`);
             }
         };
+        this.binaryRingBuffer.writeBuffer(Buffer.from(str));
         callback();
     }
 
@@ -148,7 +155,7 @@ export function createInitialTransports(cliArgs: CliArgs, consoleLogLevel: strin
             ),
         }),
     );
-    const customTransport = createCustomTransport();
+    const customTransport = createCustomTransport(consoleLevel);
 
     if (!cliArgs.logFile) {
         cliArgs.logFile = `${process.cwd()}/.mcu-debug/cli.log`;
@@ -161,9 +168,9 @@ export function createInitialTransports(cliArgs: CliArgs, consoleLogLevel: strin
     return customTransport;
 }
 
-function createCustomTransport() {
+function createCustomTransport(level: string): CustomTransport {
     const customTransport = new CustomTransport({
-        level: 'debug',
+        level: level,
         format: winston.format.combine(
             stripConsoleFields(),
             winston.format.timestamp(),

@@ -30,6 +30,11 @@ async function main() {
         process.exit(1);
     }
 
+    if (cliArgs.dumpConfig) {
+        console.log(JSON.stringify(config, null, 2));
+        process.exit(0);
+    }
+
     const session = new CliSessionDriver(cliArgs, customTransport, adapter, config);
     session.startSession(cliArgs);
 }

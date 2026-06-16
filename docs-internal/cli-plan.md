@@ -32,7 +32,7 @@ packages/mcu-debug/src/
   cli/                  ← CLI-specific: new entry point + CLI-only concerns
     cli-driver.ts       ← new entry point; drives session in-process (see Phase 5)
     cli-adapter.ts      ← CliAdapter: implements IHostAdapter for CLI mode
-    config-resolver.ts  ← thin glue: creates CliAdapter, calls common/ConfigProvider
+    cli-config-loader.ts  ← thin glue: creates CliAdapter, calls common/ConfigProvider
     session-socket.ts   ← ~/.mcu-debug/current.sock server (mux broadcast + command receive)
 
   common/               ← shared by both frontend AND cli
@@ -156,27 +156,26 @@ Each phase can be tested independently before the next begins.
 
 ---
 
-### Phase 1 — Rust bootstrap (`mcu-debug debug` subcommand)
+### Phase 1 — Node bootstrap (`npx mcu-debug debug` subcommand) invokes Rust bootstrap
 
 Entry point. Everything starts here.
 
-- [ ] **Arg parsing**
-  - [ ] `-c` / `--config`     Required: debug configuration name (case-insensitive)
-  - [ ] `-j` / `--json-file`  Optional: path to `launch.json` (default: `./launch.json`)
-  - [ ] `--no-tui`            Force headless even on a TTY (useful for testing)
+- [x] **Arg parsing**
+  - [x] `--no-tui`            Force headless even on a TTY (useful for testing)
+  - [x] **                    All others passed to node cli
 
-- [ ] **Node.js check**
-  - [ ] Locate `node` on PATH
+- [x] **Node.js check**
+  - [x] Locate `node` on PATH
   - [x] Check version >= 22; if not: clear error with nodejs.org URL, exit non-zero
-  - [ ] If not found: clear error distinguishing "not installed" from "wrong version"
+  - [x] If not found: clear error distinguishing "not installed" from "wrong version"
 
 - [x] **Locate bundled `mcu-debug-cli.js`**
   - [x] Resolve relative to own executable: `current_exe().parent().join("dist/mcu-debug-cli.js")`
   - [x] If not found: error — likely a broken installation
 
-- [ ] **TTY detection → choose mode**
-  - [ ] `stdout` is a TTY and no `-no-tui` → **TUI mode**: start node program with stdio piped
-  - [ ] `stdout` is not a TTY → **headless mode**: spawn Node with inherited stdio (Unix: `exec`-replace; Windows: spawn-and-wait), forward exit code
+- [x] **TTY detection → choose mode**
+  - [x] `stdout` is a TTY and no `-no-tui` → **TUI mode**: start node program with stdio piped
+  - [x] `stdout` is not a TTY → **headless mode**: spawn Node with inherited stdio (Unix: `exec`-replace; Windows: spawn-and-wait), forward exit code
 
 ---
 
@@ -208,19 +207,18 @@ Runs first thing in the Node process before any session logic.
   - [x] `${command:...}`    → always error: tell user to expand manually
   - [x] Collect ALL unresolved — report together, exit non-zero, never partial
 
-- [ ] **Properties requiring resolution** (complete this list as you go):
-  - [ ] `serverPath`, `armToolchainPath` / `gdbPath`
-  - [ ] STLink: `cubeProgrammerPath`
-  - [ ] `serverArgs`, `debuggerArgs`
+- [x] **Properties requiring resolution** (complete this list as you go):
+  - [x] `serverPath`, `armToolchainPath` / `gdbPath`
+  - [x] STLink: `cubeProgrammerPath`
+  - [x] `serverArgs`, `debuggerArgs`
   - [x] `type`: `launch` vs `attach`
   - [x] Pre/post/override launch and attach commands
   - [x] openOCD startup commands
   - [x] `rtt`, ~~`swo`~~, `uart` config blocks
   - [x] `envFile` itself (resolve `${workspaceFolder}` in the path before loading)
 
-- [ ] **`dump-config` subcommand** (free once resolver exists)
-  - [ ] Print fully-resolved config as JSON to stdout
-  - [ ] `--diff` flag: show which variables were substituted and to what
+- [x] **`dump-config` subcommand** (free once resolver exists)
+  - [x] Print fully-resolved config as JSON to stdout
 
 ---
 
@@ -229,14 +227,14 @@ Runs first thing in the Node process before any session logic.
 Determines where the probe is and what transport to use.
 Runs after config resolution — `remoteConfig` field in resolved config may override.
 
-- [ ] Detect WSL: `WSL_DISTRO_NAME` env var
-  - [ ] Networking mode: `wslinfo --networking-mode` → `mirrored` | `nat`
-  - [ ] NAT: resolve Windows host IP from `/proc/net/route` default gateway
-- [ ] Detect Docker: `/.dockerenv` exists, or `/proc/1/cgroup` contains `docker`
-  - [ ] Host address: `host.docker.internal` (Docker Desktop) or default gateway (Linux Docker)
+- [x] Detect WSL: `WSL_DISTRO_NAME` env var
+  - [x] Networking mode: `wslinfo --networking-mode` → `mirrored` | `nat`
+  - [x] NAT: resolve Windows host IP from `/proc/net/route` default gateway
+- [x] Detect Docker: `/.dockerenv` exists, or `/proc/1/cgroup` contains `docker`
+  - [x] Host address: `host.docker.internal` (Docker Desktop) or default gateway (Linux Docker)
 - [ ] Detect SSH server: `SSH_CLIENT` env var set → probe is local to this machine → treat as `Local`
-- [ ] Default: `Local` — no proxy, GDB connects directly
-- [ ] `remoteConfig` in launch config overrides detection:
+- [x] Default: `Local` — no proxy, GDB connects directly
+- [x] `hostConfig` in launch config overrides detection:
   - [ ] `{ type: "auto" }` — use detection above
   - [ ] `{ type: "ssh", host: "..." }` — explicit LAB host, SSH auto-deploy flow
   - [ ] `{ type: "direct", address: "...", port: N }` — proxy already running
@@ -268,12 +266,11 @@ transport, direct in-process calls. `SeqDebugSession`'s serialized-execution que
 unchanged; the CLI Driver just feeds it requests and awaits responses via the existing
 Promise resolver in `sendResponse()`.
 
-- [ ] **Event interception** — override `sendEvent()` to route DAP events to the mux stream
+- [x] **Event interception** — override `sendEvent()` to route DAP events to the mux stream
       instead of a transport. No IHostAdapter needed at the session level.
   - [x] `OutputEvent{category:'console'}` → `[GDB]` mux channel
-  - [ ] `OutputEvent{category:'important'}` → highlighted / TUI status bar
   - [x] `OutputEvent{category:'stdout'/'stderr'}` → target output mux channels
-  - [x] `StoppedEvent` / `ContinuedEvent` → TUI status indicator
+  - [x] `StoppedEvent` / `ContinuedEvent / etc.` → TUI/VSCode-panel status indicator, goes to stderr
   - [x] `TerminatedEvent` → session teardown sequence
   - [x] `SWOConfigureEvent`, `UARTConfigureEvent` (custom) → configure mux channels
 - [ ] **No-op transport** — skip `super.sendEvent()` / `super.sendResponse()` calls so the
@@ -300,14 +297,14 @@ The live session. Rust TUI connects here; AI attachers connect here later.
 
 - [x] Create `~/.mcu-debug/socket.json` (and `/tmp/mcu-debug-<pid>.sock` for explicit addressing)
 - [ ] On each new attacher connection:
-  - [ ] Send ring buffer snapshot (catch-up — same principle as serial ring buffer)
-  - [ ] Then stream live mux frames
+  - [x] Send ring buffer snapshot (catch-up — same principle as serial ring buffer)
+  - [x] Then stream live mux frames
 - [ ] Receive commands from any attacher, route to GDB input
 - [ ] Meta-command handling:
   - [x] `!!SIGINT` → send SIGINT to target
   - [x] `!!RESET` → reset via gdb-server monitor command
-  - [ ] `!!AI-REQUEST: <text>` → post to AI-REQUEST region (TUI) or tag on mux stream
-  - [ ] `!!AI-REQUEST-CLEAR` → post to (TUI) to clear the AI-REQUEST area
+  - [x] `!!AI-REQUEST: <text>` → post to AI-REQUEST region (TUI) or tag on mux stream
+  - [x] `!!AI-REQUEST-CLEAR` → post to (TUI) to clear the AI-REQUEST area
   - [ ] `!!NOTE: <json-patch>` → patch session-notes sidecar file
 - [ ] Attacher disconnect: clean, does not kill session
 - [x] Session teardown: gdb-server killed, GDB exited, socket removed, Rust bootstrap exits
