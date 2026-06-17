@@ -137,7 +137,7 @@ export class GDBServerSession extends EventEmitter {
                 this.process = child_process.spawn(executable, args, {
                     cwd: serverCwd,
                     env: env,
-                    detached: true,
+                    stdio: "pipe"
                 });
             }
 
@@ -215,7 +215,7 @@ export class GDBServerSession extends EventEmitter {
                 };
                 // If we are in CLI mode, both gdb and servers output goes to the same console. So it would create
                 // duplicaes if we write both to console. So only write server output to console when not in CLI mode.
-                const doConsoleForStdout = this.session.args.pvtIsCli ? false : true;
+                const doConsoleForStdout = this.session.args.pvtIsCli && !(this.session.args.pvtCliOptions as any)?.showServerOutput ? false : true;
                 this.process.stdout?.on("data", (data) => handleOutput(data, doConsoleForStdout));
                 this.process.stderr?.on("data", (data) => handleOutput(data, true));
 

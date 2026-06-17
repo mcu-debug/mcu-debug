@@ -437,7 +437,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     windows: any;
 
     pvtIsCli?: boolean; // Whether this configuration is being used in the CLI (as opposed to the DA); set by the CLI session driver
-    cliOptions?: CliLaunchJasonOptions; // CLI-specific options; set by the CLI session driver   
+    pvtCliOptions?: CliLaunchJasonOptions; // CLI-specific options; set by the CLI session driver   
 }
 
 export interface DisassemblyInstruction {

@@ -67,6 +67,7 @@ export class CliSessionDriver {
     public status: CLISessionType = "not-started";
     public bkptSaveFile: string | null = null; // used for restart command to save/restore breakpoints across a full teardown
     private restarting = false; // track whether we're in the middle of a restart to suppress TerminatedEvent during teardown
+    private serverConsole: net.Server | null = null;
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
@@ -86,6 +87,7 @@ export class CliSessionDriver {
         this.gdbServerLogger = logger.child({ source: 'GDB-SERVER', isConsole: true, color: 'cyan.dim' });
         this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
         config.pvtIsCli = true; // inform the DA that we are running in CLI mode
+        config.pvtCliOptions = { ...cliArgs }; // pass along CLI options to the DA via the config
 
         this.setState("not-started");
     }
@@ -198,6 +200,9 @@ export class CliSessionDriver {
     }
 
     private startGDBServerConsole(message: string): Promise<void> {
+        if (this.serverConsole) {
+            return Promise.resolve();
+        }
         return new Promise<void>(async (resolve, reject) => {
             const port = await this.adapter.getGdbServerConsolePort();
             const server = net.createServer((socket) => {
@@ -210,6 +215,7 @@ export class CliSessionDriver {
                 });
             });
             server.listen(port, () => {
+                this.serverConsole = server;
                 resolve();
             });
             server.on('error', (err) => {

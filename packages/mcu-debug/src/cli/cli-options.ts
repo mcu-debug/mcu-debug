@@ -11,6 +11,7 @@ export interface CliArgs {
     logFile?: string;
     debug?: boolean;
     dumpConfig?: boolean;
+    showServerOutput?: boolean;
     waitForClient?: boolean;
 }
 
@@ -23,6 +24,7 @@ program
     .option('-l, --log-file <string>', 'Log file path. Default path is $TMPDIR/mcu-debug-logs/<pid>.log', '')
     .option('-d, --debug', 'Enable debug mode - more verbose logging')
     .option('--dump-config', 'Dump the configuration and exit')
+    .option('--show-server-output', 'Show server output in the console')
     .option('--wait-for-client', 'Wait for a client to connect before starting the debug session')
     .version(version, '-V, --version', 'Show version information')
     .helpOption('-h, --help', 'Show this help message')
