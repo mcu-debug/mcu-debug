@@ -1361,9 +1361,71 @@ export function processVarSubstitution(str: string, vars: { [key: string]: strin
     });
 }
 
+export function escapeStringLiteral(str: string): string {
+    const escapeMap: { [key: string]: string } = {
+        '\n': '\\n',
+        '\r': '\\r',
+        '\t': '\\t',
+        '"': '\\"',
+        "'": "\\'",
+        '\\': '\\\\'
+    };
+
+    return str.replace(/[\n\r\t"'\\]/g, match => escapeMap[match]);
+}
+
+// Parses one line from an envFile.  Returns { key, value } or null for blank/comment lines.
+//
+// Quoting rules:
+//   Unquoted  KEY=VALUE      — value is literal (trimmed); backslashes are NOT escape chars,
+//                              so Windows paths work as-is (e.g. C:\Users\test).
+//   Double-quoted KEY="VALUE" — surrounding quotes are stripped; recognised escape sequences:
+//                              \\ → \   \" → "   \n → newline   \r → CR   \t → tab.
+//                              Any other \x passes through as x.
+//   Single-quoted KEY='VALUE' — surrounding quotes are stripped; value is fully literal,
+//                              no escape processing of any kind.
+//
+// Lines whose first non-whitespace character is '#' are treated as comments and ignored.
+// A '#' that appears after the '=' sign is part of the value, not a comment.
+// Variable substitution (${env:VAR}) is not supported; use args.env in the launch
+// configuration for dynamic values.
+function parseEnvFileLine(raw: string): { key: string; value: string } | null {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) { return null; }
+
+    const ix = line.indexOf('=');
+    if (ix <= 0) { return null; }
+
+    const key = line.substring(0, ix).trim();
+    if (!key) { return null; }
+
+    let value = line.substring(ix + 1).trim();
+
+    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+        value = value.slice(1, -1).replace(/\\([\s\S])/g, (_, ch) => {
+            switch (ch) {
+                case '\\': return '\\';
+                case '"': return '"';
+                case 'n': return '\n';
+                case 'r': return '\r';
+                case 't': return '\t';
+                default: return ch;
+            }
+        });
+    } else if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+        value = value.slice(1, -1);
+    }
+
+    return { key, value };
+}
+
 export function processEnvForConfig(args: ConfigurationArguments, errFn?: (msg: string) => void): { [key: string]: string } {
     const env: { [key: string]: string } = {};
     const envMap: { [key: string]: string } = {};
+    const plat = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "osx" : process.platform;
+    envMap["platform"] = plat;
+    env["platform"] = plat;
+
     for (const key in process.env) {
         if (Object.prototype.hasOwnProperty.call(process.env, key)) {
             const value = process.env[key];
@@ -1382,23 +1444,15 @@ export function processEnvForConfig(args: ConfigurationArguments, errFn?: (msg: 
     if (args.envFile) {
         try {
             const contents = fs.readFileSync(args.envFile, "utf-8");
-            const envLines = contents.split("\n");
-            for (let line of envLines) {
-                line = line.trim();
-                if (!line || line.startsWith("#")) {
-                    continue;
-                }
-                const ix = line.indexOf("=");
-                if (ix > 0) {
-                    const key = line.substring(0, ix).trim();
-                    let value = line.substring(ix + 1).trim();
-                    if (key) {
-                        env[key] = processVarSubstitution(value, envMap, 'env:', errFn);
-                    }
+            for (const raw of contents.split(/\r?\n/)) {
+                const parsed = parseEnvFileLine(raw);
+                if (parsed) {
+                    // escapeStringLiteral makes the value safe for insertion into the
+                    // JSON string during the substitution pass in substituteEnvVarsInConfig.
+                    env[parsed.key] = escapeStringLiteral(parsed.value);
                 }
             }
         } catch (e: any) {
-            // Ignore errors in reading env file, just log
             errFn?.(`Could not load environment variables from file: ${e.message}`);
         }
     }
