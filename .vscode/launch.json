@@ -1,169 +1,152 @@
 // A launch configuration that compiles the extension and then opens it inside a new window
 {
-	"version": "0.1.1",
-	"configurations": [	
-		{
-			"name": "Launch Extensions (Single Host)",
-			"type": "extensionHost",
-			"request": "launch",
-			"runtimeExecutable": "${execPath}",
-			"args": [
-				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug",
-				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy",
-				// "/Users/hdm/mtw37/Dual-CPU_Empty_PSOC6_App/Dual-CPU_Empty_PSOC6_App.code-workspace"
-				// "/Users/hdm/rtt/Hello_RTT/mtb-example-hal-hello-world.code-workspace"
-				"/Users/hdm/mtw37/Hello_World"
-			],
-			"sourceMaps": true,
-			"outFiles": [
-				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
-				"${workspaceFolder}/packages/mcu-debug-proxy/dist/*.js"
-			],
-      		// "preLaunchTask": "npm: compile"
-    	},
-		{
-			"name": "Launch Extensions (Container)",
-			"type": "extensionHost",
-			"request": "launch",
-			"runtimeExecutable": "${execPath}",
-			"args": [
-				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug",
-				"--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy"
-			],
-			"sourceMaps": true,
-			"outFiles": [
-				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
-				"${workspaceFolder}/packages/mcu-debug-proxy/dist/*.js"
-			],
-      		// "preLaunchTask": "npm: compile"
-    	},
-		{
-			"name": "Debug Server",
-			"type": "node",
-			"request": "launch",
-			"runtimeArgs": [ "--nolazy", "--trace-warnings"],//, "--unhandled-rejections=strict" ],
-			"program": "${workspaceFolder}/packages/mcu-debug/dist/adapter.js",
-			"stopOnEntry": false,
-			"args": [ "--server=4721" ],
-			"env": {
-				"RUST_BACKTRACE": "1",
-				"PROD_MCU_DEBUG_HELPER": "0"
-			},
-			"sourceMaps": true,
-			"outFiles": [
-				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
-			],
-      		// "preLaunchTask": "npm: compile"
-		},
-		{
-			"name": "Debug Server (Container)",
-			"type": "node",
-			"request": "launch",
-			"runtimeArgs": [ "--nolazy", "--trace-warnings"],//, "--unhandled-rejections=strict" ],
-			"program": "${workspaceFolder}/packages/mcu-debug/dist/adapter.js",
-			"stopOnEntry": false,
-			"args": [ "--server=4721" ],
-			"env": {
-				"RUST_BACKTRACE": "1",
-				"PROD_MCU_DEBUG_HELPER": "0"
-			},
-			"sourceMaps": true,
-			"outFiles": [
-				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
-			],
-      		// "preLaunchTask": "npm: compile"
-		},
-		{
-			"name": "Debug Node mcu-debug CLI",
-			"type": "node",
-			"request": "launch",
-			// "cwd": "${workspaceFolder}",
-			// "cwd": "/Users/hdm/mtw37/Hello_World",
-			// "cwd": "/Users/hdm/rtt/Hello_RTT",
-			"cwd": "/Users/hdm/mtw37/Hello_World",
-			"runtimeArgs": [ "--nolazy", "--trace-warnings"],//, "--unhandled-rejections=strict" ],
-			"program": "${workspaceFolder}/packages/mcu-debug/dist/mcu-debug-cli.js",
-			// "console": "internalConsole",
-			"console": "integratedTerminal",
-			"stopOnEntry": false,
-			"outputCapture": "std",
-			"args": [ "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log" ],
-			"env": {
-				"RUST_BACKTRACE": "1",
-				"PROD_MCU_DEBUG_HELPER": "0"
-			},
-			"sourceMaps": true,
-			"outFiles": [
-				"${workspaceFolder}/packages/mcu-debug/dist/*.js",
-			],
-	  		"preLaunchTask": "npm: compile"
-		},
-		{
-			"name": "Debug Rust mcu-debug TUI",
-			"type": "lldb",
-			"request": "launch",
-            "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
-			"args": ["debug", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log"],
-            // "cwd": "/Users/hdm/mtw37/Hello_World",
-			"cwd": "/Users/hdm/rtt/Hello_RTT",
-            "console": "integratedTerminal",
-			"preLaunchTask": "Build Helper",
-            "sourceLanguages": ["rust"],
-			"presentation": {
-			  "reveal": "always",
-			  "focus": true
-			}
-		},
-		{
-			"name": "Launch Tests",
-			"type": "extensionHost",
-			"request": "launch",
-			"runtimeExecutable": "${execPath}",
-			"args": ["--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug", "--extensionTestsPath=${workspaceFolder}/packages/mcu-debug/out/test/suite/index" ],
-			"sourceMaps": true,
-			"outFiles": [
-				"${workspaceFolder}/packages/mcu-debug/out/test/**/*.js"
-			],
-			"preLaunchTask": "test-compile"
-		},
-		{
-            "type": "lldb",
-            "request": "launch",
-            "name": "Launch mdbg",
-            "cargo": {
-				"cwd": "${workspaceFolder}/packages/mcu-debug",
-                "args": [
-                    "build",
-                    "--bin=mcu-debug" // Replace 'yourprogram' with your actual binary name
-                ]
-            },
-            "program": "${cargo:program}",
-            // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/stm32f429-rtt.elf"],
-            // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/proj_cm4.elf"],
-			"args": ["-h"],
-            "cwd": "${workspaceFolder}/packages/mcu-debug",
-            "sourceLanguages": ["rust"],
-            "console": "internalConsole"
-        },
-        {
-            "type": "lldb",
-            "request": "attach",
-            "name": "Attach mdbg",
-            "pid": "${command:pickMyProcess}",
-			"program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
-            "sourceLanguages": ["rust"]
-        }
-	],
-	"compounds": [
-		{
-			"name": "Extensions + Debug Server",
-			"configurations": ["Launch Extensions (Single Host)", "Debug Server"],
-      		"preLaunchTask": "compile"
-		},
-		{
-			"name": "Extensions + Debug Server (Container)",
-			"configurations": ["Launch Extensions (Container)", "Debug Server (Container)"]
-		}
-	]
+  "version": "0.1.1",
+  "configurations": [
+    {
+      "name": "Launch Extensions (Single Host)",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug",
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy",
+        // "/Users/hdm/mtw37/Dual-CPU_Empty_PSOC6_App/Dual-CPU_Empty_PSOC6_App.code-workspace"
+        // "/Users/hdm/rtt/Hello_RTT/mtb-example-hal-hello-world.code-workspace"
+        "/Users/hdm/mtw37/Hello_World"
+      ],
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/packages/mcu-debug/dist/*.js", "${workspaceFolder}/packages/mcu-debug-proxy/dist/*.js"]
+      // "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Launch Extensions (Container)",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug", "--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug-proxy"],
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/packages/mcu-debug/dist/*.js", "${workspaceFolder}/packages/mcu-debug-proxy/dist/*.js"]
+      // "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Debug Server",
+      "type": "node",
+      "request": "launch",
+      "runtimeArgs": ["--nolazy", "--trace-warnings"], //, "--unhandled-rejections=strict" ],
+      "program": "${workspaceFolder}/packages/mcu-debug/dist/adapter.js",
+      "stopOnEntry": false,
+      "args": ["--server=4721"],
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "PROD_MCU_DEBUG_HELPER": "0"
+      },
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/packages/mcu-debug/dist/*.js"]
+      // "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Debug Server (Container)",
+      "type": "node",
+      "request": "launch",
+      "runtimeArgs": ["--nolazy", "--trace-warnings"], //, "--unhandled-rejections=strict" ],
+      "program": "${workspaceFolder}/packages/mcu-debug/dist/adapter.js",
+      "stopOnEntry": false,
+      "args": ["--server=4721"],
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "PROD_MCU_DEBUG_HELPER": "0"
+      },
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/packages/mcu-debug/dist/*.js"]
+      // "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Debug Node mcu-debug CLI",
+      "type": "node",
+      "request": "launch",
+      // "cwd": "${workspaceFolder}",
+      // "cwd": "/Users/hdm/mtw37/Hello_World",
+      // "cwd": "/Users/hdm/rtt/Hello_RTT",
+      // "cwd": "/Users/hdm/mtw37/Hello_World",
+      "cwd": "c:/Users/hdm/mtw37/Empty_App",
+      "runtimeArgs": ["--nolazy", "--trace-warnings"], //, "--unhandled-rejections=strict" ],
+      "program": "${workspaceFolder}/packages/mcu-debug/dist/mcu-debug-cli.js",
+      // "console": "internalConsole",
+      "console": "integratedTerminal",
+      "stopOnEntry": false,
+      "outputCapture": "std",
+      "args": ["-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log"],
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "PROD_MCU_DEBUG_HELPER": "0"
+      },
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/packages/mcu-debug/dist/*.js"],
+      "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Debug Rust mcu-debug TUI",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
+      "args": ["debug", "-c", "0", "-s", ".vscode/settings.json", "-l", "/tmp/mcu-debug.log"],
+      // "cwd": "/Users/hdm/mtw37/Hello_World",
+      "cwd": "/Users/hdm/rtt/Hello_RTT",
+      "console": "integratedTerminal",
+      "preLaunchTask": "Build Helper",
+      "sourceLanguages": ["rust"],
+      "presentation": {
+        "reveal": "always",
+        "focus": true
+      }
+    },
+    {
+      "name": "Launch Tests",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/packages/mcu-debug", "--extensionTestsPath=${workspaceFolder}/packages/mcu-debug/out/test/suite/index"],
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/packages/mcu-debug/out/test/**/*.js"],
+      "preLaunchTask": "test-compile"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Launch mdbg",
+      "cargo": {
+        "cwd": "${workspaceFolder}/packages/mcu-debug",
+        "args": [
+          "build",
+          "--bin=mcu-debug" // Replace 'yourprogram' with your actual binary name
+        ]
+      },
+      "program": "${cargo:program}",
+      // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/stm32f429-rtt.elf"],
+      // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/proj_cm4.elf"],
+      "args": ["-h"],
+      "cwd": "${workspaceFolder}/packages/mcu-debug",
+      "sourceLanguages": ["rust"],
+      "console": "internalConsole"
+    },
+    {
+      "type": "lldb",
+      "request": "attach",
+      "name": "Attach mdbg",
+      "pid": "${command:pickMyProcess}",
+      "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
+      "sourceLanguages": ["rust"]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Extensions + Debug Server",
+      "configurations": ["Launch Extensions (Single Host)", "Debug Server"],
+      "preLaunchTask": "compile"
+    },
+    {
+      "name": "Extensions + Debug Server (Container)",
+      "configurations": ["Launch Extensions (Container)", "Debug Server (Container)"]
+    }
+  ]
 }
-

@@ -214,10 +214,10 @@ export class CLIConfigLoader {
         const builtins: { [key: string]: any } = {};
         // Populate built-in variables that can be used in launch.json. Only those that make sense
         // when no VSCode is involved. For example, ${workspaceFolder} is supported but ${file} is not since there is no file context.
-        builtins.userHome = os.homedir() || "";
-        builtins.workspaceFolder = rootDir || process.cwd();
+        builtins.userHome = (os.homedir() || "").replace(/\\/g, '/');
+        builtins.workspaceFolder = (rootDir || process.cwd()).replace(/\\/g, '/');
         builtins.workspaceFolderBasename = path.basename(builtins.workspaceFolder);
-        builtins.cwd = rootDir || process.cwd();
+        builtins.cwd = (rootDir || process.cwd()).replace(/\\/g, '/');
         builtins.pathSeparator = '/'; // path.sep;
         builtins["/"] = '/'; // Allow using ${/} as a platform-independent path separator in launch.json   
         return builtins;
