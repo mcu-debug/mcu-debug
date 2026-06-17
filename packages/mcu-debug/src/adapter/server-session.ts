@@ -40,6 +40,8 @@ export class GDBServerSession extends EventEmitter {
     public usingParentServer: boolean = false;
     private clientRequestedStop: boolean = false;
     private proxyClient: ProxyClient | null = null;
+    private serverResolve: (() => void) | null = null;
+    private resolved: boolean = false;  // Could be resolved or rejected, but we just want to know if it's resolved in any way to stop timers and avoid multiple resolve/reject calls
 
     constructor(private session: GDBDebugSession) {
         super();
@@ -97,6 +99,7 @@ export class GDBServerSession extends EventEmitter {
         const serverCwd = this.getServerCwd(executable);
         return new Promise<void>(async (resolve, reject) => {
             // Connect to the frontend console
+            this.serverResolve = resolve;
             if (this.session.args.gdbServerConsolePort) {
                 try {
                     await this.connectConsole(this.session.args.gdbServerConsolePort);
@@ -112,7 +115,7 @@ export class GDBServerSession extends EventEmitter {
             if (!this.session.args.pvtIsCli) {
                 this.consoleSocket?.write(AnsiHelpers.greenFormat(argsStr));
             }
-            const matchRegex = this.serverController.initMatch();
+            this.matchRegex = this.serverController.initMatch();
 
             if (this.proxyClient) {
                 this.session.handleMsg(GdbEventNames.Stdout, "Starting gdb-server via proxy...\n");
@@ -120,14 +123,15 @@ export class GDBServerSession extends EventEmitter {
                     this.proxyClient.on("streamStarted", (data: TcpPortDef) => {
                         if (data.name.startsWith("gdb")) {
                             this.session.handleMsg(GdbEventNames.Stdout, `GDB-Server stream ready on port server ${data.remotePort}\n`);
-                            resolved = true;
-                            resolve();
+                            this.serverResolve?.();
+                            this.serverResolve = null;
+                            this.resolved = true;
                         }
                     });
                     this.proxyClient?.on("serverExited", (code: number, signal: NodeJS.Signals) => {
                         serverExited(code, signal);
                     });
-                    await this.proxyClient.launchServer(executable, args, serverCwd, matchRegex ? [matchRegex] : []);
+                    await this.proxyClient.launchServer(executable, args, serverCwd, this.matchRegex ? [this.matchRegex] : []);
                 } catch (e: any) {
                     reject(new Error(`Failed to launch gdb-server via proxy: ${e.message}`));
                     return;
@@ -145,7 +149,6 @@ export class GDBServerSession extends EventEmitter {
 
             let timer: NodeJS.Timeout | null = null;
             let timeout: NodeJS.Timeout | null = null;
-            let resolved = false;
             const killTimers = () => {
                 if (timer) {
                     clearInterval(timer);
@@ -157,7 +160,7 @@ export class GDBServerSession extends EventEmitter {
                 }
             };
 
-            if (!matchRegex && !this.proxyClient) {
+            if (!this.matchRegex && !this.proxyClient) {
                 const timeoutMs = 2000;
                 const serverType = this.session.args.servertype || "openocd";
                 const gdbport = this.ports["gdbPort"]?.localPort;
@@ -170,60 +173,44 @@ export class GDBServerSession extends EventEmitter {
                     setTimeout(() => {
                         // No match needed, resolve immediately
                         this.serverController.serverLaunchCompleted();
-                        resolved = true;
+                        this.resolved = true;
                         resolve();
                     }, timeoutMs);
                 }
             } else {
-                let count = 0;
+                const now = Date.now();
                 timer = setInterval(() => {
-                    if (resolved || this.clientRequestedStop) {
+                    if (this.resolved || this.clientRequestedStop) {
                         killTimers();
                     }
-                    this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to start ${++count}...\n`);
+                    const elapsed = Math.round((Date.now() - now) / 1000);
+                    this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to start (${elapsed}s elapsed)...\n`);
                 }, 5000);
 
-                timeout = setTimeout(
-                    () => {
-                        if (this.process) {
-                            this.process.kill();
-                        }
-                        if (!resolved) {
-                            resolved = true;
-                            reject(new Error("Timeout waiting for gdb-server to start"));
-                        }
-                    },
-                    5 * 60 * 1000,
-                );
+                timeout = setTimeout(() => {
+                    timeout = null;
+                    killTimers();
+                    if (this.process) {
+                        this.process.kill();
+                    }
+                    if (!this.resolved) {
+                        this.resolved = true;
+                        reject(new Error("Timeout waiting for gdb-server to start"));
+                    }
+                }, 5 * 60 * 1000);
             }
 
             if (this.process) {
-                const handleOutput = (data: Buffer, doConsole: boolean) => {
-                    if (doConsole) {
-                        this.writeToConsole(data);
-                    }
-
-                    if (matchRegex && !resolved) {
-                        const str = data.toString();
-                        if (matchRegex.test(str)) {
-                            resolved = true;
-                            killTimers();
-                            this.serverController.serverLaunchCompleted();
-                            resolve();
-                        }
-                    }
-                };
                 // If we are in CLI mode, both gdb and servers output goes to the same console. So it would create
                 // duplicaes if we write both to console. So only write server output to console when not in CLI mode.
                 const doConsoleForStdout = this.session.args.pvtIsCli && !(this.session.args.pvtCliOptions as any)?.showServerOutput ? false : true;
-                this.process.stdout?.on("data", (data) => handleOutput(data, doConsoleForStdout));
-                this.process.stderr?.on("data", (data) => handleOutput(data, true));
+                this.process.stdout?.on("data", (data) => this.handleStdout(data, doConsoleForStdout));
+                this.process.stderr?.on("data", (data) => this.handleStderr(data, true));
 
                 this.process.on("error", (err) => {
                     killTimers();
-                    if (!resolved) {
-                        resolved = true;
-                        timeout && clearTimeout(timeout);
+                    if (!this.resolved) {
+                        this.resolved = true;
                         reject(err);
                     }
                 });
@@ -235,8 +222,8 @@ export class GDBServerSession extends EventEmitter {
 
             const serverExited = (code: number | null, signal: NodeJS.Signals | null) => {
                 killTimers();
-                if (!resolved) {
-                    resolved = true;
+                if (!this.resolved) {
+                    this.resolved = true;
                     reject(new Error(`Server exited with code ${code}`));
                 } else if (!this.clientRequestedStop) {
                     this.emit("server-exited", code, signal);
@@ -248,6 +235,43 @@ export class GDBServerSession extends EventEmitter {
                 }
             };
         });
+    }
+
+    private matchRegex: RegExp | null = null;
+    private stdErrRemaining = "";
+    private handleStderr(data: Buffer, doConsole: boolean) {
+        if (doConsole) {
+            this.writeToConsole(data);
+        }
+        this.stdErrRemaining = this.doMatch(data, this.stdErrRemaining);
+    }
+
+    private stdoutRemaining = "";
+    private handleStdout(data: Buffer, doConsole: boolean) {
+        if (doConsole) {
+            this.writeToConsole(data);
+        }
+        this.stdoutRemaining = this.doMatch(data, this.stdoutRemaining);
+    }
+
+    private doMatch(data: Buffer, remaining: string) {
+        if (this.matchRegex && !this.resolved) {
+            const str = remaining + data.toString();
+            const lines = str.split("\n");
+            remaining = str.endsWith("\n") ? "" : lines.pop() || "";
+            for (const line of lines) {
+                if (line.trim()) {
+                    if (this.matchRegex.test(line)) {
+                        this.serverController.serverLaunchCompleted();
+                        this.serverResolve?.();
+                        this.serverResolve = null;
+                        this.resolved = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return remaining;
     }
 
     public writeToConsole(data: Buffer) {
