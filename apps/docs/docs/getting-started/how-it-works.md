@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 6
 title: How mcu-debug Works
 ---
 
@@ -76,27 +76,27 @@ Your microcontroller. The CPU has a debug port (SWD or JTAG) that provides hardw
 
 When something fails, knowing which component failed tells you where to look:
 
-| Symptom | Likely failing component |
-|---------|--------------------------|
-| "Failed to start GDB" | GDB binary not found or not executable |
-| "Server exited with code 1" | gdb-server failed — wrong config file, probe not found |
-| "Remote target disconnected" | gdb-server crashed or probe disconnected during session |
-| Breakpoints not resolving to source | GDB cannot find debug symbols — wrong ELF, missing `-g` flag |
-| Variables show optimized-out | Compiler optimization removed the variable — rebuild with `-O0` |
+| Symptom                             | Likely failing component                                        |
+| ----------------------------------- | --------------------------------------------------------------- |
+| "Failed to start GDB"               | GDB binary not found or not executable                          |
+| "Server exited with code 1"         | gdb-server failed — wrong config file, probe not found          |
+| "Remote target disconnected"        | gdb-server crashed or probe disconnected during session         |
+| Breakpoints not resolving to source | GDB cannot find debug symbols — wrong ELF, missing `-g` flag    |
+| Variables show optimized-out        | Compiler optimization removed the variable — rebuild with `-O0` |
 
 ## How `launch.json` Maps to the Chain
 
 Each `launch.json` property configures a specific part of the chain:
 
-| Property | Configures |
-|----------|-----------|
-| `servertype` | Which gdb-server process to start |
-| `configFiles` | Configuration passed to the gdb-server (e.g. OpenOCD board/target files) |
-| `serverPath` | Path to the gdb-server binary |
-| `executable` | The ELF file passed to GDB as the debug target |
-| `gdbPath` | Path to the GDB binary |
-| `toolchainPrefix` | Prefix for `<prefix>-gdb` — `arm-none-eabi` → `arm-none-eabi-gdb` |
-| `debuggerArgs` | Extra arguments passed to GDB at startup |
+| Property          | Configures                                                               |
+| ----------------- | ------------------------------------------------------------------------ |
+| `servertype`      | Which gdb-server process to start                                        |
+| `configFiles`     | Configuration passed to the gdb-server (e.g. OpenOCD board/target files) |
+| `serverPath`      | Path to the gdb-server binary                                            |
+| `executable`      | The ELF file passed to GDB as the debug target                           |
+| `gdbPath`         | Path to the GDB binary                                                   |
+| `toolchainPrefix` | Prefix for `<prefix>-gdb` — `arm-none-eabi` → `arm-none-eabi-gdb`        |
+| `debuggerArgs`    | Extra arguments passed to GDB at startup                                 |
 
 ## What mcu-debug Does NOT Do
 

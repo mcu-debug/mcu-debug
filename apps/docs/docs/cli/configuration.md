@@ -13,13 +13,16 @@ The CLI reads the same `launch.json` as VS Code. Most configurations work withou
 
 Variables resolved by the CLI:
 
-| Variable             | Resolves to                              |
-| -------------------- | ---------------------------------------- |
-| `${workspaceFolder}` | Directory containing `launch.json`       |
-| `${env:VAR}`         | Environment variable, or `envFile` entry |
-| `${userHome}`        | User home directory                      |
-| `${pathSeparator}`   | `/` on Linux/macOS, `\` on Windows       |
-| `${config:KEY}`      | Value from `.vscode/settings.json`       |
+| Variable                     | Resolves to                                      |
+| ---------------------------- | ------------------------------------------------ |
+| `${workspaceFolder}`         | Current working directory containing             |
+| `${workspaceFolderBasename}` | Base directory name of `workspaceFolder`         |
+| `${cwd}`                     | Same as `workspaceFolder`                        |
+| `${platform}`                | name of the platform ("windows", "osx", "linux") |
+| `${userHome}`                | User home directory                              |
+| `${pathSeparator}`           | `/` on all platforms                             |
+| `${env:VAR}`                 | Environment variable, or `envFile` entry         |
+| `${config:KEY}`              | Value from `.vscode/settings.json`               |
 
 Variables **not** supported in CLI mode:
 
@@ -47,7 +50,7 @@ OPENOCD=/usr/bin/openocd
 }
 ```
 
-The `envFile` is loaded first, so its variables are available throughout the configuration.
+The `envFile` is loaded first, so its variables are available throughout the configuration. See also [Variable Substitution](../configuration/variable-substitution.md)
 
 ## settings.json
 
@@ -78,13 +81,13 @@ For user-global settings (not project-specific), create `~/.mcu-debug/settings.j
 Print the fully-resolved configuration with all variables substituted:
 
 ```sh
-mcu-debug dump-config "Launch PSoC6 CM4"
+mcu-debug debug --dump-config -c "Launch PSoC6 CM4"
 ```
 
 Show which variables were substituted (diff mode):
 
 ```sh
-mcu-debug dump-config "Launch PSoC6 CM4" --diff
+mcu-debug debug --dump-config -c "Launch PSoC6 CM4" --diff
 ```
 
 Use this to verify paths are resolving correctly before starting a session.

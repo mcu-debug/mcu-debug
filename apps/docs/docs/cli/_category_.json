@@ -1,5 +1,8 @@
 {
   "label": "CLI Tool",
-  "position": 7,
-  "link": { "type": "doc", "id": "cli/index" }
+  "position": 8,
+  "link": {
+    "type": "doc",
+    "id": "cli/index"
+  }
 }

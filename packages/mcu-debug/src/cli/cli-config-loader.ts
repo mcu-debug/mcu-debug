@@ -218,7 +218,7 @@ export class CLIConfigLoader {
         builtins.workspaceFolder = (rootDir || process.cwd()).replace(/\\/g, '/');
         builtins.workspaceFolderBasename = path.basename(builtins.workspaceFolder);
         builtins.cwd = (rootDir || process.cwd()).replace(/\\/g, '/');
-        builtins.pathSeparator = '/'; // path.sep;
+        builtins.pathSeparator = '/'; // path.sep; We always use '/' as most gnu tools don't work with backslashes even on Windows.
         builtins["/"] = '/'; // Allow using ${/} as a platform-independent path separator in launch.json   
         return builtins;
     }

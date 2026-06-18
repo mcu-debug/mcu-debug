@@ -1,5 +1,8 @@
 {
   "label": "AI Integration",
-  "position": 8,
-  "link": { "type": "doc", "id": "ai/index" }
+  "position": 9,
+  "link": {
+    "type": "doc",
+    "id": "ai/index"
+  }
 }

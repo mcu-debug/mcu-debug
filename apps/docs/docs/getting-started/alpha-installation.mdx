@@ -1,0 +1,48 @@
+---
+sidebar_position: 3
+title: Alpha Installation
+---
+
+# Installation
+
+We are currently in alpha stage and not currently distributing via the VSCode Marketplace. Once we reach the Beta stage, we will be publishing the extensions in the Marketplace and can be installed from there.
+
+The mcu-debug VSCode extension comprises of three parts. Make sure you download the latest two `vsix` files from https://github.com/mcu-debug/mcu-debug/releases. Refer to [](#manual-installation-via-vsix-file) for VSIX installation instructions
+
+## Main extension: `mcu-debug-*.vsix`
+
+This is the main debugger and in made for IDEs like VSCode and others. Download the VSIX file and install the extension. If you are using WSL/Docker you also need to install this extension in the WSL environment. VSCode will not do this automatically for you until the extension is available in the Marketplace
+
+## Proxy extension: `mcu-debug-proxy-*.vsix`
+
+This extension is a companion extention needed by the main extension for those who wish to use the main extension mcu-debug in WSL/Docker/ssh environments. This extension is only needed on the **host machine where your probe is physically attached to**.
+
+## mcu-debug cli tool
+
+This is needed for those who want to use the debugger in CLI mode and/or with AI. It is available as an npm module. You can install this globally as. The pre-requisite for installation is [NodeJS v22+](https://nodejs.org)
+
+```bash
+npm install -g mcu-debug
+```
+
+You can also run the tool without installing using `npx`. You can do `npx mcu-debug ...`
+
+
+## Manual Installation via VSIX file
+
+### Method 1
+
+Via the VS Code User InterfaceThis is the most common approach for manually adding an extension
+
+1. **Open the Extensions View:** Click on the Extensions icon in the Activity Bar on the left side of VS Code, or press Ctrl+Shift+X (Cmd+Shift+X on Mac).
+2. **Open the Options Menu:** Click the Views and More Actions button (the three dots ... icon) located at the top right of the Extensions view pane.
+3. **Select VSIX Option:** Click Install from VSIX... from the dropdown menu.
+4. **Choose the File:** Navigate to your local .vsix file in the file browser, select it, and click Install.
+
+### Method 2
+
+You can use the terminal to install a packaged extension file silently or in batches. Open your terminal or command prompt and run the standard --install-extension argument alongside the path to your file:
+
+```bash
+code --install-extension path/to/extension.vsix
+```

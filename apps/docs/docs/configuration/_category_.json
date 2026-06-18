@@ -1,5 +1,8 @@
 {
   "label": "Configuration",
-  "position": 2,
-  "link": { "type": "doc", "id": "configuration/index" }
+  "position": 3,
+  "link": {
+    "type": "doc",
+    "id": "configuration/index"
+  }
 }

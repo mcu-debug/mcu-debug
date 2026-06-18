@@ -1,9 +1,11 @@
 ---
-sidebar_position: 2
+sidebar_position: 4
 title: Installation
 ---
 
 # Installation
+
+We are currently in Alpha stage. Please refer to [Alpha Installation](../alpha-installation.mdx) for instructions.
 
 ## VS Code Extension
 
@@ -30,7 +32,7 @@ mcu-debug requires GDB for your target architecture. For ARM Cortex-M and other 
 - **xPack DevTools**: `npm install -g @xpack-dev-tools/arm-none-eabi-gcc`. Also other xpack architectures like `npm install -g @xpack-dev-tools/riscv-none-elf-gcc`
 - You can use other gdb distributions as well (RISC-V, Xtensa, Zephyr, etc.). Just make sure you specify `armToolchainPath` or `gdbPath` or `toolchainPrefix` appropriately. Setting `gdbPath` removes any guesswork
 
-After installation, verify GDB is accessible and that you can run GDB from the commaind-line:
+After installation, verify GDB is accessible and that **you can run GDB from the commaind-line**:
 
 ```sh
 arm-none-eabi-gdb --version
@@ -42,26 +44,24 @@ The `gdbPath` or `toolchainPrefix` properties in `launch.json` let you specify t
 
 Choose the gdb-server that matches your debug probe:
 
-| Probe | Recommended Server |
-|-------|--------------------|
-| Most probes (ST-Link, CMSIS-DAP, JLink, etc.) | [OpenOCD](../gdb-servers/openocd.md) |
-| JLink probes | [JLink GDB Server](../gdb-servers/jlink.md) |
-| CMSIS-DAP probes | [pyOCD](../gdb-servers/pyocd.md) |
-| ST-Link probes | [STLink GDB Server](../gdb-servers/stlink.md) |
+| Probe                                         | Recommended Server                            |
+| --------------------------------------------- | --------------------------------------------- |
+| Most probes (ST-Link, CMSIS-DAP, JLink, etc.) | [OpenOCD](../gdb-servers/openocd.md)          |
+| JLink probes                                  | [JLink GDB Server](../gdb-servers/jlink.md)   |
+| CMSIS-DAP probes                              | [pyOCD](../gdb-servers/pyocd.md)              |
+| ST-Link probes                                | [STLink GDB Server](../gdb-servers/stlink.md) |
 
 See the [GDB Servers](../gdb-servers/index.md) section for installation instructions for each server.
 
 ### Node.js (for CLI features)
 
-The mcu-debug CLI tool requires Node.js >= 22. Download from [nodejs.org](https://nodejs.org) or install via a version manager:
+The mcu-debug CLI tool requires Node.js >= 22. Download from [nodejs.org](https://nodejs.org)
 
-```sh
-# Using nvm
-nvm install 22
-nvm use 22
+The VS Code extension itself does not require Node.js to be on your `PATH` — it uses the Node.js bundled with VS Code. Once node is installed you can install the CLI tools
+
+```bash
+npm install -g mcu-debug
 ```
-
-The VS Code extension itself does not require Node.js to be on your `PATH` — it uses the Node.js bundled with VS Code.
 
 ## Verification
 

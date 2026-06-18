@@ -1,5 +1,8 @@
 {
   "label": "Reference",
-  "position": 10,
-  "link": { "type": "doc", "id": "reference/index" }
+  "position": 11,
+  "link": {
+    "type": "doc",
+    "id": "reference/index"
+  }
 }
