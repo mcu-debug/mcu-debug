@@ -5,7 +5,7 @@ title: Installation
 
 # Installation
 
-We are currently in Alpha stage. Please refer to [Alpha Installation](../alpha-installation.mdx) for instructions.
+We are currently in Alpha stage. Please refer to [Alpha Installation](./alpha-installation.mdx) for instructions.
 
 ## VS Code Extension
 
