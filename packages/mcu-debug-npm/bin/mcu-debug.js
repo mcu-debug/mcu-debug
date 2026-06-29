@@ -5,6 +5,10 @@ const { readFileSync, existsSync } = require("fs");
 const { spawnSync } = require("child_process");
 const { homedir } = require("os");
 const { join } = require("path");
+const { checkAndNotify, scheduleCheck } = require("./update-check");
+
+checkAndNotify(); // sync: print notice if cache says update available
+scheduleCheck(); // async: refresh cache in background if stale
 
 // ---------------------------------------------------------------------------
 // Locate the VS Code extension via the config file it writes on every activation.

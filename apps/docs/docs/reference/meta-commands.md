@@ -43,7 +43,7 @@ This sends the appropriate monitor reset command for the configured gdb-server (
 
 ### !!NOTE
 
-Update the session notes file (`.mcu-debug/notes.json`) using a JSON Patch (RFC 6902).
+Update the session notes file (`.mcu-debug/notes.json`) using a JSON Patch (RFC 6902). `notes.json` is workspace-wide, keyed by config name — mcu-debug scopes the patch to the active config's section automatically.
 
 ```
 !!NOTE: [{"op":"replace","path":"/working_theory","value":"DMA IRQ not linked"}]

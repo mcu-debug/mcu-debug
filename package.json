@@ -20,7 +20,7 @@
     "test": "npm run test --workspaces --if-present"
   },
   "devDependencies": {
-    "esbuild": "^0.27.3",
+    "esbuild": "^0.28.0",
     "typescript": "6.0.3",
     "typescript-strict-plugin": "^2.4.4"
   },

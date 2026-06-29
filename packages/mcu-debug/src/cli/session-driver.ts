@@ -3,7 +3,9 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { ConfigurationArguments, getNonce, RTTCommonDecoderOpts, RTTConsoleDecoderOpts } from "../adapter/servers/common";
+import find from 'find-process';
+import { apply_patch } from "jsonpatch";
+import { ConfigurationArguments, getNonce, RTTConsoleDecoderOpts } from "../adapter/servers/common";
 import { CLISessionType, IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
 import { CustomTransport, logger } from "../common/cli-logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
@@ -15,7 +17,6 @@ import { CDebugSession } from "../common/mcu-debug-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
-import { BinaryRingBuffer } from "../common/ring-buffer";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -68,6 +69,7 @@ export class CliSessionDriver {
     public bkptSaveFile: string | null = null; // used for restart command to save/restore breakpoints across a full teardown
     private restarting = false; // track whether we're in the middle of a restart to suppress TerminatedEvent during teardown
     private serverConsole: net.Server | null = null;
+    private notesManager: NotesManager;
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
@@ -88,6 +90,7 @@ export class CliSessionDriver {
         this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
         config.pvtIsCli = true; // inform the DA that we are running in CLI mode
         config.pvtCliOptions = { ...cliArgs }; // pass along CLI options to the DA via the config
+        this.notesManager = new NotesManager(this.customTransport.timeCreated);
 
         this.setState("not-started");
     }
@@ -472,6 +475,10 @@ export class CliSessionDriver {
             // to the UI to clear/display something
             logger.info(trimmedInput, { isConsole: true, source: 'AI' });
             return true;
+        } else if (trimmedInput.startsWith('!!NOTE:')) {
+            // This is a command from the DA to the CLI to update the notes. The payload is in the format of !!NOTE:{"doc":[{...json-patch...}]}
+            const jsonStr = trimmedInput.substring(7);
+            this.handleNotes(jsonStr);
         } else if (isTerminal && trimmedInput.startsWith('!!')) {
             process.stdout?.write(`Sent to any connected AI: ${trimmedInput.substring(2)}\n`);
             logger.info(trimmedInput.substring(2), { skipConsole: true, source: 'USER-REQUEST' });
@@ -482,6 +489,22 @@ export class CliSessionDriver {
             return true;
         }
         return false;
+    }
+
+    private handleNotes(message: string) {
+        const configName = this.config.name;
+        try {
+            const payload = JSON.parse(message);
+            if (!Array.isArray(payload)) {
+                logger.error(`Invalid note payload, doc is not an array: ${message}`);
+                return;
+            }
+            this.notesManager.applyPatches(configName, payload);
+        } catch (err) {
+            logger.error(`Failed to apply notes patches for config ${configName}: ${err instanceof Error ? err.message : String(err)}`);
+            return;
+        }
+        // Notes are informational messages from AI to keep session notes in json-patch format (JSONPatch RFC 6902)
     }
 
     private async doReplCommand(command: string) {
@@ -900,7 +923,7 @@ export class CliSessionDriver {
         return sockPath;
     }
 
-    private checkSocketFree() {
+    private async checkSocketFree() {
         const socketJsonPath = this.createSocketJsonPath();
         if (fs.existsSync(socketJsonPath)) {
             try {
@@ -908,8 +931,10 @@ export class CliSessionDriver {
                 if (existing && existing.pid) {
                     // Check if the process is still running
                     try {
-                        process.kill(existing.pid, 0); // signal 0 doesn't actually kill, just checks if it exists
-                        logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running.Is another instance running ? `, { source: 'DA', isConsole: true, ...existing });
+                        const list = await find('pid', existing.pid);
+                        if (list.length > 0) {
+                            logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running. Is another instance running ? `, { source: 'DA', isConsole: true, ...existing });
+                        }
                     } catch (err) {
                         logger.warn(`Socket file ${socketJsonPath} already exists but process ${existing.pid} is not running.It will be overwritten.`, { source: 'DA', isConsole: true, ...existing });
                     }
@@ -923,8 +948,8 @@ export class CliSessionDriver {
     }
 
     // In session-driver.ts — to be implemented when Node socket is wired up
-    private startSocketReader(): Promise<void> {
-        this.checkSocketFree();
+    private async startSocketReader(): Promise<void> {
+        await this.checkSocketFree();
         const socketPath = this.createSocketPath();     // Will have backslashes and .sock suffix on Windows, normal .sock file on Unix
         let timeout: NodeJS.Timeout | null = null;
         this.socketPromise = new Promise((resolve, reject) => {
@@ -978,6 +1003,7 @@ export class CliSessionDriver {
         });
         return this.socketPromise;
     }
+
     private unknowMetaCommand(cmd: string) {
         logger.info(`Unhandled meta-command from clients: ${cmd}`, { source: 'DA', isConsole: true });
     }
@@ -1017,4 +1043,70 @@ export class CliSessionDriver {
         });
     }
 }
+class NotesManager {
+    private notesFile: string;
+    private notes: { [name: string]: any } = {};
+    private mtime: number = 0;
 
+    // We use the same timestamp for the entire session regardless when we actually create/update the various session files
+    constructor(private sessionTimestamp: string) {
+        this.notesFile = `${process.cwd()}/.mcu-debug/notes.json`;
+        this.loadNotes();
+    }
+
+    private loadNotes() {
+        if (fs.existsSync(this.notesFile)) {
+            try {
+                const content = fs.readFileSync(this.notesFile, 'utf-8');
+                const stuff = JSON.parse(content);
+                if (Array.isArray(stuff)) {
+                    logger.debug(`Loaded ${stuff.length} notes from ${this.notesFile}`);
+                    this.notes = stuff.reduce((acc: Record<string, any>, note: any) => {
+                        acc[note.name] = note;
+                        return acc;
+                    }, {});
+                    this.mtime = fs.statSync(this.notesFile).mtimeMs;
+                } else {
+                    this.notes = {};
+                }
+            } catch (err) {
+                logger.error(`Failed to load notes from ${this.notesFile}: ${err instanceof Error ? err.message : String(err)}`);
+                this.notes = {};
+            }
+        }
+    }
+
+    applyPatches(configName: string, patches: any[]) {
+        const mtime = fs.existsSync(this.notesFile) ? fs.statSync(this.notesFile).mtimeMs : 0;
+        if (mtime !== this.mtime) {
+            logger.warn(`Notes file ${this.notesFile} has been modified since it was last loaded. Reloading notes to avoid overwriting external changes.`);
+            this.loadNotes();
+        }
+        const existing = this.notes[configName] ?? {};
+        try {
+            this.notes[configName] = apply_patch(existing, patches);
+        } catch (err) {
+            logger.error(`Failed to apply notes patches for config ${configName}: ${err instanceof Error ? err.message : String(err)}`);
+            return;
+        }
+        this.saveNotes();
+    }
+
+    private saveNotes() {
+        try {
+            const jsonStr = JSON.stringify(Object.values(this.notes), null, 2);
+            const dir = path.dirname(this.notesFile);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(this.notesFile, jsonStr);
+            this.mtime = fs.statSync(this.notesFile).mtimeMs;
+            try {
+                const archiveDir = `${process.cwd()}/.mcu-debug/archive/${this.sessionTimestamp}-notes.json`;
+                fs.mkdirSync(path.dirname(archiveDir), { recursive: true });
+                fs.writeFileSync(archiveDir, jsonStr);
+                logger.debug(`Archived notes to ${archiveDir}`);
+            } catch (err) { }
+        } catch (err) {
+            logger.error(`Failed to save notes to ${this.notesFile}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+}

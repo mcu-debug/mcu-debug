@@ -32,7 +32,7 @@ npx mcu-debug-cli -c 0 -s .vscode/settings.json -l /tmp/mcu-debug.log
 
 At session start:
 
-1. Read .mcu-debug/notes.json — resume previous context if it exists
+1. Read `.mcu-debug/notes.json` — look up the section keyed by the current config name and resume prior context. If no section exists for this config, start fresh.
 2. The mux stream will announce: [mcu-debug] Session started. Notes: .mcu-debug/notes.json
 
 During session:

@@ -296,17 +296,17 @@ Promise resolver in `sendResponse()`.
 The live session. Rust TUI connects here; AI attachers connect here later.
 
 - [x] Create `~/.mcu-debug/socket.json` (and `/tmp/mcu-debug-<pid>.sock` for explicit addressing)
-- [ ] On each new attacher connection:
+- [x] On each new attacher connection:
   - [x] Send ring buffer snapshot (catch-up — same principle as serial ring buffer)
   - [x] Then stream live mux frames
-- [ ] Receive commands from any attacher, route to GDB input
-- [ ] Meta-command handling:
+- [x] Receive commands from any attacher, route to GDB input
+- [x] Meta-command handling:
   - [x] `!!SIGINT` → send SIGINT to target
   - [x] `!!RESET` → reset via gdb-server monitor command
   - [x] `!!AI-REQUEST: <text>` → post to AI-REQUEST region (TUI) or tag on mux stream
   - [x] `!!AI-REQUEST-CLEAR` → post to (TUI) to clear the AI-REQUEST area
-  - [ ] `!!NOTE: <json-patch>` → patch session-notes sidecar file
-- [ ] Attacher disconnect: clean, does not kill session
+  - [x] `!!NOTE: <json-patch>` → patch session-notes sidecar file
+- [x] Attacher disconnect: clean, does not kill session
 - [x] Session teardown: gdb-server killed, GDB exited, socket removed, Rust bootstrap exits
 
 ---

@@ -13,41 +13,50 @@ Session notes are a persistent JSON file that serves as the AI's working memory 
 
 ```
 .mcu-debug/
-  notes.json           ← current session notes (always up to date)
+  notes.json           ← workspace notes for all configs (always up to date)
   cli.log              ← full session log
   archive/
-    2026-05-24T16-33-notes.json   ← notes archived at session end
+    2026-05-24T16-33-notes.json   ← full workspace notes snapshotted at session start
     2026-05-24T16-33-cli.log      ← log archived at session end
 ```
 
-The archive is written from session start — both the current file and the archive file are written simultaneously on every update. A crash leaves both files intact and consistent.
+The archive file is created at session start and updated in parallel with `notes.json` on every `!!NOTE` write. The timestamp in the archive filename marks the session start time. A crash leaves both files intact and consistent.
 
 ## Structure
 
+`notes.json` is **workspace-wide** — it covers all launch configs, keyed by config name. Each config has its own independent notes section.
+
 ```json
 {
-  "config": "Launch PSoC6 CM4",
-  "working_theory": "DMA callback never fires — suspect IRQ not linked",
-  "ruled_out": [
-    "Clock configuration — HFCLK verified stable at 144 MHz",
-    "DMA channel allocation — channel 0 confirmed available"
-  ],
-  "breadcrumbs": [
-    "Hard fault at 0x0800_1A3C on third DMA transfer iteration",
-    "Fault address is inside the DMA callback function — stack overflow?"
-  ],
-  "open_questions": [
-    "Is the DMA IRQ handler present in the map file?",
-    "Stack size of the task calling DMA_Start?"
-  ]
+  "Launch PSoC6 CM4": {
+    "working_theory": "DMA callback never fires — suspect IRQ not linked",
+    "ruled_out": [
+      "Clock configuration — HFCLK verified stable at 144 MHz",
+      "DMA channel allocation — channel 0 confirmed available"
+    ],
+    "breadcrumbs": [
+      "Hard fault at 0x0800_1A3C on third DMA transfer iteration",
+      "Fault address is inside the DMA callback function — stack overflow?"
+    ],
+    "open_questions": [
+      "Is the DMA IRQ handler present in the map file?",
+      "Stack size of the task calling DMA_Start?"
+    ]
+  },
+  "Debug STM32 FreeRTOS": {
+    "working_theory": "...",
+    "ruled_out": [],
+    "breadcrumbs": [],
+    "open_questions": []
+  }
 }
 ```
 
-Fields are flexible — the AI can add any fields that are useful for the investigation.
+Fields within each config section are flexible — the AI can add any fields useful for the investigation. If no section exists yet for the current config, treat it as a blank slate.
 
 ## Writing Notes
 
-Use the `!!NOTE` meta-command with a JSON Patch (RFC 6902):
+Use the `!!NOTE` meta-command with a JSON Patch (RFC 6902). Patch paths are **relative to the active config's section** — mcu-debug scopes them automatically. Write `/working_theory`, not `/Launch PSoC6 CM4/working_theory`.
 
 ```
 !!NOTE: [{"op":"replace","path":"/working_theory","value":"DMA IRQ not in map file"}]
@@ -83,11 +92,14 @@ Read `.mcu-debug/notes.json` directly using file tools. No special command neede
 
 ## Across Sessions
 
-Notes persist between sessions. At the start of a new session on the same project, the AI should read notes.json to resume prior context:
+`notes.json` persists between sessions and covers all configs in the workspace. At session start, read `notes.json` and look up the section for the current config name:
 
 - Start from the current `working_theory` rather than a blank slate
 - Don't re-investigate things in `ruled_out`
 - Check `open_questions` — they may be answerable immediately
+- If no section exists for this config yet, start fresh
+
+Do not carry over `working_theory`, `breadcrumbs`, or `open_questions` from another config's section — investigations are independent per config.
 
 This makes multi-session investigations dramatically more efficient.
 

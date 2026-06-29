@@ -33,6 +33,7 @@ export class CustomTransport extends Transport {
     private callback: (info: winston.Logform.TransformableInfo) => void;
     private pathMap: { [path: string]: NodeJS.WritableStream } = {};
     public usingDefaultLogFile: string | undefined;
+    public readonly timeCreated = new Date().toISOString().replace(/[:.]/g, '-');   // e.g. 2024-06-01T12-34-56-789Z
     private binaryRingBuffer = new BinaryRingBuffer(1024 * 10); // 1MB buffer for binary data from the target (e.g. GDB, RTT, SWO)
     constructor(opts: Transport.TransportStreamOptions & { callback: (info: winston.Logform.TransformableInfo) => void }) {
         super(opts);
@@ -163,7 +164,7 @@ export function createInitialTransports(cliArgs: CliArgs, consoleLogLevel: strin
     };
     customTransport.replaceStream('', cliArgs.logFile);
 
-    const archiveLog = `${process.cwd()}/.mcu-debug/archive/${HrTimer.createDateTimestamp()}.log`;
+    const archiveLog = `${process.cwd()}/.mcu-debug/archive/${customTransport.timeCreated}.log`;
     customTransport.replaceStream('', archiveLog);
     return customTransport;
 }
