@@ -13,16 +13,27 @@ import { CLISerialPortView } from './cli-serial';
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
 // Return values match VS Code's remoteName strings so resolveProxyNetworkMode() works unchanged.
 // Detection order:
-//   1. WSL          — WSL_DISTRO_NAME env var (set by WSL, always present)
-//   2. Kubernetes   — KUBERNETES_SERVICE_HOST env var; host is explicit config → return undefined
-//   3. Docker       — /.dockerenv exists (primary)
-//                     /proc/1/cgroup contains "docker" or "containerd" (secondary)
-//   4. SSH server   — SSH_CLIENT env var (process was started via SSH)
-//   5. Local        — none of the above → return undefined
+//   1. WSL Container — WSL_DISTRO_NAME + container signals (/.dockerenv or cgroup)
+//                      "wsl-container" is the expected VS Code remoteName — confirm once shipped.
+//                      TODO: watch for a dedicated env var (e.g. WSL_CONTAINER_ID) that Microsoft
+//                      may inject; that would be more reliable than the combined heuristic below.
+//   2. WSL (classic) — WSL_DISTRO_NAME env var only (no container signals)
+//   3. Kubernetes    — KUBERNETES_SERVICE_HOST env var; host is explicit config → return undefined
+//   4. Docker        — /.dockerenv exists (primary)
+//                      /proc/1/cgroup contains "docker" or "containerd" (secondary)
+//   5. SSH server    — SSH_CLIENT env var (process was started via SSH)
+//   6. Local         — none of the above → return undefined
 function calculateRemoteName(): string | undefined {
-    // WSL: WSL_DISTRO_NAME is always injected by the WSL runtime
     if (process.platform === 'linux' && process.env.WSL_DISTRO_NAME !== undefined) {
-        return 'wsl';
+        // WSL Container: WSL runtime present AND we're inside an OCI container layer.
+        // Heuristic until Microsoft exposes a dedicated env var for this case.
+        const inContainer = fs.existsSync('/.dockerenv') || (() => {
+            try {
+                const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
+                return cgroup.includes('docker') || cgroup.includes('containerd');
+            } catch { return false; }
+        })();
+        return inContainer ? 'wsl-container' : 'wsl';
     }
 
     // Kubernetes: host address must come from explicit launch.json config; skip auto-detection
@@ -30,7 +41,7 @@ function calculateRemoteName(): string | undefined {
         return undefined;
     }
 
-    // Docker: /.dockerenv (primary) or /proc/1/cgroup containing "docker"/"containerd" (secondary)
+    // Docker / Apple Container (OCI): /.dockerenv (primary) or cgroup (secondary)
     if (process.platform === 'linux') {
         if (fs.existsSync('/.dockerenv')) {
             return 'dev-container';

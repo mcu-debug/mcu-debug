@@ -16,7 +16,14 @@ import * as child_process from "child_process";
 
 export type ProxyHostType = "auto" | "ssh" | "local";
 
-export type ProxyNetworkMode = "local" | "ssh" | "auto-local" | "auto-wsl" | "auto-dev-container" | "auto-ssh-remote" | `auto-${string}`;
+// Known remoteName values from VS Code's remote extension:
+//   "wsl"            — WSL 1/2 classic (shared-kernel or mirrored)
+//   "wsl-container"  — WSL Container (VM-isolated OCI container under WSL) — TENTATIVE, watch
+//                      https://github.com/microsoft/vscode-remote-release for the confirmed string
+//   "dev-container"  — Docker Dev Containers, Apple Container (OCI-compatible)
+//   "ssh-remote"     — SSH remote
+//   "codespaces"     — GitHub Codespaces (falls through to auto-${remoteName})
+export type ProxyNetworkMode = "local" | "ssh" | "auto-local" | "auto-wsl" | "auto-wsl-container" | "auto-dev-container" | "auto-ssh-remote" | `auto-${string}`;
 
 export interface ProxyLaunchPolicy {
     mode: ProxyNetworkMode;
@@ -58,6 +65,11 @@ export function resolveProxyNetworkMode(hostType: ProxyHostType = "auto", remote
     if (remoteName === "wsl") {
         return "auto-wsl";
     }
+    // WSL Container: VM-isolated OCI container launched under WSL.
+    // "wsl-container" is the expected VS Code remoteName — confirm once VS Code ships support.
+    if (remoteName === "wsl-container") {
+        return "auto-wsl-container";
+    }
     if (remoteName === "dev-container") {
         return "auto-dev-container";
     }
@@ -94,6 +106,21 @@ export function computeProxyLaunchPolicy(mode: ProxyNetworkMode): ProxyLaunchPol
             bindHost: "127.0.0.1",
             proxyHostForDA: "host.docker.internal",
             reason: "Container reaches host through host.docker.internal",
+        };
+    }
+
+    // WSL Container: OCI container running inside WSL's VM (not the Windows host directly).
+    // Networking is not yet documented. Two hops: container → WSL VM → Windows host.
+    // "host.docker.internal" may not be injected here (that's a Docker Desktop feature).
+    // VS Code port-forwarding tunnel is likely the reliable path; proxy binds loopback only.
+    // TODO: verify once WSL Container ships in VS Code stable — may need a custom gateway IP
+    //       similar to the WSL NAT path, or may need a wslinfo-style query for container mode.
+    if (mode === "auto-wsl-container") {
+        return {
+            mode,
+            bindHost: "127.0.0.1",
+            proxyHostForDA: "127.0.0.1",
+            reason: "WSL Container: relying on VS Code port-forwarding tunnel (networking TBD)",
         };
     }
 
