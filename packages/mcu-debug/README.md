@@ -35,6 +35,7 @@ MCU-Debug solves this with a lightweight **Probe Agent** (`mdbg`) running locall
 ### 2. Standalone CLI & Terminal UI (TUI)
 Step out of the IDE entirely. With the `mcu-debug` command-line interface:
 *   Launch debug sessions from your terminal with a rich `ratatui`-based TUI, using your existing `launch.json` configurations.
+*   **Use your existing `launch.json` to launch CLI tools**
 *   Attach to ongoing debug sessions from external scripts via a socket
 *   Run in **headless mode** to expose clean, tagged multiplexed streams to CI/CD pipelines or AI assistants.
 *   **Autonomous Debugging**: AI agents can use the CLI to debug MCU targets using familiar gdb commands and monitoring serial/RTT channels. With or without a human in the loop to deal with the physical world
