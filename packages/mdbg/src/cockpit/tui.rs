@@ -76,7 +76,7 @@ ______ ___________ _   _ _____
 | | | |  __|| ___ \ | | | | __ 
 | |/ /| |___| |_/ / |_| | |_\ \
 |___/ \____/\____/ \___/ \____/
-        
+
 "#;
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -839,8 +839,6 @@ fn event_loop(
     for line in BANNER.lines() {
         app.push_line(line.to_string());
     }
-    app.push_line("".to_string());
-    thread::sleep(std::time::Duration::from_millis(250));
 
     loop {
         // Drain all pending socket lines before rendering.
