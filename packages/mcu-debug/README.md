@@ -39,7 +39,7 @@ Step out of the IDE entirely. With the `mcu-debug` command-line interface:
 *   Run in **headless mode** to expose clean, tagged multiplexed streams to CI/CD pipelines or AI assistants.
 *   **Autonomous Debugging**: AI agents can use the CLI to debug MCU targets using familiar gdb commands and monitoring serial/RTT channels. With or without a human in the loop to deal with the physical world
 *   Use the CLI in a terminal or inside a VS Code panel
-*   Following is a TUI example (Terminal and VSCOde panels have similar views)
+*   Following is a TUI example = non TUI (Terminal UI) and VSCOde panels have similar views
 
 ![TUI example](https://raw.githubusercontent.com/mcu-debug/mcu-debug/main/apps/docs/static/img/tui-example.jpg)
 
