@@ -3,7 +3,7 @@ import { CliArgs } from "./cli-options";
 import { CLIConfigLoader } from './cli-config-loader';
 import { CliAdapter } from './cli-adapter';
 import { setHostAdapter } from '../common/host-adapter';
-import { CliSessionDriver } from './session-driver';
+import { CliSessionDriver } from './cli-driver';
 
 export function validateCliArgs(args: CliArgs): boolean {
     if (!args.config) {

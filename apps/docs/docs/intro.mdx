@@ -6,19 +6,22 @@ title: MCU-Debug Overview
 
 # MCU-Debug Extension Family
 
-Welcome to the **MCU-Debug** documentation. MCU-Debug is a modern, high-performance, and modular debugging ecosystem for microcontrollers and embedded targets in Visual Studio Code. 
+Welcome to the **MCU-Debug** documentation. MCU-Debug is a modern, high-performance, and modular debugging ecosystem for microcontrollers and embedded targets in Visual Studio Code.
 
 Instead of a single monolithic extension, the MCU-Debug ecosystem is built as a **cooperative family of extensions** powered by the standard Debug Adapter Protocol (DAP). This modular design allows visualizers (like SVD or RTOS monitors) to work with **any** DAP-compatible debugger (e.g. `cppdbg`, `cspy`, or `mcu-debug`).
 
 ---
 
 ## 1. MCU-Debug (The Core Debugger)
+
 The main driver of the ecosystem. It is a modern successor and drop-in replacement for the classic `cortex-debug` extension.
 
-*   **Zero-Friction Remote Debugging:** Develop inside WSL2, Dev Containers, or remote SSH servers while your debug probe remains connected locally.
-*   **Dual-Mode RTT:** Reads RTT blocks directly from target memory at up to 40 Hz, bypassing slow TCP servers.
-*   **Workspace-Scoped UARTs:** Keep serial ports open during target resets and IDE restarts, capturing early boot logs in a local ring buffer.
-*   **Standalone CLI & TUI:** Run debug sessions entirely outside of VS Code using a terminal-based dashboard (`mcu-debug`) for headless CI/CD or AI agent workflows.
+- **Zero-Friction Remote Debugging:** Develop inside WSL2, Dev Containers, or remote SSH servers while your debug probe remains connected locally.
+- **Dual-Mode RTT:** Reads RTT blocks directly from target memory at up to 40 Hz, bypassing slow TCP servers.
+- **Workspace-Scoped UARTs:** Keep serial ports open during target resets and IDE restarts, capturing early boot logs in a local ring buffer.
+- **Standalone CLI & TUI:** Run debug sessions entirely outside of VS Code using a terminal-based dashboard (`mcu-debug`) for headless CI/CD or AI agent workflows.
+
+![VSCode with MCU-Debug](/img/vscode-ui.jpg)
 
 👉 **[Get Started with MCU-Debug](./getting-started/index.md)**
 
@@ -29,18 +32,21 @@ The main driver of the ecosystem. It is a modern successor and drop-in replaceme
 These visualization tools are fully decoupled. They connect to the active debug session using standard DAP APIs, allowing them to work with MCU-Debug or any other debugger:
 
 ### 🧩 [Peripheral Viewer](https://marketplace.visualstudio.com/items?itemName=mcu-debug.peripheral-viewer)
-*   **Extension ID:** `mcu-debug.peripheral-viewer`
-*   **GitHub:** https://github.com/mcu-debug/peripheral-viewer
-*   **Description:** Inspect microcontroller peripheral registers using standard SVD (System View Description) files. Check register fields, monitor changes, and modify values directly during a debug session.
+
+- **Extension ID:** `mcu-debug.peripheral-viewer`
+- **GitHub:** https://github.com/mcu-debug/peripheral-viewer
+- **Description:** Inspect microcontroller peripheral registers using standard SVD (System View Description) files. Check register fields, monitor changes, and modify values directly during a debug session.
 
 ### 📊 [RTOS Views](https://marketplace.visualstudio.com/items?itemName=mcu-debug.rtos-views)
-*   **Extension ID:** `mcu-debug.rtos-views`
-*   **GitHub:** https://github.com/mcu-debug/rtos-views
-*   **Description:** A popular, community-supported monitor for tracking RTOS tasks, queues, semaphores, mutexes, and kernel states. Backed by a healthy set of contributors (including ARM).
+
+- **Extension ID:** `mcu-debug.rtos-views`
+- **GitHub:** https://github.com/mcu-debug/rtos-views
+- **Description:** A popular, community-supported monitor for tracking RTOS tasks, queues, semaphores, mutexes, and kernel states. Backed by a healthy set of contributors (including ARM).
 
 ### 💾 [MemoryView](https://marketplace.visualstudio.com/items?itemName=mcu-debug.memory-view)
-*   **Extension ID:** `mcu-debug.memory-view`
-*   **GitHub:** https://github.com/mcu-debug/memview
-*   **Description:** A high-performance memory inspector displaying target memory in interactive hex/ASCII formats with raw read/write capabilities.
+
+- **Extension ID:** `mcu-debug.memory-view`
+- **GitHub:** https://github.com/mcu-debug/memview
+- **Description:** A high-performance memory inspector displaying target memory in interactive hex/ASCII formats with raw read/write capabilities.
 
 If you are having issues with any of these extensions, please submit an issue with the appropriate GitHub repository

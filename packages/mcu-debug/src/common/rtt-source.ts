@@ -1,6 +1,6 @@
 import { RTTCommonDecoderOpts, RTTConsoleDecoderOpts } from "../adapter/servers/common";
 import { getHostAdapter, IDebugSession } from "./host-adapter";
-import { CDebugSession } from "./mcu-debug-session";
+import { CDebugSession } from "./cli-session";
 import { JLinkSocketRTTSource, SocketRTTSource } from "./swo/sources/socket";
 
 export function createRTTSource(mySession: CDebugSession, tcpPort: string, channel: number): Promise<SocketRTTSource> {

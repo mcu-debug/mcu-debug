@@ -50,10 +50,10 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     DefaultTerminal,
 };
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::time::Duration;
-use std::{cell::Cell, thread};
 
 use super::transport::{MuxReader, MuxWriter};
 use tui_textarea::{CursorMove, TextArea};

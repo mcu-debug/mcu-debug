@@ -7,7 +7,7 @@ import { IHostAdapter, ISWORTTView, IOutputChannel, ISerialPortView, IDebugSessi
 import { handleHostConfig } from "../common/proxy";
 import { GraphConfiguration } from "../common/swo/common";
 import { MCUDebugChannel } from "./dbgmsgs";
-import { CDebugSession, CDebugChainedSessionItem } from "../common/mcu-debug-session";
+import { CDebugSession, CDebugChainedSessionItem } from "../common/cli-session";
 import { GDBServerConsole } from "./server-console";
 import { SWOWebview } from "./swo-view";
 import { SerialPortView } from "./serial-view";

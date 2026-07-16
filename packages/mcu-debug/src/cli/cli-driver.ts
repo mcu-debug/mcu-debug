@@ -13,7 +13,7 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 import winston from "winston";
 import { SerialPortManager } from "../common/serial-manager";
 import { CLIRTTTerminal } from "./cli-rtt";
-import { CDebugSession } from "../common/mcu-debug-session";
+import { CDebugSession } from "../common/cli-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
@@ -86,7 +86,7 @@ export class CliSessionDriver {
         this.mcuStderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
         this.mcuStdoutLogger = logger.child({ source: 'DA', color: 'yellow', isConsole: true });
         this.gdbMiLogger = logger.child({ source: 'GDB-MI', isConsole: true, color: 'blue.dim' });
-        this.gdbServerLogger = logger.child({ source: 'GDB-SERVER', isConsole: true, color: 'cyan.dim' });
+        this.gdbServerLogger = logger.child({ source: 'GDB-SERVER', isConsole: true, color: 'cyan' });
         this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
         config.pvtIsCli = true; // inform the DA that we are running in CLI mode
         config.pvtCliOptions = { ...cliArgs }; // pass along CLI options to the DA via the config
@@ -818,51 +818,86 @@ export class CliSessionDriver {
         }
     }
 
+    private previousParialLine = ""
+    private previousParitalCategory = ""
+    private previousPartialTimer: NodeJS.Timeout | null = null;
     private routeOutput(category: string, output: string): void {
-        const text = output.trimEnd();
-        if (!text) {
-            return;
-        }
-
-        if (category === 'stdout' && /^\d+[-~&@^]/.test(output)) {
-            // GDB MI command sent by DA (gdbTraces mode) — log structured, never raw to terminal
-            this.gdbMiLogger.debug(`mi: tx[MI >] ${text} `);
-            return;
-        }
-
-        if (category === 'console' && output.startsWith('-> ')) {
-            // GDB MI response received — strip the '-> ' the DA added
-            const mi = text.slice(3);
-            this.gdbMiLogger.debug(`mi: rx[MI <] ${mi} `);
-            return;
-        }
-
-        if (category === 'stderr') {
-            // DA internal messages — strip the well-known prefixes
-            const prefix1 = 'mcu-debug stderr: ';
-            const prefix2 = 'mcu-debug: ';
-            if (output.startsWith(prefix1)) {
-                const logLine = output.slice(prefix1.length).trimEnd();
-                this.mcuStderrLogger.info(logLine);
-            } else if (output.startsWith(prefix2)) {
-                const logLine = output.slice(prefix2.length).trimEnd();
-                this.mcuStdoutLogger.info(logLine);
-            } else {
-                this.stderrLogger.info(text);
+        const doOutput = (category: string, output: string) => {
+            const text = output.trimEnd();
+            if (!text) {
+                return;
             }
-            return;
+
+            if (category === 'stdout' && /^\d+[-~&@^]/.test(output)) {
+                // GDB MI command sent by DA (gdbTraces mode) — log structured, never raw to terminal
+                this.gdbMiLogger.debug(`mi: tx[MI >] ${text} `);
+                return;
+            }
+
+            if (category === 'console' && output.startsWith('-> ')) {
+                // GDB MI response received — strip the '-> ' the DA added
+                const mi = text.slice(3);
+                this.gdbMiLogger.debug(`mi: rx[MI <] ${mi} `);
+                return;
+            }
+
+            if ((category === 'stderr') || (category === 'stdout')) {
+                // DA internal messages — strip the well-known prefixes
+                const prefix1 = 'mcu-debug stderr: ';
+                const prefix2 = 'mcu-debug: ';
+                if (output.startsWith(prefix1)) {
+                    const logLine = output.slice(prefix1.length).trimEnd();
+                    this.mcuStderrLogger.info(logLine);
+                } else if (output.startsWith(prefix2)) {
+                    const logLine = output.slice(prefix2.length).trimEnd();
+                    this.mcuStdoutLogger.info(logLine);
+                } else if (category === 'stderr') {
+                    this.stderrLogger.info(text);
+                } else {
+                    if (text.startsWith('\r') && !text.startsWith('\r[100')) {
+                        this.terminalWrite(text); // overwrite current line (e.g. progress updates) — no need to log
+                        return;
+                    }
+                    this.stdoutLogger.info(text);
+                }
+            } else {
+                // category === 'console' without '-> ': real GDB console output the user should see
+                this.gdbLogger.info(text);
+            }
         }
 
-        if (text.startsWith('\r') && !text.startsWith('\r[100')) {
-            this.terminalWrite(text); // overwrite current line (e.g. progress updates) — no need to log
-            return;
-        }
-        // category === 'console' without '-> ': real GDB console output the user should see
-        // category === 'stdout' without MI token: target stdout (rare on embedded but handle it)
-        if (category === 'console') {
-            this.gdbLogger.info(text);
+        const flushPartial = () => {
+            if (this.previousParialLine) {
+                doOutput(this.previousParitalCategory, this.previousParialLine);
+                this.previousParialLine = "";
+                this.previousParitalCategory = "";
+                if (this.previousPartialTimer) {
+                    clearTimeout(this.previousPartialTimer);
+                    this.previousPartialTimer = null;
+                }
+            }
+        };
+
+        const isPartial = !output.endsWith('\n');
+        if (isPartial && output) {
+            if (this.previousParialLine) {
+                if (category !== this.previousParitalCategory) {
+                    flushPartial();
+                }
+                output = this.previousParialLine + output;
+                if (this.previousPartialTimer) {
+                    clearTimeout(this.previousPartialTimer);
+                    this.previousPartialTimer = null;
+                }
+            }
+            this.previousParialLine = output;
+            this.previousParitalCategory = category;
+            output = output.slice(0, -1);
+            this.previousPartialTimer = setTimeout(() => {
+                flushPartial();
+            }, 100);
         } else {
-            this.stdoutLogger.info(text);
+            doOutput(category, output);
         }
     }
 

@@ -4,19 +4,25 @@
 
 For full installation guides, advanced configurations, and architecture details, visit the official documentation at **[mcu-debug.github.io/mcu-debug/](https://mcu-debug.github.io/mcu-debug/)**.
 
+![VSCode debug session](https://raw.githubusercontent.com/mcu-debug/mcu-debug/main/apps/docs/static/img/vscode-ui.jpg)
+
 ---
 
-## Why MCU-Debug?
+## MCU-Debug: Next generation Cortex-Debug
 
-If you are currently using `cortex-debug`, you're already ready to use MCU-Debug. It maintains full backward compatibility with all your existing `launch.json` configurations under the `"cortex-debug"` type, while introducing game-changing features for modern development.
+If you are currently using `cortex-debug`, you're already ready to use MCU-Debug. It maintains full backward compatibility with all your existing `launch.json` configurations under the `"cortex-debug"` type, while introducing game-changing features for modern development. Integration with AI agents and remote development was the special focus
 
 *   **Standard Embedded Debug Features:** All the common features you would expect for of an embedded C/C++ development environment. With support for Rust data structures as well.
+*   **Remote Development:** First class support for `remote development` with WSL2, Docker, and ssh. Suppoert for `Apple Container` coming
 *   **Zero-Friction Remote Debugging:** Develop inside WSL2, Dev Containers, or remote SSH servers while keeping your debug probe physically connected to your local machine.
-*   **Standalone CLI & TUI Mode:** Mux your debug console, serial port, and RTT logs into a single Rust-powered terminal dashboard (`mcu-debug debug`), or run headless for CI/CD and AI agent integrations.
+*   **Standalone CLI & TUI Mode:** Mux your debug console, serial port, and RTT logs into a single Rust-powered terminal dashboard (`mcu-debug debug`), or run headless for CI/CD and AI agent integrations. [See CLI Exampe](https://raw.githubusercontent.com/mcu-debug/mcu-debug/main/apps/docs/static/img/tui-example.jpg)
+*   **MCU-Debug in VSCode Panel CLI mode:**: [Launch CLI debug session inside VSCode](https://raw.githubusercontent.com/mcu-debug/mcu-debug/main/apps/docs/static/img/ai-cockpit.jpg)
 *   **Workspace-Scoped UARTs:** Keep serial ports open during board resets and IDE restarts, capturing early boot logs in a local ring buffer.
 *   **Dual-Mode RTT:** Bypasses sluggish server-level TCP polling with target memory direct reads at up to 40 Hz.
 *   **Real-time Telemetry:** Subscribe to named variables and get streaming updates pushed directly to the UI, enabling live telemetry without manual polling loops.
 *   **Beautiful UI:** A modern, VS Code integrated UI with RTT, SWO, and serial (UART) log visualization.
+*   **Performace:** Much faster startup times, thanks to Rust doing the heavy lifting
+*   **Rust Friendly:** Support for `defmt-print` RTT and understanding Rust data structures in the debugger
 
 ---
 
@@ -33,6 +39,8 @@ Step out of the IDE entirely. With the `mcu-debug` command-line interface:
 *   Run in **headless mode** to expose clean, tagged multiplexed streams to CI/CD pipelines or AI assistants.
 *   **Autonomous Debugging**: AI agents can use the CLI to debug MCU targets using familiar gdb commands and monitoring serial/RTT channels. With or without a human in the loop to deal with the physical world
 *   Use the CLI in a terminal or inside a VS Code panel
+
+![TUI example](https://raw.githubusercontent.com/mcu-debug/mcu-debug/main/apps/docs/static/img/tui-example.jpg)
 
 ### 3. Advanced RTT & SWO Support
 *   **Standard Mode:** Connects to standard TCP ports exposed by your GDB server.

@@ -27,7 +27,7 @@ import { UsbSWOSource } from "../common/swo/sources/usb";
 import { SymbolInformation, SymbolScope } from "../adapter/symbols";
 import { IOTerminal } from "./io-terminal";
 import { GDBServerConsole } from "./server-console";
-import { CDebugSession, CDebugChainedSessionItem } from "../common/mcu-debug-session";
+import { CDebugSession, CDebugChainedSessionItem } from "../common/cli-session";
 import { ServerConsoleLog } from "../adapter/server-console-log";
 import { logger } from '../common/cli-logger';
 import { VscodeOutputChannelTransport } from './vscode-transport';

@@ -25,21 +25,26 @@ TUI (Text User Interface) mode activates automatically when stdout is a TTY. It 
 │ > _                                                 │
 └─────────────────────────────────────────────────────┘
 ```
-
 The output area fills most of the screen. The input line is at the bottom.
+
+## Layout with AI agent connected
+
+Following is a real example of a debug session, with RTT and a serialport connected, and AI agent connected
+
+![TUI mode example with RTT and serial port and AI interaction](/img/tui-example.jpg)
 
 ## Key Bindings
 
-| Key | Action |
-|-----|--------|
-| Enter | Submit command |
-| Up / Down arrow | Navigate command history |
-| Page Up / Page Down | Scroll through output |
-| End | Jump to bottom and resume auto-follow |
-| Ctrl-C | Interrupt target (send SIGINT) |
-| Ctrl-D | Graceful exit |
-| Ctrl-X | Emergency exit (kills all child processes) |
-| F1 | Show / hide help overlay |
+| Key                 | Action                                     |
+| ------------------- | ------------------------------------------ |
+| Enter               | Submit command                             |
+| Up / Down arrow     | Navigate command history                   |
+| Page Up / Page Down | Scroll through output                      |
+| End                 | Jump to bottom and resume auto-follow      |
+| Ctrl-C              | Interrupt target (send SIGINT)             |
+| Ctrl-D              | Graceful exit                              |
+| Ctrl-X              | Emergency exit (kills all child processes) |
+| F1                  | Show / hide help overlay                   |
 
 ## Auto-Follow
 

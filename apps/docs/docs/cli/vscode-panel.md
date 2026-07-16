@@ -11,6 +11,8 @@ When the CLI session driver runs inside VS Code, output is displayed in the **AI
 
 The AI Cockpit panel uses [xterm.js](https://xtermjs.org/) for terminal rendering, giving it the same ANSI color and formatting support as a real terminal emulator.
 
+![MCU-Debug AI Cockpit](/img/ai-cockpit.jpg)
+
 ## Features
 
 - **Full xterm.js rendering**: ANSI color codes, cursor control, and Unicode all work correctly
@@ -45,11 +47,11 @@ The panel has a **USER-REQUEST** button that prefixes your message with the `USE
 
 ## Panel vs Terminal
 
-| | AI Cockpit Panel | VS Code Terminal |
-|-|-----------------|----------------|
-| Color support | Full xterm.js | Full |
-| Toolbar | Yes | No |
-| Status indicator | Yes | No |
-| Config selector | Yes | No |
-| Integrated with AI | Yes | Manual |
-| Scrollback | Unlimited | Unlimited |
+|                    | AI Cockpit Panel | VS Code Terminal |
+| ------------------ | ---------------- | ---------------- |
+| Color support      | Full xterm.js    | Full             |
+| Toolbar            | Yes              | No               |
+| Status indicator   | Yes              | No               |
+| Config selector    | Yes              | No               |
+| Integrated with AI | Yes              | Manual           |
+| Scrollback         | Unlimited        | Unlimited        |
