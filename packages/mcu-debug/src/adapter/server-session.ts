@@ -182,9 +182,10 @@ export class GDBServerSession extends EventEmitter {
                 timer = setInterval(() => {
                     if (this.resolved || this.clientRequestedStop) {
                         killTimers();
+                    } else {
+                        const elapsed = Math.round((Date.now() - now) / 1000);
+                        this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to start (${elapsed}s elapsed)...\n`);
                     }
-                    const elapsed = Math.round((Date.now() - now) / 1000);
-                    this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to start (${elapsed}s elapsed)...\n`);
                 }, 5000);
 
                 timeout = setTimeout(() => {

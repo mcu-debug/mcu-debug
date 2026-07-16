@@ -127,10 +127,12 @@ export class GDBDebugSession extends SeqDebugSession {
         this.sendErrorResponse(response, message ?? 1, msg);
     }
     public handleResponseMsg(response: DebugProtocol.Response, msg: string, message?: DebugProtocol.Message): void {
-        if (!msg.startsWith("mcu-debug")) {
-            msg = "mcu-debug: " + msg;
+        if (this.args.debugFlags.anyFlags) {
+            if (!msg.startsWith("mcu-debug")) {
+                msg = "mcu-debug: " + msg;
+            }
+            this.handleMsg(GdbEventNames.Stderr, msg + "\n");
         }
-        this.handleMsg(GdbEventNames.Stderr, msg + "\n");
         this.sendResponse(response);
     }
     public busyError(response: DebugProtocol.Response, args: any) {
@@ -464,8 +466,7 @@ export class GDBDebugSession extends SeqDebugSession {
     protected async stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments, request?: DebugProtocol.Request): Promise<void> {
         response.body = { stackFrames: [], totalFrames: 0 };
         if (this.isBusy()) {
-            this.handleMsg(GdbEventNames.Stderr, "mcu-debug: StackTrace request received while target is running. Returning empty stack trace.\n");
-            this.sendResponse(response);
+            this.handleResponseMsg(response, "mcu-debug: StackTrace request received while target is running. Returning empty stack trace.\n");
             return;
         }
         const addFrame = (frame: GdbMiFrameIF, threadId: number): void => {
@@ -1363,7 +1364,6 @@ export class GDBDebugSession extends SeqDebugSession {
             if (this.debugHelperPromise) {
                 try {
                     await this.debugHelperPromise;
-                    this.handleMsg(Stdout, "Debug helper initialized successfully.\n");
                 } catch (e) {
                     this.handleMsg(Stderr, `WARNING: Debug helper initialization failed. Please report this issue. Debugging may still work ${e}\n`);
                 }
@@ -1430,7 +1430,7 @@ export class GDBDebugSession extends SeqDebugSession {
         const gdbPath = this.getGdbPath();
         const gdbArgs = ["-q", "--interpreter=mi3", ...(this.args.debuggerArgs || [])];
         this.gdbInstance.debugFlags = this.args.debugFlags ?? this.gdbInstance.debugFlags ?? {};
-        this.handleMsg(GdbEventNames.Stderr, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
+        this.handleMsg(GdbEventNames.Stdout, `mcu-debug: Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}\n`);
         this.subscribeToGdbEvents();
         await this.gdbInstance.start(gdbPath, gdbArgs, this.args.cwd, this.getGdbStartCommands());
     }

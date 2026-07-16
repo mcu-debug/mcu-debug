@@ -325,12 +325,12 @@ export class DebugHelper {
                     this.rttSymbolResolve(); // Resolve RTT promise anyway to avoid hanging if RTT symbol is missing
                 }
                 const delta = Date.now() - this.startTime;
-                this.session.handleMsg(Stderr, `mcu-debug: Symbol table ready (version: ${event.version}, elapsed: ${delta}ms)`);
+                this.session.handleMsg(Stdout, `mcu-debug: Symbol table ready (version: ${event.version}, elapsed: ${delta}ms)`);
                 break;
             }
             case "DisassemblyReady": {
                 const delta = Date.now() - this.startTime;
-                this.session.handleMsg(Stderr, `mcu-debug: Disassembly ready (${event.instruction_count} instructions, elapsed: ${delta}ms)`);
+                this.session.handleMsg(Stdout, `mcu-debug: Disassembly ready (${event.instruction_count} instructions, elapsed: ${delta}ms)`);
                 break;
             }
 
@@ -338,7 +338,7 @@ export class DebugHelper {
                 this.rttSymbolAddress = event.address;
                 this.rttSymbolResolve();
                 const delta = Date.now() - this.startTime;
-                this.session.handleMsg(Stderr, `mcu-debug: RTT found at ${event.address}, elapsed: ${delta}ms`);
+                this.session.handleMsg(Stdout, `mcu-debug: RTT found at ${event.address}, elapsed: ${delta}ms`);
                 break;
             }
             case "Progress":

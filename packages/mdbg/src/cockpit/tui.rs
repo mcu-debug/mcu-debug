@@ -50,16 +50,34 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     DefaultTerminal,
 };
-use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::time::Duration;
+use std::{cell::Cell, thread};
 
 use super::transport::{MuxReader, MuxWriter};
 use tui_textarea::{CursorMove, TextArea};
 
 const MAX_LINES: usize = 2000;
 const POLL_TIMEOUT: Duration = Duration::from_millis(50);
+
+const BANNER: &str = r#"
+___  ________ _   _            
+|  \/  /  __ \ | | |           
+| .  . | /  \/ | | |           
+| |\/| | |   | | | |           
+| |  | | \__/\ |_| |           
+\_|  |_/\____/\___/            
+                               
+                               
+______ ___________ _   _ _____ 
+|  _  \  ___| ___ \ | | |  __ \
+| | | | |__ | |_/ / | | | |  \/
+| | | |  __|| ___ \ | | | | __ 
+| |/ /| |___| |_/ / |_| | |_\ \
+|___/ \____/\____/ \___/ \____/
+        
+"#;
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
@@ -817,6 +835,12 @@ fn event_loop(
     writer: &mut dyn MuxWriter,
 ) -> Result<VecDeque<String>> {
     let mut app = App::new();
+
+    for line in BANNER.lines() {
+        app.push_line(line.to_string());
+    }
+    app.push_line("".to_string());
+    thread::sleep(std::time::Duration::from_millis(250));
 
     loop {
         // Drain all pending socket lines before rendering.

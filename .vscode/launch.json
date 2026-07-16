@@ -115,16 +115,16 @@
       "request": "launch",
       "name": "Launch mdbg",
       "cargo": {
-        "cwd": "${workspaceFolder}/packages/mcu-debug",
+        "cwd": "${workspaceFolder}/packages/mdbg",
         "args": [
           "build",
-          "--bin=mcu-debug" // Replace 'yourprogram' with your actual binary name
+          "--bin=mdbg" // Replace 'yourprogram' with your actual binary name
         ]
       },
       "program": "${cargo:program}",
       // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/stm32f429-rtt.elf"],
       // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/proj_cm4.elf"],
-      "args": ["-h"],
+      "args": ["debug", "-h"],
       "cwd": "${workspaceFolder}/packages/mcu-debug",
       "sourceLanguages": ["rust"],
       "console": "internalConsole"
