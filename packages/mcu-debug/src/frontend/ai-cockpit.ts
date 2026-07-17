@@ -221,7 +221,7 @@ export class AICockpit extends ManagedTab {
             return;
         }
         // Remove the console server port from the config since the cockpit will connect to that directly and we don't want the debug adapter to also connect to it.
-        delete (config as any).gdbServerConsolePort;
+        delete (config as any).pvtGdbServerConsolePort;
 
         this.clear();
         const jsonFile = path.join(os.tmpdir(), `mcu-debug-ai-cockpit-${process.pid}.json`).replace(/\\/g, "/");

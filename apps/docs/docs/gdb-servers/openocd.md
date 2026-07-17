@@ -34,19 +34,17 @@ openocd --version
     "target/stm32f4x.cfg"
   ],
   "searchDir": [],
-  "gdbServerConsolePort": 55550
 }
 ```
 
 ### Key Properties
 
-| Property | Description |
-|----------|-------------|
+| Property      | Description                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `configFiles` | OpenOCD config files, in order. Relative paths are resolved against OpenOCD's scripts directory and `searchDir` entries. |
-| `searchDir` | Additional directories to search for config files. Add custom board config directories here. |
-| `gdbServerConsolePort` | TCL port for the OpenOCD console (default: 55550). Also used for the OpenOCD console tab in VS Code. |
-| `serverPath` | Path to `openocd` binary if not on `PATH`. |
-| `serverArgs` | Extra arguments to pass to OpenOCD. |
+| `searchDir`   | Additional directories to search for config files. Add custom board config directories here.                             |
+| `serverPath`  | Path to `openocd` binary if not on `PATH`.                                                                               |
+| `serverArgs`  | Extra arguments to pass to OpenOCD.                                                                                      |
 
 ## Config Files
 
@@ -82,7 +80,7 @@ OpenOCD cannot find a probe. Check:
 
 ### "Error: couldn't bind tcl to socket"
 
-The TCL port (default 55550) is already in use — another OpenOCD instance is running. Either kill the existing instance or change `gdbServerConsolePort` in `launch.json`.
+The TCL port (default 55550) is already in use — another OpenOCD instance is running. But, since we generate new random ports, this may be a bug in the extension.
 
 ### "Error: open failed" for config file
 

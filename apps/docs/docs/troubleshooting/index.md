@@ -84,7 +84,7 @@ OpenOCD found the probe but not the target MCU.
 The TCL port (default 55550) is already in use.
 
 - Kill the existing OpenOCD: `pkill openocd` / `taskkill /IM openocd.exe /F`
-- Or change the port in `launch.json`: `"gdbServerConsolePort": 55551`
+- If you think this is a bug, please report this issue
 
 ### OpenOCD: "Error: open failed" for config file
 

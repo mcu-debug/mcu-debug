@@ -100,9 +100,9 @@ export class GDBServerSession extends EventEmitter {
         return new Promise<void>(async (resolve, reject) => {
             // Connect to the frontend console
             this.serverResolve = resolve;
-            if (this.session.args.gdbServerConsolePort) {
+            if (this.session.args.pvtGdbServerConsolePort) {
                 try {
-                    await this.connectConsole(this.session.args.gdbServerConsolePort);
+                    await this.connectConsole(this.session.args.pvtGdbServerConsolePort);
                 } catch (e: any) {
                     this.session.handleMsg(GdbEventNames.Stderr, `Could not connect to debug console: ${e.message}\n`);
                     reject(e);

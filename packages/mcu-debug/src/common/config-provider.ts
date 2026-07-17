@@ -68,7 +68,7 @@ export class McuDebugConfigurationProviderBase {
             this.host.showError("Errors in environment variable substitution from env or envFile:\n" + errs.join("\n"));
             return undefined;
         }
-        config.gdbServerConsolePort = port;
+        config.pvtGdbServerConsolePort = port;
         config.pvtAvoidPorts = this.host.getUsedPorts();
 
         // Flatten the platform specific stuff as it is not done by VSCode at this point.

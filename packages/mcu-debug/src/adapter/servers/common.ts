@@ -338,7 +338,6 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     servertype: string;
     serverpath: string;
     gdbPath: string;
-    gdbServerConsolePort: number;
     gdbInterruptMode: GDBInterruptMode;
     objdumpPath: string;
     serverArgs: string[];
@@ -393,6 +392,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     pvtMyConfigFromParent: ChainedConfig; // My configuration coming from the parent
     pvtAvoidPorts: number[];
     pvtOpenOCDDebug: boolean;
+    pvtGdbServerConsolePort: number;
     env?: { [key: string]: string };
     envFile?: string;
 
