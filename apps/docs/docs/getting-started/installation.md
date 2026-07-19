@@ -55,13 +55,16 @@ See the [GDB Servers](../gdb-servers/index.md) section for installation instruct
 
 ### Node.js (for CLI features)
 
-The mcu-debug CLI tool requires Node.js >= 22. Download from [nodejs.org](https://nodejs.org)
+The mcu-debug CLI tool requires Node.js >= 22. Download from [nodejs.org](https://nodejs.org) and make sure it is in your system `PATH`.
 
-The VS Code extension itself does not require Node.js to be on your `PATH` — it uses the Node.js bundled with VS Code. Once node is installed you can install the CLI tools
+The VS Code extension itself does not require Node.js to be on your `PATH` (it uses the Node.js runtime bundled with VS Code). However, to run the debugger from an external terminal or shell, Node.js must be installed on your system.
 
-```bash
-npm install -g mcu-debug
-```
+Once Node.js is installed:
+
+1. Open VS Code.
+2. Open the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows/Linux).
+3. Search for and execute the **MCU-Debug: Install CLI Tools** command.
+4. Follow the interactive prompts in the integrated terminal to automatically update your shell profile or environment `PATH`.
 
 ## Verification
 

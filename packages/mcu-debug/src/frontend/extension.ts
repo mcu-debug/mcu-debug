@@ -35,7 +35,7 @@ import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
 import { getWSLNetworkingMode } from "@mcu-debug/shared";
 import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
 import { AICockpit } from "./ai-cockpit";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
 interface SVDInfo {
     expression: RegExp;
     path: string;
@@ -71,17 +71,32 @@ export class MCUDebugExtension {
         await this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
 
         try {
-            const fileName = path.join(os.homedir(), ".mcu-debug", "config.json");
-            const obj: any = {
-                extensionVersion: context.extension.packageJSON.version,
-                extensionId: context.extension.id,
-                extensionPath: context.extension.extensionPath.replace(/\\/g, "/"),
-            }
-            mkdirSync(path.dirname(fileName), { recursive: true });
-            writeFileSync(fileName, JSON.stringify(obj, null, 2) + "\n");
+            // Auto-write/update wrapper scripts
+            this.ensureWrapperScripts(context.extension.extensionPath);
+
+            // Check PATH and prompt if necessary (delayed by 20 seconds)
+            setTimeout(() => {
+                const promptDismissedKey = "mcu-debug.cliPromptDismissed";
+                if (!this.isBinDirInPath() && !context.globalState.get<boolean>(promptDismissedKey, false)) {
+                    vscode.window.showInformationMessage(
+                        "The mcu-debug CLI tools are ready. Would you like to add them to your PATH?",
+                        "Yes",
+                        "No",
+                        "Don't Ask Again"
+                    ).then(selection => {
+                        if (selection === "Yes") {
+                            vscode.commands.executeCommand("mcu-debug.installCli");
+                        } else if (selection === "No") {
+                            return;
+                        } else if (selection === "Don't Ask Again") {
+                            context.globalState.update(promptDismissedKey, true);
+                        }
+                    });
+                }
+            }, 20000);
         } catch (error) {
-            MCUDebugChannel.debugMessage("Failed to write config file needed by CLI tools: " + error);
-            vscode.window.showWarningMessage("Failed to write config file needed by CLI tools: " + error);
+            MCUDebugChannel.debugMessage("Failed to write wrapper files needed by CLI tools: " + error);
+            vscode.window.showWarningMessage("Failed to write wrapper files needed by CLI tools: " + error);
         }
 
         this.cockpitPanel = new CockpitPanel(context.extensionUri);
@@ -124,6 +139,16 @@ export class MCUDebugExtension {
 
             vscode.commands.registerCommand("mcu-debug.cockpit.startDebugSession", (arg: string | undefined) => {
                 AICockpit.getInstance(this.context)?.startDebugSession(arg);
+            }),
+
+            vscode.commands.registerCommand("mcu-debug.installCli", () => {
+                context.globalState.update("mcu-debug.cliPromptDismissed", true);
+                const installerScriptPath = path.join(context.extensionPath, "scripts", "install-cli.js");
+                const terminal = vscode.window.createTerminal({
+                    name: "mcu-debug CLI Installer",
+                });
+                terminal.sendText(`node "${installerScriptPath}"`);
+                terminal.show();
             }),
 
             vscode.workspace.onDidChangeConfiguration(this.settingsChanged.bind(this)),
@@ -827,6 +852,64 @@ export class MCUDebugExtension {
 
     private moveDownLiveWatchExpr(node: any) {
         this.liveWatchProvider.moveDownNode(node);
+    }
+
+    private ensureWrapperScripts(extensionPath: string) {
+        const binDir = path.join(os.homedir(), ".mcu-debug", "bin");
+        try {
+            mkdirSync(binDir, { recursive: true });
+
+            const normalizedExtPath = extensionPath.replace(/\\/g, "/");
+            const windowsExtPath = extensionPath.replace(/\//g, "\\");
+
+            // macOS & Linux wrapper
+            const bashWrapperPath = path.join(binDir, "mcu-debug");
+            const bashContent = `#!/usr/bin/env bash
+exec "${normalizedExtPath}/bin/mdbg" "\$@"
+`;
+
+            // Windows wrapper
+            const winWrapperPath = path.join(binDir, "mcu-debug.cmd");
+            const winContent = `@"${windowsExtPath}\\bin\\mdbg.exe" %*
+`;
+
+            this.writeIfDifferent(bashWrapperPath, bashContent, true);
+            this.writeIfDifferent(winWrapperPath, winContent, false);
+        } catch (error) {
+            MCUDebugChannel.debugMessage(`Failed to create wrapper scripts directory: ${error}`);
+        }
+    }
+
+    private writeIfDifferent(filePath: string, content: string, setExecutable: boolean) {
+        let shouldWrite = true;
+        if (existsSync(filePath)) {
+            try {
+                const existing = readFileSync(filePath, "utf8");
+                if (existing === content) {
+                    shouldWrite = false;
+                }
+            } catch { }
+        }
+        if (shouldWrite) {
+            try {
+                writeFileSync(filePath, content, { mode: setExecutable ? 0o755 : undefined });
+            } catch (error) {
+                MCUDebugChannel.debugMessage(`Failed to write wrapper script ${filePath}: ${error}`);
+            }
+        }
+    }
+
+    private isBinDirInPath(): boolean {
+        const binDir = path.resolve(os.homedir(), ".mcu-debug", "bin").toLowerCase();
+        const paths = (process.env.PATH || "").split(path.delimiter);
+        for (const p of paths) {
+            try {
+                if (path.resolve(p).toLowerCase() === binDir) {
+                    return true;
+                }
+            } catch { }
+        }
+        return false;
     }
 }
 

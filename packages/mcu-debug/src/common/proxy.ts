@@ -68,7 +68,7 @@ const SSH_TUNNEL_POLL_MS = 250;
 const SSH_RUN_TIMEOUT_MS = 15000;
 const SSH_DEPLOY_TIMEOUT_MS = 60000;
 const SSH_AGENT_LAUNCH_TIMEOUT_MS = 30000;
-const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mdbg";
+const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mdbg"; // The ~ will be expanded by the remote shell.
 
 // Runs a command on the remote host via SSH. Returns trimmed stdout on success,
 // rejects with a descriptive error on non-zero exit or timeout.

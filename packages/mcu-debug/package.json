@@ -459,6 +459,11 @@
         "command": "mcu-debug.liveWatch.addExpr",
         "title": "Add expression to Live Watch window",
         "icon": "$(plus)"
+      },
+      {
+        "category": "MCU-Debug",
+        "command": "mcu-debug.installCli",
+        "title": "Install CLI Tools"
       }
     ],
     "keybindings": [

@@ -7,6 +7,9 @@ title: SSH / Lab Server
 
 Debugging when the probe is physically connected to a remote server — for example, a shared lab server with embedded hardware, while you develop on a laptop.
 
+> [!IMPORTANT]
+> The remote SSH host must be running a Unix-based operating system (Linux or macOS). Windows is not supported as a remote SSH server for debugging due to shell command and architecture detection requirements.
+
 ## Configuration
 
 ```json
@@ -47,9 +50,9 @@ Key-based authentication is strongly recommended over password authentication fo
 When a session starts with SSH `hostConfig`, mcu-debug:
 
 1. Opens an SSH connection to the host
-2. Checks whether the `mcu-debug proxy` binary is present (and up to date)
+2. Checks whether the `mdbg` binary is present (and up to date)
 3. If not present or outdated: copies the binary to the host automatically
-4. Starts `mcu-debug proxy` on the host
+4. Starts `mdbg` on the host
 5. Establishes an SSH port-forward tunnel for the proxy connection
 6. Connects the local debug adapter through the tunnel
 
@@ -57,14 +60,9 @@ All of this happens automatically before GDB starts.
 
 ## Proxy Binary Deployment
 
-mcu-debug deploys the proxy binary to `~/.mcu-debug/bin/mcu-debug-proxy` on the remote host. The binary is statically linked and requires no dependencies.
+mcu-debug deploys the proxy binary to `~/.mcu-debug/bin/mdbg` on the remote host. The binary is statically linked and requires no dependencies.
 
-You can also install the proxy manually on the host if automatic deployment is not desired:
-
-```sh
-# On the remote host
-npm install -g mcu-debug
-```
+You can also install the binary manually on the host by downloading the pre-compiled `mdbg` binary for your platform from the [GitHub Releases](https://github.com/mcu-debug/mcu-debug/releases) page and placing it in `~/.mcu-debug/bin/`.
 
 ## Multi-User Lab Servers
 
@@ -87,11 +85,7 @@ SSH tunneling adds latency to every GDB RSP packet. For typical embedded debuggi
 Check whether the proxy binary deployed correctly:
 
 ```sh
-ssh lab-server ~/.mcu-debug/bin/mcu-debug-proxy --version
+ssh lab-server ~/.mcu-debug/bin/mdbg --version
 ```
 
-If the binary is missing or fails, deploy manually:
-
-```sh
-ssh lab-server npm install -g mcu-debug
-```
+If the binary is missing or fails, copy the binary to the host manually or download it from the GitHub Releases page.

@@ -25,19 +25,14 @@ The CLI automatically selects a mode based on the environment:
 
 ## Installation
 
-No install required for one-off use:
+The CLI tools are bundled directly with the VS Code extension. To install the wrapper script and make the `mcu-debug` command available globally in your PATH:
 
-```sh
-npx mcu-debug debug -c "My Config"
-```
+1. Open VS Code.
+2. Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`).
+3. Execute the **MCU-Debug: Install CLI Tools** command.
+4. Follow the interactive prompts in the terminal to automatically append `~/.mcu-debug/bin` to your shell profile or environment `PATH`.
 
-For regular use, install globally:
-
-```sh
-npm install -g mcu-debug
-```
-
-**Requirements**: Node.js >= 22. The mcu-debug VS Code extension installed provides the debug adapter binary that the CLI invokes.
+**Requirements**: Node.js >= 22 installed on your system. The VS Code extension itself must be installed and active (the CLI delegates all debug adapter operations to the binaries bundled within the extension folder).
 
 ## Starting a Session
 

@@ -17,15 +17,16 @@ This is the main debugger and in made for IDEs like VSCode and others. Download 
 
 This extension is a companion extention needed by the main extension for those who wish to use the main extension mcu-debug in WSL/Docker/ssh environments. This extension is only needed on the **host machine where your probe is physically attached to**.
 
-## mcu-debug cli tool
+## mcu-debug CLI tool
 
-This is needed for those who want to use the debugger in CLI mode and/or with AI. It is available as an npm module. You can install this globally as. The pre-requisite for installation is [NodeJS v22+](https://nodejs.org)
+This is needed for those who want to use the debugger in CLI mode and/or with AI. The prerequisite is [NodeJS v22+](https://nodejs.org) installed and in your system PATH.
 
-```bash
-npm install -g mcu-debug
-```
+Once Node.js is installed, you can set up the CLI tools directly within VS Code:
 
-You can also run the tool without installing using `npx`. You can do `npx mcu-debug ...`
+1. Open VS Code.
+2. Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`).
+3. Run the **MCU-Debug: Install CLI Tools** command.
+4. Follow the prompt in the terminal to configure your shell profile PATH.
 
 
 ## Manual Installation via VSIX file
