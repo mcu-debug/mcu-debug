@@ -60,7 +60,7 @@ All of this happens automatically before GDB starts.
 
 ## Proxy Binary Deployment
 
-mcu-debug deploys the proxy binary to `~/.mcu-debug/bin/mdbg` on the remote host. The binary is statically linked and requires no dependencies.
+mcu-debug deploys the proxy binary to `~/.mcu-debug/bin/mdbg` on the remote host. The binary is statically linked (on Linux) or has zero external library dependencies (on macOS), requiring no pre-installed dependencies.
 
 You can also install the binary manually on the host by downloading the pre-compiled `mdbg` binary for your platform from the [GitHub Releases](https://github.com/mcu-debug/mcu-debug/releases) page and placing it in `~/.mcu-debug/bin/`.
 
