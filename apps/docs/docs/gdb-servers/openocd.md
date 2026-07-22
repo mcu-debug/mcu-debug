@@ -9,10 +9,14 @@ OpenOCD (Open On-Chip Debugger) is the most widely used open source gdb-server. 
 
 ## Installation
 
+- Your first choice should always be to use the vendor provided openocd. Using anything else is fraught with issues
+  - Install the software package from your vendor (ST, Infineon, etc.) that contains Openocd
+  - Find the openocd executable in their installation directory and use that for `serverpath`. If you install their Eclipse sofware, look at their debug condigurations and you can find the exact path and options they are using. Try to copy those.
+  - This also apples to setting openocd search paths for additional configuration files.
 - **macOS**: `brew install open-ocd`
 - **Ubuntu/Debian**: `sudo apt install openocd`
 - **Windows**: download from [openocd.org](https://openocd.org/pages/getting-openocd.html) or install via [xPack OpenOCD](https://xpack.github.io/dev-tools/openocd/)
-- **From source**: see the [OpenOCD documentation](https://openocd.org/doc/html/index.html)
+- **From source**: Only for the brave: See the [OpenOCD documentation](https://openocd.org/doc/html/index.html)
 
 Verify installation:
 
@@ -29,6 +33,8 @@ openocd --version
   "name": "Debug (OpenOCD)",
   "servertype": "openocd",
   "executable": "${workspaceFolder}/build/firmware.elf",
+  "serverpath": "path to openocd executable if not already in $PATH",
+  "stm32cubeprogrammer": "path to st programmer",     // Only for ST devices
   "configFiles": [
     "interface/stlink.cfg",
     "target/stm32f4x.cfg"
@@ -45,6 +51,9 @@ openocd --version
 | `searchDir`   | Additional directories to search for config files. Add custom board config directories here.                             |
 | `serverPath`  | Path to `openocd` binary if not on `PATH`.                                                                               |
 | `serverArgs`  | Extra arguments to pass to OpenOCD.                                                                                      |
+
+
+For ST devices, mcu-debug does a best effort search for your existing installation but this keeps changing so, creating having specific paths either in launch.json or your VSCode settings is highly recommended                                                                                    |
 
 ## Config Files
 

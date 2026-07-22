@@ -186,3 +186,4 @@ packages/mcu-debug-npm/mcu-debug*.tgz
 
 # Claude Code local permission overrides (personal, not for version control)
 .claude/settings.local.json
+dummy-notes.md
