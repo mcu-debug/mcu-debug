@@ -36,7 +36,7 @@ OPENOCD_PATH=/usr/local/bin/openocd
 {
   "envFile": "${workspaceFolder}/.env",
   "gdbPath": "${env:GDB_PATH}",
-  "serverPath": "${env:OPENOCD_PATH}"
+  "serverpath": "${env:OPENOCD_PATH}"
 }
 ```
 

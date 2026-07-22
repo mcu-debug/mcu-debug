@@ -46,7 +46,7 @@ OPENOCD=/usr/bin/openocd
 {
   "envFile": "${workspaceFolder}/.env",
   "gdbPath": "${env:GDB}",
-  "serverPath": "${env:OPENOCD}"
+  "serverpath": "${env:OPENOCD}"
 }
 ```
 
@@ -68,7 +68,7 @@ Then reference these in `launch.json`:
 ```json
 {
   "gdbPath": "${config:mcu-debug.armToolchainPath}/arm-none-eabi-gdb",
-  "serverPath": "${config:mcu-debug.openocdPath}/openocd"
+  "serverpath": "${config:mcu-debug.openocdPath}/openocd"
 }
 ```
 

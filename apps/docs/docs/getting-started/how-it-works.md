@@ -92,7 +92,7 @@ Each `launch.json` property configures a specific part of the chain:
 | ----------------- | ------------------------------------------------------------------------ |
 | `servertype`      | Which gdb-server process to start                                        |
 | `configFiles`     | Configuration passed to the gdb-server (e.g. OpenOCD board/target files) |
-| `serverPath`      | Path to the gdb-server binary                                            |
+| `serverpath`      | Path to the gdb-server binary                                            |
 | `executable`      | The ELF file passed to GDB as the debug target                           |
 | `gdbPath`         | Path to the GDB binary                                                   |
 | `toolchainPrefix` | Prefix for `<prefix>-gdb` — `arm-none-eabi` → `arm-none-eabi-gdb`        |

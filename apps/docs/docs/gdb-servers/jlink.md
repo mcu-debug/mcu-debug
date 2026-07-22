@@ -29,7 +29,7 @@ JLinkGDBServerCL.exe --version  # Windows
   "executable": "${workspaceFolder}/build/firmware.elf",
   "device": "STM32F407VG",
   "interface": "swd",
-  "serverPath": "/opt/SEGGER/JLink/JLinkGDBServerCLExe"
+  "serverpath": "/opt/SEGGER/JLink/JLinkGDBServerCLExe"
 }
 ```
 
@@ -39,7 +39,7 @@ JLinkGDBServerCL.exe --version  # Windows
 |----------|-------------|
 | `device` | The JLink device name (e.g. `STM32F407VG`, `nRF52840_xxAA`). Exact name must match SEGGER's device database. |
 | `interface` | Debug interface: `"swd"` (default) or `"jtag"` |
-| `serverPath` | Path to `JLinkGDBServerCLExe` if not on `PATH` |
+| `serverpath` | Path to `JLinkGDBServerCLExe` if not on `PATH` |
 | `serverArgs` | Extra arguments to the JLink GDB Server |
 
 ## Finding the Device Name

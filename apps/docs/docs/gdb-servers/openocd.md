@@ -34,7 +34,6 @@ openocd --version
   "servertype": "openocd",
   "executable": "${workspaceFolder}/build/firmware.elf",
   "serverpath": "path to openocd executable if not already in $PATH",
-  "stm32cubeprogrammer": "path to st programmer",     // Only for ST devices
   "configFiles": [
     "interface/stlink.cfg",
     "target/stm32f4x.cfg"
@@ -49,11 +48,8 @@ openocd --version
 | ------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `configFiles` | OpenOCD config files, in order. Relative paths are resolved against OpenOCD's scripts directory and `searchDir` entries. |
 | `searchDir`   | Additional directories to search for config files. Add custom board config directories here.                             |
-| `serverPath`  | Path to `openocd` binary if not on `PATH`.                                                                               |
-| `serverArgs`  | Extra arguments to pass to OpenOCD.                                                                                      |
-
-
-For ST devices, mcu-debug does a best effort search for your existing installation but this keeps changing so, creating having specific paths either in launch.json or your VSCode settings is highly recommended                                                                                    |
+| `serverpath`  | Path to `openocd` binary if not on `PATH`.                                                                               |
+| `serverArgs`  | Extra arguments to pass to OpenOCD.                                                                                      |                                                                                |
 
 ## Config Files
 

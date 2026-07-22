@@ -208,7 +208,7 @@ Runs first thing in the Node process before any session logic.
   - [x] Collect ALL unresolved — report together, exit non-zero, never partial
 
 - [x] **Properties requiring resolution** (complete this list as you go):
-  - [x] `serverPath`, `armToolchainPath` / `gdbPath`
+  - [x] `serverpath`, `armToolchainPath` / `gdbPath`
   - [x] STLink: `cubeProgrammerPath`
   - [x] `serverArgs`, `debuggerArgs`
   - [x] `type`: `launch` vs `attach`

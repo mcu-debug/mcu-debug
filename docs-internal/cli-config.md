@@ -22,7 +22,7 @@ Related: [cli-architecture.md](cli-architecture.md) (binary rename, no-DAP model
 
 The `${config:...}` form was historically the gap — toolchain paths set in VS Code settings and referenced from `launch.json`. In practice this gap is largely closed by two things:
 
-1. **Direct `launch.json` properties.** The extension converts all relevant VS Code settings to first-class `launch.json` properties and accepts both forms. Users who put `armToolchainPath` or `serverPath` directly in `launch.json` need no bridge at all — and this is the recommended approach for portable, VCS-friendly configs.
+1. **Direct `launch.json` properties.** The extension converts all relevant VS Code settings to first-class `launch.json` properties and accepts both forms. Users who put `armToolchainPath` or `serverpath` directly in `launch.json` need no bridge at all — and this is the recommended approach for portable, VCS-friendly configs.
 
 2. **`envFile`** (see below). Variables loaded from a file feed `${env:VAR}` substitution. Build systems and CMake can emit a fully-resolved env file rather than editing `launch.json`. Covers the "I want one file for my toolchain paths" use case without `${config:...}`.
 

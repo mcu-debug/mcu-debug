@@ -26,7 +26,7 @@ VS Code IntelliSense provides inline documentation and autocompletion when editi
 
 | Property      | Description                                                     |
 | ------------- | --------------------------------------------------------------- |
-| `serverPath`  | Path to the gdb-server binary; defaults to finding it on `PATH` |
+| `serverpath`  | Path to the gdb-server binary; defaults to finding it on `PATH` |
 | `serverArgs`  | Extra command-line arguments to pass to the gdb-server          |
 | `searchDir`   | Additional directories to search for OpenOCD config files       |
 | `configFiles` | OpenOCD config files (interface and target)                     |

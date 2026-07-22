@@ -59,7 +59,7 @@ pyocd list --targets
 |----------|-------------|
 | `targetId` | pyOCD target identifier (e.g. `stm32f407vg`, `nrf52840`). Run `pyocd list --targets` for valid values. |
 | `boardId` | Specific board to use when multiple are connected (the DAPLink board ID) |
-| `serverPath` | Path to the `pyocd` binary if not on `PATH` |
+| `serverpath` | Path to the `pyocd` binary if not on `PATH` |
 | `serverArgs` | Extra command-line arguments to pyOCD |
 
 ## Connecting to a Specific Probe

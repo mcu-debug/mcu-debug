@@ -11,6 +11,7 @@ The STLink GDB Server is ST Microelectronics' dedicated gdb-server for ST-Link p
 
 Install one of:
 
+- **STM32CubeCLT** (includes the GDB server): [st.com](https://www.st.com/en/development-tools/stm32cubeclt.html)
 - **STM32CubeIDE** (includes the GDB server): [st.com](https://www.st.com/en/development-tools/stm32cubeide.html)
 - **ST-LINK Utility** (standalone): [st.com](https://www.st.com/en/development-tools/stsw-link004.html)
 - **STM32CubeProgrammer** (also includes GDB server): [st.com](https://www.st.com/en/development-tools/stm32cubeprog.html)
@@ -26,7 +27,8 @@ The GDB server binary is typically `ST-LINK_gdbserver` or `ST-LINK_gdbserver.exe
   "name": "Debug (STLink)",
   "servertype": "stlink",
   "executable": "${workspaceFolder}/build/firmware.elf",
-  "serverPath": "/opt/st/stm32cubeide_1.14.0/plugins/com.st.stm32cube.ide.mcu.externaltools.stlink-gdb-server.linux64_2.1.200.202304270827/tools/bin/ST-LINK_gdbserver"
+  "serverpath": "path to ST-LINK_gdbserver",
+  "stm32cubeprogrammer": "path to stm32cubeprogrammer",     // Only for ST devices
 }
 ```
 
@@ -34,8 +36,10 @@ The GDB server binary is typically `ST-LINK_gdbserver` or `ST-LINK_gdbserver.exe
 
 | Property | Description |
 |----------|-------------|
-| `serverPath` | Full path to the `ST-LINK_gdbserver` binary. The path varies by installation and platform. |
+| `serverpath` | Full path to the `ST-LINK_gdbserver` binary. The path varies by installation and platform. |
 | `serverArgs` | Extra arguments to the STLink GDB server |
+
+For ST devices, mcu-debug does a best effort search for your existing installation but this keeps changing so, creating having specific paths either in launch.json or your VSCode settings is highly recommended    
 
 ## Limitations
 
@@ -51,7 +55,7 @@ For most STM32 development, OpenOCD with `interface/stlink.cfg` is equally capab
 
 ### Binary not found
 
-The `serverPath` must point to the exact binary location. The path is deep inside the STM32CubeIDE installation directory and changes between versions. Use the `find` command or file manager to locate it:
+The `serverpath` must point to the exact binary location. The path is deep inside the STM32CubeIDE installation directory and changes between versions. Use the `find` command or file manager to locate it:
 
 ```sh
 find /opt/st -name "ST-LINK_gdbserver" 2>/dev/null
