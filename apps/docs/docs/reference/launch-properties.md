@@ -99,6 +99,7 @@ This document provides a complete, flattened list of all properties supported in
 | <code>preAttachCommands</code> | `array` | attach | Additional GDB Commands to be executed at the start of the main attach sequence (immediately after attaching to target). |
 | <code>preLaunchCommands</code> | `array` | launch | Additional GDB Commands to be executed at the start of the main launch sequence (immediately after attaching to target). |
 | <code>preResetCommands</code> | `array` | both | Commands to be executed prior to a Reset operation, before the reset is sent to the target. |
+| <code>routeGdbServerOutputToDebugConsole</code> | `boolean` | both | **Default:** `false`<br/>Route GDB server output to debug console |
 | <code>rtos</code> | `string` | both | RTOS being used. For JLink this can be Azure, ChibiOS, embOS, FreeRTOS, NuttX, Zephyr or the path to a custom JLink RTOS Plugin library. For OpenOCD this can be auto (recommended), FreeRTOS, ThreadX, chibios, Chromium-EC, eCos, embKernel, linux, mqx, nuttx, RIOT, uCOS-III, or Zephyr. |
 | <code>rttConfig<br/>&nbsp;&nbsp;address</code> | `string` | both | **Default:** `auto`<br/>Address to start searching for the RTT control block. |
 | <code>rttConfig<br/>&nbsp;&nbsp;clearSearch</code> | `boolean` | both | **Default:** `true`<br/>When true, clears the search-string. |

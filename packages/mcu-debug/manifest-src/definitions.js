@@ -366,6 +366,7 @@ module.exports = {
             ],
         },
     },
+    routeGdbServerOutputToDebugConsole: { type: "boolean", default: false, description: "Route GDB server output to debug console" },
     debugFlags: {
         description: "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",
         type: "object",

@@ -192,7 +192,11 @@ export class GDBServerSession extends EventEmitter {
                     timeout = null;
                     killTimers();
                     if (this.process) {
+                        if (this.session.args.debugFlags.anyFlags) {
+                            this.session.handleMsg(Stderr, "Stopping gdb-server process...\n");
+                        }
                         this.process.kill();
+                        this.process = null;
                     }
                     if (!this.resolved) {
                         this.resolved = true;
@@ -223,6 +227,9 @@ export class GDBServerSession extends EventEmitter {
 
             const serverExited = (code: number | null, signal: NodeJS.Signals | null) => {
                 killTimers();
+                if (this.session.args.debugFlags.anyFlags) {
+                    this.session.handleMsg(Stderr, `Gdb-server process exited...${code !== null ? ` with code ${code}` : ""}${signal !== null ? ` with signal ${signal}` : ""}\n`);
+                }
                 if (!this.resolved) {
                     this.resolved = true;
                     reject(new Error(`Server exited with code ${code}`));
@@ -242,7 +249,7 @@ export class GDBServerSession extends EventEmitter {
     private stdErrRemaining = "";
     private handleStderr(data: Buffer, doConsole: boolean) {
         if (doConsole) {
-            this.writeToConsole(data);
+            this.writeToConsole(data, true);
         }
         this.stdErrRemaining = this.doMatch(data, this.stdErrRemaining);
     }
@@ -250,7 +257,7 @@ export class GDBServerSession extends EventEmitter {
     private stdoutRemaining = "";
     private handleStdout(data: Buffer, doConsole: boolean) {
         if (doConsole) {
-            this.writeToConsole(data);
+            this.writeToConsole(data, false);
         }
         this.stdoutRemaining = this.doMatch(data, this.stdoutRemaining);
     }
@@ -275,7 +282,10 @@ export class GDBServerSession extends EventEmitter {
         return remaining;
     }
 
-    public writeToConsole(data: Buffer) {
+    public writeToConsole(data: Buffer, isStdErr = false) {
+        if (this.session.args.routeGdbServerOutputToDebugConsole) {
+            this.session.handleMsg(isStdErr ? GdbEventNames.Stderr : GdbEventNames.Stdout, data.toString());
+        }
         if (this.consoleSocket && !this.consoleSocket.destroyed) {
             this.consoleSocket.write(data);
         }
@@ -285,9 +295,10 @@ export class GDBServerSession extends EventEmitter {
         this.clientRequestedStop = true;
         if (this.process) {
             // Check if process is still running before killing
-            if (this.process.exitCode === null && this.process.signalCode === null) {
-                this.process.kill();
+            if (this.session.args.debugFlags.anyFlags) {
+                this.session.handleMsg(Stderr, "Stopping gdb-server process...\n");
             }
+            this.process.kill();
             this.process = null;
         } else if (this.proxyClient) {
             try {

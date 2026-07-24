@@ -75,7 +75,7 @@ export class ProbeRsServerController extends EventEmitter implements GDBServerCo
         const gdbport = this.ports["gdbPort"].remotePort;
         const telnetport = this.ports["consolePort"].remotePort;
 
-        let serverargs = ["gdb", " --non-interactive", `--gdb-connection-string=127.0.0.1:${gdbport}`];
+        let serverargs = ["gdb", "--non-interactive", `--gdb-connection-string=127.0.0.1:${gdbport}`];
 
         if (this.args.interface) {
             serverargs.push("--protocol");
@@ -102,9 +102,10 @@ export class ProbeRsServerController extends EventEmitter implements GDBServerCo
         return /Firing up GDB/;
     }
 
-    public serverLaunchStarted(): void {}
-    public serverLaunchCompleted(): void {}
+    public serverLaunchStarted(): void { }
+    public serverLaunchCompleted(): void { }
 
-    public debuggerLaunchStarted(): void {}
-    public debuggerLaunchCompleted(): void {}
+    public debuggerLaunchStarted(): void { }
+    public debuggerLaunchCompleted(): void { }
 }
+

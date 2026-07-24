@@ -36,7 +36,7 @@ export function createTerminalUniqueName<T>(want: string, ctor: (name: string) =
         let found = false;
         for (const term of termalsMap.values()) {
             const isActive = term?.state.kind === "active";
-            if (term.label.startsWith(want)) {
+            if (term.label.startsWith(ret)) {
                 // Semi exact match, only reuse if inactive and exact label match. This allows multiple "SWO:foo" terminals to coexist
                 // without clashing, but still reuses the terminal if we are recreating the same one after a reload.
                 if (!isActive && term.label === ret) {

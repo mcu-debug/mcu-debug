@@ -1,7 +1,7 @@
 {
   "name": "mcu-debug",
   "publisher": "mcu-debug",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "preview": true,
   "description": "A debugger and debug adapter for MCUs",
   "displayName": "MCU-Debug",
@@ -36,7 +36,7 @@
     "Debuggers"
   ],
   "engines": {
-    "vscode": "^1.108.1"
+    "vscode": "^1.107.0"
   },
   "type": "commonjs",
   "main": "./dist/extension.js",
@@ -1181,6 +1181,11 @@
                     }
                   ]
                 }
+              },
+              "routeGdbServerOutputToDebugConsole": {
+                "type": "boolean",
+                "default": false,
+                "description": "Route GDB server output to debug console"
               },
               "debugFlags": {
                 "description": "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",
@@ -2761,6 +2766,11 @@
                     }
                   ]
                 }
+              },
+              "routeGdbServerOutputToDebugConsole": {
+                "type": "boolean",
+                "default": false,
+                "description": "Route GDB server output to debug console"
               },
               "debugFlags": {
                 "description": "Debug flags to debug this extension (mcu-debug); Causes additional output in Debug Console.",

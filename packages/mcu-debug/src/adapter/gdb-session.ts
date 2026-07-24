@@ -196,6 +196,9 @@ export class GDBDebugSession extends SeqDebugSession {
             return;
         }
         try {
+            if (this.args.debugFlags.anyFlags) {
+                this.handleMsg(Stdout, `Client (vscode?) requested end of debug session: ${JSON.stringify(args)}\n`);
+            }
             TcpPortScanner.PortAllocated.removeListener("allocated", this.tcpPortAllocatedListener);
             setTimeout(() => {
                 TcpPortScanner.unlockPortsIfFree(Array.from(this.allPorts));
@@ -203,16 +206,13 @@ export class GDBDebugSession extends SeqDebugSession {
 
             this.endSession = true;
             const doTerminate = !!args.terminateDebuggee;
-            const doContinue = !doTerminate && !args.suspendDebuggee;
+            const doDetach = !doTerminate && !args.suspendDebuggee;
             this.debugHelper.dispose();
             this.rttManager.dispose();
             this.suppressStoppedEvents = true;
             if (this.liveWatchMonitor.enabled()) {
                 await this.liveWatchMonitor.stop();
                 await new Promise((resolve) => setTimeout(resolve, 50)); // Just to ensure all pending events from the live watch monitor are processed before we stop the GDB instance   
-            }
-            if (this.args.debugFlags.anyFlags) {
-                this.handleMsg(Stdout, `Client (vscode?) requested end of debug session: ${JSON.stringify(args)}\n`);
             }
             if (this.gdbInstance) {
                 if (this.isRunning()) {
@@ -245,26 +245,30 @@ export class GDBDebugSession extends SeqDebugSession {
                     await new Promise((resolve) => setTimeout(resolve, 50));
                 }
 
-                if (doContinue) {
+                if (doDetach && false) {
+                    // If we do a continue, we cannot do a detach as gdb forbids that. It is the
+                    // gdb-servers responsibility to continue running the target after a detach.
+                    // But, if we do a continue, we cannot do a detach as gdb forbids that. It is the
+                    // gdb-servers responsibility to continue running the target after a detach.
                     try {
                         await this.gdbInstance.sendCommand("-exec-continue", 200);
                         await this.waitForCompletion(5, () => this.isRunning(), 5);
                         if (!this.isRunning()) {
                             this.handleMsg(Stderr, "Target is not running despite issuing a 'continue' command...\n");
                         }
-                    } catch (e) {
+                    } catch (e: any) {
                         this.handleMsg(Stderr, "Error continuing target before exit: " + (e ? e.toString() : "Unknown error") + "\n");
                     }
                 }
 
                 try {
                     // Give GDB a chance to detach nicely, but don't wait forever
-                    if (doContinue) {
+                    if (doDetach) {
                         await this.gdbInstance.sendCommand("-target-detach", 250);
-                    } else {
-                        // terminate or suspend — stay halted, disconnect cleanly
-                        await this.gdbInstance.sendCommand("-target-disconnect", 250);
                     }
+                    // ask gdb to disconnect from the server (drops RSP connection). This can
+                    // cause the target to exit unless the user asked for a persistent connection
+                    await this.gdbInstance.sendCommand("-target-disconnect", 250);
                 } catch (e) {
                     // Ignore errors
                 }
@@ -276,6 +280,7 @@ export class GDBDebugSession extends SeqDebugSession {
             }
 
             if (this.serverSession) {
+                await new Promise((resolve) => setTimeout(resolve, 100)); // Small delay to allow any pending server operations to complete
                 await this.serverSession.stopServer();
                 // @ts-ignore
                 this.serverSession = null;
@@ -1305,7 +1310,7 @@ export class GDBDebugSession extends SeqDebugSession {
             try {
                 await startServerPromise;
             } catch (e) {
-                const msg = "\nMake sure that the GDB server is configured correctly. See TERMINAL->gdb-server tab for details.\n";
+                const msg = "\nMake sure that the GDB server is configured correctly. See 'MCU DEBUG -> gdb-server' tab for details.\n";
                 return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}${msg}`);
             }
             reportTime("GDB Server Ready");
