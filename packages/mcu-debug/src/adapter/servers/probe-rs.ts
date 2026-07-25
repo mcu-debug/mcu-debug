@@ -33,7 +33,10 @@ export class ProbeRsServerController extends EventEmitter implements GDBServerCo
     }
 
     public launchCommands(): string[] {
-        const commands = [...genDownloadCommands(this.args, ['interpreter-exec console "monitor reset halt"']), 'interpreter-exec console "monitor reset halt"'];
+        const commands = [
+            ...genDownloadCommands(this.args, ['interpreter-exec console "monitor reset halt"']),
+            'interpreter-exec console "monitor reset halt"',
+        ];
         return commands;
     }
 

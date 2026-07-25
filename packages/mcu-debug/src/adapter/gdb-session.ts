@@ -1230,7 +1230,7 @@ export class GDBDebugSession extends SeqDebugSession {
         this.rttTcpServer.on("event", this.serverControllerEvent.bind(this));
     }
 
-    private postInitlizedEvent(): Promise<void> {
+    private postInitComplete(): Promise<void> {
         return new Promise(async (resolve) => {
             const doBuiltinRtt = !!this.args.pvtRttConfig;
             const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
@@ -1323,12 +1323,18 @@ export class GDBDebugSession extends SeqDebugSession {
             this.sendEvent(new GenericCustomEvent("post-start-server", this.args)); // if SWO launch was requested by the server controller, we wait for it to connect before starting actual debug
 
             // Let gdb connect to the server
-            await this.sendCommandsWithWait(this.getConnectCommands()); // Can throw
+            await this.sendCommandsWithWait(this.getConnectCommandsPre()); // Can throw
+            // Once connected, we can initialize arch details, this is as early as possible to ensure that any architecture-specific settings are correctly applied
+            const tInfo = new TargetInfo(this.gdbInstance, this);
+            await tInfo.initialize();
+            // Get the disassembly adapter initialized, wait for it to finish asynchronously
+            await this.sendCommandsWithWait(this.getConnectCommandsPost()); // Can throw
+
+            const postInitPromise = this.postInitComplete();
+
             this.serverSession.serverController.debuggerLaunchStarted(this);
 
             // Post connect, target info should be available
-            const tInfo = new TargetInfo(this.gdbInstance, this);
-            const tInfoPromise = tInfo.initialize();
 
             reportTime("GDB Init Commands Sent");
             // Let client know we are done with the launch/attach request and ready.
@@ -1343,7 +1349,6 @@ export class GDBDebugSession extends SeqDebugSession {
             // and we are ready to go. However, the program may be running depending on the session mode and settings
             // So, we now inform VSCode that the debugger has started. It will in turn set breakpoints, etc.
             this.sendEvent(new InitializedEvent()); // This is when we tell that the debugger has really started
-            const postInitPromise = this.postInitlizedEvent();
 
             // After the above, VSCode will set various kinds of breakpoints, watchpoints, etc. When all those things
             // happen, it will finally send a configDone request and now everything should be stable
@@ -1365,7 +1370,6 @@ export class GDBDebugSession extends SeqDebugSession {
 
             // Following can be deferred to configurationDone
             await loadSymbolsPromise;
-            await tInfoPromise;
             if (this.debugHelperPromise) {
                 try {
                     await this.debugHelperPromise;
@@ -1506,7 +1510,7 @@ export class GDBDebugSession extends SeqDebugSession {
         ];
         return cmds;
     }
-    protected getConnectCommands(): string[] {
+    protected getConnectCommandsPre(): string[] {
         const commands: string[] = [];
         if (this.args.pvtSessionMode === SessionMode.Attach) {
             commands.push(...(this.args.preAttachCommands?.map(COMMAND_MAP) ?? []));
@@ -1515,7 +1519,11 @@ export class GDBDebugSession extends SeqDebugSession {
         }
 
         commands.push(...this.getServerConnectCommands());
+        return commands;
+    }
 
+    protected getConnectCommandsPost(): string[] {
+        const commands: string[] = [];
         if (this.args.pvtSessionMode === SessionMode.Attach) {
             const attachCommands = this.args.overrideAttachCommands != null ? this.args.overrideAttachCommands.map(COMMAND_MAP) : this.serverSession.serverController.attachCommands();
             commands.push(...attachCommands);
