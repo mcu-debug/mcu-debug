@@ -27,7 +27,7 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] REPL
   - [x] SetVariable
   - [x] SetExpr
-- [ ] Add probe-rs as a gdb-server
+- [x] Add probe-rs as a gdb-server
 - [x] Debug/Trace
   - [x] SWO
   - [x] RTT
@@ -71,20 +71,20 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] ssh built into VSCode (SSH - Remote)
   - [x] WSL mirrored mode
   - [x] WSL NAT mode
-- [ ] AI Support.
-  - [ ] CLI support. Run MCU-Debug outside VSCode or inside VSCode in CLI mode
-  - [ ] AI Cockpit window for Humans and AI to look at
-  - [ ] AI can control execution of FW, interact with the debugger
+- [x] AI Support.
+  - [x] CLI support. Run MCU-Debug outside VSCode or inside VSCode in CLI mode
+  - [x] AI Cockpit window for Humans and AI to look at
+  - [x] AI can control execution of FW, interact with the debugger
   - [ ] [More line items here](./docs-internal/cli-plan.md)
 
- Testing:
+ Testing: In progress with various levels of maturity
  - [ ] All of the above
  - [ ] Test with all gdb-servers
  - [ ] C++ Testing
  - [ ] Test with RSIC-V
  - [ ] Test with Xtensa
 
-Other Extensions
+Other Extensions: Should work, but they may have to be updated adding mcu-debug as a first class citizen, testing failure conditions
  - [ ] Memory View Compatibility. Especially in failure conditions
    - [ ] See if Memory view can be dynamic (update without pausing)
  - [ ] Peripheral View Compatibility
