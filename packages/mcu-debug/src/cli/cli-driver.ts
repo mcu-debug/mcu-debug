@@ -92,6 +92,9 @@ export class CliSessionDriver {
         config.pvtCliOptions = { ...cliArgs }; // pass along CLI options to the DA via the config
         this.notesManager = new NotesManager(this.customTransport.timeCreated);
 
+        // This is already routed to the CLI, no need to also route it terminal again
+        this.config.routeGdbServerOutputToDebugConsole = false;
+
         this.setState("not-started");
     }
 
