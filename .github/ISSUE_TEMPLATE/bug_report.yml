@@ -7,6 +7,7 @@ body:
     id: what-happened
     attributes:
       label: What happened?
+      description: Describe the bug and what you expected to happen.
     validations:
       required: true
 
@@ -21,7 +22,7 @@ body:
     id: debug-console-logs
     attributes:
       label: Debug Console Logs
-      description: Paste logs from the VS Code Debug Console.
+      description: Paste logs from the VS Code Debug Console (enable gdbTraces first).
       render: shell
     validations:
       required: true
