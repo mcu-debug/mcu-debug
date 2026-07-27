@@ -265,17 +265,16 @@ export class GDBServerSession extends EventEmitter {
     private doMatch(data: Buffer, remaining: string) {
         if (this.matchRegex && !this.resolved) {
             const str = remaining + data.toString();
-            const lines = str.split("\n");
-            remaining = str.endsWith("\n") ? "" : lines.pop() || "";
-            for (const line of lines) {
-                if (line.trim()) {
-                    if (this.matchRegex.test(line)) {
-                        this.serverController.serverLaunchCompleted();
-                        this.serverResolve?.();
-                        this.serverResolve = null;
-                        this.resolved = true;
-                        break;
-                    }
+            const lines = str.split(/\r?\n/);
+            remaining = str.endsWith("\n") ? "" : lines[lines.length - 1];
+            for (const l of lines) {
+                const line = l.trim();
+                if (line && this.matchRegex.test(line)) {
+                    this.serverController.serverLaunchCompleted();
+                    this.serverResolve?.();
+                    this.serverResolve = null;
+                    this.resolved = true;
+                    break;
                 }
             }
         }
