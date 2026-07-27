@@ -3,6 +3,15 @@ description: Report a bug in MCU-Debug
 title: "[bug]: "
 labels: ["bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Before submitting
+        - If your issue is for **Peripherals / SVD Viewer**, file it at https://github.com/mcu-debug/peripheral-viewer/issues/new/choose
+        - If your issue is for **Memory Viewer**, file it at https://github.com/mcu-debug/memview/issues/new/choose
+        - If your issue is for **RTOS Viewer**, file it at https://github.com/mcu-debug/rtos-views/issues/new/choose
+        - For MCU-Debug issues, include Debug Console logs with `gdbTraces` enabled
+
   - type: textarea
     id: what-happened
     attributes:
@@ -22,7 +31,7 @@ body:
     id: debug-console-logs
     attributes:
       label: Debug Console Logs
-      description: Paste logs from the VS Code Debug Console (enable gdbTraces first).
+      description: Paste logs from the VS Code Debug Console. Enable `gdbTraces` first; reports without logs are usually not actionable.
       render: shell
     validations:
       required: true
