@@ -604,6 +604,13 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             return;
         }
         const resolvedMode = resolveNetworkMode(hostConfig);
+        if (resolvedMode === "auto-local") {
+            // There is no remote name and no ssh was specified. So, nothing for us to do, run it as if it were 
+            // totall local.
+            hostConfig.enabled = false;
+            delConfig();
+            return;
+        }
         hostConfig.pvtNetworkMode = resolvedMode;
         if (resolvedMode === "ssh") {
             // Topology B — LAB: probe on a separate physical machine. We deploy the helper binary,

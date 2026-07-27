@@ -20,11 +20,10 @@ If you’ve been using Cortex-Debug, this will feel familiar — but it’s not 
 
 ### Why switch?
 
-Cortex-Debug isn’t going anywhere—it’s stable and proven. But if you’ve ever hit limits with:
+Cortex-Debug isn’t going anywhere—it’s stable and proven. But it is feature frozen and if you’ve ever hit limits with:
 
-* remote development
-* brittle configs
-* lack of automation, AI, CLI, CI friendly
+* Remote development
+* Lack of automation, AI, CLI, CI friendly
 
 then **this is the upgrade path. `mcu-debug` isn’t just easier—it unlocks workflows that weren’t really possible before.**
 
@@ -144,10 +143,17 @@ Use your existing `cortex-debug` configurations. For example:
 
 ### 3. Remote/WSL/Docker Setup (Optional)
 To use remote debugging, simply define a `hostConfig` inside your launch configuration:
+
+```json
+"hostConfig": true // Automatically resolves WSL or Dev Container namespaces
+```
+
+THe above is equivalent to the following
+
 ```json
 "hostConfig": {
-    "enabled": true,
-    "type": "auto" // Automatically resolves WSL or Dev Container namespaces
+  "enabled" true,
+  "type": "auto" // Automatically resolves WSL or Dev Container namespaces
 }
 ```
 

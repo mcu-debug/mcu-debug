@@ -21,7 +21,14 @@ For terminology, for example with WSL or Docker, `"remote"` is your host machine
 
 ## The `hostConfig` Property
 
-All remote topologies are configured via the `hostConfig` block in `launch.json`:
+All remote topologies are configured via the `hostConfig` block in `launch.json`: For everything except for 'ssh', the `hostConfig` can be a simple boolean
+
+```json
+"serverpath": "<path-to-gdb-server-on-remote>",
+"hostConfig": true
+```
+
+the above is equivalent to the following
 
 ```json
 "serverpath": "<path-to-gdb-server-on-remote>",
