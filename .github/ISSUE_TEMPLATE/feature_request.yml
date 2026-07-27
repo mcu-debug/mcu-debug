@@ -1,0 +1,57 @@
+name: 💡 Feature Request
+description: Suggest an idea for MCU-Debug
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### 📦 Filing in the right repo
+
+        Please make sure this feature request belongs here. If it is for:
+        - **Peripherals / SVD Viewer** → [mcu-debug/peripheral-viewer](https://github.com/mcu-debug/peripheral-viewer/issues/new/choose)
+        - **Memory Viewer** → [mcu-debug/memview](https://github.com/mcu-debug/memview/issues/new/choose)
+        - **RTOS Viewer** → [mcu-debug/rtos-views](https://github.com/mcu-debug/rtos-views/issues/new/choose)
+
+        If the request is for the **debugger itself**, continue below.
+
+        ### 📖 Read the docs first
+
+        You have a lot of control over how MCU-Debug works. Please review the documentation before filing — your use case may already be supported:
+        - [README](https://github.com/mcu-debug/mcu-debug#readme)
+        - [docs/ folder](https://github.com/mcu-debug/mcu-debug/tree/main/docs)
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear and concise description of what the problem is.
+      placeholder: "Ex. I'm always frustrated when ..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Describe the solution you'd like
+      description: A clear and concise description of what you want to happen.
+      placeholder: What should MCU-Debug do differently?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Describe alternatives you've considered
+      description: A clear and concise description of any alternative solutions or features you've considered.
+      placeholder: What else could work? Why is your preferred approach better?
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any other context, screenshots, or links about the feature request here.
+    validations:
+      required: false
