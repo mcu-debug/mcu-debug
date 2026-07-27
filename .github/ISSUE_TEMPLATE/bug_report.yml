@@ -21,6 +21,7 @@ body:
     id: debug-console-logs
     attributes:
       label: Debug Console Logs
+      description: Paste logs from the VS Code Debug Console.
       render: shell
     validations:
       required: true
@@ -29,6 +30,7 @@ body:
     id: launch-json
     attributes:
       label: launch.json
+      description: Paste relevant launch.json content (remove sensitive values).
       render: json
     validations:
       required: true
