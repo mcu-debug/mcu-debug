@@ -23,6 +23,10 @@ function main() {
         error("Usage: node scripts/prepare-release.js <path-to-release-notes.md>");
     }
 
+    if (!fs.existsSync("packages/mcu-debug/package.json")) {
+        error(`Package.json file not found: packages/mcu-debug/package.json.\nYou must run this script from the root of the repository.`);
+    }
+
     const notesPath = path.resolve(args[0]);
     if (!fs.existsSync(notesPath)) {
         error(`Release notes file not found: ${notesPath}`);
@@ -31,6 +35,11 @@ function main() {
     const notesContent = fs.readFileSync(notesPath, "utf8").trim();
     if (!notesContent) {
         error(`Release notes file is empty: ${notesPath}`);
+    }
+
+    const compileStatus = execSync("npm run compile", { stdio: "inherit" });
+    if (compileStatus !== 0) {
+        error("Compilation failed. Aborting release preparation.");
     }
 
     // 2. Git workspace checks
