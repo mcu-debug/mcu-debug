@@ -1,5 +1,5 @@
 name: bug report
-description: Report MCU-Debug bugs
+description: Report a bug in MCU-Debug
 title: "[bug]: "
 labels: ["bug"]
 body:
