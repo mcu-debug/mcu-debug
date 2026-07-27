@@ -1,40 +1,37 @@
-name: 🐛 Bug Report
-description: Report a bug to help us improve MCU-Debug
+name: bug report
+description: Report a bug in MCU-Debug
+title: "[bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        ### 🛑 STOP! READ THIS FIRST 🛑
-        Most issues cannot be solved without **Debug Console Logs**. 
-        Please use `"debugFlags":` and enable gdbTraces in your `launch.json` before submitting.
-
-  - type: checkboxes
-    id: checks
-    attributes:
-      label: Pre-flight Checklist
-      options:
-        - label: I have enabled verbose logging (`"debugFlags": { "gdbTraces": true }`) in my `launch.json`.
-          required: true
-        - label: I have attached the relevant section of the Debug Console log.
-          required: true
-        - label: I am using the latest version of the extension.
-          required: true
+        ### Before submitting
+        - If your issue is for **Peripherals / SVD Viewer**, file it at https://github.com/mcu-debug/peripheral-viewer/issues/new/choose
+        - If your issue is for **Memory Viewer**, file it at https://github.com/mcu-debug/memview/issues/new/choose
+        - If your issue is for **RTOS Viewer**, file it at https://github.com/mcu-debug/rtos-views/issues/new/choose
+        - For MCU-Debug issues, include Debug Console logs with `gdbTraces` enabled
 
   - type: textarea
     id: what-happened
     attributes:
       label: What happened?
-      description: Also tell us what you expected to happen.
-      placeholder: Tell us about the bug...
+      description: Describe the bug and what you expected to happen.
     validations:
       required: true
 
   - type: textarea
-    id: debug-logs
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug-console-logs
     attributes:
       label: Debug Console Logs
-      description: Paste the logs from the VS Code Debug Console here.
+      description: Paste logs from the VS Code Debug Console. Enable `gdbTraces` first; reports without logs are usually not actionable.
       render: shell
     validations:
       required: true
@@ -42,8 +39,8 @@ body:
   - type: textarea
     id: launch-json
     attributes:
-      label: launch.json Configuration
-      description: Your launch.json (remove any sensitive paths or passwords).
+      label: launch.json
+      description: Paste relevant launch.json content (remove sensitive values).
       render: json
     validations:
       required: true
