@@ -413,7 +413,7 @@ module.exports = {
         },
     },
     hostConfig: {
-        type: "object",
+        type: ["object", "boolean"],
         description:
             "Enables remote probe support. When present, the gdb-server runs on a host machine that has the USB debug probe attached. " +
             "Omit this entirely for local debugging (the common case). " +

@@ -258,6 +258,13 @@ export class McuDebugConfigurationProviderBase {
     }
 
     public async resolveDebugConfigurationWithSubstitutedVariables(folderPath: string | undefined, config: ConfigOptions): Promise<ConfigOptions | undefined> {
+        if (typeof config.hostConfig === "boolean") {
+            if (config.hostConfig === false) {
+                config.hostConfig = undefined;
+            } else {
+                config.hostConfig = { enabled: true, type: "auto" };
+            }
+        }
         if (!config.hostConfig?.pvtResolved) {
             try {
                 await this.host.handleHostConfig(config.hostConfig, () => delete (config as any).hostConfig);

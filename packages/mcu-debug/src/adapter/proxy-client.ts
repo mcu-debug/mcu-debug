@@ -61,7 +61,7 @@ export class ProxyClient extends EventEmitter {
 
     async start(): Promise<boolean> {
         this.args = this.session.args;
-        if (!this.args.hostConfig) {
+        if (!this.args.hostConfig || typeof this.args.hostConfig !== "object") {
             return false;
         }
         const networkMode = this.args.hostConfig.pvtNetworkMode || this.args.hostConfig.type;
@@ -136,7 +136,7 @@ export class ProxyClient extends EventEmitter {
      */
     private async syncFiles() {
         const cwd = this.cwd;
-        const syncFiles = this.session.args.hostConfig?.syncFiles || [];
+        const syncFiles = (typeof this.session.args.hostConfig === "object" && this.session.args.hostConfig?.syncFiles) || [];
         let counter = 0;
         const maxFiles = 20; // Limit the number of files to sync to prevent abuse and performance issues
         let hitMaxFiles = false;

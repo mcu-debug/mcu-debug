@@ -204,7 +204,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
     public serverArguments(): string[] {
         let serverargs: string[] = [];
         let helpers = `${this.args.extensionPath}/support/openocd-helpers.tcl`;
-        if (this.args.hostConfig?.enabled) {
+        if (typeof this.args.hostConfig === "object" && this.args.hostConfig?.enabled) {
             const remoteHelpers = "./mcu-debug/support/openocd-helpers.tcl";
             this.args.hostConfig.syncFiles = this.args.hostConfig.syncFiles || [];
             this.args.hostConfig.syncFiles.push({ local: helpers, remote: remoteHelpers });

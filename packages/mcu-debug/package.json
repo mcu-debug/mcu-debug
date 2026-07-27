@@ -1261,7 +1261,10 @@
                 }
               },
               "hostConfig": {
-                "type": "object",
+                "type": [
+                  "object",
+                  "boolean"
+                ],
                 "description": "Enables remote probe support. When present, the gdb-server runs on a host machine that has the USB debug probe attached. Omit this entirely for local debugging (the common case). The \"auto\" type detects the connection from the VS Code remote environment (WSL, Dev Container, VS Code Remote SSH, or plain local). The \"ssh\" type connects explicitly to a separate probe host machine via SSH, useful for lab setups where the probe is on a dedicated server.",
                 "properties": {
                   "enabled": {
@@ -2846,7 +2849,10 @@
                 }
               },
               "hostConfig": {
-                "type": "object",
+                "type": [
+                  "object",
+                  "boolean"
+                ],
                 "description": "Enables remote probe support. When present, the gdb-server runs on a host machine that has the USB debug probe attached. Omit this entirely for local debugging (the common case). The \"auto\" type detects the connection from the VS Code remote environment (WSL, Dev Container, VS Code Remote SSH, or plain local). The \"ssh\" type connects explicitly to a separate probe host machine via SSH, useful for lab setups where the probe is on a dedicated server.",
                 "properties": {
                   "enabled": {

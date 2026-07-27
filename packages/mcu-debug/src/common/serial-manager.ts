@@ -568,10 +568,13 @@ export class SerialPortManager {
         // dictates what we do and there can only be one type of remote. So we can just check the workspace type and if it's ssh,
         // we can allow both local and remote serial ports, but if it's devcontainer or wsl, we can only allow one type of serial port.
         // This is not ideal, but it's a reasonable compromise given the limitations of the current proxy design.
-        const tmpHostConfig: HostConfig | undefined = args?.hostConfig || {
+        const rawHostConfig = typeof args?.hostConfig === "boolean"
+            ? (args.hostConfig ? { enabled: true, type: "auto" as const } : undefined)
+            : args?.hostConfig;
+        const tmpHostConfig: HostConfig = rawHostConfig || {
             type: getHostAdapter().getRemoteName() ? "auto" : "local",
             enabled: true,
-        }
+        };
         this.isFunnelTransport = (tmpHostConfig.type === "ssh" || getHostAdapter().getRemoteName() !== undefined);
         const resolvedHostConfig = await getProxyForSerialPorts(tmpHostConfig);
         if (!resolvedHostConfig) {

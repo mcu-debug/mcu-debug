@@ -1,6 +1,33 @@
 # MCU-Debug: The Next-Generation Embedded Debugger for VS Code
 
-**MCU-Debug** is a modern, high-performance successor and drop-in replacement for the classic `cortex-debug` extension. Designed from the ground up to support containerized, remote, and collaborative hardware workflows, MCU-Debug bridges the gap between your local hardware probes and your modern development environments.
+**mcu-debug — Cortex-Debug, rethought for modern embedded** by the same author
+
+If you’ve been using Cortex-Debug, this will feel familiar — but it’s not just an update. **mcu-debug is a ground-up rebuild** to support how embedded development actually works today. MCU-Debug bridges the gap between your local hardware probes and your modern development environments.
+
+### What’s different?
+
+* **Not ARM-only anymore** Built to be truly **vendor-neutral**—use whatever probe, GDB server, or silicon you want.
+
+* **Works where others break** Native support for **WSL, containers, and remote setups**—no more fragile hacks just to get a debugger running.
+
+* **The only VSCode debugger that makes WSL, containers, and local debugging behave the same** One config. works everywhere your code and hardware live. All it takes is `"hostconfig": true` in your `launch.json` and specify where your gdb-server (OpenOCD, etc.) lives if not in your $PATH. The gdb-server is the boundary, everything else is handled.
+
+* **Your `launch.json` is now scriptable** Run the same debug configuration in VS Code *or* the command line. Automate it. Put it in CI. Reproduce it anywhere.
+
+* **Finally automation-friendly** Enables **hardware-in-the-loop testing, regression runs, and repeatable debug sessions**—things that were painful or impractical before.
+
+* **Built with AI in mind** A consistent, machine-readable debug surface that lets tools (and AI) actually understand and assist with your sessions.
+
+### Why switch?
+
+Cortex-Debug isn’t going anywhere—it’s stable and proven. But if you’ve ever hit limits with:
+
+* remote development
+* brittle configs
+* lack of automation, AI, CLI, CI friendly
+
+then **this is the upgrade path. `mcu-debug` isn’t just easier—it unlocks workflows that weren’t really possible before.**
+
 
 For full installation guides, advanced configurations, and architecture details, visit the official documentation at **[mcu-debug.github.io/mcu-debug/](https://mcu-debug.github.io/mcu-debug/)**.
 

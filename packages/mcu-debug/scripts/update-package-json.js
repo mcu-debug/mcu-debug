@@ -298,6 +298,15 @@ function generateMarkdownReference() {
         }
 
         if (node.properties && typeof node.properties === "object") {
+            if (Array.isArray(node.type) && node.description) {
+                leaves.push({
+                    name: pathStr,
+                    type: node.type.join(" | "),
+                    description: node.description,
+                    default: node.default,
+                    raw: node
+                });
+            }
             for (const [key, val] of Object.entries(node.properties)) {
                 recurse(val, pathStr ? `${pathStr}.${key}` : key);
             }

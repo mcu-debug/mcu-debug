@@ -369,7 +369,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     swoConfig: SWOConfiguration;
     serialConfig?: SerialConfig;
     liveWatch: LiveWatchConfig;
-    hostConfig?: HostConfig;
+    hostConfig?: HostConfig | boolean;
     graphConfig?: any[];
     /// Triple slashes will cause the line to be ignored by the options-doc.py script
     /// We don't expect the following to be in booleann form or have the value of 'none' after
