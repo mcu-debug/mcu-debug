@@ -3,6 +3,10 @@ sidebar_position: 3
 title: CLI Commands
 ---
 
+# Installation
+
+See https://mcu-debug.github.io/mcu-debug/docs/cli#installation
+
 # CLI Commands
 
 ## mcu-debug Subcommands
@@ -23,6 +27,7 @@ mcu-debug debug [options]
 | `-s, --settings <path>`      | Path to mcu-debug settings file (alternative to `.vscode/settings.json`)    |
 | `-l, --log <path>`           | Override default log file path                                              |
 | `--script <path>`            | GDB/Meta script file to run at session start (for automated use)            |
+| `--dump-config`              | Dump the configuration and exit                                             |
 
 Examples:
 
@@ -63,26 +68,6 @@ mcu-debug list
 ```
 
 Output includes session config name, status, socket path, and start time.
-
----
-
-### dump-config
-
-Resolve and print a `launch.json` configuration with all variables substituted.
-
-```sh
-mcu-debug dump-config <config-name> [launch-json-path]
-```
-
-| Option   | Description                                            |
-| -------- | ------------------------------------------------------ |
-| `--diff` | Show which variables were substituted (before → after) |
-
-```sh
-mcu-debug dump-config "Launch PSoC6 CM4"
-mcu-debug dump-config "Launch PSoC6 CM4" --diff
-mcu-debug dump-config "Launch PSoC6 CM4" /project/launch.json
-```
 
 ---
 

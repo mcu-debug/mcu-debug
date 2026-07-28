@@ -86,7 +86,7 @@ pub struct DebugArgs {
     #[arg(
         short = 's',
         long = "settings",
-        default_value = "mcu-debug-settings.json"
+        default_value = ".vscode/settings.json"
     )]
     pub settings: String,
 
