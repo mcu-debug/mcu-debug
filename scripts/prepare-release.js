@@ -38,8 +38,8 @@ function main() {
     }
 
     const compileStatus = execSync("npm run build", { stdio: "inherit" });
-    if (compileStatus !== 0) {
-        error("Compilation failed. Aborting release preparation.");
+    if (compileStatus !== 0 && compileStatus !== undefined && compileStatus !== null) {
+        error(`Compilation failed. Aborting release preparation. Exit code ${compileStatus}`);
     }
 
     // 2. Git workspace checks
