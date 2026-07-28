@@ -859,18 +859,23 @@ export class MCUDebugExtension {
         try {
             mkdirSync(binDir, { recursive: true });
 
-            const normalizedExtPath = extensionPath.replace(/\\/g, "/");
-            const windowsExtPath = extensionPath.replace(/\//g, "\\");
+            const serverExePath = getHelperExecutable(extensionPath);
+            if (!existsSync(serverExePath)) {
+                MCUDebugChannel.debugMessage(`Wrapper script creation failed. Missing mdbg executable at ${serverExePath}`);
+                return;
+            }
+            const fSlashPath = serverExePath.replace(/\\/g, "/");
 
             // macOS & Linux wrapper
             const bashWrapperPath = path.join(binDir, "mcu-debug");
             const bashContent = `#!/usr/bin/env bash
-exec "${normalizedExtPath}/bin/mdbg" "\$@"
+exec "${fSlashPath}" "\$@"
 `;
 
             // Windows wrapper
             const winWrapperPath = path.join(binDir, "mcu-debug.cmd");
-            const winContent = `@"${windowsExtPath}\\bin\\mdbg.exe" %*
+            const windowsExtPath = path.normalize(fSlashPath);
+            const winContent = `@"${windowsExtPath}" %*
 `;
 
             this.writeIfDifferent(bashWrapperPath, bashContent, true);
