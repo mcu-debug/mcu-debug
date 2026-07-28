@@ -31,7 +31,7 @@ body:
     id: debug-console-logs
     attributes:
       label: Debug Console Logs
-      description: Paste logs from the VS Code Debug Console. Enable **`"debugFlags": { "gdbTraces": true }`** first; reports without logs are usually not actionable.
+      description: 'Paste logs from the VS Code Debug Console. Enable **`"debugFlags": { "gdbTraces": true }`** first; reports without logs are usually not actionable.'
       render: shell
     validations:
       required: true
