@@ -84,7 +84,7 @@ Print the fully-resolved configuration with all variables substituted:
 mcu-debug debug --dump-config -c "Launch PSoC6 CM4"
 ```
 
-Show which variables were substituted (diff mode):
+Show which variables were substituted (diff mode): Not yet implemented
 
 ```sh
 mcu-debug debug --dump-config -c "Launch PSoC6 CM4" --diff

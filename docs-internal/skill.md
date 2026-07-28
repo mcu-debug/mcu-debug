@@ -19,13 +19,7 @@ You are an expert Firmware Debugger. You have access to a live microcontroller h
 To start the debugger, execute the following command in the background (as an asynchronous task):
 
 ```bash
-node /Users/hdm/src/mcu-debug/packages/mcu-debug/dist/mcu-debug-cli.js -c 0 -s .vscode/settings.json -l /tmp/mcu-debug.log
-```
-
-or
-
-```bash
-npx mcu-debug-cli -c 0 -s .vscode/settings.json -l /tmp/mcu-debug.log
+mcu-debug debug -c <config-name-from-launch-json> -l /tmp/mcu-debug.log
 ```
 
 ## 3. AI Flow for history and notes management

@@ -96,7 +96,11 @@ Then from GDB: `continue` and observe the RTT stream.
 x/1uw &g_error_count
 ```
 
-Combined with Live Watch, this gives you continuous visibility without disturbing execution.
+:::note
+Most gdb-servers do not allow reading memory or other inspection, as they don't support `non-stop` mode. If your gdb server supports `non-stop` mode please enable it using `postLaunchCommands` or equivalent.
+:::
+
+TBD: Combined with Live Watch, this gives you continuous visibility without disturbing execution. We are trying to implement this at least with some gdb-servers
 
 ## Advanced: Autonomous Investigation Script
 

@@ -15,11 +15,11 @@ The CLI is the foundation for AI-assisted debugging and for headless workflows l
 
 The CLI automatically selects a mode based on the environment:
 
-| Mode | When | How |
-|------|------|-----|
-| Terminal | stdout is not a TTY, or `--no-tui` is passed | Raw terminal, readline input, plain text tagged output |
-| TUI | stdout is a TTY (default) | ratatui-based full-screen terminal UI |
-| VS Code panel | Running inside VS Code | AI Cockpit WebviewPanel with xterm.js rendering |
+| Mode          | When                                         | How                                                    |
+| ------------- | -------------------------------------------- | ------------------------------------------------------ |
+| Terminal      | stdout is not a TTY, or `--no-tui` is passed | Raw terminal, readline input, plain text tagged output |
+| TUI           | stdout is a TTY (default)                    | ratatui-based full-screen terminal UI                  |
+| VS Code panel | Running inside VS Code                       | AI Cockpit WebviewPanel with xterm.js rendering        |
 
 **Auto-detection**: if stdout is a TTY, TUI mode starts automatically. If stdout is redirected (to a pipe, file, or AI subprocess), terminal mode activates. Running inside VS Code activates the VS Code panel mode.
 
@@ -32,6 +32,12 @@ The CLI tools are bundled directly with the VS Code extension. To install the wr
 3. Execute the **MCU-Debug: Install CLI Tools** command.
 4. Follow the interactive prompts in the terminal to automatically append `~/.mcu-debug/bin` to your shell profile or environment `PATH`.
 
+Alternately, you can add `~/.mcu-debug/bin` to your $PATH environment variable yourself
+
+:::note
+You have to restart your VSCode and Terminal Windows for $PATH changes to take effect
+:::
+
 **Requirements**: Node.js >= 22 installed on your system. The VS Code extension itself must be installed and active (the CLI delegates all debug adapter operations to the binaries bundled within the extension folder).
 
 ## Starting a Session
@@ -40,7 +46,7 @@ The CLI tools are bundled directly with the VS Code extension. To install the wr
 # By configuration name
 mcu-debug debug -c "Launch PSoC6 CM4"
 
-# By index in launch.json
+# By index in launch.json (only 'mcu-debug' type configs are counted)
 mcu-debug debug -c 0
 
 # With explicit launch.json path
@@ -55,23 +61,23 @@ mcu-debug debug -c "My Config" --no-tui
 Running sessions are discoverable:
 
 ```sh
-# List all active sessions
+# List all active sessions (not yet implemented)
 mcu-debug list
 
 # Attach to a session (auto-discovers from .mcu-debug/sock.json)
 mcu-debug attach
 
 # Attach to a specific session by socket path
-mcu-debug attach /path/to/session.sock
+mcu-debug attach [-s /path/to/session.sock]
 ```
 
-Sessions write a `sock.json` file to `.mcu-debug/` in the workspace directory. This file contains the socket path and session metadata.
+Sessions write a `sock.json` file to `.mcu-debug/` in the workspace directory. This file contains the socket path (or named pipe in Windows) and session metadata.
 
 ## Documentation
 
-| Topic | Description |
-|-------|-------------|
+| Topic                                               | Description                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------------- |
 | [Configuration Outside VS Code](./configuration.md) | Using launch.json standalone, variable resolution, `dump-config` |
-| [Terminal Mode](./terminal-mode.md) | Raw output mode for pipes, AI tools, and CI |
-| [TUI Mode](./tui-mode.md) | Full-screen ratatui interface |
-| [VS Code Panel](./vscode-panel.md) | AI Cockpit WebviewPanel inside VS Code |
+| [Terminal Mode](./terminal-mode.md)                 | Raw output mode for pipes, AI tools, and CI                      |
+| [TUI Mode](./tui-mode.md)                           | Full-screen ratatui interface                                    |
+| [VS Code Panel](./vscode-panel.md)                  | AI Cockpit WebviewPanel inside VS Code                           |
