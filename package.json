@@ -18,7 +18,9 @@
     "build:rust:prod": "npm run build:rust:prod --workspace=packages/mcu-debug",
     "build:extensions": "node scripts/sync-versions.js && npm run build --workspace=packages/mcu-debug --workspace=packages/mcu-debug-proxy",
     "package": "node scripts/run-sh.js scripts/package-extensions.sh",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "test:rust": "cargo test --manifest-path packages/mdbg/Cargo.toml --lib",
+    "lint:rust": "cargo clippy --manifest-path packages/mdbg/Cargo.toml --all-targets -- -D warnings"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",

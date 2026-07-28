@@ -186,3 +186,20 @@ There is no `npm run build:types` — an earlier version of this repo had one, b
 from a defunct Go-based codegen pipeline (`packages/proxy-server` + `tygo`) that no longer exists,
 and it silently reported success while doing nothing. It was removed; use `npm run build:rust:dev`
 for a Rust-only build instead.
+
+## Rust linting (clippy)
+
+`cargo build`/`cargo check` never run clippy — it's a separate, much larger lint set that isn't
+part of the compiler. This repo surfaces clippy in three places, all running the exact same
+`cargo clippy --all-targets -- -D warnings` so nothing is CI-only or hidden:
+
+- **Editor**: `.vscode/settings.json` sets `rust-analyzer.check.command` to `clippy`, so lint
+  violations show up live as you type, the same as any other diagnostic.
+- **Manual**: `npm run lint:rust` from the repo root, or the "rust: cargo clippy" VS Code task
+  (Run Task), runs it on demand.
+- **CI**: `.github/workflows/rust-ci.yml` runs `npm run test:rust` and `npm run lint:rust` on every
+  push/PR — the identical commands available locally, so a CI failure is always reproducible on a
+  laptop without needing to guess what CI is actually doing.
+
+**How to apply:** if you add or change Rust code, run `npm run lint:rust` (or trust the live
+rust-analyzer diagnostics) before considering the change done — don't rely on CI to catch it first.

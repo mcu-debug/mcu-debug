@@ -41,7 +41,7 @@ packages/mcu-debug/bin/
 packages/mcu-debug-proxy/bin/
 
 # ts_rs default bindings output (real exports go to packages/shared/)
-packages/mcu-debug-helper/bindings/
+packages/mdbg/bindings/
 
 # Go build outputs
 packages/proxy-server/bin/

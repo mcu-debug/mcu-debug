@@ -52,6 +52,22 @@
       "label": "rust: cargo build"
     },
     {
+      "type": "cargo",
+      "command": "clippy",
+      "args": ["--all-targets", "--", "-D", "warnings"],
+      "problemMatcher": [
+        {
+          "base": "$rustc",
+          "fileLocation": ["relative", "${workspaceFolder}/packages/mdbg"]
+        }
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/packages/mdbg"
+      },
+      "group": "build",
+      "label": "rust: cargo clippy"
+    },
+    {
       "type": "shell",
       "label": "Build Helper",
       "command": "./scripts/build-binaries.sh",

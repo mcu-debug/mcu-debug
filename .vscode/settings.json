@@ -16,6 +16,11 @@
     "rust-analyzer.linkedProjects": [
         "packages/mdbg/Cargo.toml"
     ],
+    // Run clippy (not just `cargo check`) for live in-editor diagnostics, so
+    // lint-level bugs (e.g. #[deny(clippy::...)] violations) show up as you
+    // type instead of only when someone remembers to run `cargo clippy`.
+    "rust-analyzer.check.command": "clippy",
+    "rust-analyzer.check.extraArgs": ["--all-targets"],
     // Rust debugging configuration
     "rust-analyzer.debug.engine": "vadimcn.vscode-lldb",
     "rust-analyzer.debug.engineSettings": {
