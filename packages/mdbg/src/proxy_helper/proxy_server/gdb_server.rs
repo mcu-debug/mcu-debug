@@ -108,17 +108,15 @@ impl ProxyServer {
             );
             let mut err = false;
             let mut err_msg = String::new();
-            if !self.args.no_token {
-                if token != &self.args.token {
-                    err_msg = "Error: Received token does not match expected token".to_string();
-                    err = true;
-                }
+            if !self.args.no_token && token != &self.args.token {
+                err_msg = "Error: Received token does not match expected token".to_string();
+                err = true;
             }
             if version != CURRENT_VERSION {
                 err_msg = format!("Error: Unsupported version {}", version);
                 err = true;
             }
-            let dir = PathBuf::from(env::temp_dir())
+            let dir = env::temp_dir()
                 .join("mcu-proxy-server")
                 .join(workspace_uid)
                 .join(session_uid)
@@ -213,8 +211,7 @@ impl ProxyServer {
                         return;
                     }
                 };
-                let mut count = 0;
-                for id_string in &port_set.port_ids {
+                for (count, id_string) in port_set.port_ids.iter().enumerate() {
                     let listener = ports[count].try_clone().ok();
                     let port = listener.as_ref().unwrap().local_addr().unwrap().port();
                     self.reserved_ports.push(PortInfoListner {
@@ -228,7 +225,6 @@ impl ProxyServer {
                         stream_id_str: id_string.clone(),
                     });
                     self.next_stream_id += 1;
-                    count += 1;
                 }
             }
             let data = ControlResponseData::AllocatePorts { ports: ret_vec };

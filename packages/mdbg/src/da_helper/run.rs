@@ -267,7 +267,7 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
     let mut info = ObjectInfo::new();
 
     let step = Instant::now();
-    for (_i, section) in obj_file.sections().enumerate() {
+    for section in obj_file.sections() {
         if section.size() > 0 {
             info.memory_ranges.push(MemoryRegion::new(
                 section.name().unwrap_or("").to_string(),
@@ -591,7 +591,8 @@ pub fn run(args: DaHelperArgs) -> Result<()> {
     }
 
     // Notify DA that symbol table is ready
-    let notify = protocol::symbol_table_ready_notification("local-session", env!("CARGO_PKG_VERSION"));
+    let notify =
+        protocol::symbol_table_ready_notification("local-session", env!("CARGO_PKG_VERSION"));
     transport
         .write_message(&notify)
         .map_err(|e| anyhow::anyhow!("{}", e))?;

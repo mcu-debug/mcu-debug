@@ -37,7 +37,7 @@ function main() {
         error(`Release notes file is empty: ${notesPath}`);
     }
 
-    const compileStatus = execSync("npm run compile", { stdio: "inherit" });
+    const compileStatus = execSync("npm run build", { stdio: "inherit" });
     if (compileStatus !== 0) {
         error("Compilation failed. Aborting release preparation.");
     }

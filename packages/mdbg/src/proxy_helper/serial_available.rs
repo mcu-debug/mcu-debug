@@ -162,6 +162,12 @@ impl SerialAvailabilityHub {
     }
 }
 
+impl Default for SerialAvailabilityHub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Marker trait for the platform-specific watcher guard.
 /// Both `notify::RecommendedWatcher` (Unix) and `PollingWatcher` (Windows)
 /// implement this so they can be held as `Box<dyn PlatformWatcher>`.

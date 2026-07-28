@@ -80,7 +80,7 @@ fn main() -> Result<()> {
 
     if let Some(sub) = implicit_subcommand(exe_stem) {
         // Inject the subcommand only when not already supplied explicitly.
-        let has_sub = args.get(1).map_or(false, |a| {
+        let has_sub = args.get(1).is_some_and(|a| {
             matches!(
                 a.as_str(),
                 "debug" | "attach" | "da-helper" | "proxy" | "serial"

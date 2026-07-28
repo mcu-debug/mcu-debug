@@ -246,7 +246,7 @@ impl App {
 
     fn history_down(&mut self) {
         match self.history_pos {
-            None => return, // already composing a new line
+            None => (), // already composing a new line
             Some(i) if i + 1 >= self.history.len() => {
                 // Past the newest entry → restore the saved draft.
                 self.history_pos = None;
@@ -263,7 +263,7 @@ impl App {
 
     fn history_push(&mut self, line: &str) {
         // Drop consecutive duplicates (same rule as bash HISTCONTROL=ignoredups).
-        if self.history.last().map_or(true, |last| last != line) {
+        if self.history.last().is_none_or(|last| last != line) {
             self.history.push(line.to_owned());
         }
         self.history_pos = None;

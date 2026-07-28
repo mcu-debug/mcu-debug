@@ -89,7 +89,7 @@ impl AssemblyLine {
             instruction,
             raw_line,
             function_id: Cell::new(function_id),
-            offset_in_function: offset_in_function,
+            offset_in_function,
             file_id: Cell::new(-1),
             start_line: Cell::new(-1),
             start_column: Cell::new(-1),
@@ -113,7 +113,7 @@ impl AssemblyLine {
         self.end_column.set(end_column);
     }
 
-    pub fn clone(&self) -> Self {
+    pub fn duplicate(&self) -> Self {
         Self {
             address: self.address,
             bytes: self.bytes.clone(),
@@ -218,7 +218,7 @@ impl AssemblyListing {
                     .range(..start_addr)
                     .rev()
                     .take(before)
-                    .map(|(_, inst)| inst.clone())
+                    .map(|(_, inst)| *inst)
                     .collect();
                 let mut before_instrs: Vec<AssemblyLine> = before_indices
                     .iter()
@@ -227,7 +227,7 @@ impl AssemblyListing {
                             .get(*ix)
                             .expect("index from addr_map should always be valid in lines vector")
                             .as_ref()
-                            .clone()
+                            .duplicate()
                     })
                     .collect();
                 let mut tmp_addr = if !before_instrs.is_empty() {
@@ -237,7 +237,7 @@ impl AssemblyListing {
                 };
                 while before_instrs.len() < before {
                     // pad with dummy instructions if we don't have enough
-                    let mut tmp = dummy_instr.clone();
+                    let mut tmp = dummy_instr.duplicate();
                     tmp.address = tmp_addr.saturating_sub(2); // arbitrary address. TODO: Use minimum instruction size for the architecture to calculate a more realistic address
                     before_instrs.push(tmp);
                     tmp_addr = tmp_addr.saturating_sub(2);
@@ -260,14 +260,14 @@ impl AssemblyListing {
                     .addr_map
                     .range(after_start_addr..)
                     .take(after)
-                    .map(|(_, inst)| inst.clone());
+                    .map(|(_, inst)| *inst);
                 let mut after_instrs: Vec<AssemblyLine> = after_instrs
                     .map(|ix| {
                         self.lines
                             .get(ix)
                             .expect("index from addr_map should always be valid in lines vector")
                             .as_ref()
-                            .clone()
+                            .duplicate()
                     })
                     .collect();
                 let mut tmp_addr = if !after_instrs.is_empty() {
@@ -277,7 +277,7 @@ impl AssemblyListing {
                 };
                 while after_instrs.len() < after {
                     // pad with dummy instructions if we don't have enough
-                    let mut tmp = dummy_instr.clone();
+                    let mut tmp = dummy_instr.duplicate();
                     tmp.address = tmp_addr + 2; // arbitrary address. TODO: Use minimum instruction size for the architecture to calculate a more realistic address
                     after_instrs.push(tmp);
                     tmp_addr += 2;
@@ -293,7 +293,7 @@ impl AssemblyListing {
             let mut tmp_addr = target_addr;
             for _ in 0..before {
                 tmp_addr = tmp_addr.saturating_sub(2);
-                let mut tmp = dummy_instr.clone();
+                let mut tmp = dummy_instr.duplicate();
                 tmp.address = tmp_addr;
                 result.push(tmp);
             }
@@ -308,7 +308,7 @@ impl AssemblyListing {
                         .addr_map
                         .range(first_addr..)
                         .take(after)
-                        .map(|(_, inst)| inst.clone());
+                        .map(|(_, inst)| *inst);
                     let after_instrs: Vec<AssemblyLine> = after_instrs
                         .map(|ix| {
                             self.lines
@@ -317,7 +317,7 @@ impl AssemblyListing {
                                     "index from addr_map should always be valid in lines vector",
                                 )
                                 .as_ref()
-                                .clone()
+                                .duplicate()
                         })
                         .collect();
 
@@ -329,7 +329,7 @@ impl AssemblyListing {
                         if tmp_addr >= first_addr {
                             break;
                         }
-                        let mut tmp = dummy_instr.clone();
+                        let mut tmp = dummy_instr.duplicate();
                         tmp.address = tmp_addr;
                         result.push(tmp);
                     }
@@ -342,7 +342,7 @@ impl AssemblyListing {
             let mut tmp_addr = result.last().map(|l| l.address).unwrap_or(target_addr);
             while result.len() < before + after {
                 tmp_addr += 2;
-                let mut tmp = dummy_instr.clone();
+                let mut tmp = dummy_instr.duplicate();
                 tmp.address = tmp_addr;
                 result.push(tmp);
             }

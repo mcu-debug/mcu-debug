@@ -35,6 +35,12 @@ impl StdioTransport {
     }
 }
 
+impl Default for StdioTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Transport for StdioTransport {
     fn read_message(&mut self) -> Result<Value, Box<dyn Error + Send + Sync>> {
         // Read headers until an empty line

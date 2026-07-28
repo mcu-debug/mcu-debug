@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Disassembly worker thread - loads objdump output and serves requests.
-use crate::debug_println;
+use crate::common::transport;
 use crate::da_helper::elf_items::{LineInfoEntry, ObjectInfo};
 use crate::da_helper::get_assembly::{get_disasm_from_objdump, AssemblyLine, AssemblyListing};
 use crate::da_helper::helper_requests::{DisasmResponse, SerInstruction};
 use crate::da_helper::protocol::{disassembly_ready_notification, DisasmRequest};
-use crate::common::transport;
+/// Disassembly worker thread - loads objdump output and serves requests.
+use crate::debug_println;
 use serde_json;
 use std::collections::HashMap;
 use std::sync::{mpsc::Receiver, Arc};
@@ -64,7 +64,7 @@ pub fn run_disassembly_worker(
                     // the disassembly instructions before we can serve requests.
                     for addr2line in &info.addr_to_line.entries {
                         let addr = addr2line.0;
-                        let entry: &LineInfoEntry = &addr2line.1;
+                        let entry: &LineInfoEntry = addr2line.1;
                         if let Some(line_info) = listing.get_line_by_addr(*addr) {
                             // For simplicity, we just take the first line info entry if there are multiple
                             let mut min = i32::MAX;
@@ -116,7 +116,7 @@ fn serve_disassembly_requests(
         let global_file_table = obj_info.map(|info| &info.file_table);
 
         let before = if req.instr_offset < 0 {
-            req.instr_offset.abs() as usize
+            req.instr_offset.unsigned_abs() as usize
         } else {
             0
         };
@@ -164,11 +164,11 @@ fn serve_disassembly_requests(
         for instr in &window {
             let func_id = instr.function_id.get();
             let file_id = instr.file_id.get();
-            if func_id >= 0 && func_table.get(&(func_id as u32)).is_none() {
+            if func_id >= 0 && !func_table.contains_key(&(func_id as u32)) {
                 let function_name = listing.blocks[func_id as usize].name.clone();
                 func_table.insert(func_id as u32, function_name);
             }
-            if file_id >= 0 && file_table.get(&(file_id as u32)).is_none() {
+            if file_id >= 0 && !file_table.contains_key(&(file_id as u32)) {
                 let file_name = global_file_table
                     .and_then(|ft| ft.get_by_id(file_id as u32))
                     .cloned()
@@ -178,7 +178,7 @@ fn serve_disassembly_requests(
         }
         let ser_instructions: Vec<SerInstruction> = window
             .iter()
-            .map(|instr| SerInstruction::from_assembly_line(instr))
+            .map(SerInstruction::from_assembly_line)
             .collect();
         let response = DisasmResponse::new(req.seq_id, file_table, func_table, ser_instructions);
         let response_json = serde_json::to_string(&response).unwrap();
@@ -287,10 +287,10 @@ mod tests {
                         // This is the first instruction of a function, add a separator line for readability
                         let func_name =
                             listing.blocks[line.function_id.get() as usize].name.clone();
-                        fd.write(format!("\n// Function: {}\n", func_name).as_bytes())
+                        fd.write_all(format!("\n// Function: {}\n", func_name).as_bytes())
                             .expect("Failed to write function header");
                     }
-                    fd.write(format!("{}\n", line.format_bytes()).as_bytes())
+                    fd.write_all(format!("{}\n", line.format_bytes()).as_bytes())
                         .expect("Failed to write line");
                 }
                 fd.sync_all().expect("Failed to flush output file");
@@ -458,7 +458,7 @@ mod tests {
                 "Test 5: before=25, after=0, got {} instructions",
                 window.len()
             );
-            if window.len() > 0 {
+            if !window.is_empty() {
                 println!(
                     "  First: 0x{:x}, Last: 0x{:x}",
                     window[0].address,

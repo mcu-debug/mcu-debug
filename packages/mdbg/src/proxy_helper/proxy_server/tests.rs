@@ -64,7 +64,7 @@ fn read_from_stream(reader: &mut TcpStream, tx: Sender<String>) {
                 break;
             }
         }
-        while all_bytes.len() > 0 {
+        while !all_bytes.is_empty() {
             if all_bytes.len() < 5 {
                 break; // Not enough data for header
             }
@@ -151,7 +151,7 @@ fn test_proxy_server() {
         .expect("Server failed to start within 5 seconds");
     let mut seq: u64 = 1;
     let init_msg = ControlMessage {
-        seq: seq,
+        seq,
         request: ControlRequest::Initialize {
             token: "adis-ababa".to_string(),
             version: CURRENT_VERSION.to_string(),
@@ -190,7 +190,7 @@ fn test_proxy_server() {
     }
 
     let allc_ports_msg = ControlMessage {
-        seq: seq,
+        seq,
         request: ControlRequest::AllocatePorts {
             ports_spec: PortAllocatorSpec {
                 all_ports: vec![PortSet {

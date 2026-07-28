@@ -145,23 +145,44 @@ The `mdbg` binary is pre-built and checked in under `packages/mcu-debug/bin/` an
 
 ## Building
 
-| What                   | command                          |
-| ---------------------- | -------------------------------- |
-| Rust only build (dev)  | ./scripts/build-binaries.sh dev  |
-| Compile all (dev)      | npm run compile                  |
-| Rust only build (prod) | ./scripts/build-binaries.sh prod |
-| Compile all (prod)     | npm run package                  |
+| What                   | command                  |
+| ---------------------- | ------------------------- |
+| Rust only build (dev)  | npm run build:rust:dev   |
+| Rust only build (prod) | npm run build:rust:prod  |
+| Compile all (dev)      | npm run compile          |
+| Compile all (prod)     | npm run package          |
 
 prod - production builds builds all OSes and archictures (optimized and stripped)
 dev  - development builds builds just the current OS+arch for
 
-**How to apply:** When Rust structs change, regenerate the generated TS files with:
+`npm run build:rust:dev` / `build:rust:prod` (runnable from the repo root) delegate to
+`packages/mcu-debug`'s scripts of the same name, which wrap `./scripts/build-binaries.sh dev|prod`:
+they regenerate the ts-rs TypeScript bindings, **format them with prettier**, then build the
+`mdbg` Rust binary (host-only for dev, all platforms for prod). This is the fast, Rust-only path.
+
+`npm run build` (root) is a full production build across every workspace — all Rust targets,
+manifest generation, the cockpit webview, esbuild bundling of the extension — and is much
+heavier than a Rust-only build. Reach for `npm run build:rust:dev`/`build:rust:prod` instead
+when you only touched Rust code.
+
+**How to apply:** When Rust structs change, prefer `npm run build:rust:dev` to regenerate and
+reformat the generated TS files in one step. If you instead run the underlying cargo tests
+directly for speed:
 
 ```bash
   cd packages/mdbg && cargo test --lib da_helper::helper_requests::tests::ensure_ts_exports --quiet
   cd packages/mdbg && cargo test --lib proxy_helper::proxy_server::tests::ensure_ts_exports --quiet
 ```
 
-Or do a full dev build: `./scripts/build-binaries.sh dev` -- this is fast in most cases
+this regenerates the files but **skips the prettier pass**. The raw ts-rs output differs
+cosmetically from the committed (prettier-formatted) files in
+`packages/shared/{dasm-helper,proxy-protocol,serial-helper}`, so `git diff` will show noisy
+whitespace-only changes there that aren't real edits — before treating them as something to fix
+or commit, check whether they're just this formatting drift (`git checkout -- packages/shared/...`
+to discard, or run prettier to match: `node_modules/.bin/prettier --write --print-width 120
+packages/shared/dasm-helper packages/shared/proxy-protocol packages/shared/serial-helper`).
 
-See if the expected files in the `packages/shared/{proxy-protocol,serial-helper,dasm-helper)` dirs have newer timestamps
+There is no `npm run build:types` — an earlier version of this repo had one, but it was leftover
+from a defunct Go-based codegen pipeline (`packages/proxy-server` + `tygo`) that no longer exists,
+and it silently reported success while doing nothing. It was removed; use `npm run build:rust:dev`
+for a Rust-only build instead.

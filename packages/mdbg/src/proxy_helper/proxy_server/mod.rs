@@ -113,7 +113,7 @@ impl FrameWriter {
     pub fn is_connected(&self) -> bool {
         let s = self.stream.lock().unwrap_or_else(|e| e.into_inner());
         let mut buf = [0u8; 0];
-        matches!(s.peek(&mut buf), Ok(_))
+        s.peek(&mut buf).is_ok()
     }
 }
 
@@ -178,7 +178,7 @@ impl ProxyServer {
         serial_available_hub: Arc<SerialAvailabilityHub>,
     ) -> Self {
         let (event_tx, event_rx) = channel();
-        let session_port_wait_mode = args.port_wait_mode.clone();
+        let session_port_wait_mode = args.port_wait_mode;
         Self {
             args,
             writer: FrameWriter::new(stream),

@@ -15,8 +15,8 @@
 use std::num::{NonZero, NonZeroU64};
 use std::sync::Arc;
 
-use crate::common::utils::CanonicalPath;
 use crate::common::utils::canonicalize_path;
+use crate::common::utils::CanonicalPath;
 use crate::da_helper::symbols::Symbol;
 
 pub struct FileTable {
@@ -149,6 +149,12 @@ impl StaticFileMapping {
     }
 }
 
+impl Default for StaticFileMapping {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Encapsulates all debug information loaded from an ELF/DWARF object file.
 /// Keeps both ELF and DWARF symbol tables for cross-checking during development.
 pub struct ObjectInfo {
@@ -188,5 +194,11 @@ impl ObjectInfo {
     pub fn sort_globals_and_statics(&mut self) {
         self.global_symbols.sort_by_key(|s| s.name.clone());
         self.static_file_mapping.sort_symbols();
+    }
+}
+
+impl Default for ObjectInfo {
+    fn default() -> Self {
+        Self::new()
     }
 }
