@@ -59,6 +59,10 @@ if [[ "${MCU_DEBUG_INSTALL_NATIVE_TOOLCHAINS:-0}" == "1" ]]; then
     echo "  Adding messense/macos-cross-toolchains tap..."
     brew tap messense/macos-cross-toolchains
   fi
+  # Homebrew 6+ refuses to load formulae from third-party taps until they're
+  # explicitly trusted ("Refusing to load formula ... from untrusted tap").
+  # Older Homebrew versions don't have `brew trust` at all, so ignore failures.
+  brew trust --tap messense/macos-cross-toolchains >/dev/null 2>&1 || true
   brew install x86_64-unknown-linux-musl || echo "  (already installed or failed)"
   brew install aarch64-unknown-linux-musl || echo "  (already installed or failed)"
   brew install mingw-w64 || echo "  (already installed or failed)"

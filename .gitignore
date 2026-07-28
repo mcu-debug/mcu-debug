@@ -35,6 +35,7 @@ target/
 packages/*/out/
 packages/*/dist/
 packages/*/target/
+packages/*/target-cross/
 packages/*/node_modules/
 packages/shared/lib/
 packages/mcu-debug/bin/

@@ -20,15 +20,18 @@ fi
 echo "==> Build mode preflight..."
 if command -v cross >/dev/null 2>&1; then
 	if command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; then
-		echo "Mode: cross+container (cross builds can run in containers)"
+		echo "Mode: native toolchains where installed, 'cross'+container fallback otherwise"
 	else
 		echo "Mode: cross installed, but no Docker/Podman detected"
-		echo "      build-binaries.sh will use cargo fallback for non-Darwin targets"
+		echo "      build-binaries.sh will only build targets with native toolchains installed"
 	fi
 else
-	echo "Mode: cargo-only (cross not installed)"
+	echo "Mode: native toolchains only ('cross' not installed)"
 fi
 echo ""
+
+echo "==> Building Rust helper binaries (prod, all platforms)..."
+bash ./scripts/build-binaries.sh prod
 
 echo "==> Syncing helper binaries for both extensions..."
 bash ./scripts/sync-helper-binaries.sh

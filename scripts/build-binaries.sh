@@ -207,20 +207,6 @@ if [[ "$mode" == "prod" ]]; then
     linux_arm64_musl_gcc="aarch64-unknown-linux-musl-gcc"
   fi
 
-  # Override linker selection so rustc/cc-rs use resolved toolchains.
-  export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$linux_x64_musl_gcc"
-  export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$linux_arm64_musl_gcc"
-  export CC_x86_64_unknown_linux_musl="$linux_x64_musl_gcc"
-  export CC_aarch64_unknown_linux_musl="$linux_arm64_musl_gcc"
-
-  if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
-    export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32-gcc"
-    export CC_x86_64_pc_windows_gnu="x86_64-w64-mingw32-gcc"
-  fi
-  if command -v x86_64-w64-mingw32-ar >/dev/null 2>&1; then
-    export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_AR="x86_64-w64-mingw32-ar"
-  fi
-
   has_linux_x64_musl="false"
   has_linux_arm64_musl="false"
   has_win_x64_gnu="false"
@@ -230,47 +216,132 @@ if [[ "$mode" == "prod" ]]; then
     has_win_x64_gnu="true"
   fi
 
-  skipped=()
+  # Override linker selection so rustc/cc-rs use the resolved native toolchains.
+  # Only set these when the native toolchain is actually present: leaving them
+  # unset lets the `cross` fallback below use the linker baked into its own
+  # container images instead of a host binary name that doesn't exist there.
+  if [[ "$has_linux_x64_musl" == "true" ]]; then
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$linux_x64_musl_gcc"
+    export CC_x86_64_unknown_linux_musl="$linux_x64_musl_gcc"
+  fi
+  if [[ "$has_linux_arm64_musl" == "true" ]]; then
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$linux_arm64_musl_gcc"
+    export CC_aarch64_unknown_linux_musl="$linux_arm64_musl_gcc"
+  fi
+  if [[ "$has_win_x64_gnu" == "true" ]]; then
+    export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32-gcc"
+    export CC_x86_64_pc_windows_gnu="x86_64-w64-mingw32-gcc"
+    export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_AR="x86_64-w64-mingw32-ar"
+  fi
+
+  # Fallback: use `cross` (Docker/Podman-based) for any target whose native
+  # toolchain isn't installed. Requires both the `cross` cargo subcommand and
+  # a reachable container runtime.
+  needs_container="false"
+  if [[ "$has_linux_x64_musl" != "true" || "$has_linux_arm64_musl" != "true" || "$has_win_x64_gnu" != "true" ]]; then
+    needs_container="true"
+  fi
+
+  # If a container runtime is required and installed but not currently
+  # running, try to start it ourselves (Docker Desktop / podman machine are
+  # both local, reversible, single-command starts) instead of just failing.
+  # Skipped in CI, where the runtime is expected to already be up (see the
+  # CI guard in package-extensions.sh) and there's no GUI app to launch.
+  function try_start_container_runtime() {
+    if [[ "$host_os" != "Darwin" || "${CI:-}" == "true" ]]; then
+      return 1
+    fi
+    if command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
+      echo "Docker CLI found but the daemon isn't responding — starting Docker Desktop..."
+      open -a Docker >/dev/null 2>&1 || true
+      local waited=0 max_wait=90
+      while (( waited < max_wait )); do
+        sleep 3
+        waited=$(( waited + 3 ))
+        if docker info >/dev/null 2>&1; then
+          echo "Docker is up (after ${waited}s)."
+          return 0
+        fi
+        echo "  ...still waiting for Docker (${waited}s/${max_wait}s)"
+      done
+      echo "Docker didn't come up within ${max_wait}s. Start it manually with: open -a Docker"
+      return 1
+    fi
+    if command -v podman >/dev/null 2>&1 && ! podman info >/dev/null 2>&1; then
+      echo "podman CLI found but not responding — starting podman machine..."
+      podman machine start >/dev/null 2>&1 && podman info >/dev/null 2>&1 && return 0
+      echo "podman machine didn't come up. Start it manually with: podman machine start"
+      return 1
+    fi
+    return 1
+  }
+
+  has_cross="false"
+  if [[ "$needs_container" == "true" ]] && command -v cross >/dev/null 2>&1; then
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+      has_cross="true"
+    elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+      has_cross="true"
+    elif try_start_container_runtime; then
+      has_cross="true"
+    fi
+  fi
+
+  # Two skip categories:
+  # - skipped_expected: structurally impossible on this host (e.g. Apple
+  #   targets from a non-macOS host, no legal/technical way around it).
+  # - skipped_env: this host *should* be able to build the target (native
+  #   toolchain or cross+container), but isn't currently set up for it. This
+  #   is an environment problem, not an inherent limitation, so it's treated
+  #   as a hard failure below instead of silently shipping stale binaries.
+  skipped_expected=()
+  skipped_env=()
 
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   ensure_ts_exports
   format_ts_exports
 
-  # platform|target_triple|exe_ext
+  # platform|target_triple|exe_ext|method
   # Linux targets use MUSL for static-friendly binaries.
   # Note: aarch64-pc-windows-gnu not yet in stable Rust, omitted for now.
   targets=()
 
   # Native Apple targets are only practical when building on macOS.
   if [[ "$host_os" == "Darwin" ]]; then
-    targets+=("darwin-arm64|aarch64-apple-darwin|")
-    targets+=("darwin-x64|x86_64-apple-darwin|")
+    targets+=("darwin-arm64|aarch64-apple-darwin||native")
+    targets+=("darwin-x64|x86_64-apple-darwin||native")
   else
-    skipped+=("darwin-arm64 (non-macOS host)")
-    skipped+=("darwin-x64 (non-macOS host)")
+    skipped_expected+=("darwin-arm64 (non-macOS host)")
+    skipped_expected+=("darwin-x64 (non-macOS host)")
   fi
 
   if [[ "$has_linux_arm64_musl" == "true" ]]; then
-    targets+=("linux-arm64|aarch64-unknown-linux-musl|")
+    targets+=("linux-arm64|aarch64-unknown-linux-musl||native")
+  elif [[ "$has_cross" == "true" ]]; then
+    targets+=("linux-arm64|aarch64-unknown-linux-musl||cross")
   else
-    skipped+=("linux-arm64 (missing $linux_arm64_musl_gcc)")
+    skipped_env+=("linux-arm64 (missing $linux_arm64_musl_gcc, and no cross+container available)")
   fi
 
   if [[ "$has_linux_x64_musl" == "true" ]]; then
-    targets+=("linux-x64|x86_64-unknown-linux-musl|")
+    targets+=("linux-x64|x86_64-unknown-linux-musl||native")
+  elif [[ "$has_cross" == "true" ]]; then
+    targets+=("linux-x64|x86_64-unknown-linux-musl||cross")
   else
-    skipped+=("linux-x64 (missing $linux_x64_musl_gcc)")
+    skipped_env+=("linux-x64 (missing $linux_x64_musl_gcc, and no cross+container available)")
   fi
 
   if [[ "$has_win_x64_gnu" == "true" ]]; then
-    targets+=("win32-x64|x86_64-pc-windows-gnu|.exe")
+    targets+=("win32-x64|x86_64-pc-windows-gnu|.exe|native")
+  elif [[ "$has_cross" == "true" ]]; then
+    targets+=("win32-x64|x86_64-pc-windows-gnu|.exe|cross")
   else
-    skipped+=("win32-x64 (missing x86_64-w64-mingw32-gcc/ar)")
+    skipped_env+=("win32-x64 (missing x86_64-w64-mingw32-gcc/ar, and no cross+container available)")
   fi
 
-  if [[ ${#skipped[@]} -gt 0 ]]; then
-    echo "Skipping unavailable targets:"
-    for s in "${skipped[@]}"; do
+  if [[ ${#skipped_expected[@]} -gt 0 ]]; then
+    echo "Skipping targets not buildable from this host:"
+    for s in "${skipped_expected[@]}"; do
       echo "  - $s"
     done
     echo ""
@@ -279,26 +350,70 @@ if [[ "$mode" == "prod" ]]; then
   if [[ ${#targets[@]} -eq 0 ]]; then
     echo "Error: no buildable production targets found on this host."
     if [[ "$host_os" == "Darwin" ]]; then
-      echo "Install with: brew tap messense/macos-cross-toolchains && brew install x86_64-unknown-linux-musl aarch64-unknown-linux-musl mingw-w64"
+      echo "Install native toolchains with:"
+      echo "  brew tap messense/macos-cross-toolchains"
+      echo "  brew trust --tap messense/macos-cross-toolchains   # Homebrew 6+ only; required before install below will work"
+      echo "  brew install x86_64-unknown-linux-musl aarch64-unknown-linux-musl mingw-w64"
     else
-      echo "Install on Debian/Ubuntu with: sudo apt-get update && sudo apt-get install -y musl-tools gcc-mingw-w64 binutils-mingw-w64"
+      echo "Install native toolchains on Debian/Ubuntu with: sudo apt-get update && sudo apt-get install -y musl-tools gcc-mingw-w64 binutils-mingw-w64"
       echo "For linux-arm64, install a cross toolchain that provides aarch64-unknown-linux-musl-gcc (or aarch64-linux-musl-gcc)."
     fi
+    echo "Or install 'cross' (cargo install cross --locked) and start Docker/Podman: see scripts/setup-cross-compile.sh"
+    exit 1
+  fi
+
+  # Unlike skipped_expected, these targets are ones this host is supposed to
+  # be able to build. Shipping without them would silently leave stale
+  # binaries in place from a previous build, so fail loudly instead.
+  if [[ ${#skipped_env[@]} -gt 0 ]]; then
+    echo "Error: the following targets should be buildable from this host but their toolchain isn't set up:"
+    for s in "${skipped_env[@]}"; do
+      echo "  - $s"
+    done
+    echo ""
+    if ! command -v cross >/dev/null 2>&1; then
+      echo "Fix by installing the missing native toolchain(s) above, or install 'cross' to build via container:"
+      echo "  cargo install cross --locked"
+    elif [[ "$host_os" == "Darwin" ]] && command -v docker >/dev/null 2>&1; then
+      echo "'cross' is installed but Docker isn't running. Start it, then re-run this build:"
+      echo "  open -a Docker"
+    elif [[ "$host_os" == "Darwin" ]] && command -v podman >/dev/null 2>&1; then
+      echo "'cross' is installed but podman isn't running. Start it, then re-run this build:"
+      echo "  podman machine start"
+    else
+      echo "Fix by installing the missing native toolchain(s) above, or install and start Docker/Podman"
+      echo "for 'cross' to use (see scripts/setup-cross-compile.sh)."
+    fi
+    echo "Refusing to proceed with a partial build — packaging would silently ship stale binaries for these platforms."
     exit 1
   fi
 
   for entry in "${targets[@]}"; do
-    IFS='|' read -r platform triple ext <<< "$entry"
-    printf "\nBuilding target: %s (platform: %s)\n" "$triple" "$platform"
+    IFS='|' read -r platform triple ext method <<< "$entry"
+    printf "\nBuilding target: %s (platform: %s, via: %s)\n" "$triple" "$platform" "$method"
 
-    # Ensure rustup target is installed
-    if ! rustup target list --installed | grep -q "^${triple}$"; then
-      echo "Adding rust target: $triple"
-      rustup target add "$triple" || true
+    if [[ "$method" == "native" ]]; then
+      # Ensure rustup target is installed
+      if ! rustup target list --installed | grep -q "^${triple}$"; then
+        echo "Adding rust target: $triple"
+        rustup target add "$triple" || true
+      fi
+      build_cmd=(cargo build --release --bin "$BIN_NAME" --target "$triple")
+      target_dir="target"
+    else
+      # Each cross target gets its own --target-dir. cross's per-triple
+      # container images aren't ABI-compatible with each other, but the
+      # host-side proc-macro/build-script artifacts cargo compiles while
+      # cross-compiling live under <target-dir>/release (not namespaced by
+      # triple) — sharing one target dir across triples causes cargo to
+      # reuse a proc-macro .so built by a different container's toolchain
+      # and fail with "can't find crate for `foo_impl`".
+      target_dir="target-cross/$triple"
+      build_cmd=(cross build --release --bin "$BIN_NAME" --target "$triple" --target-dir "$target_dir")
     fi
 
-    if cargo build --release --bin "$BIN_NAME" --target "$triple"; then
-      artifact="target/$triple/release/$BIN_NAME$ext"
+    if "${build_cmd[@]}"; then
+      artifact="$target_dir/$triple/release/$BIN_NAME$ext"
       dest_dir="$BINDIR/$platform"
       dest_name="$BIN_NAME$ext"
       if [[ -f "$artifact" ]]; then
@@ -307,7 +422,7 @@ if [[ "$mode" == "prod" ]]; then
         echo "Expected artifact not found: $artifact"
       fi
     else
-      echo "cargo build failed for $triple — aborting."
+      echo "build failed for $triple (via $method) — aborting."
       exit 1
     fi
   done
