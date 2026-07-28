@@ -154,6 +154,10 @@ pub fn run(args: DebugArgs) -> Result<()> {
     if args.dump_config {
         node_args.push("--dump-config".to_string());
     }
+    if let Some(ref script) = args.script {
+        node_args.push("--script".to_string());
+        node_args.push(script.clone());
+    }
 
     if headless {
         // Headless mode: Node inherits our stdio. The mux stream goes directly
