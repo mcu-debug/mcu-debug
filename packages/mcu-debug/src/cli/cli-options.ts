@@ -13,6 +13,7 @@ export interface CliArgs {
     dumpConfig?: boolean;
     showServerOutput?: boolean;
     waitForClient?: boolean;
+    script?: string;
 }
 
 const program = new Command();
@@ -26,6 +27,7 @@ program
     .option('--dump-config', 'Dump the configuration and exit')
     .option('--show-server-output', 'Show server output in the console')
     .option('--wait-for-client', 'Wait for a client to connect before starting the debug session')
+    .option('-r, --script <string>', 'script file to execute after startup as though commands were entered on stdin')
     .version(version, '-V, --version', 'Show version information')
     .helpOption('-h, --help', 'Show this help message')
     .parse(process.argv);

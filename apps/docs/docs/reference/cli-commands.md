@@ -22,7 +22,7 @@ mcu-debug debug [options]
 | `--no-tui`                   | Force terminal mode even when running on a TTY                              |
 | `-s, --settings <path>`      | Path to mcu-debug settings file (alternative to `.vscode/settings.json`)    |
 | `-l, --log <path>`           | Override default log file path                                              |
-| `--script <path>`            | GDB script file to run at session start (for automated use)                 |
+| `--script <path>`            | GDB/Meta script file to run at session start (for automated use)            |
 
 Examples:
 
@@ -56,7 +56,7 @@ mcu-debug attach /path/to/.mcu-debug/session.sock
 
 ### list
 
-List all active mcu-debug sessions discoverable from the current directory.
+List all active mcu-debug sessions discoverable from the current directory. TBD
 
 ```sh
 mcu-debug list

@@ -16,7 +16,7 @@ The fundamental advantage: the human can observe the physical world (LED state, 
 **Step 1**: Human starts the debug session in TUI mode:
 
 ```sh
-mcu-debug debug -c "My Config"
+mcu-debug debug -c "My Config" ...
 ```
 
 The TUI opens in the terminal.
@@ -32,7 +32,7 @@ mcu-debug attach
 The CLI auto-discovers the session from `.mcu-debug/sock.json`. If multiple sessions are running, specify the socket path:
 
 ```sh
-mcu-debug attach /path/to/.mcu-debug/session.sock
+mcu-debug attach -s /path/to/.mcu-debug/session.sock
 ```
 
 **Step 4**: Both are now connected. All output is broadcast to all attached clients. Either can send commands.
@@ -41,7 +41,8 @@ mcu-debug attach /path/to/.mcu-debug/session.sock
 
 Both human and AI share the same GDB session. To avoid command contention, use a simple convention:
 
-- **AI sends GDB and meta-commands** for inspection and control
+- **AI sends GDB and meta-commands** for inspection and control. A complete list of Meta commands are documented in https://mcu-debug.github.io/mcu-debug/docs/reference/meta-commands
+
 - **Human uses USER-REQUEST** to provide physical-world observations
 
 ```

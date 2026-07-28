@@ -17,6 +17,8 @@ The AI spawns mcu-debug in terminal mode (stdout is redirected, so no-tui activa
 mcu-debug debug -c "Launch PSoC6 CM4"
 ```
 
+Additional arguments to `mcu-debug`  can be sent as the need arises. See `mcu-debug debug --help`
+
 Or explicitly:
 
 ```sh

@@ -199,10 +199,35 @@ export class CliSessionDriver {
                 throw new Error(`configurationDone failed: ${configDoneResponse.message}`);
             }
             logger.debug("Debug session started successfully.");
+            this.runScript(cliArgs.script);
         }).catch((error: Error | unknown) => {
             logger.error("Failed to start debug session: " + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
         });
+    }
+
+    private async runScript(script?: string) {
+        if (!script) {
+            return;
+        }
+        // Implement the logic to run the GDB script here
+        let scriptContent = "";
+        try {
+            scriptContent = fs.readFileSync(script, 'utf-8');
+            // Execute the GDB script content here
+        } catch (error) {
+            logger.error("Failed to run script: " + (error instanceof Error ? error.message : String(error)));
+            return;
+        }
+        const lines = scriptContent.split('\n');
+        for (const line of lines) {
+            // Execute each line of the GDB script here
+            if (this.isPaused) {
+                await this.handleInputLinePaused(line, false);
+            } else {
+                await this.handleInputLineRunning(line, false);
+            }
+        }
     }
 
     private startGDBServerConsole(message: string): Promise<void> {
@@ -393,10 +418,10 @@ export class CliSessionDriver {
         return true;
     }
 
-    private handleInputLinePaused(input: string, isTerminal: boolean) {
+    private handleInputLinePaused(input: string, isTerminal: boolean): Promise<void> {
         const trimmedInput = input.trim();
         if (!trimmedInput) {
-            return;
+            return Promise.resolve();
         }
         logger.debug(input, { source: 'user-input', skipConsole: true }); // log user input, but not to console to avoid confusion with DA output
         // Handle user input and send it to the debug session
@@ -411,9 +436,11 @@ export class CliSessionDriver {
                 if (!response.success) {
                     logger.warn(`Continue request failed: ${response.message}`);
                 }
+                return Promise.resolve();
             });
         } else if (this.handleSpecialCommands(trimmedInput, isTerminal)) {
             // Special commands handled
+            return Promise.resolve();
         } else {
             // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest"
             this.doReplCommand(trimmedInput).then((response) => {
@@ -430,8 +457,10 @@ export class CliSessionDriver {
                         }
                     }, 250);
                 }
+                return Promise.resolve();
             });
         }
+        return Promise.resolve();
     }
 
     /**
@@ -678,14 +707,16 @@ export class CliSessionDriver {
     // The single this.rl interface handles both paused and running states, dispatching
     // input via this.isPaused at the point each line arrives.
 
-    private handleInputLineRunning(input: string, isTerminal: boolean) {
+    private handleInputLineRunning(input: string, isTerminal: boolean): Promise<void> {
         const trimmedInput = input.trim();
         if (!trimmedInput) {
-            return;
+            return Promise.resolve();
         }
-        if (this.handleSpecialCommands(trimmedInput, isTerminal)) {
-            return;
+        try {
+            this.handleSpecialCommands(trimmedInput, isTerminal);
+        } catch {
         }
+        return Promise.resolve();
     }
 
     /**

@@ -102,6 +102,10 @@ pub struct DebugArgs {
     #[arg(long = "wait-for-client")]
     pub wait_for_client: bool,
 
+    /// Path to the script to run.
+    #[arg(short = 'r', long = "script")]
+    pub script: Option<String>,
+
     /// Dump the configuration and exit.
     #[arg(long = "dump-config")]
     pub dump_config: bool,
@@ -265,9 +269,7 @@ fn resolve_attach_path(explicit: Option<String>) -> Result<String> {
     #[cfg(not(windows))]
     let (field, resolved) = ("socket", info.socket);
 
-    resolved.ok_or_else(|| {
-        anyhow::anyhow!("no `{field}` entry found in {}", sock_file::SOCK_FILE)
-    })
+    resolved.ok_or_else(|| anyhow::anyhow!("no `{field}` entry found in {}", sock_file::SOCK_FILE))
 }
 
 pub fn attach(args: AttachArgs) -> Result<()> {
