@@ -640,7 +640,7 @@ export class SerialPortManager {
             });
         }
         if (isNew) {
-            view.notifyConnected(`Serial port ${actualPath} opened successfully on initial launch`);
+            view.notifyConnected(`Serial port ${actualPath} opened successfully on initial launch on tcp port 127.0.0.1:${tcpPort}`);
         } else {
             view.notifyReconnected();
         }
