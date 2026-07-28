@@ -14,7 +14,7 @@ if (nodeMajorVersion < 22) {
 const binDir = path.resolve(os.homedir(), ".mcu-debug", "bin");
 const delimiter = process.platform === "win32" ? ";" : ":";
 const pathEnv = process.env.PATH || "";
-const isInPath = pathEnv.split(delimiter).some(p => {
+const isInPath = pathEnv.split(delimiter).some((p) => {
     try {
         return path.resolve(p).toLowerCase() === binDir.toLowerCase();
     } catch {
@@ -40,18 +40,18 @@ if (process.platform === "win32") {
     console.log("We will add the mcu-debug bin folder to your Windows User Environment variables.");
     const rl = readline.createInterface({
         input: process.stdin,
-        output: process.stdout
+        output: process.stdout,
     });
     rl.question("Do you want to proceed? [y/N]: ", (answer) => {
         if (answer.toLowerCase() === "y") {
             try {
-                const psGetCmd = `[Environment]::GetEnvironmentVariable("PATH", "User")`;
+                const psGetCmd = `[Environment]::GetEnvironmentVariable('PATH', 'User')`;
                 const userPath = execSync(`powershell -NoProfile -Command "${psGetCmd}"`, { stdio: "pipe" }).toString().trim();
-                
+
                 if (!userPath.toLowerCase().includes(binDir.toLowerCase())) {
                     const separator = userPath.length > 0 && !userPath.endsWith(";") ? ";" : "";
                     const newPath = userPath + separator + binDir;
-                    const psSetCmd = `[Environment]::SetEnvironmentVariable("PATH", "${newPath.replace(/"/g, '\\"')}", "User")`;
+                    const psSetCmd = `[Environment]::SetEnvironmentVariable('PATH', '${newPath.replace(/'/g, "''")}', 'User')`;
                     execSync(`powershell -NoProfile -Command "${psSetCmd}"`);
                     console.log("\n[SUCCESS] Added mcu-debug bin directory to your Windows User PATH!");
                     console.log("IMPORTANT: Please restart your terminal (or VS Code) for the PATH changes to take effect.\n");
@@ -92,7 +92,7 @@ if (process.platform === "win32") {
     console.log(`We will add mcu-debug to your PATH by appending to ${profilePath}`);
     const rl = readline.createInterface({
         input: process.stdin,
-        output: process.stdout
+        output: process.stdout,
     });
     rl.question("Do you want to proceed? [y/N]: ", (answer) => {
         if (answer.toLowerCase() === "y") {
