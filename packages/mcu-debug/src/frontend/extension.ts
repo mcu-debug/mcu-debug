@@ -143,7 +143,7 @@ export class MCUDebugExtension {
 
             vscode.commands.registerCommand("mcu-debug.installCli", () => {
                 context.globalState.update("mcu-debug.cliPromptDismissed", true);
-                const installerScriptPath = path.join(context.extensionPath, "scripts", "install-cli.js");
+                const installerScriptPath = path.join(context.extensionPath, "support", "install-cli.js");
                 const terminal = vscode.window.createTerminal({
                     name: "mcu-debug CLI Installer",
                 });
