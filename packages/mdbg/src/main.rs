@@ -15,6 +15,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use mdbg::cockpit::run::AttachArgs;
 use mdbg::cockpit::run::DebugArgs;
 use mdbg::da_helper::run::DaHelperArgs;
 use mdbg::proxy_helper::run::ProxyArgs;
@@ -36,6 +37,10 @@ enum Commands {
     /// Launch a debug CLI session with an optional ratatui TUI (Terminal UI).
     #[command(name = "debug")]
     Debug(DebugArgs),
+
+    /// Attach to an existing debug session via a Unix socket.
+    #[command(name = "attach")]
+    Attach(AttachArgs),
 
     /// Debug Adapter helper: ELF parsing, disassembly, and symbol lookup
     #[command(name = "da-helper")]
@@ -76,7 +81,10 @@ fn main() -> Result<()> {
     if let Some(sub) = implicit_subcommand(exe_stem) {
         // Inject the subcommand only when not already supplied explicitly.
         let has_sub = args.get(1).map_or(false, |a| {
-            matches!(a.as_str(), "debug" | "da-helper" | "proxy")
+            matches!(
+                a.as_str(),
+                "debug" | "attach" | "da-helper" | "proxy" | "serial"
+            )
         });
         if !has_sub {
             args.insert(1, sub.to_string());
@@ -87,6 +95,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Debug(args) => mdbg::cockpit::run::run(args),
+        Commands::Attach(args) => mdbg::cockpit::run::attach(args),
         Commands::DaHelper(args) => mdbg::da_helper::run::run(args),
         Commands::Proxy(args) => mdbg::proxy_helper::run::run(args),
         Commands::Serial(args) => mdbg::serial::cmd::run(args),

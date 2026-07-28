@@ -985,7 +985,6 @@ export class CliSessionDriver {
         }
     }
 
-    // In session-driver.ts — to be implemented when Node socket is wired up
     private async startSocketReader(): Promise<void> {
         await this.checkSocketFree();
         const socketPath = this.createSocketPath();     // Will have backslashes and .sock suffix on Windows, normal .sock file on Unix
@@ -1047,10 +1046,13 @@ export class CliSessionDriver {
     }
 
     private writeSockFile(socketPath: string) {
-        // Write the socket path to .mcu-debug/socket.json for the Rust side to pick up
+        // Write the socket/pipe path to .mcu-debug/socket.json for the Rust side to pick up.
+        // The Rust SockInfo struct treats these as mutually exclusive: a Windows named pipe
+        // path goes under `pipe`, everything else (Unix domain socket) goes under `socket`.
         const sockInfo = {
             pid: process.pid,
-            socket: socketPath,
+            socket: process.platform === 'win32' ? undefined : socketPath,
+            pipe: process.platform === 'win32' ? socketPath : undefined,
             cwd: process.cwd(),
             config: this.config.name,
             startedAt: new Date().toISOString(),

@@ -14,9 +14,12 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
-use std::{io::IsTerminal, path::PathBuf};
+use std::{
+    io::{IsTerminal, Read, Write},
+    path::PathBuf,
+};
 
-use super::{spawn, transport, tui};
+use super::{sock_file, spawn, transport, tui};
 
 const MIN_NODE_MAJOR: u32 = 22; // Node v22+ is required for stable features we rely on (e.g. stable fetch API)
 
@@ -111,6 +114,12 @@ pub struct DebugArgs {
     pub no_tui: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct AttachArgs {
+    #[arg(short = 's', long = "socket-path")]
+    pub socket_path: Option<String>,
+}
+
 pub fn run(args: DebugArgs) -> Result<()> {
     check_node_version()?;
 
@@ -175,4 +184,114 @@ pub fn run(args: DebugArgs) -> Result<()> {
     let _ = child.wait();
 
     Ok(())
+}
+
+/// A duplex connection that can be split into an independently-owned
+/// read half and write half by cloning the underlying handle. Implemented
+/// for `UnixStream` (Unix domain socket) and `File` (Windows named pipe,
+/// opened as a client via `CreateFileW`).
+trait ClonableDuplex: Read + Write + Sized {
+    fn try_clone_duplex(&self) -> std::io::Result<Self>;
+}
+
+#[cfg(unix)]
+impl ClonableDuplex for std::os::unix::net::UnixStream {
+    fn try_clone_duplex(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
+}
+
+#[cfg(windows)]
+impl ClonableDuplex for std::fs::File {
+    fn try_clone_duplex(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
+}
+
+/// Pipe our stdin to `connection` and echo `connection`'s output to our
+/// stdout, until the peer disconnects.
+fn pump_stdio<S: ClonableDuplex + Send + 'static>(connection: S) -> Result<()> {
+    // Our stdin -> connection runs on a background thread since reading
+    // stdin blocks independently of the connection. It has no explicit
+    // shutdown: once the peer disconnects, this function returns and the
+    // whole process exits, tearing the thread down with it.
+    let mut writer = connection
+        .try_clone_duplex()
+        .context("failed to clone the connection for writing")?;
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut std::io::stdin(), &mut writer);
+    });
+
+    // connection -> our stdout, on the main thread. Returns once the peer
+    // disconnects (read returns 0).
+    let mut reader = connection;
+    let mut stdout = std::io::stdout();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .context("error reading from the connection")?;
+        if n == 0 {
+            break;
+        }
+        stdout.write_all(&buf[..n])?;
+        stdout.flush()?;
+    }
+
+    Ok(())
+}
+
+/// Resolve the endpoint to attach to: the explicit `--socket-path` override,
+/// or — per platform — the `socket` (Unix) / `pipe` (Windows) field of the
+/// session file written by the Node CLI (see `writeSockFile` in
+/// `cli-driver.ts`).
+fn resolve_attach_path(explicit: Option<String>) -> Result<String> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+
+    let session_file = std::path::Path::new(sock_file::SOCK_FILE);
+    if !session_file.exists() {
+        anyhow::bail!(
+            "Socket file not specified and {} not found in the current directory",
+            sock_file::SOCK_FILE
+        );
+    }
+    let raw = std::fs::read_to_string(session_file)?;
+    let info: sock_file::SockInfo = serde_json::from_str(&raw)?;
+
+    #[cfg(windows)]
+    let (field, resolved) = ("pipe", info.pipe);
+    #[cfg(not(windows))]
+    let (field, resolved) = ("socket", info.socket);
+
+    resolved.ok_or_else(|| {
+        anyhow::anyhow!("no `{field}` entry found in {}", sock_file::SOCK_FILE)
+    })
+}
+
+pub fn attach(args: AttachArgs) -> Result<()> {
+    let path = resolve_attach_path(args.socket_path)?;
+
+    #[cfg(unix)]
+    {
+        let connection = std::os::unix::net::UnixStream::connect(&path)
+            .with_context(|| format!("failed to connect to the Unix socket {path}"))?;
+        pump_stdio(connection)
+    }
+
+    #[cfg(windows)]
+    {
+        // A Windows named pipe is opened as a client the same way as a
+        // regular file, once the server side is listening for a connection.
+        let connection = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("failed to connect to the named pipe {path}"))?;
+        pump_stdio(connection)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    anyhow::bail!("`attach` is not supported on this platform");
 }
