@@ -20,7 +20,7 @@ Items marked marked ✨ are new features relative to Cortex-Debug
 - **CLI tool✨** — full debug sessions in a terminal (TUI, plain or VSCode Panel), suitable for headless and AI-driven workflows
 - **AI integration✨** — designed for autonomous and hybrid AI-assisted debugging with Claude Code, GitHub Copilot, and similar tools
 - **Multi-core support** — debug CM0+ and CM4 cores simultaneously on devices like PSoC6 or combination of MCUs RISC-V/ARM or even boards.
-- **Rust✨**Support for Rust data structures
+- **Rust** - Support for Rust data structures
 
 ## Prerequisites
 
