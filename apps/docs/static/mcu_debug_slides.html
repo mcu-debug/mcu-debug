@@ -454,7 +454,7 @@
 
                         <div
                             class="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs text-emerald-300 mt-6">
-                            "hostConfig": { "type": "auto" } or "hostConfig": true
+                            "hostConfig": { "type": "auto" }<br>"hostConfig": true
                         </div>
                     </div>
                 </div>
@@ -530,12 +530,13 @@
 
                         <!-- Multiplexed Stream Live Preview Box -->
                         <div class="telemetry-stream-preview">
-                            <div><span class="tag-rtt">[RTT]</span> Task execution delayed in DMA queue (0x20001400)
+                            <div><span class="tag-rtt">[RTT#0]</span> Task execution delayed in DMA queue (0x20001400)
                             </div>
-                            <div><span class="tag-svd">[SVD]</span> USART1-&gt;ISR: TXE=0, TC=0, ORE=1 (Overrun Error)
+                            <div><span class="tag-svd">[UART:Debug]</span> USART1-&gt;ISR: TXE=0, TC=0, ORE=1 (Overrun
+                                Error)
                             </div>
                             <div><span class="tag-gdb">[GDB]</span> frame #0: HardFault_Handler () at faults.c:42</div>
-                            <div><span class="tag-ai">[AI Agent]</span> Isolated: RX overrun triggered unhandled ISR
+                            <div><span class="tag-ai">[AI-REQUEST]</span> Isolated: RX overrun triggered unhandled ISR
                                 spinlock.</div>
                         </div>
                     </div>
@@ -667,7 +668,7 @@
                         </div>
 
                         <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-slate-400">
-                            Available today on VS Code Marketplace &amp; GitHub.
+                            Available on GitHub &amp; soon on VS Code Marketplace
                         </div>
                     </div>
                 </div>
