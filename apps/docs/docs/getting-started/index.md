@@ -39,3 +39,4 @@ Before starting, you will need:
 | [Quick Start](./quick-start.md)               | First debug session in five minutes                        |
 | [How mcu-debug Works](./how-it-works.md)      | The VS Code → DA → GDB → gdb-server → probe → target chain |
 | [Migrating from Cortex-Debug](./migrating.md) | mcu-debug is the successor to Cortex-Debug — what changed  |
+| [Slide Presentation](pathname:///mcu_debug_slides.html) | Visual tour of mcu-debug for existing Cortex-Debug users |

@@ -7,6 +7,8 @@ title: Migrating from Cortex-Debug
 
 mcu-debug is the successor to **Cortex-Debug**, written by the same author. If you have existing projects using Cortex-Debug, this page explains what changed and what you need to update.
 
+👉 **[View the mcu-debug slide presentation](pathname:///mcu_debug_slides.html)** — a quick visual tour of what's new, built for Cortex-Debug users.
+
 ## Background
 
 Cortex-Debug was the original VS Code embedded debug extension. mcu-debug is a ground-up rewrite that adds the CLI tool, AI integration, RTT server improvements, remote debugging support, and a cleaner architecture. Most `launch.json` configurations migrate with minimal changes.

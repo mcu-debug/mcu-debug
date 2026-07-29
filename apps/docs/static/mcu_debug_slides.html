@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mcu-debug Presentation</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            400: '#38bdf8',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            900: '#0c4a6e',
+                        },
+                        accent: {
+                            purple: '#c084fc',
+                            emerald: '#34d399',
+                            amber: '#fbbf24',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        /* Custom Styling for Presentation Slides */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0b0f19;
+            color: #f1f5f9;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        .slide-deck {
+            position: relative;
+            width: 100vw;
+            height: calc(100vh - 70px);
+            overflow: hidden;
+        }
+
+        .slide-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateX(30px);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            flex-direction: column;
+            padding: 2.5rem 4rem;
+        }
+
+        .slide-container.active {
+            opacity: 1;
+            visibility: visible;
+            transform: translateX(0);
+        }
+
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 1rem;
+        }
+
+        .gradient-text {
+            background: linear-gradient(135deg, #38bdf8 0%, #c084fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* Architecture Diagram Specific Styling */
+        .telemetry-diagram {
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            border-radius: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            padding: 1.5rem;
+            height: 100%;
+            justify-content: space-between;
+        }
+
+        .diagram-layer {
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 0.75rem;
+            padding: 0.85rem 1rem;
+            transition: all 0.2s ease;
+        }
+
+        .diagram-layer.highlight-blue {
+            border-color: rgba(56, 189, 248, 0.4);
+            box-shadow: 0 0 20px rgba(56, 189, 248, 0.08);
+        }
+
+        .diagram-layer.highlight-purple {
+            border-color: rgba(168, 85, 247, 0.4);
+            box-shadow: 0 0 20px rgba(168, 85, 247, 0.08);
+        }
+
+        .layer-title {
+            align-items: center;
+            color: #94a3b8;
+            display: flex;
+            font-size: 0.75rem;
+            font-weight: 700;
+            gap: 0.5rem;
+            letter-spacing: 0.8px;
+            margin-bottom: 0.6rem;
+            text-transform: uppercase;
+        }
+
+        .stream-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .chip {
+            align-items: center;
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            color: #cbd5e1;
+            display: flex;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            gap: 0.4rem;
+            padding: 0.35rem 0.65rem;
+        }
+
+        .chip i {
+            color: #38bdf8;
+        }
+
+        .chip.purple i {
+            color: #c084fc;
+        }
+
+        .chip.emerald i {
+            color: #34d399;
+        }
+
+        .flow-connector {
+            align-items: center;
+            color: #38bdf8;
+            display: flex;
+            font-size: 0.75rem;
+            font-weight: 600;
+            gap: 0.5rem;
+            justify-content: center;
+            opacity: 0.85;
+        }
+
+        .flow-connector span {
+            background: rgba(56, 189, 248, 0.12);
+            border: 1px solid rgba(56, 189, 248, 0.2);
+            border-radius: 1rem;
+            color: #38bdf8;
+            font-size: 0.7rem;
+            padding: 0.15rem 0.75rem;
+        }
+
+        /* Unified Telemetry Stream Terminal Box inside Diagram */
+        .telemetry-stream-preview {
+            background: #060911;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 0.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.725rem;
+            padding: 0.75rem 0.85rem;
+            color: #94a3b8;
+            line-height: 1.6;
+            box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+        }
+
+        .telemetry-stream-preview .tag-rtt {
+            color: #38bdf8;
+            font-weight: 600;
+        }
+
+        .telemetry-stream-preview .tag-svd {
+            color: #34d399;
+            font-weight: 600;
+        }
+
+        .telemetry-stream-preview .tag-ai {
+            color: #c084fc;
+            font-weight: 600;
+        }
+
+        .telemetry-stream-preview .tag-gdb {
+            color: #facc15;
+            font-weight: 600;
+        }
+
+        .code-tag {
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 0.375rem;
+            color: #34d399;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            padding: 0.15rem 0.5rem;
+        }
+    </style>
+</head>
+
+<body class="flex flex-col h-screen select-none">
+
+    <!-- Navigation Header -->
+    <header class="h-[70px] border-b border-slate-800 bg-slate-950/80 px-8 flex items-center justify-between z-50">
+        <div class="flex items-center space-x-3">
+            <div
+                class="w-9 h-9 rounded-lg bg-gradient-to-br from-sky-400 to-indigo-600 flex items-center justify-center text-white font-mono font-bold text-lg shadow-lg shadow-sky-500/20">
+                m
+            </div>
+            <div>
+                <h1 class="text-base font-bold text-slate-100 tracking-wide font-mono">mcu-debug</h1>
+                <p class="text-xs text-slate-400">Next-Gen Open Source Embedded Debugging</p>
+            </div>
+        </div>
+
+        <!-- Slide Controls -->
+        <div class="flex items-center space-x-6">
+            <!-- Slide Dots -->
+            <div class="flex space-x-2" id="slide-dots">
+                <!-- Javascript will populate dots -->
+            </div>
+
+            <!-- Slide Counter -->
+            <span class="text-xs font-mono text-slate-400" id="slide-counter">Slide 1 of 4</span>
+
+            <!-- Buttons -->
+            <div class="flex items-center space-x-2">
+                <button onclick="prevSlide()"
+                    class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
+                    title="Previous Slide">
+                    <i class="fa-solid fa-chevron-left text-sm"></i>
+                </button>
+                <button onclick="nextSlide()"
+                    class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
+                    title="Next Slide">
+                    <i class="fa-solid fa-chevron-right text-sm"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Slide Deck Area -->
+    <main class="slide-deck">
+
+        <!-- SLIDE 1: Title & Overview -->
+        <div class="slide-container active" id="slide1">
+            <div class="h-full flex flex-col justify-between max-w-6xl mx-auto w-full">
+                <div class="pt-6">
+                    <div
+                        class="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/20 text-sky-400 text-xs font-medium mb-6">
+                        <i class="fa-solid fa-code-branch"></i>
+                        <span>The Evolution Beyond Cortex-Debug</span>
+                    </div>
+                    <h1 class="text-5xl font-extrabold tracking-tight text-white mb-4">
+                        Introducing <span class="gradient-text">mcu-debug</span>
+                    </h1>
+                    <p class="text-xl text-slate-300 max-w-3xl leading-relaxed font-light">
+                        A modern, modular embedded debugging ecosystem engineered for automation, headless CI workflows,
+                        seamless remote development, and AI agent integration.
+                    </p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 my-auto">
+                    <!-- Feature 1 -->
+                    <div class="glass-panel p-6 flex flex-col justify-between hover:border-sky-500/40 transition">
+                        <div>
+                            <div
+                                class="w-12 h-12 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center text-xl mb-4">
+                                <i class="fa-solid fa-terminal"></i>
+                            </div>
+                            <h3 class="text-lg font-semibold text-white mb-2">CLI & CI First</h3>
+                            <p class="text-sm text-slate-400 leading-relaxed">
+                                Full TUI mode and headless command-line interface. Automate firmware flashes, GDB trace
+                                captures, and regression tests in CI pipelines.
+                            </p>
+                        </div>
+                        <div class="mt-4 pt-3 border-t border-slate-800 text-xs font-mono text-sky-400">
+                            Zero VS Code dependency for CI
+                        </div>
+                    </div>
+
+                    <!-- Feature 2 -->
+                    <div class="glass-panel p-6 flex flex-col justify-between hover:border-sky-500/40 transition">
+                        <div>
+                            <div
+                                class="w-12 h-12 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-xl mb-4">
+                                <i class="fa-solid fa-cloud-arrow-down"></i>
+                            </div>
+                            <h3 class="text-lg font-semibold text-white mb-2">Frictionless Remote</h3>
+                            <p class="text-sm text-slate-400 leading-relaxed">
+                                First-class support for WSL2, Docker containers, and SSH targets with zero manual port
+                                forwarding or pipe setup.
+                            </p>
+                        </div>
+                        <div class="mt-4 pt-3 border-t border-slate-800 text-xs font-mono text-emerald-400">
+                            Native cross-platform tunnels
+                        </div>
+                    </div>
+
+                    <!-- Feature 3 -->
+                    <div class="glass-panel p-6 flex flex-col justify-between hover:border-purple-500/40 transition">
+                        <div>
+                            <div
+                                class="w-12 h-12 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center text-xl mb-4">
+                                <i class="fa-solid fa-robot"></i>
+                            </div>
+                            <h3 class="text-lg font-semibold text-white mb-2">AI Agent Native</h3>
+                            <p class="text-sm text-slate-400 leading-relaxed">
+                                Multiplexes raw GDB commands, SVD registers, RTT buffers, and logs into a structured
+                                stream for hybrid AI/human debugging.
+                            </p>
+                        </div>
+                        <div class="mt-4 pt-3 border-t border-slate-800 text-xs font-mono text-purple-400">
+                            Raw GDB feature access
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between text-xs text-slate-500 border-t border-slate-800/80 pt-4">
+                    <span>Drop-in migration path for Cortex-Debug users</span>
+                    <span>Open Source &amp; Community Driven</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- SLIDE 2: Focus 1 & 2 - CLI / CI & Remote Support -->
+        <div class="slide-container" id="slide2">
+            <div class="h-full flex flex-col justify-between max-w-6xl mx-auto w-full">
+                <div>
+                    <span class="text-xs font-mono text-sky-400 uppercase tracking-widest font-semibold">Pillar 1 &amp;
+                        2</span>
+                    <h2 class="text-3xl font-bold text-white mt-1 mb-2">Automation &amp; Remote Infrastructure</h2>
+                    <p class="text-slate-400 text-sm">Bring your embedded debugging out of isolated desktop IDEs into
+                        modern cloud &amp; containerized dev pipelines.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 my-auto">
+                    <!-- Column 1: CLI & CI -->
+                    <div class="glass-panel p-6 flex flex-col justify-between border-l-4 border-l-sky-500">
+                        <div>
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-xl font-bold text-white flex items-center gap-2">
+                                    <i class="fa-solid fa-terminal text-sky-400"></i>
+                                    CLI &amp; CI Automation
+                                </h3>
+                                <span class="code-tag">Headless Mode</span>
+                            </div>
+                            <p class="text-sm text-slate-300 mb-4 leading-relaxed">
+                                Launch full debug sessions directly from the command line or within automated test
+                                suites without booting a graphical user interface.
+                            </p>
+
+                            <ul class="space-y-3 text-sm text-slate-300">
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-check text-sky-400 mt-1"></i>
+                                    <span><strong>TUI Debugger:</strong> Rich terminal user interface for interactive
+                                        terminal-only environments.</span>
+                                </li>
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-check text-sky-400 mt-1"></i>
+                                    <span><strong>CI Pipeline Ready:</strong> Run automated hardware-in-the-loop (HIL)
+                                        tests in GitHub Actions or Jenkins.</span>
+                                </li>
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-check text-sky-400 mt-1"></i>
+                                    <span><strong>Unified Scripting:</strong> Programmatically execute GDB commands and
+                                        capture memory dumps.</span>
+                                </li>
+                            </ul>
+                        </div>
+
+                        <div
+                            class="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs text-sky-300 mt-6">
+                            $ mcu-debug --config "Launch CM0" --no-tui --script gdb-script-file.gdb --logfile
+                            session.log
+                        </div>
+                    </div>
+
+                    <!-- Column 2: Remote Support -->
+                    <div class="glass-panel p-6 flex flex-col justify-between border-l-4 border-l-emerald-500">
+                        <div>
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-xl font-bold text-white flex items-center gap-2">
+                                    <i class="fa-solid fa-server text-emerald-400"></i>
+                                    Frictionless Remote Debugging
+                                </h3>
+                                <span class="code-tag"
+                                    style="color: #34d399; background: rgba(52, 211, 153, 0.15); border-color: rgba(52, 211, 153, 0.3);">Zero
+                                    Config Tunnels</span>
+                            </div>
+                            <p class="text-sm text-slate-300 mb-4 leading-relaxed">
+                                Native support for remote development environments without standard remote GDB
+                                networking gymnastics.
+                            </p>
+
+                            <ul class="space-y-3 text-sm text-slate-300">
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-check text-emerald-400 mt-1"></i>
+                                    <span><strong>Docker &amp; Container Dev:</strong> Seamless hardware passthrough
+                                        into Linux dev containers.</span>
+                                </li>
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-check text-emerald-400 mt-1"></i>
+                                    <span><strong>WSL2 Native Speed:</strong> Direct USB debug probe access with
+                                        low-latency sockets.</span>
+                                </li>
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-check text-emerald-400 mt-1"></i>
+                                    <span><strong>Remote SSH Hosts:</strong> Debug hardware attached to remote farm
+                                        servers transparently.</span>
+                                </li>
+                            </ul>
+                        </div>
+
+                        <div
+                            class="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs text-emerald-300 mt-6">
+                            "hostConfig": { "type": "auto" } or "hostConfig": true
+                        </div>
+                    </div>
+                </div>
+
+                <div class="text-center text-xs text-slate-500">
+                    Reduces setup time from hours of custom shell scripts to a single standardized configuration file.
+                </div>
+            </div>
+        </div>
+
+        <!-- SLIDE 3: Focus 3 - AI & Telemetry Architecture -->
+        <div class="slide-container" id="slide3">
+            <div class="h-full flex flex-col justify-between max-w-6xl mx-auto w-full">
+                <div>
+                    <span class="text-xs font-mono text-purple-400 uppercase tracking-widest font-semibold">Pillar
+                        3</span>
+                    <h2 class="text-3xl font-bold text-white mt-1 mb-1">AI-Assisted Debugging &amp; Hardware Telemetry
+                    </h2>
+                    <p class="text-slate-400 text-sm">Multiplexing raw GDB capabilities, register states, and memory
+                        streams into a coherent AI diagnostic surface.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 my-auto">
+                    <!-- Left Column: Architecture Diagram -->
+                    <div class="telemetry-diagram">
+                        <!-- Human Layer -->
+                        <div class="diagram-layer">
+                            <div class="layer-title"><i class="fa-solid fa-user-gear text-sky-400"></i> Human Developer
+                                (Strategic Intent)</div>
+                            <div class="stream-chips">
+                                <div class="chip"><i class="fa-solid fa-desktop"></i> VS Code / CLI TUI</div>
+                                <div class="chip"><i class="fa-solid fa-note-sticky"></i> Session Notes</div>
+                                <div class="chip"><i class="fa-solid fa-hand-point-right"></i> High-Level Decisions
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flow-connector">
+                            <i class="fa-solid fa-arrows-up-down"></i>
+                            <span>Structured Session Context &amp; Guidance</span>
+                        </div>
+
+                        <!-- AI Agent Layer -->
+                        <div class="diagram-layer highlight-purple">
+                            <div class="layer-title"><i class="fa-solid fa-brain text-purple-400"></i> Autonomous AI
+                                Debug Agent</div>
+                            <div class="stream-chips">
+                                <div class="chip purple"><i class="fa-solid fa-terminal"></i> Direct GDB Interface</div>
+                                <div class="chip purple"><i class="fa-solid fa-magnifying-glass"></i> Autonomous
+                                    Inspection</div>
+                                <div class="chip purple"><i class="fa-solid fa-diagram-project"></i> Cause Hypothesis
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flow-connector">
+                            <i class="fa-solid fa-arrows-up-down"></i>
+                            <span>Multiplexed Telemetry &amp; Debug Stream</span>
+                        </div>
+
+                        <!-- Telemetry & Hardware Multiplexer Layer -->
+                        <div class="diagram-layer highlight-blue">
+                            <div class="layer-title"><i class="fa-solid fa-microchip text-emerald-400"></i> Target
+                                Hardware &amp; Telemetry Engine</div>
+                            <div class="stream-chips">
+                                <div class="chip emerald"><i class="fa-solid fa-bolt"></i> GDB Control Engine</div>
+                                <div class="chip emerald"><i class="fa-solid fa-memory"></i> RTT Memory Buffer</div>
+                                <div class="chip emerald"><i class="fa-solid fa-list-check"></i> SVD Peripherals</div>
+                                <div class="chip emerald"><i class="fa-solid fa-network-wired"></i> Serial/UART Log
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Multiplexed Stream Live Preview Box -->
+                        <div class="telemetry-stream-preview">
+                            <div><span class="tag-rtt">[RTT]</span> Task execution delayed in DMA queue (0x20001400)
+                            </div>
+                            <div><span class="tag-svd">[SVD]</span> USART1-&gt;ISR: TXE=0, TC=0, ORE=1 (Overrun Error)
+                            </div>
+                            <div><span class="tag-gdb">[GDB]</span> frame #0: HardFault_Handler () at faults.c:42</div>
+                            <div><span class="tag-ai">[AI Agent]</span> Isolated: RX overrun triggered unhandled ISR
+                                spinlock.</div>
+                        </div>
+                    </div>
+
+                    <!-- Right Column: Explanatory Features -->
+                    <div class="flex flex-col justify-between space-y-4">
+                        <div class="glass-panel p-5">
+                            <div class="flex items-center gap-3 mb-2">
+                                <div
+                                    class="w-10 h-10 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center font-bold">
+                                    <i class="fa-solid fa-layer-group"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-base font-semibold text-white">Multiplexed Debug Surface</h3>
+                                    <p class="text-xs text-purple-400 font-mono">RTT + SVD + GDB Commands + UART</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-slate-300 leading-relaxed">
+                                Unifies fragmented hardware output channels into a clean, machine-parsable stream. AI
+                                agents don't struggle with raw terminal noise; they read structured hardware telemetry.
+                            </p>
+                        </div>
+
+                        <div class="glass-panel p-5">
+                            <div class="flex items-center gap-3 mb-2">
+                                <div
+                                    class="w-10 h-10 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center font-bold">
+                                    <i class="fa-solid fa-gears"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-base font-semibold text-white">Autonomous Raw GDB Operations</h3>
+                                    <p class="text-xs text-sky-400 font-mono">Full Direct Control</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-slate-300 leading-relaxed">
+                                The AI agent directly executes low-level GDB inspection commands—evaluating pointers,
+                                reading register states, dumping memory maps, and setting conditional hardware
+                                breakpoints autonomously.
+                            </p>
+                        </div>
+
+                        <div class="glass-panel p-5">
+                            <div class="flex items-center gap-3 mb-2">
+                                <div
+                                    class="w-10 h-10 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold">
+                                    <i class="fa-solid fa-user-check"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-base font-semibold text-white">Hybrid Mode &amp; Session Notes</h3>
+                                    <p class="text-xs text-emerald-400 font-mono">Human-in-the-Loop</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-slate-300 leading-relaxed">
+                                Developers maintain full strategic direction. Using <code
+                                    class="text-emerald-300 bg-emerald-950 px-1 py-0.5 rounded">session-notes</code>,
+                                the human sets targets while the AI logs hypotheses and asks for physical board actions
+                                (e.g., unplug cable, toggle jumper).
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="text-center text-xs text-slate-500">
+                    Provides LLM agents with real hardware visibility rather than guessing from static source code
+                    alone.
+                </div>
+            </div>
+        </div>
+
+        <!-- SLIDE 4: Migration & Drop-in Replacement -->
+        <div class="slide-container" id="slide4">
+            <div class="h-full flex flex-col justify-between max-w-6xl mx-auto w-full">
+                <div>
+                    <span class="text-xs font-mono text-emerald-400 uppercase tracking-widest font-semibold">Strategic
+                        Transition</span>
+                    <h2 class="text-3xl font-bold text-white mt-1 mb-2">Drop-in Evolution from Cortex-Debug</h2>
+                    <p class="text-slate-400 text-sm">Built on years of cortex-debug experience, upgraded for
+                        next-generation embedded demands.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 my-auto">
+                    <!-- Comparison Card -->
+                    <div class="glass-panel p-6">
+                        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                            <i class="fa-solid fa-arrows-rotate text-emerald-400"></i>
+                            Frictionless Team Onboarding
+                        </h3>
+                        <p class="text-sm text-slate-300 mb-4 leading-relaxed">
+                            Because <code class="text-sky-300 font-mono">mcu-debug</code> shares DNA with <code
+                                class="text-sky-300 font-mono">cortex-debug</code>, existing launch configurations can
+                            be reused with minimal modifications.
+                        </p>
+
+                        <div class="space-y-3 font-mono text-xs">
+                            <div class="p-3 bg-slate-950 rounded-lg border border-red-500/30">
+                                <div class="text-slate-500 font-sans mb-1 text-[10px] uppercase">Legacy launch.json
+                                </div>
+                                <span class="text-red-400">"type": "cortex-debug"</span>
+                            </div>
+                            <div class="p-3 bg-slate-950 rounded-lg border border-emerald-500/30">
+                                <div class="text-slate-500 font-sans mb-1 text-[10px] uppercase">New mcu-debug
+                                    launch.json</div>
+                                <span class="text-emerald-400">"type": "mcu-debug"</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Key Takeaways for Upper Management & Engineering -->
+                    <div class="glass-panel p-6 flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-lg font-bold text-white mb-3">Key Strategic Advantages</h3>
+                            <ul class="space-y-3 text-sm text-slate-300">
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-star text-amber-400 mt-1"></i>
+                                    <span><strong>Standardized Tooling:</strong> One debugger for local VS Code, remote
+                                        Linux servers, and automated CI tests.</span>
+                                </li>
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-star text-amber-400 mt-1"></i>
+                                    <span><strong>AI Readyness:</strong> Prepares team workflows for AI co-pilots with
+                                        multiplexed telemetry feeds.</span>
+                                </li>
+                                <li class="flex items-start gap-3">
+                                    <i class="fa-solid fa-star text-amber-400 mt-1"></i>
+                                    <span><strong>Vendor Neutrality:</strong> Works across ARM Cortex-*, RISC-V,
+                                        OpenOCD, J-Link, ST-Link, probe-rs, and PyOCD. 64-bit ready</span>
+                                </li>
+                            </ul>
+                        </div>
+
+                        <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-slate-400">
+                            Available today on VS Code Marketplace &amp; GitHub.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Call to Action -->
+                <div class="glass-panel p-6 text-center border border-sky-500/30">
+                    <h3 class="text-xl font-bold text-white mb-2">Ready to explore mcu-debug?</h3>
+                    <p class="text-sm text-slate-300 max-w-2xl mx-auto mb-4">
+                        Try running a test session side-by-side with your existing setup. Fully open source and built to
+                        empower modern embedded engineering teams.
+                    </p>
+                    <div
+                        class="inline-flex items-center space-x-3 font-mono text-xs text-sky-400 bg-slate-950 px-4 py-2 rounded-lg border border-slate-800">
+                        <span>https://github.com/mcu-debug/mcu-debug</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Presentation Logic JavaScript -->
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide-container');
+        const dotsContainer = document.getElementById('slide-dots');
+        const counterElement = document.getElementById('slide-counter');
+
+        // Initialize Slide Navigation Dots
+        function initDots() {
+            dotsContainer.innerHTML = '';
+            slides.forEach((_, index) => {
+                const dot = document.createElement('button');
+                dot.className = `w-2.5 h-2.5 rounded-full transition-all duration-300 ${index === currentSlide ? 'bg-sky-400 w-6' : 'bg-slate-700 hover:bg-slate-500'}`;
+                dot.onclick = () => goToSlide(index);
+                dotsContainer.appendChild(dot);
+            });
+        }
+
+        // Update View State
+        function updateSlides() {
+            slides.forEach((slide, index) => {
+                if (index === currentSlide) {
+                    slide.classList.add('active');
+                } else {
+                    slide.classList.remove('active');
+                }
+            });
+
+            // Update Dots
+            const dots = dotsContainer.querySelectorAll('button');
+            dots.forEach((dot, index) => {
+                if (index === currentSlide) {
+                    dot.className = 'w-6 h-2.5 rounded-full bg-sky-400 transition-all duration-300';
+                } else {
+                    dot.className = 'w-2.5 h-2.5 rounded-full bg-slate-700 hover:bg-slate-500 transition-all duration-300';
+                }
+            });
+
+            // Update Counter
+            counterElement.textContent = `Slide ${currentSlide + 1} of ${slides.length}`;
+        }
+
+        function nextSlide() {
+            if (currentSlide < slides.length - 1) {
+                currentSlide++;
+                updateSlides();
+            }
+        }
+
+        function prevSlide() {
+            if (currentSlide > 0) {
+                currentSlide--;
+                updateSlides();
+            }
+        }
+
+        function goToSlide(index) {
+            currentSlide = index;
+            updateSlides();
+        }
+
+        // Keyboard Navigation Controls
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                prevSlide();
+            }
+        });
+
+        // Touch Swipe Navigation for Mobile/Tablets
+        let touchStartX = 0;
+        let touchEndX = 0;
+
+        document.addEventListener('touchstart', (e) => {
+            touchStartX = e.changedTouches[0].screenX;
+        });
+
+        document.addEventListener('touchend', (e) => {
+            touchEndX = e.changedTouches[0].screenX;
+            handleSwipe();
+        });
+
+        function handleSwipe() {
+            if (touchEndX < touchStartX - 50) {
+                nextSlide();
+            } else if (touchEndX > touchStartX + 50) {
+                prevSlide();
+            }
+        }
+
+        // Initialize on Load
+        window.onload = function () {
+            initDots();
+            updateSlides();
+        };
+    </script>
+</body>
+
+</html>

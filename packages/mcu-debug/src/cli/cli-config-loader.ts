@@ -58,17 +58,23 @@ export class CLIConfigLoader {
             const configMsg = `Loaded configuration "${selectedConfig.name}"` + (args.json ? ` from ${args.json}` : "") + (this.forVscode ? " for VSCode" : " for CLI");
             this.logger.info(configMsg, { source: 'DA' });
             // selectedConfig.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
+            this.logger.warn("Testing warning: This is a test warning message to demonstrate the warning display in CLI mode.");
+
             if (selectedConfig.liveWatch?.enabled) {
-                getHostAdapter().showWarning("Live watch is not supported in CLI mode. Disabling live watch.");
+                this.logger.warn("Live watch is not supported in CLI mode. Disabling live watch.");
                 delete (selectedConfig as any).liveWatch;
             }
             if (selectedConfig.swoConfig?.enabled) {
-                getHostAdapter().showWarning("SWO is not supported in CLI mode. Disabling SWO.");
+                this.logger.warn("SWO is not supported in CLI mode. Disabling SWO.");
                 delete (selectedConfig as any).swoConfig;
             }
             if (selectedConfig.chainedConfigurations?.enabled) {
-                getHostAdapter().showWarning("Chained configurations are not supported in CLI mode. Ignoring chained configurations.");
+                this.logger.warn("Chained configurations are not supported in CLI mode. Ignoring chained configurations.");
                 delete (selectedConfig as any).chainedConfigurations;
+            }
+            if (selectedConfig.graphConfig) {
+                this.logger.warn("Graph config is not supported in CLI mode and will be ignored.");
+                delete (selectedConfig as any).graphConfig;
             }
 
             const processedConfig = this.processVarSubstitutions(args, selectedConfig);
@@ -241,10 +247,6 @@ export class CliConfigProvider extends McuDebugConfigurationProviderBase {
         const saveEnvFile = config.envFile;
         config.env = undefined;
         config.envFile = undefined;
-        if (config.graphConfig) {
-            this.logger.warn("Graph config is not supported in CLI mode and will be ignored.");
-            config.graphConfig = undefined;
-        }
 
         try {
             config = (await super.resolveDebugConfiguration(folder, config)) as ConfigurationArguments;
