@@ -18,7 +18,9 @@ use anyhow::Result;
 use clap::{ArgGroup, Args, Subcommand};
 
 use crate::serial::bridge::TcpBridge;
-use crate::serial::port::{FlowControl, Parity, PortHandle, SerialParams, SerialTransport, StopBits};
+use crate::serial::port::{
+    FlowControl, Parity, PortHandle, SerialParams, SerialTransport, StopBits,
+};
 use crate::serial::{list_available, resolve_port};
 
 #[derive(Args, Debug)]
@@ -67,6 +69,56 @@ pub struct ServeArgs {
     /// Serial baud rate.
     #[arg(long, default_value = "115200")]
     pub baud: u32,
+
+    /// Data bits (5, 6, 7, or 8).
+    #[arg(long, default_value = "8")]
+    pub data_bits: u8,
+
+    /// Stop bits (1 or 2).
+    #[arg(long, default_value = "1")]
+    pub stop_bits: u8,
+
+    /// Parity (none, even, or odd).
+    #[arg(long, default_value = "none")]
+    pub parity: String,
+
+    /// Flow control (none, software, or hardware).
+    #[arg(long, default_value = "none")]
+    pub flow_control: String,
+
+    /// On disconnect, keep waiting and re-bridge when the device reappears
+    /// instead of exiting. Without this flag, the process exits (non-zero)
+    /// on the first fatal port error — one shot per invocation.
+    #[arg(long)]
+    pub persist: bool,
+}
+
+// ── stdout status protocol ───────────────────────────────────────────────────
+
+/// One JSON object per line on stdout, so a launching client can track this
+/// command's state without a side-channel. Mirrors the daemon's
+/// `serial.portError` event shape (`SerialErrorKind`) for a single schema
+/// across both entry points.
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ServeStatus<'a> {
+    /// The device is open and bridged; TCP clients may connect to `tcp_port`.
+    Listening { path: &'a str, tcp_port: u16 },
+    /// The device is not currently available; retrying (only with `--persist`).
+    Waiting { msg: String },
+    /// A fatal port error occurred; the bridge for `path` has been torn down.
+    Error {
+        path: &'a str,
+        kind: crate::serial::port::SerialErrorKind,
+        msg: &'a str,
+    },
+}
+
+fn emit_status(status: &ServeStatus) {
+    match serde_json::to_string(status) {
+        Ok(line) => println!("{line}"),
+        Err(e) => eprintln!("failed to serialize status line: {e}"),
+    }
 }
 
 pub fn run(args: SerialArgs) -> Result<()> {
@@ -115,6 +167,9 @@ fn run_list(filter: bool) -> Result<()> {
     Ok(())
 }
 
+/// Poll interval while `--persist` is waiting for the device to (re)appear.
+const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
+
 fn run_serve(args: ServeArgs, filter: bool) -> Result<()> {
     let (vid_opt, pid_opt) = if let Some(ref vp) = args.vidpid {
         let (v, p) = split_vidpid(vp)?;
@@ -123,40 +178,134 @@ fn run_serve(args: ServeArgs, filter: bool) -> Result<()> {
         (None, None)
     };
 
-    let resolved = resolve_port(
-        args.path.as_deref(),
-        args.serial.as_deref(),
-        vid_opt.as_deref(),
-        pid_opt.as_deref(),
-        args.desc.as_deref(),
-        filter,
-    )?;
-
-    let params = SerialParams {
-        path: Some(resolved.clone()),
-        serial: None,
-        vid: None,
-        pid: None,
-        baud_rate: args.baud,
-        data_bits: 8,
-        stop_bits: StopBits::One,
-        parity: Parity::None,
-        flow_control: FlowControl::None,
-        transport: SerialTransport::default(),
-        log_file: None,
-        input_mode: None,
-        label: None,
+    let stop_bits = match args.stop_bits {
+        1 => StopBits::One,
+        2 => StopBits::Two,
+        _ => anyhow::bail!("Invalid stop bits: {}", args.stop_bits),
+    };
+    let parity = match args.parity.to_lowercase().as_str() {
+        "none" => Parity::None,
+        "even" => Parity::Even,
+        "odd" => Parity::Odd,
+        _ => anyhow::bail!("Invalid parity: {}", args.parity),
+    };
+    let flow_control = match args.flow_control.to_lowercase().as_str() {
+        "none" => FlowControl::None,
+        "software" => FlowControl::Software,
+        "hardware" => FlowControl::Hardware,
+        _ => anyhow::bail!("Invalid flow control: {}", args.flow_control),
     };
 
-    println!("Opening {}", resolved);
-    let handle = Arc::new(PortHandle::open(resolved, params)?);
-    let bridge = TcpBridge::start("127.0.0.1", args.tcp_port, Arc::clone(&handle))?;
-    println!("Bridging on TCP port {} — press Ctrl+C to stop.", bridge.tcp_port);
+    loop {
+        let (resolved, handle) = open_with_retry(
+            &args,
+            vid_opt.as_deref(),
+            pid_opt.as_deref(),
+            filter,
+            stop_bits,
+            parity,
+            flow_control,
+        )?;
 
-    // Block until the process is killed (Ctrl+C / SIGINT).
-    let (_stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-    let _ = stop_rx.recv();
-    Ok(())
+        let bridge = TcpBridge::start("127.0.0.1", args.tcp_port, Arc::clone(&handle))?;
+        emit_status(&ServeStatus::Listening {
+            path: &resolved,
+            tcp_port: bridge.tcp_port,
+        });
+
+        // Block until the port dies (fatal disconnect/IO error). Nothing else
+        // drops `handle`'s error_subs sender while we hold this Arc alongside
+        // the bridge's, so `recv()` only returns once that actually happens.
+        let (err_tx, err_rx) = std::sync::mpsc::channel();
+        handle.subscribe_errors(err_tx);
+        let err = err_rx.recv();
+
+        // Tear down explicitly (rather than waiting on scope-end drop) so the
+        // TCP port is released before we potentially try to rebind it below.
+        drop(bridge);
+        drop(handle);
+
+        if let Ok(e) = err {
+            emit_status(&ServeStatus::Error {
+                path: &e.path,
+                kind: e.kind,
+                msg: &e.msg,
+            });
+        }
+
+        if !args.persist {
+            std::process::exit(1);
+        }
+        // else: loop back around and wait for the device to reappear.
+    }
+}
+
+/// Resolve and open the device, retrying on failure only when `persist` is
+/// set on `args`. Emits a single `Waiting` status line per outage (not once
+/// per poll) so stdout doesn't get spammed while the device is absent.
+fn open_with_retry(
+    args: &ServeArgs,
+    vid_opt: Option<&str>,
+    pid_opt: Option<&str>,
+    filter: bool,
+    stop_bits: StopBits,
+    parity: Parity,
+    flow_control: FlowControl,
+) -> Result<(String, Arc<PortHandle>)> {
+    let mut waiting_announced = false;
+    loop {
+        let resolved = match resolve_port(
+            args.path.as_deref(),
+            args.serial.as_deref(),
+            vid_opt,
+            pid_opt,
+            args.desc.as_deref(),
+            filter,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                if !args.persist {
+                    return Err(e);
+                }
+                if !waiting_announced {
+                    emit_status(&ServeStatus::Waiting { msg: e.to_string() });
+                    waiting_announced = true;
+                }
+                std::thread::sleep(RETRY_INTERVAL);
+                continue;
+            }
+        };
+
+        let params = SerialParams {
+            path: Some(resolved.clone()),
+            serial: None,
+            vid: None,
+            pid: None,
+            baud_rate: args.baud,
+            data_bits: args.data_bits,
+            stop_bits,
+            parity,
+            flow_control,
+            transport: SerialTransport::default(),
+            log_file: None,
+            input_mode: None,
+            label: None,
+        };
+
+        match PortHandle::open(resolved.clone(), params) {
+            Ok(h) => return Ok((resolved, Arc::new(h))),
+            Err(e) => {
+                if !args.persist {
+                    return Err(e);
+                }
+                if !waiting_announced {
+                    emit_status(&ServeStatus::Waiting { msg: e.to_string() });
+                    waiting_announced = true;
+                }
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+        }
+    }
 }
 
 fn split_vidpid(s: &str) -> Result<(String, String)> {

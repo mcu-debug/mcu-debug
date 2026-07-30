@@ -170,8 +170,11 @@ impl ProxyServer {
             Phase1Result::Error(e) => Err(e),
         };
 
-        // Subscribe to fatal port errors (dead senders are pruned automatically).
-        if result.is_ok() {
+        // Subscribe to fatal port errors — once per path per session. Without
+        // this guard, every reconfigure of an already-open port (e.g. a UI
+        // baud-rate change) would spawn another forwarder thread and push
+        // another dead-forever `Sender` into the port's `error_subs`.
+        if result.is_ok() && self.serial_error_subs.insert(path.clone()) {
             let (err_tx, err_rx) = mpsc::channel::<PortErrorEvent>();
             {
                 let reg = self.serial_registry.lock().unwrap();
@@ -274,6 +277,9 @@ impl ProxyServer {
     pub(super) fn handle_serial_close(&mut self, seq: u64, path: &str) {
         let removed = self.serial_registry.lock().unwrap().remove(path);
         if let Some((handle, backing)) = removed {
+            // Allow a future reopen of this path to resubscribe — the next
+            // PortHandle will be a brand new instance with its own error_subs.
+            self.serial_error_subs.remove(path);
             // If funnel transport, detach the client writer and remove the routing entry.
             if let SerialPortBacking::Funnel { stream_id } = backing {
                 if let Some((_, client_id, _)) = self.serial_funnel_write.remove(&stream_id) {

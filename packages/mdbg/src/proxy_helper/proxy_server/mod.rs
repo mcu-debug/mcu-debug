@@ -158,6 +158,12 @@ pub struct ProxyServer {
     serial_funnel_write: HashMap<u8, (Arc<PortHandle>, u64, String)>,
     serial_available_hub: Arc<SerialAvailabilityHub>,
     serial_available_sub_id: Option<u64>,
+    /// Paths this session already has a `PortErrorEvent` forwarder thread
+    /// running for. Prevents `handle_serial_open` from spawning a duplicate
+    /// thread + subscription on every reconfigure of an already-open port.
+    /// Cleared whenever the underlying `PortHandle` goes away (explicit
+    /// close or a fatal port error) so a fresh open resubscribes.
+    serial_error_subs: std::collections::HashSet<String>,
 }
 
 impl Drop for ProxyServer {
@@ -196,6 +202,7 @@ impl ProxyServer {
             serial_funnel_write: HashMap::new(),
             serial_available_hub,
             serial_available_sub_id: None,
+            serial_error_subs: std::collections::HashSet::new(),
         }
     }
 
@@ -458,6 +465,9 @@ impl ProxyServer {
                     if let Some((_, SerialPortBacking::Funnel { stream_id })) = removed {
                         self.serial_funnel_write.remove(&stream_id);
                     }
+                    // Allow a future successful open of this path to resubscribe —
+                    // the PortHandle it would subscribe to is a brand new instance.
+                    self.serial_error_subs.remove(&err.path);
                     let event = ProxyServerEvents::SerialPortError {
                         path: err.path,
                         kind: err.kind,

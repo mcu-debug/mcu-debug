@@ -49,7 +49,7 @@
 use std::io::Read;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::serial::port::PortHandle;
 
@@ -66,6 +66,11 @@ pub struct TcpBridge {
     shutdown: Arc<AtomicBool>,
     bind_addr: String,
     accept_thread: Option<std::thread::JoinHandle<()>>,
+    /// Clone of the currently connected client socket, if any. `accept_loop`
+    /// only serves one connection at a time (`handle_connection` blocks the
+    /// accept thread until torn down), so `stop()` uses this to force that
+    /// connection closed instead of potentially blocking on it forever.
+    active_conn: Arc<Mutex<Option<TcpStream>>>,
 }
 
 impl TcpBridge {
@@ -88,11 +93,13 @@ impl TcpBridge {
         })?;
         let actual_port = listener.local_addr()?.port();
         let shutdown = Arc::new(AtomicBool::new(false));
+        let active_conn: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
 
         let shutdown_clone = Arc::clone(&shutdown);
+        let active_conn_clone = Arc::clone(&active_conn);
         let bind_addr_owned = bind_addr.to_string();
         let accept_thread = std::thread::spawn(move || {
-            accept_loop(listener, port_handle, shutdown_clone);
+            accept_loop(listener, port_handle, shutdown_clone, active_conn_clone);
         });
 
         Ok(TcpBridge {
@@ -100,6 +107,7 @@ impl TcpBridge {
             shutdown,
             bind_addr: bind_addr_owned,
             accept_thread: Some(accept_thread),
+            active_conn,
         })
     }
 
@@ -108,6 +116,16 @@ impl TcpBridge {
     /// Also called automatically on [`Drop`].
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
+        // Force-close any connection currently being served. Without this, a
+        // client that never writes (e.g. a read-only monitor) would leave
+        // `handle_connection`'s blocking read parked forever once the serial
+        // device has died — and since the accept thread doesn't return to
+        // accept() until that call returns, the join() below would hang too,
+        // stalling whatever thread called stop() (the proxy's single-threaded
+        // event loop, in the disconnect case).
+        if let Some(tcp) = self.active_conn.lock().unwrap().take() {
+            let _ = tcp.shutdown(Shutdown::Both);
+        }
         // Unblock accept() with a self-connect — the accept loop will
         // notice the shutdown flag and return cleanly.
         let _ = TcpStream::connect((self.bind_addr.as_str(), self.tcp_port));
@@ -125,7 +143,12 @@ impl Drop for TcpBridge {
 
 // ── accept loop ───────────────────────────────────────────────────────────────
 
-fn accept_loop(listener: TcpListener, port_handle: Arc<PortHandle>, shutdown: Arc<AtomicBool>) {
+fn accept_loop(
+    listener: TcpListener,
+    port_handle: Arc<PortHandle>,
+    shutdown: Arc<AtomicBool>,
+    active_conn: Arc<Mutex<Option<TcpStream>>>,
+) {
     let path = port_handle.path.clone();
     loop {
         match listener.accept() {
@@ -142,7 +165,12 @@ fn accept_loop(listener: TcpListener, port_handle: Arc<PortHandle>, shutdown: Ar
                     return;
                 }
                 log::info!("[{path}] TCP client connected from {peer}");
+                match tcp.try_clone() {
+                    Ok(clone) => *active_conn.lock().unwrap() = Some(clone),
+                    Err(e) => log::warn!("[{path}] try_clone for shutdown tracking failed: {e}"),
+                }
                 handle_connection(tcp, Arc::clone(&port_handle));
+                *active_conn.lock().unwrap() = None;
                 log::info!("[{path}] TCP client {peer} disconnected; waiting for next");
             }
         }

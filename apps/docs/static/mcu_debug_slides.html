@@ -88,6 +88,7 @@
 
         .glass-panel {
             background: rgba(15, 23, 42, 0.75);
+            -webkit-backdrop-filter: blur(12px);
             backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 1rem;
@@ -96,6 +97,7 @@
         .gradient-text {
             background: linear-gradient(135deg, #38bdf8 0%, #c084fc 100%);
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
@@ -424,8 +426,7 @@
                                     <i class="fa-solid fa-server text-emerald-400"></i>
                                     Frictionless Remote Debugging
                                 </h3>
-                                <span class="code-tag"
-                                    style="color: #34d399; background: rgba(52, 211, 153, 0.15); border-color: rgba(52, 211, 153, 0.3);">Zero
+                                <span class="code-tag">Zero
                                     Config Tunnels</span>
                             </div>
                             <p class="text-sm text-slate-300 mb-4 leading-relaxed">
