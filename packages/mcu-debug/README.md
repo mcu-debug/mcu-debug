@@ -105,7 +105,7 @@ To keep the core debugger lightweight and modular, we have factored out several 
 MCU-Debug is vendor-agnostic and includes built-in configurations for:
 *   **Segger J-Link**
 *   **OpenOCD**
-*   **probe-rs**
+*   **probe-rs** Experimental
 *   **pyOCD**
 *   **ST-Link & ST-Util**
 *   **PE Micro**
