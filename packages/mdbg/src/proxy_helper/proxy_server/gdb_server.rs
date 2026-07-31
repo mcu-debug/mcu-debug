@@ -21,6 +21,7 @@ use std::env;
 use std::fs;
 use std::io::Read;
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::Sender;
@@ -64,6 +65,8 @@ pub enum WaitPortResult {
     Stream(TcpStream),
     /// Port responded to a probe connection (`keep_open == false`).
     Ready,
+    /// The session was cancelled while still waiting for the port.
+    Cancelled,
 }
 
 /// Validate that `relative_path` is a safe relative path for the `syncFile`
@@ -345,13 +348,14 @@ impl ProxyServer {
     ) {
         for (stream_id, port) in ports {
             let event_tx = self.event_tx.clone();
+            let cancel = self.cancel.clone();
             spawn_session_thread(&self.event_tx, SessionThreadRole::PortWaiter, move || {
                 let duration = if msg_seq != 0 {
                     Duration::from_millis(30)
                 } else {
                     Duration::from_secs(10 * 60)
                 };
-                match Self::wait_and_connect_sync(port, duration, keep_open) {
+                match Self::wait_and_connect_sync(port, duration, keep_open, &cancel) {
                     Ok(WaitPortResult::Ready) => {
                         eprintln!(
                             "Port {} is ready for stream {}, but keep_open is false, not forwarding",
@@ -395,6 +399,10 @@ impl ProxyServer {
                         // the PortConnected event before we start forwarding data.
                         std::thread::sleep(Duration::from_millis(100));
                         read_and_forward(stream_id, read_stream, event_tx);
+                    }
+                    Ok(WaitPortResult::Cancelled) => {
+                        // Session is tearing down — exit quietly; the event loop
+                        // is already gone, so there is no one to notify.
                     }
                     Err(e) => {
                         event_tx
@@ -465,6 +473,7 @@ impl ProxyServer {
         port: u16,
         timeout: Duration,
         keep_open: bool,
+        cancel: &AtomicBool,
     ) -> Result<WaitPortResult> {
         eprintln!(
             "Waiting for connection on port {} with timeout {:?}",
@@ -476,6 +485,12 @@ impl ProxyServer {
 
         while once || Instant::now() < deadline {
             once = false;
+            // Bail promptly if the session is tearing down — otherwise an
+            // auto-connect waiter would block here for up to its 10-minute
+            // timeout after the session is already gone.
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(WaitPortResult::Cancelled);
+            }
             match TcpStream::connect(("127.0.0.1", port)) {
                 Ok(stream) => {
                     if keep_open {

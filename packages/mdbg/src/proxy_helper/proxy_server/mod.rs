@@ -25,6 +25,7 @@ use std::io;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Child;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -188,6 +189,11 @@ pub struct ProxyServer {
     /// Cleared whenever the underlying `PortHandle` goes away (explicit
     /// close or a fatal port error) so a fresh open resubscribes.
     serial_error_subs: std::collections::HashSet<String>,
+    /// Set by [`ProxyServer::cancel`] on teardown. Polled by the session's
+    /// background threads that block on something other than the gdb-server
+    /// child (port waiters mid-connect, the serial error forwarder) so they stop
+    /// promptly instead of lingering.
+    cancel: Arc<AtomicBool>,
 }
 
 impl Drop for ProxyServer {
@@ -195,6 +201,7 @@ impl Drop for ProxyServer {
     /// `ProxyServer` is dropped — covers panics, early returns, and any path that
     /// bypasses the normal `end_process()` call.
     fn drop(&mut self) {
+        self.cancel();
         self.unsubscribe_serial_available();
         self.end_process();
     }
@@ -227,6 +234,7 @@ impl ProxyServer {
             serial_available_hub,
             serial_available_sub_id: None,
             serial_error_subs: std::collections::HashSet::new(),
+            cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -240,6 +248,22 @@ impl ProxyServer {
         if let Some(tx) = self.monitor_stop_tx.take() {
             tx.send(()).ok();
         }
+    }
+
+    /// Prompt session teardown for threads that block on something *other* than
+    /// the gdb-server child (which [`end_process`](Self::end_process) already
+    /// reaps, unblocking the stdout/stderr forwarders). Sets the cancel flag the
+    /// port waiters and serial error forwarder poll, and shuts down the control
+    /// socket so the reader's blocked `read` returns at once.
+    ///
+    /// Called only from `Drop` — **never** from `end_process`, because the
+    /// `EndSession` path calls `end_process` and then still needs the control
+    /// socket alive to send its success response.
+    pub(super) fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        // Affects every clone of the underlying socket, so the control reader's
+        // blocked `read` on its own clone returns immediately.
+        let _ = self.writer.shutdown(std::net::Shutdown::Both);
     }
 
     pub fn end_process(&mut self) {

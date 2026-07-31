@@ -17,8 +17,10 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::common::sync::MutexExt;
 use crate::serial::bridge::TcpBridge;
@@ -184,13 +186,28 @@ impl ProxyServer {
                 }
             }
             let proxy_tx = self.event_tx.clone();
+            let cancel = self.cancel.clone();
             spawn_session_thread(
                 &self.event_tx,
                 SessionThreadRole::SerialErrorForwarder,
                 move || {
-                    while let Ok(e) = err_rx.recv() {
-                        if proxy_tx.send(ProxyEvent::SerialPortError(e)).is_err() {
-                            break;
+                    // `recv_timeout` (not `recv`) so the thread also polls the
+                    // cancel flag and exits promptly on teardown, instead of
+                    // blocking forever on an `err_tx` that lives in the shared,
+                    // longer-lived `PortHandle`.
+                    loop {
+                        match err_rx.recv_timeout(Duration::from_millis(250)) {
+                            Ok(e) => {
+                                if proxy_tx.send(ProxyEvent::SerialPortError(e)).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                if cancel.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }
                     }
                 },
