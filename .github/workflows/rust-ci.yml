@@ -5,6 +5,12 @@ on:
   push:
     branches:
       - main
+  schedule:
+    # Weekly (Mon 06:00 UTC). Unlike clippy, `cargo audit` can start failing
+    # without any code change — a newly published advisory against a dependency
+    # we already ship. The scheduled run catches that; PR/push runs catch the
+    # rest.
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 jobs:
@@ -28,6 +34,13 @@ jobs:
         with:
           components: clippy
 
+      # Prebuilt binary — no compile step, keeps CI fast (a `cargo install
+      # cargo-audit` would rebuild it every run).
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -40,3 +53,6 @@ jobs:
 
       - name: Clippy
         run: npm run lint:rust
+
+      - name: Audit
+        run: npm run audit:rust
