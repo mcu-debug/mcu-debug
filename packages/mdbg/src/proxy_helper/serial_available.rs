@@ -23,6 +23,8 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::common::sync::MutexExt;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 
@@ -68,7 +70,7 @@ impl SerialAvailabilityHub {
 
     /// Register a subscriber and return (subscriber_id, revision, snapshot).
     pub fn subscribe(&self, tx: Sender<ProxyEvent>) -> (u64, u64, Vec<AvailablePort>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock_recover();
         let id = state.next_subscriber_id;
         state.next_subscriber_id += 1;
         state.subscribers.insert(id, tx);
@@ -83,7 +85,7 @@ impl SerialAvailabilityHub {
     }
 
     pub fn unsubscribe(&self, id: u64) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock_recover();
         let removed = state.subscribers.remove(&id).is_some();
         log::info!(
             "Serial availability unsubscribe: id={}, removed={}, subscribers={}",
@@ -98,7 +100,7 @@ impl SerialAvailabilityHub {
         new_ports.sort_by(|a, b| a.path.cmp(&b.path));
 
         let (revision, snapshot, subscribers) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock_recover();
             if state.ports == new_ports {
                 log::debug!("Serial availability refresh: no change");
                 return;
@@ -154,7 +156,7 @@ impl SerialAvailabilityHub {
         }
 
         if !dead.is_empty() {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock_recover();
             for id in dead {
                 state.subscribers.remove(&id);
             }

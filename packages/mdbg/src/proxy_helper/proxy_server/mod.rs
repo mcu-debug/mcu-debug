@@ -15,6 +15,7 @@
 //! Proxy server core: struct definition, lifecycle, message loop, dispatch,
 //! and shared utilities used by the child modules.
 
+use crate::common::sync::MutexExt;
 use crate::proxy_helper::run::{PortWaitMode, ProxyArgs};
 use crate::proxy_helper::serial_available::SerialAvailabilityHub;
 use crate::serial::port::PortHandle;
@@ -81,7 +82,7 @@ impl FrameWriter {
     /// Write `bytes` as a single Funnel-protocol frame with the given `stream_id`.
     /// Acquires the internal lock for the duration so header + payload are atomic.
     pub fn write_frame(&self, stream_id: u8, bytes: &[u8]) -> io::Result<()> {
-        let mut s = self.stream.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = self.stream.lock_recover();
         let mut header = Vec::with_capacity(5);
         header.push(stream_id);
         header.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
@@ -95,23 +96,17 @@ impl FrameWriter {
     /// background thread. The clone does not go through the write lock because
     /// reads and writes use separate OS-level operations on the same fd.
     pub fn try_clone_stream(&self) -> io::Result<TcpStream> {
-        self.stream
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .try_clone()
+        self.stream.lock_recover().try_clone()
     }
 
     /// Shut down the underlying socket.
     pub fn shutdown(&self, how: std::net::Shutdown) -> io::Result<()> {
-        self.stream
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .shutdown(how)
+        self.stream.lock_recover().shutdown(how)
     }
 
     /// Return `true` if the peer is still connected (non-blocking 0-byte peek).
     pub fn is_connected(&self) -> bool {
-        let s = self.stream.lock().unwrap_or_else(|e| e.into_inner());
+        let s = self.stream.lock_recover();
         let mut buf = [0u8; 0];
         s.peek(&mut buf).is_ok()
     }
@@ -461,7 +456,7 @@ impl ProxyServer {
                 ProxyEvent::SerialPortError(err) => {
                     // Port died — remove from registry (drops the backing and fd),
                     // then notify the client so it can update its UI.
-                    let removed = self.serial_registry.lock().unwrap().remove(&err.path);
+                    let removed = self.serial_registry.lock_recover().remove(&err.path);
                     if let Some((_, SerialPortBacking::Funnel { stream_id })) = removed {
                         self.serial_funnel_write.remove(&stream_id);
                     }

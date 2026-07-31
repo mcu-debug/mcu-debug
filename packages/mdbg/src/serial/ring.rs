@@ -24,6 +24,8 @@
 
 use std::sync::Mutex;
 
+use crate::common::sync::MutexExt;
+
 /// Ring buffer capacity: 1 MB.
 pub const CAPACITY: usize = 1024 * 1024;
 
@@ -60,7 +62,7 @@ impl RingBuffer {
         if bytes.is_empty() {
             return;
         }
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock_recover();
         let cap = g.data.len();
         let n = bytes.len();
 
@@ -92,7 +94,7 @@ impl RingBuffer {
     /// The returned `Vec` is a copy; callers may hold it indefinitely without
     /// blocking subsequent `push` calls.
     pub fn snapshot(&self) -> Vec<u8> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock_recover();
         let cap = g.data.len();
         let filled = g.filled;
         if filled == 0 {
@@ -115,11 +117,11 @@ impl RingBuffer {
 
     /// Number of valid bytes currently in the ring (0..=`CAPACITY`).
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().filled
+        self.inner.lock_recover().filled
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().filled == 0
+        self.inner.lock_recover().filled == 0
     }
 }
 

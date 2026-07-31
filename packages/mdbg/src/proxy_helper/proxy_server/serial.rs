@@ -20,6 +20,7 @@ use std::io::Write;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use crate::common::sync::MutexExt;
 use crate::serial::bridge::TcpBridge;
 use crate::serial::port::{PortErrorEvent, PortHandle, SerialParams, SerialTransport};
 use crate::serial::AvailablePort;
@@ -109,7 +110,7 @@ impl ProxyServer {
         }
 
         let phase1: Phase1Result = (|| {
-            let mut reg = self.serial_registry.lock().unwrap();
+            let mut reg = self.serial_registry.lock_recover();
             if let Some((handle, backing)) = reg.get(&path) {
                 // Port already open — check transport consistency.
                 match (&params.transport, backing) {
@@ -177,7 +178,7 @@ impl ProxyServer {
         if result.is_ok() && self.serial_error_subs.insert(path.clone()) {
             let (err_tx, err_rx) = mpsc::channel::<PortErrorEvent>();
             {
-                let reg = self.serial_registry.lock().unwrap();
+                let reg = self.serial_registry.lock_recover();
                 if let Some((handle, _)) = reg.get(&path) {
                     handle.subscribe_errors(err_tx);
                 }
@@ -253,8 +254,7 @@ impl ProxyServer {
 
         // Update (or insert) the registry entry with the confirmed stream_id.
         self.serial_registry
-            .lock()
-            .unwrap()
+            .lock_recover()
             .entry(path.to_string())
             .and_modify(|(_, b)| {
                 *b = SerialPortBacking::Funnel {
@@ -275,7 +275,7 @@ impl ProxyServer {
 
     /// `serial.close` — close a previously opened serial port.
     pub(super) fn handle_serial_close(&mut self, seq: u64, path: &str) {
-        let removed = self.serial_registry.lock().unwrap().remove(path);
+        let removed = self.serial_registry.lock_recover().remove(path);
         if let Some((handle, backing)) = removed {
             // Allow a future reopen of this path to resubscribe — the next
             // PortHandle will be a brand new instance with its own error_subs.
@@ -305,7 +305,7 @@ impl ProxyServer {
 
     /// `serial.listOpen` — return current config + transport info for every open port.
     pub(super) fn handle_serial_list_open(&mut self, seq: u64) {
-        let reg = self.serial_registry.lock().unwrap();
+        let reg = self.serial_registry.lock_recover();
         let ports: Vec<SerialPortInfo> = reg
             .values()
             .map(|(handle, backing)| {
@@ -314,7 +314,7 @@ impl ProxyServer {
                     SerialPortBacking::Funnel { stream_id } => (None, Some(*stream_id)),
                 };
                 SerialPortInfo {
-                    params: handle.params.lock().unwrap().clone(),
+                    params: handle.params.lock_recover().clone(),
                     tcp_port,
                     channel_id,
                 }
@@ -344,9 +344,9 @@ impl ProxyServer {
 
     /// `serial.isOpen` — pull-based status probe for a single port.
     pub(super) fn handle_serial_is_open(&mut self, seq: u64, path: &str) {
-        let reg = self.serial_registry.lock().unwrap();
+        let reg = self.serial_registry.lock_recover();
         let (open, tcp_port, channel_id, params) = if let Some((handle, backing)) = reg.get(path) {
-            let p = handle.params.lock().unwrap().clone();
+            let p = handle.params.lock_recover().clone();
             let (tcp_port, channel_id) = match backing {
                 SerialPortBacking::Direct(bridge) => (Some(bridge.tcp_port), None),
                 SerialPortBacking::Funnel { stream_id } => (None, Some(*stream_id)),

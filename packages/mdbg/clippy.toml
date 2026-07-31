@@ -1,0 +1,8 @@
+# A raw `Mutex::lock()` unwraps to a panic on poison, which — in the singleton
+# Probe Agent that serves many sessions from one process — cascades one session's
+# panic into every other session holding the lock. Route shared locks through
+# `.lock_recover()` (crate::common::sync::MutexExt) instead. See
+# docs-internal/CLI-Proxy-Provisioning.md §7.3.
+disallowed-methods = [
+    { path = "std::sync::Mutex::lock", reason = "use .lock_recover() (crate::common::sync::MutexExt) so a poisoned lock recovers instead of cascading panics across sessions" },
+]

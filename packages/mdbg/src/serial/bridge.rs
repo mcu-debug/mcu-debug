@@ -51,6 +51,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::common::sync::MutexExt;
 use crate::serial::port::PortHandle;
 
 // ── TcpBridge ─────────────────────────────────────────────────────────────────
@@ -123,7 +124,7 @@ impl TcpBridge {
         // accept() until that call returns, the join() below would hang too,
         // stalling whatever thread called stop() (the proxy's single-threaded
         // event loop, in the disconnect case).
-        if let Some(tcp) = self.active_conn.lock().unwrap().take() {
+        if let Some(tcp) = self.active_conn.lock_recover().take() {
             let _ = tcp.shutdown(Shutdown::Both);
         }
         // Unblock accept() with a self-connect — the accept loop will
@@ -166,11 +167,11 @@ fn accept_loop(
                 }
                 log::info!("[{path}] TCP client connected from {peer}");
                 match tcp.try_clone() {
-                    Ok(clone) => *active_conn.lock().unwrap() = Some(clone),
+                    Ok(clone) => *active_conn.lock_recover() = Some(clone),
                     Err(e) => log::warn!("[{path}] try_clone for shutdown tracking failed: {e}"),
                 }
                 handle_connection(tcp, Arc::clone(&port_handle));
-                *active_conn.lock().unwrap() = None;
+                *active_conn.lock_recover() = None;
                 log::info!("[{path}] TCP client {peer} disconnected; waiting for next");
             }
         }

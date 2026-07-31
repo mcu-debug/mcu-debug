@@ -43,7 +43,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
@@ -53,6 +53,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
+use crate::common::sync::MutexExt;
 use crate::serial::ring::RingBuffer;
 
 // ── Serial error types ───────────────────────────────────────────────────────
@@ -275,12 +276,36 @@ fn apply_params(port: &mut Box<dyn serialport::SerialPort>, params: &SerialParam
 
 // ── Shared (reader ↔ handle) ─────────────────────────────────────────────────
 
+/// Max serial chunks buffered per attached client before it is considered too
+/// slow and disconnected. Bounds memory so one stalled client cannot grow the
+/// process heap without limit — the reader broadcast is `try_send`, never a
+/// blocking send (see `docs-internal/CLI-Proxy-Provisioning.md` §7.3, R6).
+/// Chunks are <= the reader's 4 KiB read buffer, so this caps at ~1 MiB/client.
+const CLIENT_QUEUE_DEPTH: usize = 256;
+
+/// One attached client's delivery path.
+///
+/// The reader thread pushes bytes into `tx` (a **bounded, non-blocking**
+/// channel) while holding the shared `clients` lock only briefly. A dedicated
+/// `drain` thread owns the real `Box<dyn Write>` (a TCP socket) and performs the
+/// **blocking** write off that lock, so one slow client cannot stall delivery to
+/// the other sessions attached to the same physical port (§7.3, R3).
+struct ClientSink {
+    tx: SyncSender<Vec<u8>>,
+    /// Drain-thread handle. Joined on explicit detach; simply dropped (detached)
+    /// when the reader removes a slow/dead client, since that thread is already
+    /// exiting and the reader must never block on a join.
+    drain: Option<JoinHandle<()>>,
+}
+
 /// State shared between the [`PortHandle`] on the caller side and the reader thread.
 struct Shared {
     ring: RingBuffer,
-    /// Active client writers. Keyed by caller-assigned ID (see [`PortHandle::next_client_id`]).
-    /// The reader thread locks this to forward bytes; callers lock it to add/remove writers.
-    clients: Mutex<HashMap<u64, Box<dyn Write + Send>>>,
+    /// Active clients keyed by caller-assigned ID (see [`PortHandle::next_client_id`]).
+    /// The reader thread locks this only to `try_send` into each client's queue;
+    /// callers lock it to add/remove clients. The blocking socket write happens
+    /// in each client's own drain thread, never under this lock.
+    clients: Mutex<HashMap<u64, ClientSink>>,
 }
 
 // ── PortHandle ────────────────────────────────────────────────────────────────
@@ -360,10 +385,10 @@ impl PortHandle {
     /// The new settings take effect on the reader thread's very next read because
     /// both `config_port` and the reader's clone share the same underlying fd.
     pub fn reconfigure(&self, params: &SerialParams) -> Result<()> {
-        let mut port = self.config_port.lock().unwrap();
+        let mut port = self.config_port.lock_recover();
         apply_params(&mut port, params)
             .with_context(|| format!("reconfigure failed for '{}'", self.path))?;
-        *self.params.lock().unwrap() = params.clone();
+        *self.params.lock_recover() = params.clone();
         Ok(())
     }
 
@@ -378,16 +403,44 @@ impl PortHandle {
     /// Call [`PortHandle::snapshot`] first to get buffered history, write it
     /// to the same destination, then call this to start receiving live data.
     /// See the module-level note about the acceptable race window.
-    pub fn attach_client(&self, id: u64, writer: Box<dyn Write + Send>) {
-        self.shared.clients.lock().unwrap().insert(id, writer);
+    pub fn attach_client(&self, id: u64, mut writer: Box<dyn Write + Send>) {
+        // Bounded queue + dedicated drain thread: the reader never blocks on this
+        // client's socket, and a client that falls `CLIENT_QUEUE_DEPTH` chunks
+        // behind is disconnected (below) rather than growing memory unbounded.
+        let (tx, rx) = sync_channel::<Vec<u8>>(CLIENT_QUEUE_DEPTH);
+        let drain = std::thread::Builder::new()
+            .name(format!("serial-drain-{id}"))
+            .spawn(move || {
+                // Own the writer here; the blocking socket write is off the
+                // shared `clients` lock. Exit when `tx` is dropped (detach or a
+                // slow-client disconnect) or the write fails (client gone).
+                while let Ok(chunk) = rx.recv() {
+                    if writer.write_all(&chunk).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn serial drain thread");
+        self.shared
+            .clients
+            .lock_recover()
+            .insert(id, ClientSink { tx, drain: Some(drain) });
     }
 
-    /// Remove a previously registered client writer.
+    /// Remove a previously registered client.
     ///
     /// Silently does nothing if `id` is not found (already removed by the
-    /// reader thread after a write failure, or double-detach).
+    /// reader thread after a write failure/slow disconnect, or double-detach).
     pub fn detach_client(&self, id: u64) {
-        self.shared.clients.lock().unwrap().remove(&id);
+        // Take the sink out under the lock, then release the lock *before*
+        // joining so a stalled drain thread can't hold up other sessions.
+        let removed = self.shared.clients.lock_recover().remove(&id);
+        if let Some(sink) = removed {
+            drop(sink.tx); // unblock the drain thread's recv()
+            if let Some(handle) = sink.drain {
+                let _ = handle.join();
+            }
+        }
     }
 
     /// Return a copy of all buffered bytes in FIFO order (oldest first).
@@ -403,8 +456,7 @@ impl PortHandle {
     /// Multiple callers are safe because `config_port` is behind a `Mutex`.
     pub fn write_to_port(&self, bytes: &[u8]) -> Result<()> {
         self.config_port
-            .lock()
-            .unwrap()
+            .lock_recover()
             .write_all(bytes)
             .with_context(|| format!("write to serial port '{}' failed", self.path))
     }
@@ -415,7 +467,7 @@ impl PortHandle {
     /// once. When the reader thread hits an unrecoverable error it sends a
     /// [`PortErrorEvent`] to all registered subscribers and prunes dead ones.
     pub fn subscribe_errors(&self, tx: Sender<PortErrorEvent>) {
-        self.error_subs.lock().unwrap().push(tx);
+        self.error_subs.lock_recover().push(tx);
     }
 
     /// Stop the reader thread and release the serial device.
@@ -424,7 +476,7 @@ impl PortHandle {
     /// lets callers check for join errors; `Drop` silently discards them.
     pub fn close(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
-        if let Some(t) = self.reader_thread.lock().unwrap().take() {
+        if let Some(t) = self.reader_thread.lock_recover().take() {
             let _ = t.join();
         }
         // config_port drops when PortHandle is dropped, closing the last fd reference.
@@ -465,11 +517,22 @@ impl PortHandle {
                         // 1. Push into ring (late-attach catch-up).
                         shared.ring.push(bytes);
 
-                        // 2. Forward to all live clients; remove any whose write fails
-                        //    (TCP disconnect). `retain` drops the writer on removal,
-                        //    which closes the TcpStream clone.
-                        let mut clients = shared.clients.lock().unwrap();
-                        clients.retain(|_id, writer| writer.write_all(bytes).is_ok());
+                        // 2. Fan out to every attached client's bounded queue.
+                        //    This is `try_send` only — never a blocking write — so
+                        //    the shared lock is held briefly and no slow client can
+                        //    stall the others. Drop a client whose queue is full
+                        //    (too slow) or whose drain thread has exited (write
+                        //    failed): both mean "gone", matching the old
+                        //    remove-on-write-failure behavior. Dropping the
+                        //    `ClientSink` closes `tx`, so its drain thread and
+                        //    socket clone wind down on their own.
+                        let mut clients = shared.clients.lock_recover();
+                        clients.retain(|_id, sink| {
+                            !matches!(
+                                sink.tx.try_send(bytes.to_vec()),
+                                Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_))
+                            )
+                        });
                     }
                     Err(e)
                         if e.kind() == std::io::ErrorKind::TimedOut
@@ -515,7 +578,7 @@ fn classify_io_error(e: &std::io::Error) -> SerialErrorKind {
 
 /// Send `event` to all registered subscribers, pruning any whose channel has closed.
 fn notify_error(subs: &Mutex<Vec<Sender<PortErrorEvent>>>, event: PortErrorEvent) {
-    let mut guard = subs.lock().unwrap();
+    let mut guard = subs.lock_recover();
     guard.retain(|tx| tx.send(event.clone()).is_ok());
 }
 

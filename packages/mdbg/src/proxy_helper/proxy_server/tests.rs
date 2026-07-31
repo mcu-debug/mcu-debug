@@ -2,6 +2,7 @@ use super::*;
 use crate::serial::port::{
     FlowControl, Parity, SerialErrorKind, SerialParams, SerialTransport, StopBits,
 };
+use crate::common::sync::MutexExt;
 use crate::serial::AvailablePort;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::Mutex;
@@ -37,7 +38,7 @@ fn ensure_ts_exports() {
 
 static TEST_MUTEX: Mutex<()> = Mutex::new(()); // Don't really need a mutex for this simple test, but is there in case the tests get more complex in the future and need to synchronize access to the stream
 fn send_to_stream(stream_id: u8, stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
-    let _lock = TEST_MUTEX.lock().expect("failed to acquire stream lock"); // Acquire the global mutex before sending
+    let _lock = TEST_MUTEX.lock_recover(); // Serialize test senders; recovers if a prior test panicked holding it
     let mut header = Vec::with_capacity(5);
     header.push(stream_id);
     header.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
