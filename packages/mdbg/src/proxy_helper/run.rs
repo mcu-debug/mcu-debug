@@ -16,7 +16,7 @@
 //! This will implement the Probe Agent that manages gdb-server processes
 //! and speaks the Funnel Protocol over TCP.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 use clap::ValueEnum;
 use flexi_logger::{Age, Cleanup, Criterion, Duplicate, FileSpec, Logger, LoggerHandle, Naming};
@@ -24,7 +24,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::{
     backtrace::Backtrace,
-    io::Write,
     net::{Ipv4Addr, TcpListener, TcpStream},
     panic,
     path::PathBuf,
@@ -36,10 +35,13 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::proxy_helper::admin::{self, AdminContext};
+use crate::proxy_helper::lifetime::Lifetime;
 use crate::proxy_helper::proxy_server::{ProxyServer, SerialPortRegistry};
 use crate::proxy_helper::serial_available::{
     start_serial_available_watcher, SerialAvailabilityHub,
 };
+use crate::proxy_helper::singleton;
 
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "proxy-protocol/")]
@@ -93,6 +95,28 @@ pub struct ProxyArgs {
     /// Do NOT pass it for SSH-launched or daemon instances.
     #[arg(long = "heartbeat", default_value_t = false)]
     pub heartbeat: bool,
+
+    /// Singleton instance name. One proxy runs per (user, instance); a distinct
+    /// name (e.g. `dev`) runs an isolated proxy that never collides with the
+    /// default one — handy when debugging `mdbg` itself.
+    #[arg(long = "instance", env = "MDBG_PROXY_INSTANCE", default_value = "default")]
+    pub instance: String,
+
+    /// Seconds with no active session (and no `--heartbeat` window keep-alive)
+    /// before the proxy self-exits. 0 disables idle shutdown (run until killed
+    /// or explicitly stopped) — use it for a persistent lab/SSH daemon.
+    #[arg(long = "idle-timeout", default_value_t = 300)]
+    pub idle_timeout: u64,
+
+    /// Client mode: query the running proxy for this instance and print its
+    /// status as JSON, then exit (does not start a proxy).
+    #[arg(long = "status", default_value_t = false)]
+    pub status: bool,
+
+    /// Client mode: ask the running proxy for this instance to shut down
+    /// gracefully (stop accepting, exit when active sessions finish), then exit.
+    #[arg(long = "shutdown", default_value_t = false)]
+    pub shutdown: bool,
 }
 
 fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
@@ -178,11 +202,175 @@ fn install_panic_hook() {
     });
 }
 
+/// Signal the accept loop to stop, then unblock it by self-connecting so the
+/// blocked `accept()` returns and the loop sees the flag and breaks. Used by the
+/// idle monitor and by admin drain.
+pub(crate) fn trigger_graceful_shutdown(stop_flag: &AtomicBool, local_port: u16) {
+    stop_flag.store(true, Ordering::SeqCst);
+    let addr = format!("127.0.0.1:{local_port}");
+    if let Err(e) = TcpStream::connect(&addr) {
+        log::warn!(
+            "Self-connect to {addr} failed during shutdown: {e} — accept loop may not unblock immediately"
+        );
+    }
+}
+
+/// Client mode for `--status` / `--shutdown`: locate the running proxy for this
+/// instance, send it an admin request, and print the reply as JSON. Never starts
+/// a proxy. A missing/unreachable endpoint is reported as `{ok:false,...}`, not
+/// an error, so scripts get a stable JSON shape.
+fn run_admin_client(args: &ProxyArgs) -> Result<()> {
+    let instance = singleton::Instance::resolve(&args.instance)?;
+    let print = |resp: &admin::AdminResponse| -> Result<()> {
+        println!("{}", serde_json::to_string_pretty(resp)?);
+        Ok(())
+    };
+    let not_running = |msg: String| admin::AdminResponse {
+        ok: false,
+        error: Some(msg),
+        status: None,
+        message: None,
+    };
+
+    let endpoint = match singleton::read_endpoint(&instance.endpoint_path) {
+        Ok(ep) => ep,
+        Err(_) => {
+            return print(&not_running(format!(
+                "no proxy running for instance '{}'",
+                instance.name
+            )));
+        }
+    };
+    let req = admin::AdminRequest {
+        v: 1,
+        cmd: if args.shutdown { "shutdown" } else { "status" }.to_string(),
+        token: endpoint.token.clone(),
+        graceful: true,
+        version: String::new(),
+    };
+    match admin::query(&endpoint, &req) {
+        Ok(resp) => print(&resp),
+        Err(e) => print(&not_running(format!("proxy not reachable ({e:#})"))),
+    }
+}
+
+/// Acquire the per-(user, instance) singleton lock, or defer to a running proxy.
+///
+/// Returns `Ok(Some(guard))` when we own the instance (caller runs as the
+/// singleton), or `Ok(None)` when a running proxy was reused (discovery JSON is
+/// printed here; caller should just return). If a strictly-newer binary is
+/// launched, it asks the running proxy to step down and then takes over.
+///
+/// (A free function so the successful guard is returned by value — this keeps the
+/// initial attempt's borrow of `proxy_lock` from overlapping the upgrade-retry.)
+fn acquire_or_reuse<'a>(
+    proxy_lock: &'a mut fd_lock::RwLock<std::fs::File>,
+    instance: &singleton::Instance,
+    args: &ProxyArgs,
+    mine: &str,
+) -> Result<Option<fd_lock::RwLockWriteGuard<'a, std::fs::File>>> {
+    // Probe *without* holding the guard (the temporary guard drops at the end of
+    // this statement), so the decision below doesn't pin the `proxy_lock` borrow
+    // across the acquire-loop (NLL problem case #3).
+    let held_by_other = proxy_lock.try_write().is_err();
+
+    if held_by_other {
+        let ep = singleton::read_endpoint_retry(&instance.endpoint_path)?;
+        let token = if args.no_token {
+            None
+        } else {
+            Some(ep.token.as_str())
+        };
+
+        if !singleton::is_newer(mine, &ep.version) {
+            // Same or older → reuse the running proxy.
+            if singleton::is_newer(&ep.version, mine) {
+                log::warn!(
+                    "A newer proxy v{} is already running for '{}'; using it",
+                    ep.version,
+                    instance.name
+                );
+            }
+            log::info!(
+                "Reusing existing proxy for '{}' (pid {}, port {})",
+                instance.name,
+                ep.pid,
+                ep.port
+            );
+            singleton::print_discovery(ep.port, ep.pid, token);
+            return Ok(None);
+        }
+
+        // We are newer → ask the running proxy to step down, then take over its
+        // identity (Phase D drain-and-replace). Fall through to the acquire loop.
+        log::info!(
+            "Newer proxy v{mine} > running v{} for '{}' — requesting handover",
+            ep.version,
+            instance.name
+        );
+        if let Err(e) = admin::request_upgrade(&ep, mine) {
+            log::warn!("Handover request failed: {e:#}; reusing the existing proxy");
+            singleton::print_discovery(ep.port, ep.pid, token);
+            return Ok(None);
+        }
+    }
+
+    // Wait until the lock is free (probe-only — a guard returned from inside the
+    // loop would trip NLL problem case #3), covering both the momentary free-race
+    // after the probe and the upgrade handoff window. Then acquire once for real.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while proxy_lock.try_write().is_err() {
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("could not acquire the instance lock (another proxy won the race?)");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    match proxy_lock.try_write() {
+        Ok(g) => {
+            let _ = std::fs::remove_file(&instance.endpoint_path);
+            Ok(Some(g))
+        }
+        Err(_) => anyhow::bail!("lost the instance-lock race after waiting"),
+    }
+}
+
 pub fn run(args: ProxyArgs) -> Result<()> {
     let _log_handle = init_logging(&args);
     install_panic_hook();
 
     crate::common::debug::set_debug(args.debug);
+
+    // Client modes: query/command a running proxy and exit — do not start one.
+    if args.status || args.shutdown {
+        return run_admin_client(&args);
+    }
+
+    // ── Singleton identity (Tier 1, Phase A) ────────────────────────────────
+    // Acquire the per-(user, instance) advisory lock. If another proxy for this
+    // instance already holds it, that proxy is alive (the OS releases the lock
+    // on process death) — so reuse it: print its discovery JSON and exit, so the
+    // launcher gets connection details whether we started fresh or found one.
+    let instance = singleton::Instance::resolve(&args.instance)?;
+    instance.ensure_dir()?;
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false) // it's a lock file — never clobber its contents
+        .open(&instance.lock_path)
+        .with_context(|| format!("could not open {}", instance.lock_path.display()))?;
+    let mut proxy_lock = fd_lock::RwLock::new(lock_file);
+    let mine = singleton::self_version();
+
+    // Acquire the instance lock, or reuse / take over a running proxy. `None`
+    // means we reused an existing proxy (discovery JSON already printed) and
+    // should just exit. Held for the process lifetime — except on an upgrade
+    // handover, where it's released early (see `superseded` near the end), so
+    // it's an `Option` we can `take()`.
+    let mut lock_guard = match acquire_or_reuse(&mut proxy_lock, &instance, &args, &mine)? {
+        Some(guard) => Some(guard),
+        None => return Ok(()),
+    };
 
     // TODO: Maybe allow Ipv6 in the future, but for now we can just require IPv4 for simplicity
     let host = match args.host.parse::<Ipv4Addr>() {
@@ -201,9 +389,51 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     };
     let local_port = listener.local_addr()?.port();
 
-    // Graceful-shutdown flag, shared with the heartbeat watcher thread (when --heartbeat is set).
-    // The main accept loop polls this after each accepted connection and breaks when set.
+    // Publish the discovery anchor now that we own the lock and have a port.
+    let endpoint = singleton::Endpoint {
+        v: 1,
+        instance: instance.name.clone(),
+        pid: std::process::id(),
+        version: singleton::self_version(),
+        port: local_port,
+        token: args.token.clone(),
+        state: "active".to_string(),
+        started_at_unix: singleton::Endpoint::now_unix(),
+    };
+    singleton::write_endpoint_atomic(&instance.endpoint_path, &endpoint)?;
+
+    // Graceful-shutdown flag. The idle monitor (and, later, admin shutdown) set
+    // it and self-connect; the accept loop polls it after each accept and breaks.
     let stop_flag = Arc::new(AtomicBool::new(false));
+
+    // Use-bounded lifetime: the proxy stays alive while any ref is held — one per
+    // live session, plus a "window keep-alive" ref while --heartbeat pings arrive
+    // (Phase B). When all refs drop, the idle monitor exits after --idle-timeout.
+    let lifetime = Lifetime::new();
+
+    // Draining flag (Phase C): set on admin `shutdown` — the accept loop then
+    // refuses new sessions and the proxy exits when the last session ends.
+    let draining = Arc::new(AtomicBool::new(false));
+
+    // Superseded flag (Phase D): set on admin `upgrade` — this proxy handed its
+    // identity to a newer one and must release the lock early without deleting
+    // endpoint.json on exit.
+    let superseded = Arc::new(AtomicBool::new(false));
+
+    // Shared context for admin (`--status` / `--shutdown` / `upgrade`) connections.
+    let admin_ctx = Arc::new(AdminContext {
+        token: args.token.clone(),
+        lifetime: Arc::clone(&lifetime),
+        draining: Arc::clone(&draining),
+        superseded: Arc::clone(&superseded),
+        stop_flag: stop_flag.clone(),
+        local_port,
+        endpoint_path: instance.endpoint_path.clone(),
+        pid: std::process::id(),
+        version: singleton::self_version(),
+        instance: instance.name.clone(),
+        started_at_unix: endpoint.started_at_unix,
+    });
 
     // Stdin heartbeat watchdog — only when explicitly requested via --heartbeat.
     // The extension that spawns us locally passes this flag and sends a '\n' every
@@ -214,7 +444,6 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     // sets stop_flag + self-connects instead of using the default signal termination.
     if args.heartbeat {
         let (tx, rx) = mpsc::channel::<()>();
-        let stop_flag_watcher = stop_flag.clone();
         thread::spawn(move || {
             use std::io::Read;
             let stdin = std::io::stdin();
@@ -230,24 +459,34 @@ pub fn run(args: ProxyArgs) -> Result<()> {
                 }
             }
         });
+        // Hold a window keep-alive ref while heartbeats arrive. Losing the
+        // heartbeat (window closed) now only drops this ref — it no longer kills
+        // the proxy directly. If sessions are still running, the proxy lives on;
+        // otherwise the idle monitor exits it after --idle-timeout.
+        let window_ref = lifetime.acquire();
         thread::spawn(move || {
+            let _window_ref = window_ref;
             const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
             // Loop until the channel is closed (EOF on stdin) or times out (no heartbeat).
             while rx.recv_timeout(HEARTBEAT_TIMEOUT).is_ok() {}
-            log::info!("Stdin closed or heartbeat timeout — initiating graceful shutdown");
-            // Signal the accept loop to stop after the next accepted connection.
-            stop_flag_watcher.store(true, Ordering::SeqCst);
-            // Unblock listener.incoming(): connect to ourselves so the blocked accept()
-            // returns a stream; the main thread then sees the flag and breaks cleanly,
-            // allowing all ProxyServer instances to drop and kill their child processes.
-            let addr = format!("127.0.0.1:{}", local_port);
-            if let Err(e) = TcpStream::connect(&addr) {
-                log::warn!(
-                    "Self-connect to {} failed: {} — accept loop may not unblock immediately",
-                    addr,
-                    e
-                );
-            }
+            log::info!("Heartbeat lost (window closed) — dropping window keep-alive ref");
+            // _window_ref drops here → lifetime decremented.
+        });
+    }
+
+    // Idle monitor: when all refs are gone for --idle-timeout, self-exit. Skip
+    // entirely when idle_timeout == 0 (persistent daemon).
+    if args.idle_timeout > 0 {
+        let lifetime_monitor = Arc::clone(&lifetime);
+        let stop_flag_monitor = stop_flag.clone();
+        let idle = Duration::from_secs(args.idle_timeout);
+        thread::spawn(move || {
+            lifetime_monitor.wait_until_idle(idle);
+            log::info!(
+                "Idle for {}s with no active sessions — shutting down",
+                args.idle_timeout
+            );
+            trigger_graceful_shutdown(&stop_flag_monitor, local_port);
         });
     }
 
@@ -263,18 +502,11 @@ pub fn run(args: ProxyArgs) -> Result<()> {
 
     // Print Discovery JSON to stdout: {"status": "ready", "port": <actual_port>, "pid": <pid>} with an optional "token" field
     // If --no-token is not set, the client will parse this to discover the port and token to use for connecting to the Probe Agent.
-    let out_token = if args.no_token {
-        String::new()
-    } else {
-        format!(", \"token\": \"{}\"", args.token)
-    };
-    println!(
-        "{{\"status\": \"ready\", \"port\": {}, \"pid\": {}{}}}",
+    singleton::print_discovery(
         local_port,
         std::process::id(),
-        out_token
+        if args.no_token { None } else { Some(args.token.as_str()) },
     );
-    std::io::stdout().flush()?;
 
     log::info!("Probe Agent listening on port {}", local_port);
 
@@ -304,7 +536,13 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         }
         match stream {
             Ok(stream) => {
-                // Spawn a new thread to handle each incoming connection
+                // Draining (admin shutdown): refuse new connections; existing
+                // sessions run to completion, then the proxy exits.
+                if draining.load(Ordering::SeqCst) {
+                    log::info!("Draining — refusing new connection");
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
                 let args_clone = ProxyArgs {
                     host: args.host.clone(),
                     port: args.port,
@@ -315,19 +553,35 @@ pub fn run(args: ProxyArgs) -> Result<()> {
                     log_dir: args.log_dir.clone(),
                     no_token: args.no_token,
                     heartbeat: false, // watchdog already running on main thread; no second instance
+                    instance: args.instance.clone(),
+                    idle_timeout: args.idle_timeout,
+                    status: false,
+                    shutdown: false,
                 };
                 let registry_clone = Arc::clone(&serial_registry);
                 let serial_available_hub_clone = Arc::clone(&serial_available_hub);
-                let handle = thread::spawn(move || {
-                    let mut new_client = ProxyServer::new(
-                        args_clone,
-                        stream,
-                        registry_clone,
-                        serial_available_hub_clone,
-                    );
-                    new_client.message_loop().unwrap_or_else(|e| {
-                        log::error!("Error in client message loop: {}", e);
-                    });
+                let lifetime_conn = Arc::clone(&lifetime);
+                let admin_ctx_conn = Arc::clone(&admin_ctx);
+                let handle = thread::spawn(move || match admin::discriminate(&stream) {
+                    admin::Kind::Session => {
+                        // Session ref held for the session's lifetime; its drop
+                        // (session end) may arm the idle timer.
+                        let _session_ref = lifetime_conn.acquire();
+                        let mut new_client = ProxyServer::new(
+                            args_clone,
+                            stream,
+                            registry_clone,
+                            serial_available_hub_clone,
+                        );
+                        new_client.message_loop().unwrap_or_else(|e| {
+                            log::error!("Error in client message loop: {}", e);
+                        });
+                    }
+                    admin::Kind::Admin => admin::handle(stream, &admin_ctx_conn),
+                    admin::Kind::Unknown => {
+                        log::warn!("Unrecognized connection (no session/admin prefix) — closing");
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                    }
                 });
                 client_threads.push(handle);
             }
@@ -345,6 +599,18 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         }
     }
 
+    // Upgrade handover: if a newer proxy superseded us, release the lock NOW (so
+    // it can bind) and leave endpoint.json alone (the successor owns it). We then
+    // serve our existing sessions to completion, headless.
+    let was_superseded = superseded.load(Ordering::SeqCst);
+    if was_superseded {
+        drop(lock_guard.take());
+        log::info!(
+            "Handed off identity; serving {} existing session(s) to completion",
+            client_threads.len()
+        );
+    }
+
     // Wait for all client handler threads so their ProxyServer instances are fully dropped
     // (killing any still-running gdb-server/openocd children) before we return.
     log::info!(
@@ -355,6 +621,13 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         handle.join().ok();
     }
     let _ = serial_available_watcher_stop.send(());
+
+    // Best-effort: remove the discovery anchor — unless a successor now owns it.
+    // The advisory lock auto-releases when `lock_guard` drops on return (if not
+    // already released above).
+    if !was_superseded {
+        let _ = std::fs::remove_file(&instance.endpoint_path);
+    }
     log::info!("All client threads finished — proxy exiting cleanly");
 
     Ok(())
@@ -377,6 +650,10 @@ mod tests {
             log_dir: Some(temp.path().to_string_lossy().to_string()),
             no_token: false,
             heartbeat: false,
+            instance: "default".to_string(),
+            idle_timeout: 300,
+            status: false,
+            shutdown: false,
         };
 
         let _log_handle = init_logging(&args);

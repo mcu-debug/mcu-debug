@@ -22,7 +22,7 @@ rustc-demangle = "0.1.27"
 cpp_demangle = "0.5.1"
 regex = "1"
 ts-rs = "12.0.1"
-clap = { version = "4.5.57", features = ["derive"] }
+clap = { version = "4.5.57", features = ["derive", "env"] }
 capstone = "0.14.0"
 tokio = { version = "1.49.0", features = ["full"] }
 tempfile = "3.26.0"
@@ -34,6 +34,8 @@ ratatui = "0.29"
 tui-textarea = { version = "0.7", features = ["crossterm"] }
 crossterm = "0.28"
 libc = "0.2"
+fd-lock = "4.0.4"
+dirs = "6.0.0"
 
 [profile.release]
 strip = "symbols"

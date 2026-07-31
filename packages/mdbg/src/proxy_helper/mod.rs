@@ -15,7 +15,10 @@
 //! Probe Agent / Proxy helper — remote gdb-server orchestration via the Funnel Protocol.
 //! This module will be populated in Phase 1 of the remote proxy implementation.
 
+pub mod admin;
+pub mod lifetime;
 pub mod port_monitor;
 pub mod proxy_server;
 pub mod run;
 pub mod serial_available;
+pub mod singleton;

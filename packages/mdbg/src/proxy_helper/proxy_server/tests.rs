@@ -132,6 +132,11 @@ fn test_proxy_server() {
     let rx: Receiver<String>;
     (tx, rx) = channel();
 
+    // Keep the singleton state dir (lock + endpoint.json) out of the real home
+    // directory during tests — point it at a throwaway temp path instead.
+    let state_dir = std::env::temp_dir().join(format!("mdbg-test-proxy-{}", std::process::id()));
+    std::env::set_var("MDBG_PROXY_STATE_DIR", &state_dir);
+
     thread::spawn(|| {
         let args = ProxyArgs {
             host: "127.0.0.1".to_string(),
@@ -143,6 +148,12 @@ fn test_proxy_server() {
             log_dir: None,
             no_token: false,
             heartbeat: false,
+            // Distinct instance so the test never touches (or is blocked by) a
+            // real `default` proxy running on the dev machine.
+            instance: "test-proxy-server".to_string(),
+            idle_timeout: 0, // no idle monitor during the test
+            status: false,
+            shutdown: false,
         };
         let _ = crate::proxy_helper::run::run(args);
     });
