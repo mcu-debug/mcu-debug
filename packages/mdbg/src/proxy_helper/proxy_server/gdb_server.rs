@@ -286,13 +286,13 @@ impl ProxyServer {
 
             if let Some(stdout) = self.process.as_mut().unwrap().stdout.take() {
                 let tx = self.event_tx.clone();
-                std::thread::spawn(move || {
+                spawn_session_thread(&self.event_tx, SessionThreadRole::GdbStdout, move || {
                     read_and_forward(StreamId::Stdout.to_u8(), stdout, tx);
                 });
             }
             if let Some(stderr) = self.process.as_mut().unwrap().stderr.take() {
                 let tx = self.event_tx.clone();
-                std::thread::spawn(move || {
+                spawn_session_thread(&self.event_tx, SessionThreadRole::GdbStderr, move || {
                     read_and_forward(StreamId::Stderr.to_u8(), stderr, tx);
                 });
             }
@@ -309,7 +309,7 @@ impl ProxyServer {
                     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
                     self.monitor_stop_tx = Some(stop_tx);
                     let event_tx = self.event_tx.clone();
-                    std::thread::spawn(move || {
+                    spawn_session_thread(&self.event_tx, SessionThreadRole::PortMonitor, move || {
                         if let Err(e) = wait_for_ports(ports, event_tx, stop_rx) {
                             eprintln!("Port monitor exited with error: {}", e);
                         }
@@ -345,7 +345,7 @@ impl ProxyServer {
     ) {
         for (stream_id, port) in ports {
             let event_tx = self.event_tx.clone();
-            std::thread::spawn(move || {
+            spawn_session_thread(&self.event_tx, SessionThreadRole::PortWaiter, move || {
                 let duration = if msg_seq != 0 {
                     Duration::from_millis(30)
                 } else {

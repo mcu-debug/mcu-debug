@@ -29,6 +29,42 @@ use crate::serial::AvailablePort;
 
 // ── Funnel event (unified event channel) ─────────────────────────────────────
 
+/// Which session-owned background thread a [`ProxyEvent::SessionThreadExited`]
+/// refers to. `message_loop` uses [`SessionThreadRole::is_fatal`] to decide
+/// whether the thread's death ends the whole session or is merely noted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionThreadRole {
+    /// Reads the client control socket. Fatal — without it the session is deaf.
+    ControlReader,
+    /// Forwards gdb-server stdout to the client.
+    GdbStdout,
+    /// Forwards gdb-server stderr to the client.
+    GdbStderr,
+    /// Waits for a gdb-server port to open, then forwards it.
+    PortWaiter,
+    /// Monitors gdb-server ports (`PortWaitMode::Monitor`).
+    PortMonitor,
+    /// Forwards fatal serial-port errors into the event loop.
+    SerialErrorForwarder,
+}
+
+impl SessionThreadRole {
+    /// OS thread name, surfaced by the panic hook and in logs.
+    pub fn thread_name(self) -> String {
+        format!("session-{self:?}")
+    }
+
+    /// Whether this thread's exit should tear down the whole session.
+    ///
+    /// Only the control reader is fatal: a panic there would otherwise strand
+    /// `message_loop` on `recv()` forever (the loop always holds a sender, so it
+    /// never sees `Disconnected`). Every other role's death is local — the
+    /// relevant stream/port is simply gone.
+    pub fn is_fatal(self) -> bool {
+        matches!(self, SessionThreadRole::ControlReader)
+    }
+}
+
 /// Unified event type for the main event loop. All background threads
 /// (control-stream reader, port waiters, stdout/stderr forwarders) send events
 /// through one channel so `message_loop` can block on `recv()` instead of
@@ -72,6 +108,10 @@ pub enum ProxyEvent {
         revision: u64,
         ports: Vec<AvailablePort>,
     },
+    /// A session-owned background thread exited — returned, errored, or panicked.
+    /// Emitted by `spawn_session_thread` so the loop always learns of the death
+    /// (even on panic) and can end the session for fatal roles or note the rest.
+    SessionThreadExited { role: SessionThreadRole, panicked: bool },
 }
 
 // ── Misc shared types ─────────────────────────────────────────────────────────

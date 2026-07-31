@@ -184,13 +184,17 @@ impl ProxyServer {
                 }
             }
             let proxy_tx = self.event_tx.clone();
-            std::thread::spawn(move || {
-                while let Ok(e) = err_rx.recv() {
-                    if proxy_tx.send(ProxyEvent::SerialPortError(e)).is_err() {
-                        break;
+            spawn_session_thread(
+                &self.event_tx,
+                SessionThreadRole::SerialErrorForwarder,
+                move || {
+                    while let Ok(e) = err_rx.recv() {
+                        if proxy_tx.send(ProxyEvent::SerialPortError(e)).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
+                },
+            );
         }
 
         match result {

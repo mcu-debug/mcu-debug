@@ -782,10 +782,74 @@
             }
         }
 
+        // Fit-to-Window Scaling
+        //
+        // Each slide's content wrapper normally stretches to fill the slide
+        // (h-full + justify-between) for a nicely spread-out layout. On short
+        // viewports (small laptops, browser windows with lots of chrome) that
+        // content can be taller than what's actually available, and since the
+        // deck deliberately has no scrollbars (they'd sit awkwardly under the
+        // fixed header), overflow would otherwise just get silently clipped.
+        //
+        // To avoid that without introducing scrolling, we measure each slide's
+        // natural (unstretched) content height and, only if it doesn't fit,
+        // scale the whole wrapper down uniformly to fit — same technique
+        // presentation tools like reveal.js use. Slides that already fit are
+        // left at their normal 100%-height, spread-out layout.
+        function fitSlides() {
+            const availableHeight = getAvailableContentHeight();
+            slides.forEach((slide) => {
+                const content = slide.firstElementChild;
+                if (!content) return;
+
+                // Force natural (auto) height to measure true content size,
+                // ignoring any scale/height applied by a previous pass.
+                content.style.transform = 'none';
+                content.style.height = 'auto';
+                const naturalHeight = content.scrollHeight;
+
+                if (naturalHeight > availableHeight) {
+                    const scale = availableHeight / naturalHeight;
+                    content.style.transformOrigin = 'top center';
+                    content.style.transform = `scale(${scale})`;
+                    // Leave height as 'auto': the transform is purely visual
+                    // and doesn't affect layout, so this just anchors the
+                    // (now-scaled) content at the top of the slide instead of
+                    // stretching to fill it.
+                } else {
+                    content.style.transform = '';
+                    content.style.transformOrigin = '';
+                    content.style.height = '100%';
+                }
+            });
+        }
+
+        function getAvailableContentHeight() {
+            const deck = document.querySelector('.slide-deck');
+            const cs = getComputedStyle(slides[0]);
+            const padTop = parseFloat(cs.paddingTop) || 0;
+            const padBottom = parseFloat(cs.paddingBottom) || 0;
+            return deck.clientHeight - padTop - padBottom;
+        }
+
+        // Recompute on resize, debounced so dragging a window edge doesn't
+        // thrash layout on every pixel.
+        let resizeTimer = null;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(fitSlides, 100);
+        });
+
         // Initialize on Load
         window.onload = function () {
             initDots();
             updateSlides();
+            fitSlides();
+            // Web fonts loading in can shift text metrics slightly; refit once
+            // they're ready so the scale factor accounts for final sizes.
+            if (document.fonts && document.fonts.ready) {
+                document.fonts.ready.then(fitSlides);
+            }
         };
     </script>
 </body>

@@ -43,6 +43,35 @@ mod gdb_server;
 mod serial;
 pub use serial::{FunnelWriter, SerialPortBacking, SerialPortRegistry};
 
+/// Spawn a session-owned background thread that can never die silently.
+///
+/// The body runs under `catch_unwind`; on **any** exit — normal return, error,
+/// or panic — a [`ProxyEvent::SessionThreadExited`] is sent to the event loop.
+/// This closes the one hole the singleton Agent can't tolerate: a panicking
+/// session thread stranding `message_loop` blocked on `recv()` (the loop always
+/// holds a sender, so it would otherwise never wake). See `SessionThreadRole`.
+///
+/// The panic hook ([`crate::proxy_helper::run`]) has already logged the
+/// file/line/backtrace by the time control returns here.
+pub(super) fn spawn_session_thread<F>(
+    event_tx: &Sender<ProxyEvent>,
+    role: SessionThreadRole,
+    body: F,
+) where
+    F: FnOnce() + Send + 'static,
+{
+    let exit_tx = event_tx.clone();
+    std::thread::Builder::new()
+        .name(role.thread_name())
+        .spawn(move || {
+            let panicked =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err();
+            // Best-effort: if the loop is already gone, this send simply fails.
+            let _ = exit_tx.send(ProxyEvent::SessionThreadExited { role, panicked });
+        })
+        .expect("failed to spawn session thread");
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -229,7 +258,7 @@ impl ProxyServer {
         // on a stream read in the main thread.
         let control_stream = self.writer.try_clone_stream()?;
         let event_tx = self.event_tx.clone();
-        std::thread::spawn(move || {
+        spawn_session_thread(&self.event_tx, SessionThreadRole::ControlReader, move || {
             let mut reader = control_stream;
             let mut buf = [0u8; 4096];
             loop {
@@ -281,6 +310,19 @@ impl ProxyServer {
                     eprintln!("Client connection closed");
                     self.end_process();
                     break;
+                }
+                ProxyEvent::SessionThreadExited { role, panicked } => {
+                    if panicked {
+                        eprintln!("Session thread {role:?} panicked (see log)");
+                    }
+                    if role.is_fatal() {
+                        eprintln!("Fatal session thread {role:?} exited — ending session");
+                        self.end_process();
+                        break;
+                    }
+                    // Non-fatal: the thread's own clean-exit event (StreamClosed,
+                    // PortFailed, …) already handled teardown, or on a panic there
+                    // is nothing further to unwind for this role. Noted only.
                 }
                 ProxyEvent::IncomingData(bytes) => {
                     all_bytes.extend_from_slice(&bytes);

@@ -75,6 +75,8 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] CLI support. Run MCU-Debug outside VSCode or inside VSCode in CLI mode
   - [x] AI Cockpit window for Humans and AI to look at
   - [x] AI can control execution of FW, interact with the debugger
+  - [ ] Multi-core support (currently disabled)
+  - [ ] Remote proxy host (does not work other than ssh)
   - [ ] [More line items here](./docs-internal/cli-plan.md)
 
  Testing: In progress with various levels of maturity
