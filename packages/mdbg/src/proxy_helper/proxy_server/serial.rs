@@ -218,25 +218,21 @@ impl ProxyServer {
         }
     }
 
-    /// Allocate a Funnel stream ID, send the ring snapshot for late-attach catch-up,
-    /// attach a [`FunnelWriter`] to the port handle, register the inbound routing
-    /// entry, and update (or insert) the registry backing.
+    /// Allocate a Funnel stream ID, attach a [`FunnelWriter`] to the port handle
+    /// (which seeds the ring snapshot for late-attach catch-up), register the
+    /// inbound routing entry, and update (or insert) the registry backing.
     ///
     /// Caller **must not** hold the registry lock — this method takes the lock
-    /// itself to update the backing, and also writes to `self.stream`.
+    /// itself to update the backing.
     fn alloc_funnel_channel(&mut self, path: &str, handle: &Arc<PortHandle>) -> anyhow::Result<u8> {
         let channel_id = self.next_stream_id;
         self.next_stream_id += 1;
 
-        // Late-attach catch-up: send ring snapshot as funnel frames.
-        let snapshot = handle.snapshot();
-        if !snapshot.is_empty() {
-            self.writer
-                .write_frame(channel_id, &snapshot)
-                .map_err(|e| anyhow::anyhow!("funnel snapshot send failed: {e}"))?;
-        }
-
-        // Attach a FunnelWriter for the serial→client direction.
+        // Attach a FunnelWriter for the serial→client direction. `attach_client`
+        // seeds the ring snapshot into the client's queue atomically with going
+        // live, so late-attach catch-up is exactly-once — the snapshot and all
+        // live bytes reach the client in order through this one FunnelWriter, with
+        // none lost or duplicated. (No separate snapshot frame is sent here.)
         let client_id = handle.next_client_id();
         handle.attach_client(
             client_id,

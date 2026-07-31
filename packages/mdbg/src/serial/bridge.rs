@@ -183,24 +183,12 @@ fn accept_loop(
 fn handle_connection(tcp: TcpStream, port_handle: Arc<PortHandle>) {
     let path = port_handle.path.clone();
 
-    // ── 1. Drain: send ring snapshot before attaching as live client ──────────
+    // ── Attach: register the TCP write-half as a live client ──────────────────
     //
-    // Snapshot → write → attach is not atomic, so a few bytes emitted by the
-    // reader thread between snapshot() and attach_client() may be missed.
-    // This is acceptable for a UART terminal — see port.rs module doc.
-    {
-        let history = port_handle.snapshot();
-        if !history.is_empty() {
-            use std::io::Write;
-            if let Err(e) = (&tcp).write_all(&history) {
-                log::warn!("[{path}] failed to drain ring to new client: {e}");
-                let _ = tcp.shutdown(Shutdown::Both);
-                return;
-            }
-        }
-    }
-
-    // ── 2. Attach: register TCP write-half as a live client ───────────────────
+    // `attach_client` seeds the ring snapshot into the client's queue atomically
+    // with going live, so late-attach catch-up is exactly-once: the history and
+    // all live bytes arrive in order, none lost between snapshot and attach, none
+    // duplicated.
     let client_id = port_handle.next_client_id();
     let tcp_writer: Box<dyn std::io::Write + Send> = Box::new(
         tcp.try_clone()

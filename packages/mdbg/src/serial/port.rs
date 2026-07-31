@@ -20,11 +20,12 @@
 //!
 //! ## Thread model
 //!
-//! - **Reader thread**: Continuously reads from the serial device. Pushes bytes
-//!   into the ring buffer and forwards to all attached client writers. Exits
-//!   when `shutdown` flag is set or on an unrecoverable I/O error.
+//! - **Reader thread**: Continuously reads from the serial device. Under the
+//!   `clients` lock it pushes bytes into the ring buffer and fans them out to
+//!   each attached client's bounded queue. Exits when the `shutdown` flag is set
+//!   or on an unrecoverable I/O error.
 //! - **Caller thread(s)**: Call [`PortHandle::reconfigure`], [`PortHandle::attach_client`],
-//!   [`PortHandle::detach_client`], [`PortHandle::snapshot`], and [`PortHandle::close`].
+//!   [`PortHandle::detach_client`], and [`PortHandle::close`].
 //!
 //! ## Reconfigure
 //!
@@ -35,11 +36,11 @@
 //!
 //! ## Late-attach catch-up
 //!
-//! Callers should call [`PortHandle::snapshot`] before [`PortHandle::attach_client`]
-//! to get buffered history, then stream live. There is a small (nanosecond-scale)
-//! race window between the two calls during which a handful of bytes may be
-//! pushed by the reader thread without being sent to the new client. For a
-//! UART terminal this is acceptable.
+//! [`PortHandle::attach_client`] seeds the ring snapshot into the new client's
+//! queue as its first item, atomically with going live — both the seed and the
+//! reader's push+fan-out happen under the `clients` lock. Catch-up is therefore
+//! **exactly-once**: every buffered and live byte reaches the client, in order,
+//! with none lost between snapshot and attach and none duplicated.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -398,15 +399,19 @@ impl PortHandle {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Register `writer` to receive live serial bytes going forward.
+    /// Attach a client to receive serial bytes, seeded with buffered history.
     ///
-    /// Call [`PortHandle::snapshot`] first to get buffered history, write it
-    /// to the same destination, then call this to start receiving live data.
-    /// See the module-level note about the acceptable race window.
+    /// The ring snapshot is placed as the **first** item in the client's queue,
+    /// atomically with going live: the snapshot is taken and the client inserted
+    /// while holding the `clients` lock — the very lock the reader holds for its
+    /// push+fan-out. So no live byte can slip into the queue ahead of the seeded
+    /// history, and none is lost in between. Catch-up is exactly-once and in
+    /// order. The caller does **not** pre-send history — `writer` receives
+    /// history then live data through this one path.
     pub fn attach_client(&self, id: u64, mut writer: Box<dyn Write + Send>) {
         // Bounded queue + dedicated drain thread: the reader never blocks on this
         // client's socket, and a client that falls `CLIENT_QUEUE_DEPTH` chunks
-        // behind is disconnected (below) rather than growing memory unbounded.
+        // behind is disconnected (by the reader) rather than growing memory.
         let (tx, rx) = sync_channel::<Vec<u8>>(CLIENT_QUEUE_DEPTH);
         let drain = std::thread::Builder::new()
             .name(format!("serial-drain-{id}"))
@@ -421,10 +426,17 @@ impl PortHandle {
                 }
             })
             .expect("spawn serial drain thread");
-        self.shared
-            .clients
-            .lock_recover()
-            .insert(id, ClientSink { tx, drain: Some(drain) });
+
+        // Hold `clients` (blocking the reader's push+fan-out) while we snapshot
+        // and insert, so the seeded history precedes any live byte and nothing
+        // is missed in the gap. The sink is not yet in the map, so this first
+        // send into its fresh CLIENT_QUEUE_DEPTH-slot channel cannot be `Full`.
+        let mut clients = self.shared.clients.lock_recover();
+        let history = self.shared.ring.snapshot();
+        if !history.is_empty() {
+            let _ = tx.try_send(history);
+        }
+        clients.insert(id, ClientSink { tx, drain: Some(drain) });
     }
 
     /// Remove a previously registered client.
@@ -441,13 +453,6 @@ impl PortHandle {
                 let _ = handle.join();
             }
         }
-    }
-
-    /// Return a copy of all buffered bytes in FIFO order (oldest first).
-    ///
-    /// Call this before [`attach_client`] to implement late-attach catch-up.
-    pub fn snapshot(&self) -> Vec<u8> {
-        self.shared.ring.snapshot()
     }
 
     /// Write bytes from a TCP client into the serial port (TCP → serial direction).
@@ -514,19 +519,21 @@ impl PortHandle {
                     Ok(n) => {
                         let bytes = &buf[..n];
 
-                        // 1. Push into ring (late-attach catch-up).
-                        shared.ring.push(bytes);
-
-                        // 2. Fan out to every attached client's bounded queue.
-                        //    This is `try_send` only — never a blocking write — so
-                        //    the shared lock is held briefly and no slow client can
-                        //    stall the others. Drop a client whose queue is full
-                        //    (too slow) or whose drain thread has exited (write
-                        //    failed): both mean "gone", matching the old
-                        //    remove-on-write-failure behavior. Dropping the
-                        //    `ClientSink` closes `tx`, so its drain thread and
-                        //    socket clone wind down on their own.
+                        // Push into the ring AND fan out to every client's queue as
+                        // one step under the `clients` lock. A client attaching
+                        // concurrently seeds its queue from the ring under this same
+                        // lock (see `attach_client`), so making push+fan-out atomic
+                        // is what guarantees every byte lands in exactly one of
+                        // {seeded snapshot, live queue} — never lost, never dup'd.
+                        //
+                        // `try_send` only — never a blocking write — so the lock is
+                        // held briefly and no slow client stalls the others. Drop a
+                        // client whose queue is full (too slow) or whose drain thread
+                        // has exited (write failed); both mean "gone". Dropping the
+                        // `ClientSink` closes `tx`, so its drain thread and socket
+                        // clone wind down on their own.
                         let mut clients = shared.clients.lock_recover();
+                        shared.ring.push(bytes);
                         clients.retain(|_id, sink| {
                             !matches!(
                                 sink.tx.try_send(bytes.to_vec()),
