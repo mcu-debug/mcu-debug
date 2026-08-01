@@ -117,6 +117,11 @@ pub struct ProxyArgs {
     /// gracefully (stop accepting, exit when active sessions finish), then exit.
     #[arg(long = "shutdown", default_value_t = false)]
     pub shutdown: bool,
+
+    /// Internal: marks the re-spawned, detached daemon so it runs the proxy
+    /// instead of launching another daemon. Not for direct use.
+    #[arg(long = "daemonized", hide = true, default_value_t = false)]
+    pub daemonized: bool,
 }
 
 fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
@@ -334,16 +339,141 @@ fn acquire_or_reuse<'a>(
     }
 }
 
+/// Re-spawn ourselves as a detached daemon and forward its one discovery line.
+///
+/// The trick that makes "detached, but I can still read its output" work: we
+/// create a pipe and hand the daemon the write-end as its **stdout** (an
+/// inherited handle). File/handle inheritance is *independent* of session /
+/// console detachment — so the daemon can be fully detached (its own session on
+/// Unix, no console on Windows) and still write its discovery JSON to the pipe
+/// we read here. We read exactly one line (the daemon holds the pipe open on the
+/// owner path, so we must not wait for EOF), forward it, and exit.
+fn run_foreground_launcher(args: &ProxyArgs) -> Result<()> {
+    use std::io::{BufRead, Write};
+
+    let exe = std::env::current_exe().context("could not determine own executable path")?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("proxy")
+        .arg("--host")
+        .arg(&args.host)
+        .arg("--port")
+        .arg(args.port.to_string())
+        .arg("--token")
+        .arg(&args.token)
+        .arg("--instance")
+        .arg(&args.instance)
+        .arg("--idle-timeout")
+        .arg(args.idle_timeout.to_string())
+        .arg("--port-wait-mode")
+        .arg(
+            args.port_wait_mode
+                .to_possible_value()
+                .expect("port-wait-mode has a value name")
+                .get_name(),
+        )
+        // The marker that tells the child it IS the daemon (don't re-launch).
+        .arg("--daemonized");
+    if args.no_token {
+        cmd.arg("--no-token");
+    }
+    if args.debug {
+        cmd.arg("--debug");
+    }
+    if args.log_stderr {
+        cmd.arg("--log-stderr");
+    }
+    if let Some(dir) = &args.log_dir {
+        cmd.arg("--log-dir").arg(dir);
+    }
+    // (Deliberately do NOT forward --heartbeat: the daemon is independent of this
+    // transient launcher's stdin.)
+
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped()); // the discovery line comes back here
+    cmd.stderr(std::process::Stdio::null()); // the daemon logs to its file
+    detach_process(&mut cmd);
+
+    let mut child = cmd.spawn().context("failed to spawn the proxy daemon")?;
+    let stdout = child.stdout.take().context("daemon stdout pipe missing")?;
+
+    // Read exactly one line on a helper thread with a timeout — on the owner path
+    // the daemon keeps the pipe open after printing, so a blocking read-to-EOF
+    // would hang.
+    let (tx, rx) = mpsc::channel::<std::io::Result<String>>();
+    thread::spawn(move || {
+        let mut line = String::new();
+        let res = std::io::BufReader::new(stdout)
+            .read_line(&mut line)
+            .map(|_| line);
+        let _ = tx.send(res);
+    });
+
+    let discovery = match rx.recv_timeout(Duration::from_secs(15)) {
+        Ok(Ok(line)) if !line.trim().is_empty() => line.trim().to_string(),
+        Ok(Ok(_)) => anyhow::bail!("proxy daemon closed its output without reporting readiness"),
+        Ok(Err(e)) => anyhow::bail!("failed to read proxy daemon output: {e}"),
+        Err(_) => anyhow::bail!("timed out waiting for the proxy daemon to report readiness"),
+    };
+
+    // Forward the daemon's fresh discovery to our own stdout for the launcher.
+    println!("{discovery}");
+    std::io::stdout().flush().ok();
+    // Do NOT wait for the child: on the owner path it runs indefinitely. Dropping
+    // the `Child` handle neither signals nor kills the process.
+    Ok(())
+}
+
+/// Configure `cmd` so the spawned daemon detaches from this launcher (its own
+/// session on Unix; no console + own process group on Windows).
+#[cfg(unix)]
+fn detach_process(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `setsid` is async-signal-safe and runs in the forked child before
+    // exec. A new session detaches the daemon from the controlling terminal, so a
+    // terminal close / SIGHUP won't take it down.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(windows)]
+fn detach_process(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    // DETACHED_PROCESS: run without a console (a background service, not a
+    // terminal app). CREATE_NEW_PROCESS_GROUP: independent of the launcher's
+    // Ctrl-C/Ctrl-Break group. Handle inheritance (the stdout pipe) is unaffected
+    // by these flags.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+}
+
 pub fn run(args: ProxyArgs) -> Result<()> {
-    let _log_handle = init_logging(&args);
-    install_panic_hook();
-
-    crate::common::debug::set_debug(args.debug);
-
     // Client modes: query/command a running proxy and exit — do not start one.
+    // Kept lightweight: no daemon logging setup.
     if args.status || args.shutdown {
         return run_admin_client(&args);
     }
+
+    // Foreground launcher: re-spawn ourselves as a detached, windowless daemon,
+    // forward its single discovery line to our stdout, and exit. The daemon
+    // (`--daemonized`) does the real acquire-or-reuse + run. The launcher thus
+    // gets a FRESH discovery line — printed by the daemon *after* its real lock
+    // check — with no stale-file race, while the owner keeps running
+    // independently past this launcher.
+    if !args.daemonized {
+        return run_foreground_launcher(&args);
+    }
+
+    // ── We are the daemon from here ─────────────────────────────────────────
+    let _log_handle = init_logging(&args);
+    install_panic_hook();
+    crate::common::debug::set_debug(args.debug);
 
     // ── Singleton identity (Tier 1, Phase A) ────────────────────────────────
     // Acquire the per-(user, instance) advisory lock. If another proxy for this
@@ -557,6 +687,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
                     idle_timeout: args.idle_timeout,
                     status: false,
                     shutdown: false,
+                    daemonized: true,
                 };
                 let registry_clone = Arc::clone(&serial_registry);
                 let serial_available_hub_clone = Arc::clone(&serial_available_hub);
@@ -654,6 +785,7 @@ mod tests {
             idle_timeout: 300,
             status: false,
             shutdown: false,
+            daemonized: false,
         };
 
         let _log_handle = init_logging(&args);

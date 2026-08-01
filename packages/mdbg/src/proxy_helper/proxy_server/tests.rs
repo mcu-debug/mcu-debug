@@ -154,6 +154,7 @@ fn test_proxy_server() {
             idle_timeout: 0, // no idle monitor during the test
             status: false,
             shutdown: false,
+            daemonized: true, // run the proxy in-process; don't re-spawn a daemon
         };
         let _ = crate::proxy_helper::run::run(args);
     });

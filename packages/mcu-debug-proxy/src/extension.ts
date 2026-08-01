@@ -12,13 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// ── Singleton model (Tier 1) ─────────────────────────────────────────────────
+// `mdbg proxy` is now a per-(user, instance) singleton. Launching it either
+// starts the one proxy or *reuses* the running one — the binary does the
+// "reuse-if-there, start-if-not" logic itself, so this extension no longer
+// implements it. Consequences:
+//   • No heartbeat. The proxy's lifetime is driven by active sessions + an
+//     idle-timeout, not by pings from us. A dead extension just means its
+//     session connections drop, which drops those refs.
+//   • No watchdog. If the proxy dies, its in-flight gdb-servers/sessions die
+//     with it; spawning a fresh empty proxy recovers nothing.
+//   • Spawned *detached*, so the shared proxy OUTLIVES the window that started
+//     it — other windows (and the CLI) reuse the same instance.
+//   • We never kill it on deactivate; it self-reaps via idle-timeout.
+// The one non-deletion: use the token the running proxy REPORTS (json.token).
+// On reuse that is the first launcher's token, not our nonce.
+
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import { ChildProcess, spawn } from "node:child_process";
 import { computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults } from "@mcu-debug/shared";
-
-let childP: ChildProcess | null = null; // Placeholder for the actual child process that will run the proxy server
 
 /**
  * Returns true if the binary at filePath is a native executable for the
@@ -77,30 +91,6 @@ function binaryMatchesPlatform(filePath: string, platform: NodeJS.Platform, arch
 }
 let proxyPath: string = "path/to/proxy/server"; // Placeholder for the actual path to the proxy server script
 let proxyPolicy: ProxyLaunchPolicy | null = null;
-
-// ── Soft-kill helper ───────────────────────────────────────────────────────────
-// Closes stdin (sends EOF) so the Rust heartbeat watcher fires immediately and
-// initiates a graceful shutdown — running Drop on ProxyServer which kills child
-// processes (openocd, gdb-server, etc.) before the Rust process exits.
-// Falls back to SIGKILL after graceMs if the process has not exited on its own.
-// This is safe to call on any ChildProcess, even ones without --heartbeat.
-const SOFT_KILL_GRACE_MS = 3_000;
-
-function softKillProcess(proc: ChildProcess, graceMs = SOFT_KILL_GRACE_MS): void {
-    // Closing stdin delivers EOF to the Rust reader thread, which drops the tx,
-    // causing the watcher to see Disconnected and start graceful shutdown immediately.
-    try {
-        proc.stdin?.end();
-    } catch {
-        // ignore — stdin may already be closed
-    }
-    const timer = setTimeout(() => {
-        if (!proc.killed) {
-            proc.kill();
-        }
-    }, graceMs);
-    proc.once("exit", () => clearTimeout(timer));
-}
 
 // ── SSH reverse tunnel (auto-ssh-remote) ──────────────────────────────────────
 // The DA runs on the remote SSH host; the Proxy Agent runs here on the Engineer
@@ -199,18 +189,11 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
         }, SSH_REV_TUNNEL_TIMEOUT_MS);
     });
 }
+
 let currentLaunchResults: ProxyLaunchResults | null = null;
-let exiting = false;
 
 const nonce = generateNonce();
 const STARTUP_TIMEOUT_MS = 10_000;
-const WATCHDOG_WINDOW_MS = 60_000;
-const WATCHDOG_MAX_RESTARTS = 5;
-const WATCHDOG_BASE_DELAY_MS = 500;
-const HEARTBEAT_INTERVAL_MS = 5_000;
-let watchdogWindowStart = Date.now();
-let watchdogRestartCount = 0;
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 function generateNonce(length: number = 16): string {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -230,35 +213,27 @@ function computeLaunchPolicy(hostType: ProxyHostType = "auto"): ProxyLaunchPolic
     return computeProxyLaunchPolicy(mode);
 }
 
-function canWatchdogRestart(): boolean {
-    const now = Date.now();
-    if (now - watchdogWindowStart > WATCHDOG_WINDOW_MS) {
-        watchdogWindowStart = now;
-        watchdogRestartCount = 0;
-    }
-    watchdogRestartCount++;
-    return watchdogRestartCount <= WATCHDOG_MAX_RESTARTS;
-}
-
-function nextWatchdogDelayMs(): number {
-    const n = Math.max(0, watchdogRestartCount - 1);
-    return Math.min(WATCHDOG_BASE_DELAY_MS * Math.pow(2, n), 5000);
-}
-
 async function startProxyServer(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults> {
     proxyPolicy = policy;
-    const ret = await startProxyServerWithPolicy();
-    return ret;
-}
-
-async function startProxyServerWithPolicy(): Promise<ProxyLaunchResults> {
-    currentLaunchResults = null;
     currentLaunchResults = await startProxyServerWithPolicyInternal();
     return currentLaunchResults;
 }
+
+// Launch (or reuse) the singleton proxy and read its discovery line. `mdbg proxy`
+// self-daemonizes: the process we spawn is a short-lived foreground launcher that
+// re-spawns a detached daemon, forwards its discovery line to stdout, and exits.
+// The daemon (owner) survives on its own; we never own or manage it.
 function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
-        const dummyResolve = () => {
+        const messages: string[] = [];
+        const errors: string[] = [];
+        const port = proxyPolicy!.fixedPort ?? 0; // 0 → OS-assigned; non-zero → fixed port (WSL NAT firewall scenario)
+        let resolved = false;
+        let ready = false;
+
+        // Resolve with a failure sentinel (serverPort: -1) so a caller can tell
+        // "could not launch/reuse" without the promise rejecting.
+        const resolveFailure = () => {
             if (!resolved) {
                 resolved = true;
                 resolve({
@@ -271,59 +246,38 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
             }
         };
 
-        const messages: string[] = [];
-        const errors: string[] = [];
-        const port = proxyPolicy!.fixedPort ?? 0; // 0 → OS-assigned; non-zero → fixed port (WSL NAT firewall scenario)
-        let resolved = false;
-        let ready = false;
         messages.push(`Starting proxy server with policy: ${JSON.stringify(proxyPolicy)}`);
-        const args = ["proxy", "--host", proxyPolicy!.bindHost, "--port", port.toString(), "--token", nonce, "--heartbeat"];
+        // No --heartbeat: the singleton manages its own lifetime (session refs +
+        // idle-timeout). `--token` is used only if WE become the owner; on reuse
+        // the running proxy keeps its own token and reports it in the discovery.
+        const args = ["proxy", "--host", proxyPolicy!.bindHost, "--port", port.toString(), "--token", nonce];
+        // This spawned process is the SHORT-LIVED foreground launcher. `mdbg proxy`
+        // re-spawns a detached daemon itself, forwards the daemon's discovery line
+        // to this process's stdout, and exits (owner OR reuse — both exit now).
+        // So we do NOT need detached / windowsHide / unref here — survival is the
+        // daemon's job. We just read the forwarded discovery line.
         const proxyProcess = spawn(proxyPath, args, {
-            stdio: ["pipe", "pipe", "pipe"],
+            stdio: ["ignore", "pipe", "pipe"],
         });
+
         proxyProcess.on("error", (err) => {
             errors.push(`Failed to start proxy server: ${err}`);
             vscode.window.showErrorMessage(`Failed to start proxy server: ${err.message}`);
-            dummyResolve();
+            resolveFailure();
         });
+
         proxyProcess.on("exit", (code, signal) => {
-            messages.push(`Proxy server exited with code ${code} and signal ${signal}`);
-            childP = null;
-            if (heartbeatTimer) {
-                clearInterval(heartbeatTimer);
-                heartbeatTimer = null;
-            }
+            messages.push(`Proxy launcher exited with code ${code} and signal ${signal}`);
             if (!ready) {
-                dummyResolve();
+                // Exited before we saw the discovery line → the daemon could
+                // neither start nor reuse. Surface it; no watchdog restart.
+                errors.push(`Proxy launcher exited before ready (code ${code}, signal ${signal})`);
+                resolveFailure();
             }
-            if (!exiting && ready) {
-                if (!canWatchdogRestart()) {
-                    vscode.window.showErrorMessage(`Proxy server restart limit reached (${WATCHDOG_MAX_RESTARTS}/${WATCHDOG_WINDOW_MS / 1000}s). Watchdog is stopping.`);
-                    return;
-                }
-                const delayMs = nextWatchdogDelayMs();
-                setTimeout(() => {
-                    vscode.window.showErrorMessage(`Restarting proxy server after unexpected exit with code ${code} and signal ${signal} (attempt ${watchdogRestartCount}/${WATCHDOG_MAX_RESTARTS}).`);
-                    startProxyServerWithPolicy().catch((restartErr) => {
-                        console.error(`Watchdog restart failed: ${restartErr}`);
-                    });
-                }, delayMs);
-            } else if (!exiting) {
-                if (code !== 0) {
-                    vscode.window.showErrorMessage(`Proxy server exited unexpectedly with code ${code} and signal ${signal}`);
-                }
-            }
+            // If ready: the foreground launcher has done its job and exits — the
+            // detached daemon keeps running. Nothing to do.
         });
-        proxyProcess.on("spawn", () => {
-            messages.push("Proxy server process spawned successfully");
-            childP = proxyProcess;
-            // Heartbeat: write a newline to stdin periodically so the proxy can
-            // detect a frozen or dead extension even if the pipe stays half-open.
-            // The proxy also exits immediately on stdin EOF (VS Code killed).
-            heartbeatTimer = setInterval(() => {
-                childP?.stdin?.write("\n");
-            }, HEARTBEAT_INTERVAL_MS);
-        });
+
         let stdoutData = "";
         proxyProcess.stdout?.on("data", (data) => {
             const msg = data.toString();
@@ -334,14 +288,14 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
                 if (json.status === "ready") {
                     ready = true;
                     resolved = true;
-                    watchdogWindowStart = Date.now();
-                    watchdogRestartCount = 0;
                     const baseResults: ProxyLaunchResults = {
                         policy: proxyPolicy!,
                         consoleMessages: messages,
                         consoleErrors: errors,
                         serverPort: json.port,
-                        token: nonce,
+                        // Use the token the RUNNING proxy reports — on reuse this
+                        // is the first launcher's token, not our nonce.
+                        token: json.token ?? nonce,
                     };
                     if (proxyPolicy!.reverseTunnelSshHost) {
                         // Start the reverse tunnel here — we already know the local port (json.port)
@@ -353,26 +307,26 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
                         resolve(baseResults);
                     }
                 }
-            } catch (e) { }
+            } catch {
+                // Partial JSON — wait for more stdout.
+            }
         });
         proxyProcess.stderr?.on("data", (data) => {
             const msg = data.toString();
             messages.push(`Proxy server stderr: ${msg}`);
         });
+
         setTimeout(() => {
-            dummyResolve();
-            if (proxyProcess) {
-                if (!exiting && !ready) {
+            if (!ready) {
+                errors.push(`Proxy server did not become ready within ${STARTUP_TIMEOUT_MS / 1000}s`);
+                try {
                     proxyProcess.kill();
+                } catch {
+                    // ignore — it may have already exited
                 }
-                proxyProcess.removeAllListeners();
-                childP = null;
-                if (heartbeatTimer) {
-                    clearInterval(heartbeatTimer);
-                    heartbeatTimer = null;
-                }
+                resolveFailure();
             }
-        }, STARTUP_TIMEOUT_MS); // Wait for proxy server to become ready
+        }, STARTUP_TIMEOUT_MS);
     });
 }
 
@@ -382,14 +336,10 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
  * not using the debugging features, and we also avoid any issues with the proxy server running before the user
  * has had a chance to configure it through mcu-debug's settings.
  *
- * We return a token and port as part of the launch results to ensure that the mcu-debug extension can verify
- * that the proxy server it is communicating with is indeed the one it started, and not some other instance that
- * might be running on the system. This adds an extra layer of security and reliability to the communication
- * between the extensions.
- *
- * We can also consider the mcu-debug extension sending us a token we can use. Not sure what is better.
- * It is also not clear if a randomly generated port is okay for all use cases...especially if firewalls
- * are involved. We might want to allow configuring a fixed port (range) through settings
+ * With the singleton model, `startProxyServer` returns whichever proxy is running for the instance (starting one
+ * if needed) along with its port and reported token. Callers on the workspace (DA) side should treat these results
+ * as fresh-per-request and NOT cache the port across debug sessions — the singleton can idle-exit between sessions,
+ * after which a re-launch yields a new port.
  */
 
 export function activate(context: vscode.ExtensionContext) {
@@ -411,23 +361,20 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     const disposables = [
-        // This command allows the mcu-debug extension to retrieve the current proxy launch results, including the
-        // policy, console messages, errors, token, and server port. It will return null if the proxy server is not
-        // currently running or if the launch results are not available.
+        // Returns the most recent launch results (policy, messages, token, port).
+        // NOTE: with the singleton, the proxy may have idle-exited since the last
+        // launch, so these can be stale — callers should prefer a fresh
+        // `startProxyServer` per debug session rather than caching this.
         vscode.commands.registerCommand("mcu-debug-proxy.getProxyResults", () => {
-            if (!childP || !currentLaunchResults || !proxyPolicy || currentLaunchResults.serverPort === -1) {
+            if (!currentLaunchResults || currentLaunchResults.serverPort === -1) {
                 return null;
             }
             return currentLaunchResults;
         }),
-        // This is the main command that the mcu-debug extension will call to start the proxy server. It will return
-        // the launch results, including the policy, console messages, errors, token, and server port.
+        // The main command the mcu-debug extension calls to obtain the proxy. It
+        // launches-or-reuses the singleton and returns its port + reported token.
         vscode.commands.registerCommand("mcu-debug-proxy.startProxyServer", (policy: ProxyLaunchPolicy) => {
             if (policy) {
-                if (childP) {
-                    softKillProcess(childP);
-                    childP = null;
-                }
                 return startProxyServer(policy);
             }
         }),
@@ -477,14 +424,8 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-    exiting = true;
-    if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-    }
-    if (childP) {
-        softKillProcess(childP);
-        childP = null;
-    }
+    // The shared singleton proxy is intentionally NOT killed here — other windows
+    // and the CLI may be using it, and it self-reaps via idle-timeout once no
+    // sessions remain. We only tear down our own SSH reverse tunnel.
     killSshReverseTunnel();
 }

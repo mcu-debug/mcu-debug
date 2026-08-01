@@ -5,3 +5,4 @@ export * from "./wait-for-port";
 export * from "./run-decoder";
 export * from "./proxy-network";
 export * from "./cockpit-protocol";
+export * from "./proxy-starter";
