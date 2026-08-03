@@ -33,7 +33,7 @@ import { ServerConsoleLog } from "../adapter/server-console-log";
 import { logger } from '../common/cli-logger';
 import { VscodeOutputChannelTransport } from './vscode-transport';
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
-import { getWSLNetworkingMode, ProvisioningResults } from "@mcu-debug/shared";
+import { getWSLNetworkingMode, ProvisioningResults, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
 import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
 import { AICockpit } from "./ai-cockpit";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
@@ -943,6 +943,10 @@ exec "${fSlashPath}" "\$@"
 
 export async function activate(context: vscode.ExtensionContext) {
     try {
+        if (context.extensionMode === vscode.ExtensionMode.Development) {
+            console.log("[mcu-debug-proxy] Running in development mode");
+            setDevelopmentModeEnvVars();
+        }
         setHostAdapter(new VscodeAdapter(context));
         Reporting.activateTelemetry(context);
         MCUDebugChannel.createDebugChannel();

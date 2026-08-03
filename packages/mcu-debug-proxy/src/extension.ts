@@ -32,7 +32,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import { ChildProcess, spawn } from "node:child_process";
-import { computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults, ProvisioningResults, ProxyProvisionRequest, startProxyServerWithPolicy } from "@mcu-debug/shared";
+import { computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults, ProvisioningResults, ProxyProvisionRequest, startProxyServerWithPolicy, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
 
 /**
  * Returns true if the binary at filePath is a native executable for the
@@ -90,7 +90,6 @@ function binaryMatchesPlatform(filePath: string, platform: NodeJS.Platform, arch
     }
 }
 let proxyPath: string = "path/to/proxy/server"; // Placeholder for the actual path to the proxy server script
-let proxyPolicy: ProxyLaunchPolicy | null = null;
 
 // ── SSH reverse tunnel (auto-ssh-remote) ──────────────────────────────────────
 // The DA runs on the remote SSH host; the Proxy Agent runs here on the Engineer
@@ -190,8 +189,6 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
     });
 }
 
-let currentLaunchResults: ProxyLaunchResults | null = null;
-
 const STARTUP_TIMEOUT_MS = 10_000;
 
 function resolveNetworkMode(hostType: ProxyHostType = "auto") {
@@ -203,17 +200,11 @@ function computeLaunchPolicy(hostType: ProxyHostType = "auto"): ProxyLaunchPolic
     return computeProxyLaunchPolicy(mode);
 }
 
-async function startProxyServerWrapper(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults> {
-    proxyPolicy = policy;
-    currentLaunchResults = await startProxyServerWithPolicyInternal();
-    return currentLaunchResults;
-}
-
 // Launch (or reuse) the singleton proxy and read its discovery line. `mdbg proxy`
 // self-daemonizes: the process we spawn is a short-lived foreground launcher that
 // re-spawns a detached daemon, forwards its discovery line to stdout, and exits.
 // The daemon (owner) survives on its own; we never own or manage it.
-function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
+function startProxyServerWrapper(proxyPolicy: ProxyLaunchPolicy): Promise<ProxyLaunchResults> {
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
         startProxyServerWithPolicy(proxyPolicy!, proxyPath, STARTUP_TIMEOUT_MS)
             .then((result: ProxyLaunchResults) => {
@@ -247,6 +238,10 @@ function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
 
 export function activate(context: vscode.ExtensionContext) {
     console.log("[mcu-debug-proxy] Activating MCU Debug Proxy extension");
+    if (context.extensionMode === vscode.ExtensionMode.Development) {
+        console.log("[mcu-debug-proxy] Running in development mode");
+        setDevelopmentModeEnvVars();
+    }
     const platform = process.platform;
     const exeName = "mdbg" + (platform === "win32" ? ".exe" : "");
     const devPath = context.asAbsolutePath(`bin/${exeName}`);
@@ -315,9 +310,25 @@ class MyUriHandler implements vscode.UriHandler {
     // This function will get run when something redirects to VS Code
     // with your extension id as the authority.
     handleUri(uri: vscode.Uri): vscode.ProviderResult<void> {
+        // TODO: remove after testing
         vscode.window.showInformationMessage(uri.toString());
         if ((uri.path === "/provision") && uri.query) {
-            const obj = Object.fromEntries(new URLSearchParams(uri.query)) as unknown as ProxyProvisionRequest;
+            // The request is one JSON param (`req`) so every field keeps its real
+            // type — `v` is a number, `args` is an array. (URLSearchParams would
+            // otherwise String()-coerce everything to strings / "[object Object]".)
+            // A `const` (via IIFE) so the narrowing below survives into the async
+            // `.then()` closures where `obj` is used.
+            const obj: ProxyProvisionRequest | undefined = (() => {
+                const raw = new URLSearchParams(uri.query).get("req");
+                if (!raw) {
+                    return undefined;
+                }
+                try {
+                    return JSON.parse(raw) as ProxyProvisionRequest;
+                } catch {
+                    return undefined; // malformed JSON → treat as no valid request
+                }
+            })();
             if (obj && obj.v === 1 && obj.api && obj.resultsFile) {
                 let error = "";
                 let result: any = undefined;
@@ -347,31 +358,19 @@ class MyUriHandler implements vscode.UriHandler {
                             }
                             break;
                         }
-                        case "startReverseTunnel": {
-                            const sshHost = obj.args?.[0] as string;
-                            const localProxyPort = obj.args?.[1] as number;
-                            if (sshHost && localProxyPort) {
-                                if (!obj.authority) {
-                                    error = "Missing authority for startProxyServer";
-                                    break;
-                                }
-                                this.validateAuthority(obj.authority).then((isAuthorized) => {
-                                    if (isAuthorized) {
-                                        startSshReverseTunnel(sshHost, localProxyPort).then((remotePort) => {
-                                            this.depositProvision(obj, "", remotePort);
-                                        }).catch((err) => {
-                                            this.depositProvision(obj, `Failed to start reverse tunnel: ${err.message}`, undefined);
-                                        });
-                                    } else {
-                                        this.depositProvision(obj, "Probe host declined permission", undefined);
-                                    }
-                                });
-                                return; // async, will call depositProvision later
-                            } else {
-                                error = "Missing or invalid arguments for startReverseTunnel";
-                            }
-                            break;
-                        }
+                        // NOTE: `startReverseTunnel` is deliberately NOT exposed via the URI / CLI
+                        // path. The `ssh -R` reverse tunnel is a VS Code *Remote-SSH* concept — set
+                        // up FOR the DA in auto-ssh-remote mode. A plain-ssh CLI has no notion of
+                        // "ssh-remote" and cannot construct this request, so removing the entry
+                        // point is a hard guarantee against an accidental one — an unexpected
+                        // request just falls through to "unknown api". It also removes the lifetime
+                        // hazard regardless: the tunnel is a child of THIS extension host and dies
+                        // on `deactivate` (all windows closed), whereas a CLI outlives VS Code. For
+                        // a plain-ssh CLI, port forwarding is part of the user's own ssh setup
+                        // (their `-L`/`-R`, or a tunnel referenced via hostConfig).
+                        // The `mcu-debug-proxy.startReverseTunnel` *command* stays (below) for the
+                        // DA, which shares the extension's lifetime — there the tunnel dying with
+                        // the VS Code session is correct, because the DA session ends too.
                         case "getRemoteSshHost": {
                             result = getRemoteShhHost();
                             break;

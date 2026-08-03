@@ -424,7 +424,7 @@ module.exports = {
         properties: {
             enabled: {
                 type: "boolean",
-                default: false,
+                default: true,
                 description: "Enable/Disable remote probe support. When true, the gdb-server runs on a host machine that has the USB debug probe attached.",
             },
             type: {

@@ -114,7 +114,7 @@ code --open-url "vscode://mcu-debug.mcu-debug-proxy/provision?v=1&nonce=<n>&auth
 | Param         | Req | Meaning                                                                                     |
 | ------------- | --- | ------------------------------------------------------------------------------------------- |
 | `v`           | ✓   | Protocol version. Broker rejects unknown majors.                                            |
-| `authority`   | -   | Guest identity for TOFU (§6), e.g. `dev-container+<hash>`, `ssh-remote+host`.               |
+| `authority`   | ✓   | Guest identity for TOFU (§6), e.g. `dev-container+<hash>`, `ssh-remote+host`.               |
 | `api`         | ✓   | Which provisioning op to run — **whitelisted** (see failure modes below).                   |
 | `args`        | –   | Optional args for the api.                                                                  |
 | `resultsFile` | ✓   | **Guest** absolute path the WS extension writes the result to. URL-encode it. include nonce |

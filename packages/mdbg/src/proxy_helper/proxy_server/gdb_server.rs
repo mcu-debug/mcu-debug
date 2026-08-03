@@ -142,15 +142,15 @@ impl ProxyServer {
             if err {
                 err_msg = format!("Initialization failed, closing connection: {}", err_msg);
                 eprintln!("{}", err_msg);
-                self.writer
-                    .shutdown(std::net::Shutdown::Both)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Failed to shutdown stream: {}", e);
-                    });
                 ControlResponse::error(msg.seq, err_msg)
                     .send(&self.writer)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send error response: {}", e);
+                    });
+                self.writer
+                    .shutdown(std::net::Shutdown::Both)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to shutdown stream: {}", e);
                     });
                 self.exit = true;
             } else {

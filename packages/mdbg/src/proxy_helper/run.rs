@@ -99,13 +99,17 @@ pub struct ProxyArgs {
     /// Singleton instance name. One proxy runs per (user, instance); a distinct
     /// name (e.g. `dev`) runs an isolated proxy that never collides with the
     /// default one — handy when debugging `mdbg` itself.
-    #[arg(long = "instance", env = "MDBG_PROXY_INSTANCE", default_value = "default")]
+    #[arg(
+        long = "instance",
+        env = "MDBG_PROXY_INSTANCE",
+        default_value = "default"
+    )]
     pub instance: String,
 
     /// Seconds with no active session (and no `--heartbeat` window keep-alive)
     /// before the proxy self-exits. 0 disables idle shutdown (run until killed
     /// or explicitly stopped) — use it for a persistent lab/SSH daemon.
-    #[arg(long = "idle-timeout", default_value_t = 300)]
+    #[arg(long = "idle-timeout", env = "MDBG_PROXY_IDLE_TIMEOUT", default_value_t = 5*60*60)]
     pub idle_timeout: u64,
 
     /// Client mode: query the running proxy for this instance and print its
@@ -635,7 +639,11 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     singleton::print_discovery(
         local_port,
         std::process::id(),
-        if args.no_token { None } else { Some(args.token.as_str()) },
+        if args.no_token {
+            None
+        } else {
+            Some(args.token.as_str())
+        },
     );
 
     log::info!("Probe Agent listening on port {}", local_port);

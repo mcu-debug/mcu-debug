@@ -13,6 +13,7 @@ import { EventEmitter } from "stream";
 import * as crypto from "crypto";
 import { glob, GlobOptions } from "glob";
 import { isUnsafeRelativeSyncPath, resolveSyncRelativePathForFile } from "./sync-files-utils";
+import { pkgJsonVersion } from "../commit-hash";
 
 type StreamStatus = "starting" | "connected" | "ready" | "timedOut" | "closed";
 
@@ -89,7 +90,7 @@ export class ProxyClient extends EventEmitter {
                 method: "initialize",
                 params: {
                     token: token,
-                    version: "1.0.3",
+                    version: pkgJsonVersion,
                     workspace_uid: cdir,
                     session_uid: sdir,
                     port_wait_mode: "monitor",

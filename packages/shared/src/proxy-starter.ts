@@ -185,7 +185,11 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
             resultsFile: os.tmpdir() + `/mcu-debug-${nonce}.json`,      // nonce embedded in filename to avoid collisions
         };
         const url = new URL(`vscode://mcu-debug.mcu-debug-proxy/provision`);
-        url.search = new URLSearchParams(params as any).toString();
+        // Serialize the whole request as ONE JSON param. Handing the typed object
+        // straight to URLSearchParams would String()-coerce every value — turning
+        // `v: 1` into "1" and, worse, the `args` array into "[object Object]".
+        // JSON round-trips every field with its real type.
+        url.search = new URLSearchParams({ req: JSON.stringify(params) }).toString();
         try { fs.unlinkSync(params.resultsFile); } catch { }
 
         const spawnArgs = ["--open-url", url.toString()];
@@ -213,7 +217,8 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
                 resolved = true;
                 try {
                     const content = fs.readFileSync(params.resultsFile, "utf8");
-                    fs.unlinkSync(params.resultsFile);
+                    // TODO: uncomment following after testing
+                    // fs.unlinkSync(params.resultsFile);
                     const result = JSON.parse(content) as ProvisioningResults;
                     if (result.resultsFile !== params.resultsFile) {
                         logger.error(`Results file mismatch: expected ${params.resultsFile}, got ${result.resultsFile}`);
@@ -351,4 +356,9 @@ export function startProxyServerWithPolicy(
             }
         }, STARTUP_TIMEOUT_MS);
     });
+}
+
+export function setDevelopmentModeEnvVars() {
+    process.env["MDBG_PROXY_INSTANCE"] = "dev"; // signal to the proxy that it is running in dev mode
+    process.env["MDBG_PROXY_IDLE_TIMEOUT"] = "0"; // 0 is do not exit on idle, for dev mode only
 }
