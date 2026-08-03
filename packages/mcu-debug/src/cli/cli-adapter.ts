@@ -9,6 +9,7 @@ import { logger } from "../common/cli-logger";
 import { GraphConfiguration } from "../common/swo/common";
 import JSONC from 'jsonc-simple-parser';
 import { CLISerialPortView } from './cli-serial';
+import { ProxyLaunchPolicy, proxyServerCommand } from '@mcu-debug/shared';
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
 // Return values match VS Code's remoteName strings so resolveProxyNetworkMode() works unchanged.
@@ -128,7 +129,7 @@ export class CliAdapter implements IHostAdapter {
     }
     executeProxyCommand<T>(command: string, ...args: unknown[]): Promise<T | null> {
         logger.debug(`Proxy command: ${command}`);
-        return Promise.resolve(null);
+        return proxyServerCommand(command, logger, ...args) as Promise<T | null>;
     }
     createSWORTTWebView(extensionPath: string, graphs: GraphConfiguration[]): ISWORTTView {
         throw new Error("SWO RTT WebView not supported in CLI mode.");

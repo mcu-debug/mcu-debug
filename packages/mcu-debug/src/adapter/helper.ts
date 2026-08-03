@@ -126,7 +126,8 @@ export class DebugHelper {
                 return;
             }
 
-            const helperPath = this.getHelperExecPath();
+            const extPath = this.session.args.extensionPath;
+            const helperPath = getHelperExecutable(extPath);
             if (!helperPath) {
                 throw new Error("Helper executable not found");
             }
@@ -175,11 +176,6 @@ export class DebugHelper {
             this.session.handleMsg(Stderr, `Failed to initialize DebugHelper: ${error}`);
             this.symbolTableReject(error);
         }
-    }
-
-    public getHelperExecPath() {
-        const extPath = this.session.args.extensionPath;
-        return getHelperExecutable(extPath);
     }
 
     private handleHelperStdout(message: Buffer | string) {

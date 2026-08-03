@@ -19,7 +19,7 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { spawn } from "child_process";
-import { computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode } from "@mcu-debug/shared";
+import { computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
 import { tcpReachable } from "./utils";
@@ -442,6 +442,14 @@ let currentPolicy: ProxyLaunchPolicy | null = null;
 let proxyLaunchResults: ProxyLaunchResults | null = null;
 let currentHostConfig: HostConfig | null = null;
 export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
+    if (policy.mode.includes("wsl") || policy.mode === "local") {
+        try {
+            const result = await startOrReuseProxyServerOnWslHost(policy);
+        } catch (error) {
+            // We could remove this in the future
+            getHostAdapter().showError(`Failed to quick-start proxy server on WSL host: ${error}. Trying another way`);
+        }
+    }
     try {
         const command = "mcu-debug-proxy.startProxyServer";
         const value = await getHostAdapter().executeProxyCommand<ProxyLaunchResults | null>(command, policy);
@@ -452,25 +460,6 @@ export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy):
         proxyLaunchResults = null;
         currentPolicy = null;
         getHostAdapter().showError(`Failed to launch proxy server: ${error}, mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
-        return null;
-    }
-}
-
-export async function getCurrentProxyLaunchResults(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
-    const command = "mcu-debug-proxy.getProxyResults";
-    try {
-        const value = await getHostAdapter().executeProxyCommand<ProxyLaunchResults | null>(command);
-        if (!value || !value.serverPort || value.serverPort <= 0) {
-            proxyLaunchResults = null;
-            return null;
-        }
-        if (value.serverPort !== proxyLaunchResults?.serverPort || value.token !== proxyLaunchResults?.token || value.policy.bindHost !== proxyLaunchResults?.policy.bindHost) {
-            proxyLaunchResults = null;
-            return null;
-        }
-        return value;
-    } catch {
-        getHostAdapter().showError(`Failed to get current proxy launch results. mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
         return null;
     }
 }
@@ -516,82 +505,18 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
         // We need to spawn the proxy server on the local machine, but the DA will connect to it via the loopback interface,
         // so no network setup is needed. We can set the mode and return immediately.
         const helperPath = getHelperExecutable(getHostAdapter().getExtensionPath());
-        const token = crypto.randomBytes(16).toString("hex");
-        let settled = false;
-        let timeout: NodeJS.Timeout | undefined;
-        const cleanup = () => {
-            if (timeout) {
-                clearTimeout(timeout);
-            }
-            settled = true;
-            if (localProxyProcess) {
-                localProxyProcess.kill();
-                localProxyProcess = null;
-            }
-            proxyLaunchResults = null;
-            currentHostConfig = null;
-        }
-        if (localProxyProcess) {
-            cleanup();
-        }
-        getAnyFreePort(35900).then((port) => {
+        const policy = computeProxyLaunchPolicy("local");
+        startProxyServerWithPolicy(policy, helperPath, 10000).then((launchResults) => {
             hostConfig.pvtNetworkMode = "local";
             hostConfig.pvtProxyHost = "127.0.0.1";
-            hostConfig.pvtProxyPort = port;
-            hostConfig.pvtProxyToken = token;
-            const args = ["proxy", "--port", port.toString(), "--token", token];
-            getHostAdapter().debugMessage(`Starting local proxy with command: ${helperPath} ${args.join(" ")}`);
-            localProxyProcess = spawn(helperPath, args, {
-                stdio: ["pipe", "pipe", "pipe"],
-            });
-            localProxyProcess.stdout?.on("data", (data: Buffer) => {
-                const line = data.toString().trim();
-                getHostAdapter().debugMessage(`Local proxy stdout: ${line}`);
-                hostConfig.pvtProxyPort = port;
-                proxyLaunchResults = {
-                    policy: computeProxyLaunchPolicy('local'),
-                    consoleMessages: [],
-                    consoleErrors: [],
-                    serverPort: port,
-                    token: token,
-                };
-                settled = true;
-                resolve();
-            });
-            localProxyProcess.stderr?.on("data", (data: Buffer) => {
-                const line = data.toString().trim();
-                getHostAdapter().debugMessage(`Local proxy stderr: ${line}`);
-            });
-            localProxyProcess.on("exit", (code) => {
-                cleanup();
-                getHostAdapter().debugMessage(`Local proxy process exited with code ${code}`);
-                if (code !== 0 && code !== null) {
-                    getHostAdapter().showError(`Local proxy process exited with code ${code}`);
-                }
-            });
-            localProxyProcess.on("error", (err) => {
-                cleanup();
-                getHostAdapter().debugMessage(`Local proxy process error: ${err.message}`);
-                getHostAdapter().showError(`Local proxy process error: ${err.message}`);
-            });
-            localProxyProcess.on("spawn", () => {
-                getHostAdapter().debugMessage(`Local proxy process started on port ${port}`);
-            });
-            process.on("exit", () => {
-                cleanup();
-            });
-            timeout = setTimeout(() => {
-                if (!settled) {
-                    cleanup();
-                    reject(new Error("Local proxy process failed to start within timeout"));
-                }
-                timeout = undefined;
-            }, 10000);
+            hostConfig.pvtProxyPort = launchResults.serverPort!;
+            hostConfig.pvtProxyToken = launchResults.token;
+            resolve();
         }).catch((err) => {
-            reject(new Error(`Failed to get free port for local proxy: ${err.message}`));
+            reject(err);
         });
     });
-    return promise
+    return promise;
 }
 
 export async function handleHostConfig(hostConfig: HostConfig | undefined, delConfig: () => void): Promise<void> {
@@ -660,12 +585,9 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             }
 
             // Ensure the proxy is running on the Engineer Machine (and the reverse tunnel is up)
-            let current = await awaitWithTimeout(getCurrentProxyLaunchResults(policy), 10000);
-            if (!current || !currentPolicy || currentPolicy.bindHost !== policy.bindHost) {
-                current = await awaitWithTimeout(launchProxyServerFromExtension(policy), 10000);
-                if (!current) {
-                    throw new Error("Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated? Please try again.");
-                }
+            const current = await awaitWithTimeout(launchProxyServerFromExtension(policy), 10000);
+            if (!current) {
+                throw new Error("Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated? Please try again.");
             }
             if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
                 getHostAdapter().showError("mcu-debug-proxy did not return a valid port");
@@ -721,14 +643,11 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             if (!hostConfig.pvtProxyHost) {
                 hostConfig.pvtProxyHost = resolvedProxyHost;
             }
-            let current = await awaitWithTimeout(getCurrentProxyLaunchResults(policy), 10000);
-            if (!current || !currentPolicy || currentPolicy.bindHost !== policy.bindHost || currentPolicy.fixedPort !== policy.fixedPort) {
-                current = await awaitWithTimeout(launchProxyServerFromExtension(policy), 10000);
-                if (!current) {
-                    throw new Error(
-                        "Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated?. Please try again. Report this problem if it continues to happen",
-                    );
-                }
+            const current = await awaitWithTimeout(launchProxyServerFromExtension(policy), 10000);
+            if (!current) {
+                throw new Error(
+                    "Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated?. Please try again. Report this problem if it continues to happen",
+                );
             }
             if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
                 getHostAdapter().showError("mcu-debug-proxy did not return a valid port");

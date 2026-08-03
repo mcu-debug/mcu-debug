@@ -1,5 +1,22 @@
 import { execSync, spawn } from "child_process";
 import { ProxyLaunchPolicy, ProxyLaunchResults } from "./proxy-network";
+import { commandExists } from "./command-exists";
+import * as fs from "fs";
+import * as os from "os";
+
+export interface ProvisioningResults {
+    resultsFile: string;
+    error?: string;
+    result?: any;
+}
+
+export interface ProxyProvisionRequest {
+    v: number; // version of the protocol
+    api: string; // the command to execute on the proxy server
+    authority: string; // the authority of the proxy server (e.g. dev-container+<hash>, ssh-remote+host, etc.)
+    args?: any[]; // arguments to pass to the command
+    resultsFile: string; // the file to write the results to
+}
 
 let WINDOWS_HOST_HOME = ""; // Windows host home, Windows form (e.g. C:\Users\me)
 
@@ -13,7 +30,7 @@ function generateNonce(length: number = 16): string {
     return result;
 }
 
-const LAUNCH_TIMEOUT_MS = 20_000;
+const LAUNCH_TIMEOUT_MS = 5_000;
 
 /**
  * Launch-or-reuse the singleton proxy on the Windows host from a WSL guest.
@@ -116,5 +133,222 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
                 reject(new Error(`Bad discovery JSON '${line}': ${err}`));
             }
         });
+    });
+}
+
+/**
+ * This is for use in the CLI adapter to execute a command on the proxy server from a WSL/docker/ssh client
+ * We use the vscode command line to open a url and when that is processed by the url handler in the extension,
+ * it will execute the command on the main extension and return the result in a temporary file. The idea is
+ * that since we cannot use the vscode apis directly from the CLI, we can use the extension to do it for us.
+ * This is useful when the client file system is not visible to the UI extension. The round trip can be slow,
+ * but there is no other way to do it. The command is executed in the extension and the result is returned in a temporary file.
+ * 
+ * @param command a normal vscode command of the form "mcu-debug-proxy.*" that is implemented by the proxy server
+ * @param logger an object with an error method for logging errors
+ * @param args arguments to pass to the proxy server command
+ * @returns a promise that resolves to the result of the command, or null if there was an error
+ */
+
+type ProxyCommandLogger = {
+    error: (msg: string) => void;
+};
+export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogger = console, ...args_: unknown[]): Promise<T | null> {
+    return new Promise((resolve) => {
+        const prefix = "mcu-debug-proxy.";
+        if (!command.startsWith(prefix)) {
+            logger.error(`Invalid proxy command: ${command}`);
+            resolve(null);
+            return;
+        }
+        if (!commandExists("code")) {
+            logger.error("VS Code command 'code' not found.");
+            resolve(null);
+            return;
+        }
+
+        let timer: NodeJS.Timeout | undefined = setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                logger.error(`'code ${spawnArgs.join(" ")}' timed out after ${LAUNCH_TIMEOUT_MS}ms`);
+                resolve(null);
+            }
+        }, LAUNCH_TIMEOUT_MS);
+
+        const cmd = command.replace(prefix, "");
+        const nonce = (Math.random() + Math.random()).toString(36).substring(2, 15).padEnd(16, '0');
+        const params: ProxyProvisionRequest = {
+            v: 1,
+            api: cmd,
+            authority: createAuthority(),
+            args: args_,
+            resultsFile: os.tmpdir() + `/mcu-debug-${nonce}.json`,      // nonce embedded in filename to avoid collisions
+        };
+        const url = new URL(`vscode://mcu-debug.mcu-debug-proxy/provision`);
+        url.search = new URLSearchParams(params as any).toString();
+        try { fs.unlinkSync(params.resultsFile); } catch { }
+
+        const spawnArgs = ["--open-url", url.toString()];
+        const child = spawn("code", spawnArgs, { stdio: "inherit" });
+        let resolved = false;
+        child.on("error", (err) => {
+            resolved = true;
+            clear();
+            logger.error(`Failed to run 'code ${spawnArgs.join(" ")}': ${err}`);
+            resolve(null);
+        });
+        child.on("exit", async (code) => {
+            if (code !== 0) {
+                resolved = true;
+                logger.error(`'code ${spawnArgs.join(" ")}' exited with code ${code}`);
+                resolve(null);
+                return;
+            }
+            while (!resolved) {
+                if (!fs.existsSync(params.resultsFile)) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    continue
+                }
+                clear();
+                resolved = true;
+                try {
+                    const content = fs.readFileSync(params.resultsFile, "utf8");
+                    fs.unlinkSync(params.resultsFile);
+                    const result = JSON.parse(content) as ProvisioningResults;
+                    if (result.resultsFile !== params.resultsFile) {
+                        logger.error(`Results file mismatch: expected ${params.resultsFile}, got ${result.resultsFile}`);
+                        resolve(null);
+                        return;
+                    }
+                    if (result.error) {
+                        logger.error(`Error from proxy server: ${result.error}`);
+                        resolve(null);
+                        return;
+                    }
+                    resolve(result.result);
+                } catch (error) {
+                    logger.error(`Failed to read results file: ${error instanceof Error ? error.message : String(error)}`);
+                    resolve(null);
+                }
+            }
+        });
+        // Clear the timeout if the child process exits or errors
+        const clear = () => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = undefined;
+            }
+        };
+    });
+}
+
+export function createAuthority(): string {
+    const osType = process.env["WSL_DISTRO_NAME"] || os.type();
+    const user = os.userInfo().username || "unknown-user";
+    const host = os.hostname() || "unknown-host";
+    return `cli-proxy-${osType}-${user}-${host}`;
+}
+
+
+// Launch (or reuse) the singleton proxy and read its discovery line. `mdbg proxy`
+// self-daemonizes: the process we spawn is a short-lived foreground launcher that
+// re-spawns a detached daemon, forwards its discovery line to stdout, and exits.
+// The daemon (owner) survives on its own; we never own or manage it.
+export function startProxyServerWithPolicy(
+    proxyPolicy: ProxyLaunchPolicy, proxyPath: string, STARTUP_TIMEOUT_MS: number): Promise<ProxyLaunchResults> {
+    return new Promise<ProxyLaunchResults>((resolve, reject) => {
+        const messages: string[] = [];
+        const errors: string[] = [];
+        const port = proxyPolicy!.fixedPort ?? 0; // 0 → OS-assigned; non-zero → fixed port (WSL NAT firewall scenario)
+        let resolved = false;
+        let ready = false;
+
+        // Resolve with a failure sentinel (serverPort: -1) so a caller can tell
+        // "could not launch/reuse" without the promise rejecting.
+        const resolveFailure = () => {
+            if (!resolved) {
+                resolved = true;
+                resolve({
+                    policy: proxyPolicy!,
+                    consoleMessages: messages,
+                    consoleErrors: errors,
+                    serverPort: -1,
+                    token: NONCE,
+                });
+            }
+        };
+
+        messages.push(`Starting proxy server with policy: ${JSON.stringify(proxyPolicy)}`);
+        // No --heartbeat: the singleton manages its own lifetime (session refs +
+        // idle-timeout). `--token` is used only if WE become the owner; on reuse
+        // the running proxy keeps its own token and reports it in the discovery.
+        const args = ["proxy", "--host", proxyPolicy!.bindHost, "--port", port.toString(), "--token", NONCE];
+        // This spawned process is the SHORT-LIVED foreground launcher. `mdbg proxy`
+        // re-spawns a detached daemon itself, forwards the daemon's discovery line
+        // to this process's stdout, and exits (owner OR reuse — both exit now).
+        // So we do NOT need detached / windowsHide / unref here — survival is the
+        // daemon's job. We just read the forwarded discovery line.
+        const proxyProcess = spawn(proxyPath, args, {
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+
+        proxyProcess.on("error", (err) => {
+            errors.push(`Failed to start proxy server: ${err}`);
+            resolveFailure();
+        });
+
+        proxyProcess.on("exit", (code, signal) => {
+            messages.push(`Proxy launcher exited with code ${code} and signal ${signal}`);
+            if (!ready) {
+                // Exited before we saw the discovery line → the daemon could
+                // neither start nor reuse. Surface it; no watchdog restart.
+                errors.push(`Proxy launcher exited before ready (code ${code}, signal ${signal})`);
+                resolveFailure();
+            }
+            // If ready: the foreground launcher has done its job and exits — the
+            // detached daemon keeps running. Nothing to do.
+        });
+
+        let stdoutData = "";
+        proxyProcess.stdout?.on("data", (data) => {
+            const msg = data.toString();
+            messages.push(`Proxy server stdout: ${msg}`);
+            stdoutData += msg;
+            try {
+                const json = JSON.parse(stdoutData);
+                if (json.status === "ready") {
+                    ready = true;
+                    resolved = true;
+                    const baseResults: ProxyLaunchResults = {
+                        policy: proxyPolicy!,
+                        consoleMessages: messages,
+                        consoleErrors: errors,
+                        serverPort: json.port,
+                        // Use the token the RUNNING proxy reports — on reuse this
+                        // is the first launcher's token, not our nonce.
+                        token: json.token ?? NONCE,
+                    };
+                    resolve(baseResults);
+                }
+            } catch {
+                // Partial JSON — wait for more stdout.
+            }
+        });
+        proxyProcess.stderr?.on("data", (data) => {
+            const msg = data.toString();
+            messages.push(`Proxy server stderr: ${msg}`);
+        });
+
+        setTimeout(() => {
+            if (!ready) {
+                errors.push(`Proxy server did not become ready within ${STARTUP_TIMEOUT_MS / 1000}s`);
+                try {
+                    proxyProcess.kill();
+                } catch {
+                    // ignore — it may have already exited
+                }
+                resolveFailure();
+            }
+        }, STARTUP_TIMEOUT_MS);
     });
 }

@@ -361,6 +361,10 @@
     ],
     "commands": [
       {
+        "command": "mcu-debug.depositProvision",
+        "title": "Deposit provisioning results to file"
+      },
+      {
         "command": "mcu-debug.cockpit.addUart",
         "title": "Add UART",
         "icon": "$(add)"

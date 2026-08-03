@@ -5,6 +5,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as os from "os";
+import * as fs from "fs";
 
 import { MCUDebugChannel } from "./dbgmsgs";
 import { LiveWatchTreeProvider, LiveVariableNode } from "./views/live-watch";
@@ -32,7 +33,7 @@ import { ServerConsoleLog } from "../adapter/server-console-log";
 import { logger } from '../common/cli-logger';
 import { VscodeOutputChannelTransport } from './vscode-transport';
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
-import { getWSLNetworkingMode } from "@mcu-debug/shared";
+import { getWSLNetworkingMode, ProvisioningResults } from "@mcu-debug/shared";
 import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
 import { AICockpit } from "./ai-cockpit";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
@@ -136,6 +137,8 @@ export class MCUDebugExtension {
             vscode.commands.registerCommand("mcu-debug.liveWatch.addToLiveWatch", this.addToLiveWatch.bind(this)),
             vscode.commands.registerCommand("mcu-debug.liveWatch.moveUp", this.moveUpLiveWatchExpr.bind(this)),
             vscode.commands.registerCommand("mcu-debug.liveWatch.moveDown", this.moveDownLiveWatchExpr.bind(this)),
+
+            vscode.commands.registerCommand("mcu-debug.depositProvision", (data: ProvisioningResults) => this.depositProvision(data)),
 
             vscode.commands.registerCommand("mcu-debug.cockpit.startDebugSession", (arg: string | undefined) => {
                 AICockpit.getInstance(this.context)?.startDebugSession(arg);
@@ -915,6 +918,26 @@ exec "${fSlashPath}" "\$@"
             } catch { }
         }
         return false;
+    }
+
+    private depositProvision(data: ProvisioningResults) {
+        const toLower = (s: string) => {
+            if (os.platform() === "win32") {
+                return s.toLowerCase();
+            }
+            return s;
+        }
+        const platPath = toLower(data?.resultsFile || "");
+        if (!platPath || !platPath.startsWith(toLower(os.tmpdir()))) {
+            MCUDebugChannel.debugMessage(`Error: resultsFile must be in the temporary directory. Provisioning results deposited at: ${data.resultsFile}`);
+            return
+        }
+        try {
+            fs.writeFileSync(data.resultsFile, JSON.stringify(data), { encoding: "utf8" });
+            MCUDebugChannel.debugMessage(`Provisioning results deposited at: ${data.resultsFile}`);
+        } catch (error) {
+            MCUDebugChannel.debugMessage(`Error writing provisioning results to file: ${error}`);
+        }
     }
 }
 

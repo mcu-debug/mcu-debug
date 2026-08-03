@@ -38,7 +38,7 @@ const OPENOCD_VALID_RTOS: string[] = [
 const JLINK_VALID_RTOS: string[] = ["Azure", "ChibiOS", "embOS", "FreeRTOS", "NuttX", "Zephyr"];
 
 export class McuDebugConfigurationProviderBase {
-    constructor(protected readonly host: IHostAdapter, private isCli: boolean = false) { }
+    constructor(protected readonly hostAdapter: IHostAdapter, private isCli: boolean = false) { }
 
     public provideDebugConfigurations(): { [key: string]: any }[] {
         return [
@@ -55,9 +55,9 @@ export class McuDebugConfigurationProviderBase {
     }
 
     public async resolveDebugConfiguration(folderPath: string | undefined, config: ConfigOptions): Promise<ConfigOptions | undefined> {
-        const port = await this.host.getGdbServerConsolePort();
+        const port = await this.hostAdapter.getGdbServerConsolePort();
         if (port <= 0) {
-            this.host.showError("GDB server console not yet ready. Please try again. Report this problem");
+            this.hostAdapter.showError("GDB server console not yet ready. Please try again. Report this problem");
             return undefined;
         }
         let errs: string[] = [];
@@ -65,11 +65,11 @@ export class McuDebugConfigurationProviderBase {
             errs.push(msg);
         });
         if (errs.length > 0) {
-            this.host.showError("Errors in environment variable substitution from env or envFile:\n" + errs.join("\n"));
+            this.hostAdapter.showError("Errors in environment variable substitution from env or envFile:\n" + errs.join("\n"));
             return undefined;
         }
         config.pvtGdbServerConsolePort = port;
-        config.pvtAvoidPorts = this.host.getUsedPorts();
+        config.pvtAvoidPorts = this.hostAdapter.getUsedPorts();
 
         // Flatten the platform specific stuff as it is not done by VSCode at this point.
         switch (os.platform()) {
@@ -108,11 +108,11 @@ export class McuDebugConfigurationProviderBase {
         } else if (config.swoConfig.enabled) {
             if (!config.swoConfig.cpuFrequency) {
                 config.swoConfig.cpuFrequency = 1 * 1e6;
-                this.host.showWarning(`launch.json: Missing/Invalid swoConfig.cpuFrequency. setting to ${config.swoConfig.cpuFrequency} Hz`);
+                this.hostAdapter.showWarning(`launch.json: Missing/Invalid swoConfig.cpuFrequency. setting to ${config.swoConfig.cpuFrequency} Hz`);
             }
             if (!config.swoConfig.swoFrequency) {
                 config.swoConfig.swoFrequency = config.swoConfig.cpuFrequency / 2;
-                this.host.showWarning(`launch.json: Missing/Invalid swoConfig.swoFrequency. setting to ${config.swoConfig.swoFrequency} Hz`);
+                this.hostAdapter.showWarning(`launch.json: Missing/Invalid swoConfig.swoFrequency. setting to ${config.swoConfig.swoFrequency} Hz`);
             }
             if (!config.swoConfig.swoEncoding) {
                 config.swoConfig.swoEncoding = "uart";
@@ -179,7 +179,7 @@ export class McuDebugConfigurationProviderBase {
             config.runToEntryPoint = config.runToEntryPoint.trim();
         } else if (config.runToMain) {
             config.runToEntryPoint = "main";
-            this.host.showWarning('launch.json: "runToMain" has been deprecated and will not work in future versions of mcu-debug. Please use "runToEntryPoint" instead');
+            this.hostAdapter.showWarning('launch.json: "runToMain" has been deprecated and will not work in future versions of mcu-debug. Please use "runToEntryPoint" instead');
         }
 
         switch (type) {
@@ -236,21 +236,21 @@ export class McuDebugConfigurationProviderBase {
         }
 
         if (!config.toolchainPrefix) {
-            config.toolchainPrefix = this.host.getSetting<string>("mcu-debug", "armToolchainPrefix") || "arm-none-eabi";
+            config.toolchainPrefix = this.hostAdapter.getSetting<string>("mcu-debug", "armToolchainPrefix") || "arm-none-eabi";
         }
 
         this.setOsSpecficConfigSetting(config, "gdbPath");
         this.setOsSpecficConfigSetting(config, "objdumpPath");
-        config.extensionPath = this.host.getExtensionPath();
+        config.extensionPath = this.hostAdapter.getExtensionPath();
         if (os.platform() === "win32") {
             config.extensionPath = config.extensionPath.replace(/\\/g, "/"); // GDB doesn't interpret the path correctly with backslashes.
         }
 
-        config.registerUseNaturalFormat = this.host.getSetting<boolean>("mcu-debug", MCUDebugKeys.REGISTER_DISPLAY_MODE, true);
-        config.variableUseNaturalFormat = this.host.getSetting<boolean>("mcu-debug", MCUDebugKeys.VARIABLE_DISPLAY_MODE, true);
+        config.registerUseNaturalFormat = this.hostAdapter.getSetting<boolean>("mcu-debug", MCUDebugKeys.REGISTER_DISPLAY_MODE, true);
+        config.variableUseNaturalFormat = this.hostAdapter.getSetting<boolean>("mcu-debug", MCUDebugKeys.VARIABLE_DISPLAY_MODE, true);
 
         if (validationResponse) {
-            this.host.showError(validationResponse);
+            this.hostAdapter.showError(validationResponse);
             return undefined;
         }
 
@@ -265,9 +265,12 @@ export class McuDebugConfigurationProviderBase {
                 config.hostConfig = { enabled: true, type: "auto" };
             }
         }
+        if (config.hostConfig?.enabled && config.hostConfig?.type === "auto" && !this.hostAdapter.getRemoteName()) {
+            config.hostConfig = undefined;
+        }
         if (!config.hostConfig?.pvtResolved) {
             try {
-                await this.host.handleHostConfig(config.hostConfig, () => delete (config as any).hostConfig);
+                await this.hostAdapter.handleHostConfig(config.hostConfig, () => delete (config as any).hostConfig);
                 if (config.hostConfig) {
                     config.hostConfig.pvtResolved = true;
                 }
@@ -277,7 +280,7 @@ export class McuDebugConfigurationProviderBase {
             }
         }
 
-        const wsFile = this.host.getWorkspaceFilePath();
+        const wsFile = this.hostAdapter.getWorkspaceFilePath();
         let cwd = config.cwd || folderPath || (wsFile ? path.dirname(wsFile) : ".");
         const isAbsCwd = path.isAbsolute(cwd);
         if (!isAbsCwd && folderPath) {
@@ -287,7 +290,7 @@ export class McuDebugConfigurationProviderBase {
         }
         config.cwd = cwd;
         if (!cwd || !fs.existsSync(cwd)) {
-            this.host.showWarning(`Invalid "cwd": "${cwd}". Many operations can fail. Trying to continue`);
+            this.hostAdapter.showWarning(`Invalid "cwd": "${cwd}". Many operations can fail. Trying to continue`);
         }
         this.validateLoadAndSymbolFiles(config, cwd);
 
@@ -295,7 +298,7 @@ export class McuDebugConfigurationProviderBase {
             const supportedList = ["openocd", "jlink", "stlink"];
             if (supportedList.indexOf(config.servertype) < 0) {
                 const str = supportedList.join(", ");
-                this.host.showInfo(
+                this.hostAdapter.showInfo(
                     `Live watch is not officially supported for servertype '${config.servertype}'. ` +
                     `Only ${str} are supported and tested. ` +
                     `Report back to us if it works with your servertype '${config.servertype}'.\n \n` +
@@ -315,7 +318,7 @@ export class McuDebugConfigurationProviderBase {
                 break;
         }
         if (validationResponse) {
-            this.host.showError(validationResponse);
+            this.hostAdapter.showError(validationResponse);
             return undefined;
         }
 
@@ -333,7 +336,7 @@ export class McuDebugConfigurationProviderBase {
         const def = defSymbolFile(config.executable);
         const symFiles: SymbolFile[] = config.symbolFiles?.map((v) => (typeof v === "string" ? defSymbolFile(v) : (v as SymbolFile))) || [def];
         if (!symFiles || symFiles.length === 0) {
-            this.host.showWarning('No "executable" or "symbolFiles" specified. We will try to run program without symbols');
+            this.hostAdapter.showWarning('No "executable" or "symbolFiles" specified. We will try to run program without symbols');
         } else {
             for (const symF of symFiles) {
                 let exe = symF.file;
@@ -351,7 +354,7 @@ export class McuDebugConfigurationProviderBase {
                 }
                 validateELFHeader(exe, (str: string, fatal: boolean) => {
                     if (fatal) {
-                        this.host.showError(str);
+                        this.hostAdapter.showError(str);
                     } else {
                         // this.host.showWarning(str);
                     }
@@ -384,14 +387,14 @@ export class McuDebugConfigurationProviderBase {
 
         for (const propName of props) {
             if (blackList.includes(propName) || propName.startsWith("pvt")) {
-                this.host.showWarning(`Cannot inherit property '${propName}' for configuration '${config.name}' ` + `because it is reserved`);
+                this.hostAdapter.showWarning(`Cannot inherit property '${propName}' for configuration '${config.name}' ` + `because it is reserved`);
                 continue;
             }
             const val = parent[propName];
             if (val !== undefined) {
                 config[propName] = val;
             } else {
-                this.host.showWarning(`Cannot inherit property '${propName}' for configuration '${config.name}' ` + `because it does not exist in parent configuration`);
+                this.hostAdapter.showWarning(`Cannot inherit property '${propName}' for configuration '${config.name}' ` + `because it does not exist in parent configuration`);
             }
         }
     }
@@ -417,7 +420,7 @@ export class McuDebugConfigurationProviderBase {
 
     private sanitizeChainedConfigs(config: ConfigOptions) {
         // First are we chained ... as in do we have a parent?
-        const isChained = this.host.findChainedSession(config.name);
+        const isChained = this.hostAdapter.findChainedSession(config.name);
         if (isChained) {
             (config as any).pvtParent = isChained.parent.config;
             (config as any).pvtMyConfigFromParent = isChained.config;
@@ -480,7 +483,7 @@ export class McuDebugConfigurationProviderBase {
         if (!config[dstName]) {
             propName = propName || dstName;
             for (const configName of ["mcu-debug", "cortex-debug"]) {
-                const obj = this.host.getSetting<any>(configName, propName);
+                const obj = this.hostAdapter.getSetting<any>(configName, propName);
                 if (obj !== undefined && obj !== null) {
                     if (typeof obj === "object") {
                         const osName = os.platform();
@@ -511,7 +514,7 @@ export class McuDebugConfigurationProviderBase {
         }
 
         if (config.swoConfig.enabled) {
-            this.host.showWarning("SWO support is not available when using QEMU.");
+            this.hostAdapter.showWarning("SWO support is not available when using QEMU.");
             config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0 };
             config.graphConfig = [];
         }
@@ -613,7 +616,7 @@ export class McuDebugConfigurationProviderBase {
             return `The following RTOS values are supported by OpenOCD: ${OPENOCD_VALID_RTOS.join(" ")}.` + 'You can always use "auto" and OpenOCD generally does the right thing';
         }
 
-        if (!this.host.findChainedSession(config.name)) {
+        if (!this.hostAdapter.findChainedSession(config.name)) {
             // Not chained so configFiles, searchDir matter
             if (!config.configFiles || config.configFiles.length === 0) {
                 return "At least one OpenOCD Configuration File must be specified.";
@@ -638,7 +641,7 @@ export class McuDebugConfigurationProviderBase {
         }
 
         if (config.swoConfig.enabled && config.swoConfig.source === "probe") {
-            this.host.showWarning("SWO support is not available from the probe when using the ST-Util GDB server. Disabling SWO.");
+            this.hostAdapter.showWarning("SWO support is not available from the probe when using the ST-Util GDB server. Disabling SWO.");
             config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0 };
             config.graphConfig = [];
         }
@@ -735,11 +738,11 @@ export class McuDebugConfigurationProviderBase {
     private verifyExternalConfiguration(config: ConfigOptions): string {
         if (config.swoConfig.enabled) {
             if (config.swoConfig.source === "socket" && !config.swoConfig.swoPort) {
-                this.host.showWarning('SWO source type "socket" requires a "swoPort". Disabling SWO support.');
+                this.hostAdapter.showWarning('SWO source type "socket" requires a "swoPort". Disabling SWO support.');
                 config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0 };
                 config.graphConfig = [];
             } else if (config.swoConfig.source !== "socket" && !config.swoConfig.swoPath) {
-                this.host.showWarning(`SWO source type "${config.swoConfig.source}" requires a "swoPath". Disabling SWO support.`);
+                this.hostAdapter.showWarning(`SWO source type "${config.swoConfig.source}" requires a "swoPath". Disabling SWO support.`);
                 config.swoConfig = { enabled: false, decoders: [], cpuFrequency: 0, swoFrequency: 0 };
                 config.graphConfig = [];
             }

@@ -28,12 +28,8 @@
   "activationEvents": [
     "onDebugResolve:cortex-debug",
     "onDebugResolve:mcu-debug",
-    "onStartupFinished",
-    "onCommand:mcu-debug-proxy.getProxyResults",
-    "onCommand:mcu-debug-proxy.startProxyServer",
-    "onCommand:mcu-debug-proxy.startReverseTunnel",
-    "onCommand:mcu-debug-proxy.getRemoteSshHost",
-    "onCommand:mcu-debug-proxy.getWslHostIp"
+    "onUri",
+    "onStartupFinished"
   ],
   "categories": [
     "Other"
@@ -43,6 +39,26 @@
   },
   "type": "commonjs",
   "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mcu-debug-proxy.startProxyServer",
+        "title": "Start MCU Debug Proxy Server"
+      },
+      {
+        "command": "mcu-debug-proxy.startReverseTunnel",
+        "title": "Start Reverse Tunnel"
+      },
+      {
+        "command": "mcu-debug-proxy.getRemoteSshHost",
+        "title": "Get Remote SSH Host"
+      },
+      {
+        "command": "mcu-debug-proxy.getWslHostIp",
+        "title": "Get WSL Host IP"
+      }
+    ]
+  },
   "scripts": {
     "compile": "npm run check-types && node esbuild.js",
     "build": "npm run package",

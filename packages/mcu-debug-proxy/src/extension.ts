@@ -32,7 +32,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import { ChildProcess, spawn } from "node:child_process";
-import { computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults } from "@mcu-debug/shared";
+import { computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults, ProvisioningResults, ProxyProvisionRequest, startProxyServerWithPolicy } from "@mcu-debug/shared";
 
 /**
  * Returns true if the binary at filePath is a native executable for the
@@ -192,17 +192,7 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
 
 let currentLaunchResults: ProxyLaunchResults | null = null;
 
-const nonce = generateNonce();
 const STARTUP_TIMEOUT_MS = 10_000;
-
-function generateNonce(length: number = 16): string {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let result = "";
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-}
 
 function resolveNetworkMode(hostType: ProxyHostType = "auto") {
     return resolveProxyNetworkMode(hostType, vscode.env.remoteName);
@@ -213,7 +203,7 @@ function computeLaunchPolicy(hostType: ProxyHostType = "auto"): ProxyLaunchPolic
     return computeProxyLaunchPolicy(mode);
 }
 
-async function startProxyServer(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults> {
+async function startProxyServerWrapper(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults> {
     proxyPolicy = policy;
     currentLaunchResults = await startProxyServerWithPolicyInternal();
     return currentLaunchResults;
@@ -225,108 +215,21 @@ async function startProxyServer(policy: ProxyLaunchPolicy): Promise<ProxyLaunchR
 // The daemon (owner) survives on its own; we never own or manage it.
 function startProxyServerWithPolicyInternal(): Promise<ProxyLaunchResults> {
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
-        const messages: string[] = [];
-        const errors: string[] = [];
-        const port = proxyPolicy!.fixedPort ?? 0; // 0 → OS-assigned; non-zero → fixed port (WSL NAT firewall scenario)
-        let resolved = false;
-        let ready = false;
-
-        // Resolve with a failure sentinel (serverPort: -1) so a caller can tell
-        // "could not launch/reuse" without the promise rejecting.
-        const resolveFailure = () => {
-            if (!resolved) {
-                resolved = true;
-                resolve({
-                    policy: proxyPolicy!,
-                    consoleMessages: messages,
-                    consoleErrors: errors,
-                    serverPort: -1,
-                    token: nonce,
-                });
-            }
-        };
-
-        messages.push(`Starting proxy server with policy: ${JSON.stringify(proxyPolicy)}`);
-        // No --heartbeat: the singleton manages its own lifetime (session refs +
-        // idle-timeout). `--token` is used only if WE become the owner; on reuse
-        // the running proxy keeps its own token and reports it in the discovery.
-        const args = ["proxy", "--host", proxyPolicy!.bindHost, "--port", port.toString(), "--token", nonce];
-        // This spawned process is the SHORT-LIVED foreground launcher. `mdbg proxy`
-        // re-spawns a detached daemon itself, forwards the daemon's discovery line
-        // to this process's stdout, and exits (owner OR reuse — both exit now).
-        // So we do NOT need detached / windowsHide / unref here — survival is the
-        // daemon's job. We just read the forwarded discovery line.
-        const proxyProcess = spawn(proxyPath, args, {
-            stdio: ["ignore", "pipe", "pipe"],
-        });
-
-        proxyProcess.on("error", (err) => {
-            errors.push(`Failed to start proxy server: ${err}`);
-            vscode.window.showErrorMessage(`Failed to start proxy server: ${err.message}`);
-            resolveFailure();
-        });
-
-        proxyProcess.on("exit", (code, signal) => {
-            messages.push(`Proxy launcher exited with code ${code} and signal ${signal}`);
-            if (!ready) {
-                // Exited before we saw the discovery line → the daemon could
-                // neither start nor reuse. Surface it; no watchdog restart.
-                errors.push(`Proxy launcher exited before ready (code ${code}, signal ${signal})`);
-                resolveFailure();
-            }
-            // If ready: the foreground launcher has done its job and exits — the
-            // detached daemon keeps running. Nothing to do.
-        });
-
-        let stdoutData = "";
-        proxyProcess.stdout?.on("data", (data) => {
-            const msg = data.toString();
-            messages.push(`Proxy server stdout: ${msg}`);
-            stdoutData += msg;
-            try {
-                const json = JSON.parse(stdoutData);
-                if (json.status === "ready") {
-                    ready = true;
-                    resolved = true;
-                    const baseResults: ProxyLaunchResults = {
-                        policy: proxyPolicy!,
-                        consoleMessages: messages,
-                        consoleErrors: errors,
-                        serverPort: json.port,
-                        // Use the token the RUNNING proxy reports — on reuse this
-                        // is the first launcher's token, not our nonce.
-                        token: json.token ?? nonce,
-                    };
-                    if (proxyPolicy!.reverseTunnelSshHost) {
-                        // Start the reverse tunnel here — we already know the local port (json.port)
-                        // so there is no need for the workspace extension to make a second round-trip.
-                        startSshReverseTunnel(proxyPolicy!.reverseTunnelSshHost, json.port)
-                            .then((remotePort) => resolve({ ...baseResults, reverseTunnelPort: remotePort }))
-                            .catch((err) => reject(err));
-                    } else {
-                        resolve(baseResults);
-                    }
+        startProxyServerWithPolicy(proxyPolicy!, proxyPath, STARTUP_TIMEOUT_MS)
+            .then((result: ProxyLaunchResults) => {
+                if (proxyPolicy!.reverseTunnelSshHost) {
+                    // Start the reverse tunnel here — we already know the local port (json.port)
+                    // so there is no need for the workspace extension to make a second round-trip.
+                    startSshReverseTunnel(proxyPolicy!.reverseTunnelSshHost, result.serverPort!)
+                        .then((remotePort) => resolve({ ...result, reverseTunnelPort: remotePort }))
+                        .catch((err) => reject(err));
+                } else {
+                    resolve(result);
                 }
-            } catch {
-                // Partial JSON — wait for more stdout.
-            }
-        });
-        proxyProcess.stderr?.on("data", (data) => {
-            const msg = data.toString();
-            messages.push(`Proxy server stderr: ${msg}`);
-        });
-
-        setTimeout(() => {
-            if (!ready) {
-                errors.push(`Proxy server did not become ready within ${STARTUP_TIMEOUT_MS / 1000}s`);
-                try {
-                    proxyProcess.kill();
-                } catch {
-                    // ignore — it may have already exited
-                }
-                resolveFailure();
-            }
-        }, STARTUP_TIMEOUT_MS);
+            })
+            .catch((err) => {
+                reject(err);
+            });
     });
 }
 
@@ -360,22 +263,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
+    const uriHandler = new MyUriHandler(context);
     const disposables = [
-        // Returns the most recent launch results (policy, messages, token, port).
-        // NOTE: with the singleton, the proxy may have idle-exited since the last
-        // launch, so these can be stale — callers should prefer a fresh
-        // `startProxyServer` per debug session rather than caching this.
-        vscode.commands.registerCommand("mcu-debug-proxy.getProxyResults", () => {
-            if (!currentLaunchResults || currentLaunchResults.serverPort === -1) {
-                return null;
-            }
-            return currentLaunchResults;
-        }),
         // The main command the mcu-debug extension calls to obtain the proxy. It
         // launches-or-reuses the singleton and returns its port + reported token.
         vscode.commands.registerCommand("mcu-debug-proxy.startProxyServer", (policy: ProxyLaunchPolicy) => {
             if (policy) {
-                return startProxyServer(policy);
+                return startProxyServerWrapper(policy);
             }
         }),
         // Establishes an SSH reverse tunnel so the DA (running on the remote SSH host in
@@ -392,9 +286,7 @@ export function activate(context: vscode.ExtensionContext) {
         // This is stable public API (no proposed API required), making it safe to call from
         // the workspace extension running on the remote host.
         vscode.commands.registerCommand("mcu-debug-proxy.getRemoteSshHost", () => {
-            const authority = vscode.workspace.workspaceFolders?.[0]?.uri.authority ?? "";
-            const host = authority.replace(/^ssh-remote\+/, "");
-            return host || null;
+            return getRemoteShhHost();
         }),
         // Returns the IPv4 address of the Windows host's WSL virtual ethernet adapter
         // ("vEthernet (WSL)" or "vEthernet (WSL (Hyper-V firewall))").
@@ -403,24 +295,168 @@ export function activate(context: vscode.ExtensionContext) {
         // Hyper-V DNS relay rather than the actual gateway. Returns null if the adapter
         // is not found (e.g. not on Windows, or WSL not installed).
         vscode.commands.registerCommand("mcu-debug-proxy.getWslHostIp", () => {
-            const nets = os.networkInterfaces();
-            for (const name of Object.keys(nets)) {
-                if (/vEthernet.*WSL/i.test(name)) {
-                    const entry = nets[name]?.find((n) => n.family === "IPv4" && !n.internal);
-                    if (entry) {
-                        return entry.address;
-                    }
-                }
-            }
-            return null;
+            return getWslHostIp();
         }),
+        // And register it with VS Code. You can only register a single UriHandler for your extension.
+        vscode.window.registerUriHandler(uriHandler),
     ];
     context.subscriptions.push(...disposables);
     return {
         resolveNetworkMode,
         computeLaunchPolicy,
-        startProxyServer,
+        startProxyServer: startProxyServerWrapper,
     };
+}
+
+class MyUriHandler implements vscode.UriHandler {
+    constructor(private context: vscode.ExtensionContext) {
+        // Nothing to do in the constructor for now
+    }
+    // This function will get run when something redirects to VS Code
+    // with your extension id as the authority.
+    handleUri(uri: vscode.Uri): vscode.ProviderResult<void> {
+        vscode.window.showInformationMessage(uri.toString());
+        if ((uri.path === "/provision") && uri.query) {
+            const obj = Object.fromEntries(new URLSearchParams(uri.query)) as unknown as ProxyProvisionRequest;
+            if (obj && obj.v === 1 && obj.api && obj.resultsFile) {
+                let error = "";
+                let result: any = undefined;
+                try {
+                    switch (obj.api) {
+                        case "startProxyServer": {
+                            const policy = obj.args?.[0] as ProxyLaunchPolicy;
+                            if (policy) {
+                                if (!obj.authority) {
+                                    error = "Missing authority for startProxyServer";
+                                    break;
+                                }
+                                this.validateAuthority(obj.authority).then((isAuthorized) => {
+                                    if (isAuthorized) {
+                                        startProxyServerWrapper(policy).then((result) => {
+                                            this.depositProvision(obj, "", result);
+                                        }).catch((err) => {
+                                            this.depositProvision(obj, `Failed to start proxy server: ${err.message}`, undefined);
+                                        });
+                                    } else {
+                                        this.depositProvision(obj, "Probe host declined permission", undefined);
+                                    }
+                                });
+                                return; // async, will call depositProvision later
+                            } else {
+                                error = "Missing or invalid policy argument for startProxyServer";
+                            }
+                            break;
+                        }
+                        case "startReverseTunnel": {
+                            const sshHost = obj.args?.[0] as string;
+                            const localProxyPort = obj.args?.[1] as number;
+                            if (sshHost && localProxyPort) {
+                                if (!obj.authority) {
+                                    error = "Missing authority for startProxyServer";
+                                    break;
+                                }
+                                this.validateAuthority(obj.authority).then((isAuthorized) => {
+                                    if (isAuthorized) {
+                                        startSshReverseTunnel(sshHost, localProxyPort).then((remotePort) => {
+                                            this.depositProvision(obj, "", remotePort);
+                                        }).catch((err) => {
+                                            this.depositProvision(obj, `Failed to start reverse tunnel: ${err.message}`, undefined);
+                                        });
+                                    } else {
+                                        this.depositProvision(obj, "Probe host declined permission", undefined);
+                                    }
+                                });
+                                return; // async, will call depositProvision later
+                            } else {
+                                error = "Missing or invalid arguments for startReverseTunnel";
+                            }
+                            break;
+                        }
+                        case "getRemoteSshHost": {
+                            result = getRemoteShhHost();
+                            break;
+                        }
+                        case "getWslHostIp": {
+                            result = getWslHostIp();
+                            break;
+                        }
+                        default:
+                            error = `Unknown API command: ${obj.api}`;
+                    }
+                } catch (err: any) {
+                    error = `Error processing API command ${obj.api}: ${err.message}`;
+                }
+                this.depositProvision(obj, error, result);
+            }
+        }
+    }
+
+    private depositProvision(obj: ProxyProvisionRequest, error: string, result: any) {
+        const results: ProvisioningResults = {
+            resultsFile: obj.resultsFile,
+            error: error,
+            result: result,
+        };
+        vscode.commands.executeCommand("mcu-debug.depositProvision", results);
+    }
+
+    public validateAuthority(authority: string): Promise<boolean> {
+        return new Promise<boolean>(async (resolve) => {
+            let resolved = false;
+            let permissions = this.context.globalState.get<string[]>("mcu-debug-proxy.authorizedAuthorities", []);
+            if (permissions.includes(authority)) {
+                return resolve(true);
+            }
+            const timer = setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    return resolve(false);
+                }
+            }, 30_000); // 30 seconds timeout for user to respond
+            const choices = ["Deny", "Allow", "Always Allow"];
+            const result = await vscode.window.showWarningMessage(
+                `The authority "${authority}" is requesting access to the MCU Debug Proxy. Do you want to allow it?`,
+                { modal: true },
+                ...choices
+            );
+
+            if (result === choices[1] || result === choices[2]) {
+                if (result === choices[2]) {
+                    permissions.push(authority);
+                    this.context.globalState.update("mcu-debug-proxy.authorizedAuthorities", permissions);
+                }
+                if (!resolved) {
+                    clearTimeout(timer);
+                    resolved = true;
+                    return resolve(true);
+                }
+            }
+            if (!resolved) {
+                clearTimeout(timer);
+                resolved = true;
+                return resolve(false);
+            }
+        });
+    }
+}
+
+function getRemoteShhHost() {
+    const authority = vscode.workspace.workspaceFolders?.[0]?.uri.authority ?? "";
+    const host = authority.replace(/^ssh-remote\+/, "");
+    return host || null;
+}
+
+function getWslHostIp() {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+        if (/vEthernet.*WSL/i.test(name)) {
+            const entry = nets[name]?.find((n) => n.family === "IPv4" && !n.internal);
+            if (entry) {
+                return entry.address;
+            }
+        }
+    }
+    return null;
 }
 
 export function deactivate() {

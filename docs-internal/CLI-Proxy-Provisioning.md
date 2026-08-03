@@ -28,9 +28,9 @@ Reuses [Proxy-Plan.md](./Proxy-Plan.md): **Engineer Machine**, **Probe Host**, *
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Client**        | Whatever is trying to reach the Probe Agent: the DA, or the `mdbg` CLI. Symmetric for this protocol.                                                                           |
 | **Broker**        | The `mcu-debug.mcu-debug-proxy` VS Code UI extension acting as a URI handler. Runs on the Engineer Machine UI side. Ensures the Probe Agent is running and issues credentials. |
-| **Rendezvous**    | A pair of files (`<handle>.req` / `<handle>.res`) on a filesystem visible to both Client and Broker, used to exchange the request and the result.                             |
+| **Rendezvous**    | A pair of files (`<handle>.req` / `<handle>.res`) on a filesystem visible to both Client and Broker, used to exchange the request and the result.                              |
 | **Master key**    | Long-lived secret held **only** inside the Probe Agent. Never leaves the Probe Host.                                                                                           |
-| **Session token** | Short-lived, revocable capability minted from the master key. This is the only credential a Client ever sees.                                                                 |
+| **Session token** | Short-lived, revocable capability minted from the master key. This is the only credential a Client ever sees.                                                                  |
 | **TOFU**          | *Trust On First Use* — prompt the first time an identity is seen, remember the decision, stay silent afterward (the SSH known-hosts pattern). See §6.                          |
 
 ### What the Probe Agent is — and is not
@@ -74,6 +74,8 @@ The Client tries these in order and stops at the first that works. Each rung deg
 
 Rungs 1 and 3 are the WSL/Docker story; rung 2 is the SSH/LAB story; rung 4 is the always-works floor.
 
+**Best-effort auto, guaranteed manual.** Rungs 0–3 are "auto" — best-effort, and any of them may legitimately not apply (no `code`, headless, no shared FS, …). They are not obligated to cover 100% of environments; they cover the common ones and **degrade cleanly to manual (rung 4)**. Manual already exists: the user starts the daemon themselves and supplies `{host, port, token}` via `hostConfig` in `launch.json`. So "auto" failing is not a dead end — it's a fall-through to a path that always works.
+
 **Rung 1 (WSL) needs no Windows username** — it uses the *WSL-side* filesystem addressed by UNC (`\\wsl.localhost\<distro>\run\user\<uid>\…`), derivable from `$WSL_DISTRO_NAME` + `id -u` alone (§5.2).
 
 **Rung 3 is the only place the Windows username matters**, because it writes into the *Windows* per-user temp. There is no native env var for it in WSL (the WSL user ≠ the Windows user). Rather than reconstruct the name, ask Windows for the whole path and convert it:
@@ -87,52 +89,109 @@ Requires Windows interop enabled; run from `~` (not a `/mnt/...` cwd) to avoid t
 
 ---
 
-## 4. The `provision` URI (rung 1)
+## 4. The `provision` URI (rung 1) — via the VS Code extension bridge
 
-Invoked from the guest via the injected `code` CLI shim, which crosses the remote boundary and fires the Broker's `UriHandler` on the UI host:
+A shared host↔guest filesystem exists **only for WSL** (`\\wsl.localhost`). **Dev Containers and Remote-SSH have none**, so a rendezvous *file on the host* can't be the general rung-1 return path. But every VS Code remote already runs a **bidirectional bridge between the UI extension host and the workspace (WS) extension host** (the remote protocol). We use *that* as the return path — so the only file involved is **guest-local**, and the mechanism works uniformly across WSL, Dev Containers, and Remote-SSH.
+
+### Three hops
+
+```
+guest CLI ──[1] code --open-url──▶ Broker = UI extension (host)
+Broker ─────[2] executeCommand───▶ WS extension (guest)
+WS extension ─[3] writes guest-local file──▶ guest CLI polls it
+```
+
+1. **Guest → UI host.** The injected `code` shim crosses the remote boundary and fires the Broker's `UriHandler`. The Broker is `extensionKind: ["ui"]`, so it runs on the UI side where it can reach USB.
+2. **UI host → WS guest.** The Broker runs the host-side work (ensure the Probe Agent §7, mint a session token §8), then hands the result to the **WS extension** via `vscode.commands.executeCommand`. This RPC is always present in a remote window — **no shared FS required**.
+3. **WS guest → CLI.** The WS extension (guest-side) writes a **guest-local** results file (§5.1); the CLI polls it. Same filesystem on both ends.
+
+### The URL
 
 ```bash
-code --open-url "vscode://mcu-debug.mcu-debug-proxy/provision?v=1&rendezvous=<host-path-to-.req>"
+code --open-url "vscode://mcu-debug.mcu-debug-proxy/provision?v=1&nonce=<n>&authority=<a>&api=<name>&args=<...>&resultsFile=<guest-path>"
 ```
 
-### Inverted handshake — the file *is* the request
+| Param         | Req | Meaning                                                                                     |
+| ------------- | --- | ------------------------------------------------------------------------------------------- |
+| `v`           | ✓   | Protocol version. Broker rejects unknown majors.                                            |
+| `authority`   | -   | Guest identity for TOFU (§6), e.g. `dev-container+<hash>`, `ssh-remote+host`.               |
+| `api`         | ✓   | Which provisioning op to run — **whitelisted** (see failure modes below).                   |
+| `args`        | –   | Optional args for the api.                                                                  |
+| `resultsFile` | ✓   | **Guest** absolute path the WS extension writes the result to. URL-encode it. include nonce |
 
-Almost nothing travels in the URL. The Client first drops a **request file**, then points the Broker at it. This keeps request data out of URL logs, forces the Broker to actually read the file (which validates its access), and — because the file handle is random and exclusively created — resists squatting.
+**No secret in the URL** (they land in extension-host + OS URI-dispatch logs). The `nonce`/`authority`/`api` are not secrets; the credential (session token) travels only in the guest-local results file. `--open-url` is fire-and-forget — the results file is the return channel.
 
-| Param        | Req | Meaning                                                                                                                              |
-| ------------ | --- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `v`          | ✓   | Protocol version. Currently `1`. Broker rejects unknown majors.                                                                       |
-| `rendezvous` | ✓   | **Host-side** absolute path of the `<handle>.req` file the Client already created. `<handle>` is random and unguessable (see §5.2). |
+Including the nonce in the resultsFile makes an implicit nonce check and nonce is not a secret anyways
 
-Everything else — `nonce`, `authority`, `client` label — lives **inside** `<handle>.req` (§5.1). The URL carries no secret and no nonce.
-
-Notes:
-
-- **No secret in the URI.** URIs land in extension-host logs and OS URI-dispatch logs. The credential travels only via the `.res` file.
-- `--open-url` is fire-and-forget; there is no synchronous return. The `.res` file *is* the return channel.
-- The `code` shim is present in WSL, Dev Containers, and Remote-SSH; detect via `VSCODE_IPC_HOOK_CLI` or `command -v code`. The Broker extension is `extensionKind: ["ui"]`, so its handler runs on the UI side where it can reach USB.
-
-### Broker handling of `provision`
+### Flow
 
 ```
-1. Parse + version-check. Validate `rendezvous` against the host allowlist (§5.3); it must already exist and end in `.req`.
-2. Read <handle>.req  → { nonce, authority, client }.
-3. TOFU gate on authority (§6). On deny → write <handle>.res {status:"denied"} (echo nonce) and stop.
-4. Ensure Probe Agent running (§7): reuse the singleton if alive, else spawn it.
-5. Ask the Agent to mint a session token, subject = authority (§8).
-6. Atomically write <handle>.res (temp file + rename) with the result, echoing nonce.
-7. Add a lifetime ref for this window (§7).
+Broker UriHandler(provision):
+  1. Parse + version-check; TOFU gate on `authority` (§6).
+  2. Run the whitelisted `api`: ensure Probe Agent (§7); mint session token (§8).
+  3. executeCommand("mcu-debug.depositProvision", { resultsFile, result | error }).
+
+WS deposit command (guest):
+  - write `resultsFile` atomically (temp + rename) with the §5.1 payload.
+
+Client (guest CLI):
+  - poll `resultsFile` with a timeout;
+    read { port, token }; fill `host` from §2; delete the file.
 ```
 
-The Client never has the Broker overwrite the file it is polling — request and reply are **separate files** (`.req` / `.res`), so there is no read/write race on a single file.
+Failures are **written** to the file (`status:"error"`/`"denied"`), never left to time out — the CLI gets a reason, not silence.
+
+### Precondition — is VS Code the right mechanism here?
+
+The bridge needs a running VS Code (remote) to relay through, and calling `code --open-url` with **no** window running can **spawn one** — so don't invoke it blindly. Signals, strongest first:
+
+1. **Launched by the extension** — the definitive, safe case: VS Code is present and bridging, and the extension can hand the CLI the bridge details directly. This is the primary way the bridge is meant to be used.
+2. **`code` on `PATH`** — the *necessary* condition for a *standalone* CLI to even attempt it, and roughly "VS Code is installed." But it does **not** mean a window is open, so a standalone `code --open-url` can spawn one. Therefore, for standalone use treat the bridge as a **fallback / opt-in**, not the default: prefer the direct rungs (the WSL `cmd.exe` launcher §3, or SSH §9) where they exist, and use the bridge only where there is **no direct alternative** (notably Docker Dev Containers) or the user explicitly opts in.
+
+Do **not** gate on **`VSCODE_IPC_HOOK_CLI`**. Its purpose is to route `code` at the window owning VS Code's *integrated terminal*, so it is set only when the CLI runs inside that terminal — supported, but not the normal case. If it happens to be set it's a nice positive signal (a reachable window, and the right one), but it must not be a requirement.
+
+If `code` is missing from `PATH` where the bridge is wanted (notably macOS, where it's opt-in), notify the user to run *"Shell Command: Install 'code' command in PATH."*
+
+### Don't pre-detect failure — try, then fall back
+
+There are cases where the bridge *can't* work but are hard to predict: `code` on PATH in a **headless** env (plain SSH/telnet, no `$DISPLAY` → Electron can't launch), no window open, wrong window, wrong remote. Do **not** try to enumerate/pre-detect them (e.g. a `$DISPLAY` check is actively wrong — the **Remote-SSH integrated terminal works even headless**, since the `code` shim relays to the *client's* VS Code, no server-side display). Instead, they all funnel into **one** path: the results file never appears → **timeout → fall back to the next rung / manual**. One robust fallback handles the whole class.
+
+### Activation is declarative, not retried
+
+The one real hazard is either extension not being activated when the bridge reaches it. Solve it with activation events, not retries:
+
+- **Broker (UI):** declare `onUri`. The fully-qualified-id URI *is* the activation trigger — VS Code activates the extension, waits, then delivers to the registered `UriHandler`. So a slow `onStartupFinished` is irrelevant here.
+- **WS extension:** declare `onCommand:mcu-debug.depositProvision`. `executeCommand` triggers that activation, waits, then runs the command — so calling it is what activates the WS side. With the command registered synchronously in `activate()`, it is one-shot; retries are only a backstop for a wedged host.
+
+### Why this beats the shared-FS rendezvous (§5)
+
+- **Uniform across WSL, Dev Container, and Remote-SSH** — no host↔guest shared FS (the Docker/SSH blocker is gone).
+- The only file is **guest-local**, so the host-path resolution, allowlist, and cross-boundary permission wrinkles of §5.2–5.4 collapse away for this rung.
+- Transport is VS Code's own already-authenticated bridge.
+
+### Failure modes to handle
+
+| Class                  | Failure                                                                                                                                                                                             | Handling                                                                                                                                                                                                                                                                    |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Bridge misses**      | `code` not on PATH; `--open-url` fires nothing (VS Code not running, handler not installed, extension not activated); `code` starts a new VS Code or targets the wrong install (stable vs insiders) | detect `command -v code` / `VSCODE_IPC_HOOK_CLI`; **timeout** on the results file → clear "VS Code didn't respond" message; fall back to another rung                                                                                                                       |
+| **Wrong window**       | multiple windows → which `UriHandler` fires is ambiguous                                                                                                                                            | benign for a per-user singleton (any window yields the same proxy), **but** the results file is written by *that* window's WS extension — if it's a *different* remote, the guest path isn't its FS. `nonce` validation keeps it correct; a mismatch → keep waiting / retry |
+| **Op / deposit fails** | api throws on host; WS extension not activated or has no deposit command → `executeCommand` rejects/hangs                                                                                           | api errors → write `{status:"error"}`; WS registers the command with an activation event; Broker catches the `executeCommand` rejection (and, if it can't reach the WS side, still times out on the CLI)                                                                    |
+| **File / nonce**       | partial read (mid-write); stale/replayed file; path with spaces                                                                                                                                     | atomic write (temp+rename); **fresh unique `resultsFile` per request** + reject on `nonce` mismatch + cleanup; URL-encode the path                                                                                                                                          |
+| **Security**           | any local process can `code --open-url` and invoke `api`                                                                                                                                            | **whitelist** api-names, validate args, gate with TOFU (§6) — this is a provisioning endpoint, not a general command executor                                                                                                                                               |
 
 ---
 
-## 5. Rendezvous files
+## 5. Rendezvous files (shared-FS fallback)
+
+> **Superseded for rung 1 by the §4 bridge.** With the VS Code extension bridge, the request travels in the URL and the reply is written **guest-locally** by the WS extension — there is no `.req`, and no host-addressable `.res`. This section is retained for:
+> - the **results-file payload** (§5.1 `.res` — the WS extension writes exactly this, guest-locally); and
+> - the **shared-FS variants** that still apply where a shared FS genuinely exists: WSL (`\\wsl.localhost` UNC) as a bridge-free option, and rung 3's `endpoint.json` (§3, §7) read over `/mnt/c`.
+>
+> The host-path resolution (§5.2), Broker allowlist (§5.3), and cross-boundary permissions (§5.4) apply **only** to those shared-FS variants, not to the §4 bridge.
 
 ### 5.1 Payloads
 
-**`<handle>.req`** — written by the Client (O_CREAT|O_EXCL) before invoking the URI:
+**`<handle>.req`** — *(shared-FS variant only)* written by the Client (O_CREAT|O_EXCL) before invoking the URI. Under the §4 bridge the request is the URL instead:
 
 ```json
 {
@@ -144,7 +203,7 @@ The Client never has the Broker overwrite the file it is polling — request and
 }
 ```
 
-**`<handle>.res`** — written by the Broker (rung 1), or by `mdbg proxy` itself (rung 3):
+**`<handle>.res` / results file** — written by the Broker on the shared FS (WSL/rung 3), or **guest-locally by the WS extension** under the §4 bridge:
 
 ```json
 {
@@ -170,11 +229,11 @@ The Client never has the Broker overwrite the file it is polling — request and
 
 The Client knows its environment best, so it computes **both** the guest path (to create `.req` / read `.res`) and the host path (to pass in `rendezvous`). `<handle>` is a fresh random stem; on collision the O_EXCL create fails and the Client picks a new one.
 
-| Env               | Directory — guest view (Client)      | Same directory — host view (Broker)                        |
-| ----------------- | ------------------------------------ | ---------------------------------------------------------- |
-| **WSL2**          | `/run/user/<uid>/mcu-debug/`         | `\\wsl.localhost\$WSL_DISTRO_NAME\run\user\<uid>\mcu-debug\` |
-| **Dev Container** | `<dedicated-mount>/mcu-debug/`       | `<host-side mount root>\mcu-debug\`                          |
-| **SSH / LAB**     | — (uses stdout over SSH, §9)         | —                                                          |
+| Env               | Directory — guest view (Client) | Same directory — host view (Broker)                          |
+| ----------------- | ------------------------------- | ------------------------------------------------------------ |
+| **WSL2**          | `/run/user/<uid>/mcu-debug/`    | `\\wsl.localhost\$WSL_DISTRO_NAME\run\user\<uid>\mcu-debug\` |
+| **Dev Container** | `<dedicated-mount>/mcu-debug/`  | `<host-side mount root>\mcu-debug\`                          |
+| **SSH / LAB**     | — (uses stdout over SSH, §9)    | —                                                            |
 
 Why `/run/user/<uid>` for WSL rather than `/tmp` or `/mnt/c`: it is tmpfs, `0700`, honors real Linux permissions, is reachable host-side by UNC, and needs **only** `$WSL_DISTRO_NAME` + `id -u` — no Windows username. (`/mnt/c/…/AppData/Local/Temp` is reserved for rung 3, §3.)
 
@@ -279,13 +338,13 @@ One process serving many sessions means **a crash can take down every session at
 
 **Blast-radius, and what keeps each fault contained:**
 
-| Fault                                       | Default outcome                    | Contained to one session? | Mechanism                                            |
-| ------------------------------------------- | ---------------------------------- | ------------------------- | --------------------------------------------------- |
-| Panic in a session thread (unwind)          | that thread dies; hook logs it     | Yes — **if supervised**   | R2 supervised spawn + R3 cancel fan-out             |
-| Panic while holding a **shared** `Mutex`    | *other* sessions get `PoisonError` | Only with R4              | R4 non-poisoning / brief panic-free critical section |
-| Panic inside a `Drop` during unwinding      | **process abort** (double-panic)   | No                        | R5 panic-free teardown Drops                        |
-| Unbounded queue growth (slow/stuck peer)    | **OOM → abort**                    | No                        | R6 bounded channels + backpressure                  |
-| Stack overflow / SIGSEGV / OOM              | **process death**                  | No — irreducible          | R8 out-of-process gdb-servers; pure safe-Rust funnel |
+| Fault                                    | Default outcome                    | Contained to one session? | Mechanism                                            |
+| ---------------------------------------- | ---------------------------------- | ------------------------- | ---------------------------------------------------- |
+| Panic in a session thread (unwind)       | that thread dies; hook logs it     | Yes — **if supervised**   | R2 supervised spawn + R3 cancel fan-out              |
+| Panic while holding a **shared** `Mutex` | *other* sessions get `PoisonError` | Only with R4              | R4 non-poisoning / brief panic-free critical section |
+| Panic inside a `Drop` during unwinding   | **process abort** (double-panic)   | No                        | R5 panic-free teardown Drops                         |
+| Unbounded queue growth (slow/stuck peer) | **OOM → abort**                    | No                        | R6 bounded channels + backpressure                   |
+| Stack overflow / SIGSEGV / OOM           | **process death**                  | No — irreducible          | R8 out-of-process gdb-servers; pure safe-Rust funnel |
 
 **Requirements:**
 
@@ -365,12 +424,12 @@ SSH is therefore the fallback whenever there is no Broker on the host side — w
 
 This is the one decision that changes the credential machinery. It is **not yet decided**.
 
-|                            | **A. Broker-mediated (default)**               | **B. Refresh token**                                                                                                                                                   |
-| -------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| How CLI gets fresh tokens  | Round-trips `provision` each time              | First provision drops a long-lived, authority-bound, revocable **refresh token** (guest side); CLI presents it **directly** to the Agent to mint access tokens         |
-| Needs live VS Code window? | Yes, at provision time (promptless after TOFU) | No — works after the window closes, as long as the Agent is still alive per §7                                                                                         |
-| Complexity                 | Minimal                                        | Adds refresh-token issuance, storage, rotation, revocation                                                                                                             |
-| Thing to protect           | Nothing persistent                             | The refresh token becomes the sensitive at-rest secret                                                                                                                 |
+|                            | **A. Broker-mediated (default)**               | **B. Refresh token**                                                                                                                                           |
+| -------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| How CLI gets fresh tokens  | Round-trips `provision` each time              | First provision drops a long-lived, authority-bound, revocable **refresh token** (guest side); CLI presents it **directly** to the Agent to mint access tokens |
+| Needs live VS Code window? | Yes, at provision time (promptless after TOFU) | No — works after the window closes, as long as the Agent is still alive per §7                                                                                 |
+| Complexity                 | Minimal                                        | Adds refresh-token issuance, storage, rotation, revocation                                                                                                     |
+| Thing to protect           | Nothing persistent                             | The refresh token becomes the sensitive at-rest secret                                                                                                         |
 
 **Recommendation:** ship **A** (simplest, most secure; the URI round-trip is imperceptible once TOFU is granted), and add **B** only when a genuine *CLI-without-VS-Code-window* workflow is required. Given the CLI-first framing, B may well become necessary — design the token claims in §8 so a refresh grant slots in later without a format break.
 
@@ -378,17 +437,17 @@ This is the one decision that changes the credential machinery. It is **not yet 
 
 ## 11. CLI provisioning state machine
 
-| State              | Action                                                                                          | Transitions                                                                   |
-| ------------------ | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| **Discover**       | Locate `endpoint.json` (via shared FS if guest); acquire-lock test + ping control channel       | live + credential valid → **Connect**; else → **SelectRung**                  |
-| **SelectRung**     | Detect environment (VS Code shim? SSH config? shared FS?)                                        | → **Broker** / **Ssh** / **SharedFs** / **Manual**                            |
-| **Broker**         | Pre-create rendezvous dir; write `<handle>.req` (O_EXCL); `code --open-url …/provision`          | → **WaitReply**                                                              |
-| **WaitReply**      | Poll for `<handle>.res` (timeout ~15 s); require `phase==reply` + matching nonce                 | `ready` → **Connect**; `denied`/`error` → **Fail(msg)**; timeout → **Manual** |
-| **Ssh**            | Deploy/verify Agent; `ssh … mdbg proxy --port 0`; parse stdout; open `-L`                        | parsed → **Connect**; fail → **Fail**                                         |
-| **SharedFs**       | Read host `endpoint.json` via `/mnt/c/…`                                                         | found + fresh → **Connect**; else → **Manual**                                |
-| **Manual**         | Print paste-ready `mdbg connect --host … --port … --token …` (Agent also prints this on start)   | user pastes → **Connect**                                                     |
-| **Connect**        | Dial `host:port` (host from §2), present token, add lifetime ref                                 | ok → **Ready**; auth fail → **SelectRung** (token may be stale)               |
-| **Ready**          | Funnel established                                                                               | —                                                                             |
+| State          | Action                                                                                         | Transitions                                                                   |
+| -------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **Discover**   | Locate `endpoint.json` (via shared FS if guest); acquire-lock test + ping control channel      | live + credential valid → **Connect**; else → **SelectRung**                  |
+| **SelectRung** | Detect environment (VS Code shim? SSH config? shared FS?)                                      | → **Broker** / **Ssh** / **SharedFs** / **Manual**                            |
+| **Broker**     | Pre-create rendezvous dir; write `<handle>.req` (O_EXCL); `code --open-url …/provision`        | → **WaitReply**                                                               |
+| **WaitReply**  | Poll for `<handle>.res` (timeout ~15 s); require `phase==reply` + matching nonce               | `ready` → **Connect**; `denied`/`error` → **Fail(msg)**; timeout → **Manual** |
+| **Ssh**        | Deploy/verify Agent; `ssh … mdbg proxy --port 0`; parse stdout; open `-L`                      | parsed → **Connect**; fail → **Fail**                                         |
+| **SharedFs**   | Read host `endpoint.json` via `/mnt/c/…`                                                       | found + fresh → **Connect**; else → **Manual**                                |
+| **Manual**     | Print paste-ready `mdbg connect --host … --port … --token …` (Agent also prints this on start) | user pastes → **Connect**                                                     |
+| **Connect**    | Dial `host:port` (host from §2), present token, add lifetime ref                               | ok → **Ready**; auth fail → **SelectRung** (token may be stale)               |
+| **Ready**      | Funnel established                                                                             | —                                                                             |
 
 ---
 
