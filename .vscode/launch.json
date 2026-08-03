@@ -124,7 +124,7 @@
       "program": "${cargo:program}",
       // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/stm32f429-rtt.elf"],
       // "args": ["--timing", "--rtt-search", "${workspaceFolder}/mylfs/proj_cm4.elf"],
-      "args": ["debug", "-h"],
+      "args": ["-h"],
       "cwd": "${workspaceFolder}/packages/mcu-debug",
       "sourceLanguages": ["rust"],
       "console": "internalConsole"

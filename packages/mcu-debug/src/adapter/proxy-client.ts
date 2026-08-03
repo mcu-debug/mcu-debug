@@ -493,7 +493,7 @@ export class ProxyClient extends EventEmitter {
                 if (msg.success) {
                     resolve(msg.data);
                 } else {
-                    reject(new Error(msg.error || "Unknown error from proxy"));
+                    reject(new Error(msg.message || "Unknown error from proxy"));
                 }
             } else {
                 this.logError(`Received response with unknown seq: ${msg.seq}`);

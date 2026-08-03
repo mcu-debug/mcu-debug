@@ -184,7 +184,11 @@ export class GDBServerSession extends EventEmitter {
                         killTimers();
                     } else {
                         const elapsed = Math.round((Date.now() - now) / 1000);
-                        this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to start (${elapsed}s elapsed)...\n`);
+                        if (this.matchRegex) {
+                            this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to output line matching regex ${this.matchRegex} (${elapsed}s elapsed)...\n`);
+                        } else {
+                            this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to start (${elapsed}s elapsed)...\n`);
+                        }
                     }
                 }, 5000);
 

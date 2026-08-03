@@ -116,8 +116,34 @@ function copy_artifact() {
     echo "Warning: artifact not found: $src"
     return 1
   fi
-  cp "$src" "$dest_dir/$dest_name"
+  # Replace the destination by swapping in a fresh inode instead of writing
+  # into the existing one. The singleton proxy daemon is long-lived and may
+  # still have the old binary mmap'd; an in-place `cp` overwrite corrupts the
+  # running Mach-O's code signature, and on macOS AMFI then SIGKILLs the very
+  # next exec of that path ("zsh: killed"). `mv` unlinks the old inode (the
+  # daemon keeps its now-anonymous mapping, unharmed) and atomically links a
+  # brand-new, correctly-signed file for future launches.
+  local tmp="$dest_dir/.$dest_name.tmp.$$"
+  cp "$src" "$tmp"
+  chmod +x "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$dest_dir/$dest_name"
   echo "Wrote: $dest_dir/$dest_name"
+}
+
+# Best-effort: stop any lingering singleton proxy daemon(s) before we swap
+# binaries. Unlike a version-bumped release (which hands off via the upgrade
+# path), a dev rebuild keeps the SAME version, so a relaunch would otherwise
+# reuse the still-running daemon executing the OLD code. `pkill -f 'mdbg proxy'`
+# targets only proxy daemons (not an unrelated `mdbg da-helper`/cockpit) across
+# all instances at once; `killall` is a fallback where pkill is unavailable.
+# All best-effort: no daemon running, or no such tool, is fine. Copy safety
+# does NOT depend on this — copy_artifact's inode swap is safe regardless.
+function stop_running_proxies() {
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -f "$BIN_NAME proxy" 2>/dev/null || true
+  elif command -v killall >/dev/null 2>&1; then
+    killall "$BIN_NAME" 2>/dev/null || true
+  fi
 }
 
 function sync_proxy_binaries() {
@@ -163,6 +189,10 @@ if [[ "$mode" == "dev" ]]; then
     fi
     BIN_NAME="$BIN_NAME.exe"
   fi
+
+  # Stop any lingering singleton daemon so the next launch runs these fresh
+  # bytes (dev builds keep the same version, so no auto-upgrade handover).
+  stop_running_proxies
 
   # Copy root binary
   copy_artifact "$dbg_path" "$BINDIR" "$BIN_NAME" || true
@@ -387,6 +417,9 @@ if [[ "$mode" == "prod" ]]; then
     echo "Refusing to proceed with a partial build — packaging would silently ship stale binaries for these platforms."
     exit 1
   fi
+
+  # Stop any lingering singleton daemon before we swap the deployed binaries.
+  stop_running_proxies
 
   for entry in "${targets[@]}"; do
     IFS='|' read -r platform triple ext method <<< "$entry"
