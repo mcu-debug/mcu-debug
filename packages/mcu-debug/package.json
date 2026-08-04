@@ -4011,7 +4011,6 @@
     "triple-beam": "^1.4.1"
   },
   "extensionDependencies": [
-    "mcu-debug.mcu-debug-proxy",
     "mcu-debug.debug-tracker-vscode",
     "mcu-debug.memory-view",
     "mcu-debug.rtos-views",
