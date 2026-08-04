@@ -3958,7 +3958,7 @@
     "generate-manifest": "node scripts/update-package-json.js",
     "update-commit-hash": "node scripts/commit-hash.js",
     "build:rust:dev": "node scripts/build-rust.js dev",
-    "build-cockpit": "npm --prefix src/webviews/cockpit run build",
+    "build-cockpit": "npm --prefix src/webviews/cockpit install && npm --prefix src/webviews/cockpit run build",
     "compile": "npm run build:rust:dev && npm run copy-codicons && npm run build-cockpit && npm run generate-manifest && npm run update-commit-hash && npm run check-types && node esbuild.js",
     "build": "npm run build-all",
     "check-types": "tsc-strict --noEmit",
