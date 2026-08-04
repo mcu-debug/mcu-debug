@@ -960,6 +960,15 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
                 break;
             }
+            case "output-message": {
+                const msg = args?.message;
+                const type = args?.type || "console";
+                if (msg) {
+                    this.handleMsg(type, msg);
+                }
+                this.sendResponse(response);
+                break;
+            }
             default:
                 response.body = { error: "Invalid command." };
                 this.sendResponse(response);

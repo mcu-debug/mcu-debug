@@ -82,15 +82,15 @@ export class VscodeAdapter implements IHostAdapter {
     }
 
     debugConsoleMessage(msg: string): void {
-        if (vscode.debug.activeDebugConsole) {
-            vscode.debug.activeDebugConsole.appendLine(msg);
+        if (vscode.debug.activeDebugSession) {
+            vscode.debug.activeDebugSession.customRequest("output-message", { type: "console", message: msg });
         }
         this.debugMessage(msg);
     }
 
     debugConsoleError(msg: string): void {
-        if (vscode.debug.activeDebugConsole) {
-            vscode.debug.activeDebugConsole.appendLine("Error:" + msg);
+        if (vscode.debug.activeDebugSession) {
+            vscode.debug.activeDebugSession.customRequest("output-message", { type: "stderr", message: msg });
         }
         this.debugMessage("Error:" + msg);
     }
