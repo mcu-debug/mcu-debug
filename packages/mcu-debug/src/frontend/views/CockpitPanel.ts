@@ -133,6 +133,7 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         }
         this._tabs.set(tab.tabId, tab);
         tab._attach(this);
+        this._activeTabId = tab.tabId;
         if (this._webviewReady) {
             this.postToWebview({ type: "tab-add", tab: tab.descriptor });
         }
