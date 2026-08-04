@@ -278,6 +278,7 @@ fn open_with_retry(
 
         let params = SerialParams {
             path: Some(resolved.clone()),
+            description: None,
             serial: None,
             vid: None,
             pid: None,

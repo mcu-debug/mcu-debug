@@ -87,8 +87,8 @@ impl ProxyServer {
             params.serial.as_deref(),
             params.vid.as_deref(),
             params.pid.as_deref(),
-            None,
-            false,
+            params.description.as_deref(),
+            true,
         ) {
             Ok(p) => p,
             Err(e) => {

@@ -159,6 +159,13 @@ export interface IHostAdapter {
     /** Write a message to the debug output channel (VS Code) or stderr (CLI). */
     debugMessage(msg: string): void;
 
+
+    /** Print a message to the debug console (VS Code) or stdout (CLI). */
+    debugConsoleMessage(msg: string): void;
+
+    /** Print a message to the debug console (VS Code) or stdout (CLI). */
+    debugConsoleError(msg: string): void;
+
     /** The VS Code remote name (e.g. "wsl", "ssh-remote+host") or undefined when local. */
     getRemoteName(): string | undefined;
 

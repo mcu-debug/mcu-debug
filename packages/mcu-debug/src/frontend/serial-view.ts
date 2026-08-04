@@ -52,7 +52,7 @@ export class SerialPortView extends ManagedTab implements ISerialPortView {
     }
 
     constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
-        const baseName = path.basename(device);
+        const baseName = serialConfig.label || path.basename(device);
         super(
             `serial-${getUUidPrefixed('serial')}`,
             baseName,

@@ -120,6 +120,15 @@ export class CliAdapter implements IHostAdapter {
     debugMessage(msg: string): void {
         logger.debug(msg);
     }
+
+    debugConsoleMessage(msg: string): void {
+        logger.info(msg);
+    }
+
+    debugConsoleError(msg: string): void {
+        logger.error("Error:" + msg);
+    }
+
     getRemoteName(): string | undefined {
         return this.remoteName;
     }

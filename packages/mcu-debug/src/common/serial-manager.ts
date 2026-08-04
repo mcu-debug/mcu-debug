@@ -25,62 +25,118 @@ import { getHostAdapter, ISerialPortView } from "./host-adapter";
 
 const PROXY_TIMOUT = 5000;
 
-interface SerialPortMap {
-    path: string;
-    tcp_port: number;
-}
-
-type SerialPortMapList = SerialPortMap[];
-
 interface ProxyConnectionInfo {
     host: string;
     port: number;
     token: string;
 }
 
-export class SerialPortManager {
-    static instance: SerialPortManager | null = null;
+/**
+ * Stable identity of a proxy connection. Manager-side maps that are keyed by
+ * device path must be qualified by this, because the same path (e.g.
+ * `/dev/ttyACM0`) can exist on more than one proxy at once (local + ssh
+ * remote). Step 1 kept a single connection; from here on, keys are always
+ * `(ProxyKey, path)` so adding more connections in Step 3 can't collide.
+ */
+export type ProxyKey = string;
+
+/** Composite key for a port on a specific proxy. NUL never occurs in a device path. */
+const KEY_SEP = "\u0000";
+function compositeKey(proxyKey: ProxyKey, path: string): string {
+    return `${proxyKey}${KEY_SEP}${path}`;
+}
+
+/**
+ * An available port together with the proxy it was reported by. The same device
+ * path can be served by more than one proxy (local + ssh remote), so the source
+ * is what lets the picker disambiguate otherwise-identical paths.
+ */
+export interface SourcedPort {
+    port: AvailablePort;
+    proxyKey: ProxyKey;
+    /** Human-readable source label for the picker (e.g. "local", "ssh:pi@lab"). */
+    label: string;
+}
+
+/**
+ * Resolves a hostConfig to a proxy endpoint (populating pvtProxy* fields).
+ * Defaults to {@link getProxyForSerialPorts}; injectable so tests can point the
+ * manager at fake proxies without going through the real launch machinery.
+ */
+export type ProxyResolver = (hostConfig: HostConfig | undefined) => Promise<HostConfig | null>;
+
+/** Shared logging helpers so both the connection and its TCP servers log the same way. */
+function serialLogInfo(message: string) {
+    getHostAdapter().debugConsoleMessage(message);
+}
+function serialLogError(message: string) {
+    getHostAdapter().debugConsoleError(message);
+}
+
+/**
+ * Extract the resolved device path from a SerialPortInfo.
+ *
+ * `serial.open` responses have shape { path, tcp_port, channel_id } at the
+ * top level, while `serial.listOpen` entries have { params.path, ... }.
+ * Both shapes live in openPorts[], so we check both.
+ */
+function resolvedPath(info: SerialPortInfo): string | undefined {
+    return (info as any).path || info.params?.path || undefined;
+}
+
+/** Human-readable description of a port selector for log messages. */
+function portSel(p: SerialParams): string {
+    if (p.path) { return p.path; }
+    if (p.serial) { return `serial=${p.serial}`; }
+    return `vid=${p.vid} pid=${p.pid}`;
+}
+
+/**
+ * Higher-level reactions a {@link ProxyConnection} hands back to its owner
+ * (the {@link SerialPortManager}). The connection owns the wire; the manager
+ * owns the views/config/reconnect policy, so wire-level events that require a
+ * UI reaction are delegated here rather than reaching into the manager.
+ */
+interface ProxyConnectionDelegate {
+    onPortError(conn: ProxyConnection, path: string, kind: SerialErrorKind, msg: string): void;
+}
+
+/**
+ * A single connection to one proxy (Probe Agent). Owns everything that is
+ * scoped to that one proxy: the socket, the request/response sequence space,
+ * the funnel stream-id space (clientStreams), and this proxy's view of which
+ * ports are available/open. Framing and heartbeat live here too.
+ *
+ * The {@link SerialPortManager} currently creates exactly one of these; the
+ * multi-proxy work turns that into a registry of connections keyed by proxy
+ * identity. Keeping all per-proxy state on this object is what makes that
+ * possible without namespace collisions between proxies.
+ */
+export class ProxyConnection {
     private socket: net.Socket | null = null;
     private proxyInfo: ProxyConnectionInfo | null = null;
+    private lastProxyInfo: string = "";
     private heartbeatTimer: NodeJS.Timeout | null = null;
+    // Whether ports on this connection are bridged over the funnel (multiplexed
+    // on the single control socket) vs a direct per-port TCP listener. Derived
+    // in connect() from THIS proxy's resolved topology, not the workspace: a
+    // local proxy is directly reachable (direct); a remote proxy (ssh tunnel /
+    // reverse tunnel / wsl) is only reachable through the control socket (funnel).
     private isFunnelTransport: boolean = false;
     private clientStreams: Map<number, ProxySerialTcpServer> = new Map();
     private nextSeq: number = 1;
     private pendingPromises: Map<number, { resolve: (value: any) => void; reject: (reason?: any) => void }> = new Map();
     private availablePorts: AvailablePort[] = [];
     private openPorts: SerialPortInfo[] = [];
-    private serialPortViews: Map<string, ISerialPortView> = new Map();
-    private serialPortConfigs: Map<string, SerialParams> = new Map();
-    private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
     private pendingAvailableSnapshotResolvers: Array<() => void> = [];
 
-    constructor() {
-        SerialPortManager.instance = this;
-    }
+    constructor(public readonly key: ProxyKey, private delegate: ProxyConnectionDelegate, public label: string = key) { }
 
     public logInfo(message: string) {
-        getHostAdapter().debugMessage(message);
+        serialLogInfo(message);
     }
     public logError(message: string) {
-        getHostAdapter().showError(message);
-    }
-
-    /** Human-readable description of a port selector for log messages. */
-    private static portSel(p: SerialParams): string {
-        if (p.path) { return p.path; }
-        if (p.serial) { return `serial=${p.serial}`; }
-        return `vid=${p.vid} pid=${p.pid}`;
-    }
-
-    /**
-     * Extract the resolved device path from a SerialPortInfo.
-     *
-     * `serial.open` responses have shape { path, tcp_port, channel_id } at the
-     * top level, while `serial.listOpen` entries have { params.path, ... }.
-     * Both shapes live in openPorts[], so we check both.
-     */
-    private static resolvedPath(info: SerialPortInfo): string | undefined {
-        return (info as any).path || info.params?.path || undefined;
+        serialLogError(message);
     }
 
     private destroySocket() {
@@ -91,8 +147,11 @@ export class SerialPortManager {
         }
     }
 
-    private lastProxyInfo: string = ""
-    private connectToProxy(hostConfig: HostConfig): Promise<boolean> {
+    public connect(hostConfig: HostConfig): Promise<boolean> {
+        // Transport is a property of THIS proxy's topology, not the workspace: a
+        // local proxy is directly reachable; any remote proxy must funnel over
+        // the single control socket.
+        this.isFunnelTransport = hostConfig.pvtNetworkMode !== "local";
         const newProxyInfo = JSON.stringify(hostConfig);
         if (this.lastProxyInfo === newProxyInfo && this.socket && !this.socket.destroyed) {
             return Promise.resolve(true);
@@ -116,7 +175,7 @@ export class SerialPortManager {
             socket.on("close", () => {
                 this.logInfo("Proxy connection closed");
                 this.stopHeartbeat();
-                this.destroySocket()
+                this.destroySocket();
             });
             socket.once("connect", async () => {
                 this.logInfo(`Successfully connected to proxy on ${host}:${port}`);
@@ -285,7 +344,7 @@ export class SerialPortManager {
                         const errMsg = msg.params?.msg || "Unknown error";
                         const errKind = msg.params?.kind || "unknown";
                         this.logError(`Received serial port error from proxy: (kind: ${errKind}) msg: ${errMsg} for port ${msg.params.path}`);
-                        this.handlePortError(msg.params.path, errKind, errMsg);
+                        this.delegate.onPortError(this, msg.params.path, errKind, errMsg);
                         break;
                     }
                     case "serial.availableChanged": {
@@ -323,66 +382,6 @@ export class SerialPortManager {
         }
     }
 
-    private handlePortError(portPath: string, kind: SerialErrorKind, msg: string) {
-        const view = this.serialPortViews.get(portPath);
-        if (kind === "disconnected" && view) {
-            // The helper may already have torn down serial state; drop manager-side state and recreate.
-            view.notifyDisconnected(msg);
-            this.removeSerialPortTab(portPath, true, true);
-            this.scheduleReconnect(portPath);
-        } else {
-            this.removeSerialPortTab(portPath);
-        }
-    }
-
-    private scheduleReconnect(portPath: string, delayMs: number = 3000) {
-        if (this.reconnectTimers.has(portPath)) {
-            return;
-        }
-        const timer = setTimeout(() => {
-            this.reconnectTimers.delete(portPath);
-            this.attemptReconnect(portPath);
-        }, delayMs);
-        this.reconnectTimers.set(portPath, timer);
-    }
-
-    private async attemptReconnect(portPath: string): Promise<void> {
-        const reconnectConfig = this.serialPortConfigs.get(portPath);
-        if (!reconnectConfig) {
-            return;
-        }
-        const lCasePath = portPath.toLowerCase();
-        const isAvailable = this.availablePorts.some((p) => p.path.toLowerCase() === lCasePath);
-        if (!isAvailable) {
-            // Port is not in the available list yet; reschedule and wait for it to reappear.
-            this.scheduleReconnect(portPath, 3000);
-            return;
-        }
-        try {
-            const result = await this.openSerialPort({ ...reconnectConfig }, true);
-            if (result) {
-                const configPath = reconnectConfig.path;
-                const actualPath: string = SerialPortManager.resolvedPath(result) || configPath || '';
-                const reconnectViewConfig: SerialParams = {
-                    ...reconnectConfig,
-                    path: actualPath,
-                };
-                if (actualPath !== configPath) {
-                    this.serialPortConfigs.delete(configPath ?? '');
-                }
-                this.createOrUpdateViewWithSerialInfo(result, reconnectViewConfig, false);
-                const view = this.serialPortViews.get(actualPath);
-                if (!view) {
-                    return;
-                }
-                return;
-            }
-        } catch {
-            // fall through to retry
-        }
-        this.scheduleReconnect(portPath, 3000);
-    }
-
     private stopHeartbeat() {
         if (this.heartbeatTimer) {
             clearInterval(this.heartbeatTimer);
@@ -409,7 +408,7 @@ export class SerialPortManager {
 
     public getSerialPortInfo(path: string): SerialPortInfo | null {
         for (const port of this.openPorts) {
-            if (SerialPortManager.resolvedPath(port) === path) {
+            if (resolvedPath(port) === path) {
                 return port;
             }
         }
@@ -438,42 +437,6 @@ export class SerialPortManager {
         }
     }
 
-    public async listAvailablePortsCmd(noDisplay?: boolean): Promise<AvailablePort[]> {
-        const tmpHostConfig: HostConfig = {
-            type: getHostAdapter().getRemoteName() ? "auto" : "local",
-            enabled: true,
-        }
-        const resolvedHostConfig = await getProxyForSerialPorts(tmpHostConfig);
-        if (!resolvedHostConfig) {
-            this.logError(`Failed to resolve proxy configuration for serial ports. Serial ports will not be available.`);
-            return [];
-        }
-        const initDone = await this.connectToProxy(resolvedHostConfig);
-        if (!initDone) {
-            this.logError(`Failed to connect to proxy for serial ports. Serial ports will not be available.`);
-            return [];
-        }
-        const ports = this.getCurrentSerialPorts();
-        if (noDisplay) {
-            return ports;
-        }
-
-        const items = [];
-        for (const p of ports) {
-            items.push({
-                label: p.path,
-                description: p.description ?? '',
-                detail: `VID: ${p.vid !== null ? p.vid.toString(16).padStart(4, '0') : 'N/A'} PID: ${p.pid !== null ? p.pid.toString(16).padStart(4, '0') : 'N/A'}`,
-            });
-        }
-        getHostAdapter().showQuickPick(items, {
-            title: 'Available Serial Ports',
-            placeHolder: 'Serial ports found on the probe host',
-        });
-
-        return ports;
-    }
-
     public async openSerialPort(serialParams: SerialParams, silent: boolean = false): Promise<SerialPortInfo | null> {
         try {
             serialParams.transport = this.isFunnelTransport ? "funnel" : "direct";   // Default to proxy transport for remote workspaces and direct transport for local workspaces. The proxy will handle the transport details on its side.
@@ -487,11 +450,11 @@ export class SerialPortManager {
             if (!openInfo) {
                 return null;
             }
-            const openPath = SerialPortManager.resolvedPath(openInfo);
+            const openPath = resolvedPath(openInfo);
             if (openPath) {
                 let updated = false;
                 for (let ix = 0; ix < this.openPorts.length; ix++) {
-                    if (SerialPortManager.resolvedPath(this.openPorts[ix]) === openPath) {
+                    if (resolvedPath(this.openPorts[ix]) === openPath) {
                         this.openPorts[ix] = openInfo;
                         updated = true;
                         break;
@@ -504,7 +467,7 @@ export class SerialPortManager {
             return openInfo;
         } catch (err) {
             if (!silent) {
-                const sel = SerialPortManager.portSel(serialParams);
+                const sel = portSel(serialParams);
                 this.logError(`Failed to open serial port ${sel}: ${err}`);
             }
             return null;
@@ -517,6 +480,266 @@ export class SerialPortManager {
 
     public getCurrentOpenSerialPorts(): SerialPortInfo[] {
         return this.openPorts;
+    }
+
+    /** Whether this proxy currently reports `path` among its available ports. */
+    public isPortAvailable(path: string): boolean {
+        const lCasePath = path.toLowerCase();
+        return this.availablePorts.some((p) => p.path.toLowerCase() === lCasePath);
+    }
+
+    /**
+     * Get-or-create the funnel TCP server for a port's channel. The stream-id
+     * space is owned by this connection, so the map of servers lives here.
+     */
+    public ensureStreamServer(host: string, path: string, channel_id: number): ProxySerialTcpServer {
+        let server = this.clientStreams.get(channel_id);
+        if (server) {
+            server.setChannelId(channel_id);
+        } else {
+            server = new ProxySerialTcpServer(host, path, channel_id, this);
+            this.clientStreams.set(channel_id, server);
+        }
+        return server;
+    }
+
+    /**
+     * Close a port on the proxy side and drop this connection's bookkeeping for
+     * it (open-port entry and funnel stream server). The manager handles the
+     * view/config/reconnect side; this is only the wire teardown.
+     */
+    public closePort(path: string, skipSerialClose: boolean = false) {
+        const portInfo = this.getSerialPortInfo(path);
+        if (!portInfo) {
+            return;
+        }
+        if (!skipSerialClose) {
+            const controlMsg: ControlMessage = {
+                seq: this.nextSeq++,
+                method: "serial.close",
+                params: { path },
+            };
+            this.sendControlCommand(controlMsg).catch((err) => {
+                this.logError(`Failed to close serial port ${path}: ${err}`);
+            });
+        }
+        this.openPorts = this.openPorts.filter((p) => resolvedPath(p) !== path);
+        for (const [stream_id, server] of this.clientStreams.entries()) {
+            if (server.getPort() === portInfo.tcp_port) {
+                server.dataFromServer(Buffer.from(""), stream_id);   // Send an empty message to trigger any cleanup on the server side
+                this.clientStreams.delete(stream_id);
+                break;
+            }
+        }
+    }
+
+    /**
+     * Tear this connection down completely: stop the heartbeat, close the
+     * control socket and every funnel TCP server, and fail any in-flight
+     * requests/waiters. After dispose() the object must not be reused. This is
+     * the only thing that clears the heartbeat interval, so a manager holding a
+     * connection must dispose it rather than just dropping the reference.
+     */
+    public dispose() {
+        this.stopHeartbeat();
+        for (const server of this.clientStreams.values()) {
+            server.close();
+        }
+        this.clientStreams.clear();
+        this.destroySocket();
+        for (const { reject } of this.pendingPromises.values()) {
+            reject(new Error("Proxy connection disposed"));
+        }
+        this.pendingPromises.clear();
+        this.resolvePendingAvailableSnapshots();
+    }
+}
+
+export class SerialPortManager implements ProxyConnectionDelegate {
+    static instance: SerialPortManager | null = null;
+
+    // Registry of live proxy connections, keyed by proxy endpoint identity
+    // (host:port). A single debug session uses exactly one proxy, but the
+    // manager spans sessions and standalone commands, so several connections
+    // can be live at once (e.g. the local proxy plus one or more ssh-remote
+    // proxies). Connections are created lazily and are NEVER torn down to serve
+    // a different endpoint — doing so was the core bug of the old single-socket
+    // design, where opening a port on proxy B killed all of proxy A's ports.
+    private connections: Map<ProxyKey, ProxyConnection> = new Map();
+
+    // Keyed by compositeKey(proxyKey, path) — NOT bare path. The same device
+    // path can be served by more than one proxy, so the owning connection must
+    // qualify every entry.
+    private serialPortViews: Map<string, ISerialPortView> = new Map();
+    private serialPortConfigs: Map<string, SerialParams> = new Map();
+    private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+
+    constructor(private resolveProxy: ProxyResolver = getProxyForSerialPorts) {
+        SerialPortManager.instance = this;
+    }
+
+    /**
+     * Stable identity of a proxy from its resolved endpoint. Two hostConfigs
+     * that resolve to the same host:port are the same proxy and share one
+     * connection; different endpoints get independent connections. A proxy that
+     * restarts under the same host:port keeps its key — {@link ProxyConnection.connect}
+     * handles a changed token/port by reconnecting in place.
+     */
+    private proxyKeyFor(hostConfig: HostConfig): ProxyKey {
+        const host = hostConfig.pvtProxyHost || "127.0.0.1";
+        const port = hostConfig.pvtProxyPort || 4567;
+        return `${host}:${port}`;
+    }
+
+    /** Get the connection for a resolved hostConfig, creating it on first use. */
+    private getOrCreateConnection(hostConfig: HostConfig): ProxyConnection {
+        const key = this.proxyKeyFor(hostConfig);
+        let conn = this.connections.get(key);
+        if (!conn) {
+            conn = new ProxyConnection(key, this, this.proxyLabelFor(hostConfig));
+            this.connections.set(key, conn);
+        }
+        return conn;
+    }
+
+    /** Human-readable source label for a proxy, used to tag ports in the picker. */
+    private proxyLabelFor(hostConfig: HostConfig): string {
+        if (hostConfig.sshHost) {
+            return `ssh:${hostConfig.sshHost}`;
+        }
+        if (hostConfig.pvtNetworkMode === "local" || hostConfig.type === "local") {
+            return "local";
+        }
+        if (hostConfig.pvtNetworkMode) {
+            return hostConfig.pvtNetworkMode;
+        }
+        return this.proxyKeyFor(hostConfig);
+    }
+
+    /**
+     * Every available port across all live connections, each tagged with its
+     * source proxy. Lists are kept fresh per-connection by the availability
+     * subscription, so this just flattens the current snapshots.
+     */
+    public getAllAvailablePorts(): SourcedPort[] {
+        const out: SourcedPort[] = [];
+        for (const conn of this.connections.values()) {
+            for (const port of conn.getCurrentSerialPorts()) {
+                out.push({ port, proxyKey: conn.key, label: conn.label });
+            }
+        }
+        return out;
+    }
+
+    /** Composite map key for a port on a specific connection. */
+    private ckey(conn: ProxyConnection, path: string): string {
+        return compositeKey(conn.key, path);
+    }
+
+    public logInfo(message: string) {
+        serialLogInfo(message);
+    }
+    public logError(message: string) {
+        serialLogError(message);
+    }
+
+    // --- ProxyConnectionDelegate ---
+    public onPortError(conn: ProxyConnection, portPath: string, kind: SerialErrorKind, msg: string) {
+        const view = this.serialPortViews.get(this.ckey(conn, portPath));
+        if (kind === "disconnected" && view) {
+            // The helper may already have torn down serial state; drop manager-side state and recreate.
+            view.notifyDisconnected(msg);
+            this.removeSerialPortTab(conn, portPath, true, true);
+            this.scheduleReconnect(conn, portPath);
+        } else {
+            this.removeSerialPortTab(conn, portPath);
+        }
+    }
+
+    private scheduleReconnect(conn: ProxyConnection, portPath: string, delayMs: number = 3000) {
+        const key = this.ckey(conn, portPath);
+        if (this.reconnectTimers.has(key)) {
+            return;
+        }
+        const timer = setTimeout(() => {
+            this.reconnectTimers.delete(key);
+            this.attemptReconnect(conn, portPath);
+        }, delayMs);
+        this.reconnectTimers.set(key, timer);
+    }
+
+    private async attemptReconnect(conn: ProxyConnection, portPath: string): Promise<void> {
+        const reconnectConfig = this.serialPortConfigs.get(this.ckey(conn, portPath));
+        if (!reconnectConfig) {
+            return;
+        }
+        if (!conn.isPortAvailable(portPath)) {
+            // Port is not in the available list yet; reschedule and wait for it to reappear.
+            this.scheduleReconnect(conn, portPath, 3000);
+            return;
+        }
+        try {
+            const result = await conn.openSerialPort({ ...reconnectConfig }, true);
+            if (result) {
+                const configPath = reconnectConfig.path;
+                const actualPath: string = resolvedPath(result) || configPath || '';
+                const reconnectViewConfig: SerialParams = {
+                    ...reconnectConfig,
+                    path: actualPath,
+                };
+                if (actualPath !== configPath) {
+                    this.serialPortConfigs.delete(this.ckey(conn, configPath ?? ''));
+                }
+                this.createOrUpdateViewWithSerialInfo(conn, result, reconnectViewConfig, false);
+                return;
+            }
+        } catch {
+            // fall through to retry
+        }
+        this.scheduleReconnect(conn, portPath, 3000);
+    }
+
+    public async listAvailablePortsCmd(noDisplay?: boolean): Promise<AvailablePort[]> {
+        // Ensure the default (local/auto) connection for this workspace is up, so
+        // a standalone list works even with no debug session running. Failure to
+        // resolve/connect is non-fatal here: we still aggregate whatever other
+        // connections active debug sessions have already established.
+        const tmpHostConfig: HostConfig = {
+            type: getHostAdapter().getRemoteName() ? "auto" : "local",
+            enabled: true,
+        }
+        const resolvedHostConfig = await this.resolveProxy(tmpHostConfig);
+        if (resolvedHostConfig) {
+            const conn = this.getOrCreateConnection(resolvedHostConfig);
+            if (!(await conn.connect(resolvedHostConfig))) {
+                this.logError(`Failed to connect to proxy for serial ports.`);
+            }
+        } else {
+            this.logError(`Failed to resolve proxy configuration for serial ports.`);
+        }
+
+        // Aggregate across every live connection (local + any remotes) so the
+        // picker shows all reachable ports, each tagged with its source proxy.
+        const sourced = this.getAllAvailablePorts();
+        if (noDisplay) {
+            return sourced.map((s) => s.port);
+        }
+
+        const items = sourced.map((s) => {
+            const p = s.port;
+            const desc = p.description ? `${s.label} · ${p.description}` : s.label;
+            return {
+                label: p.path,
+                description: desc,
+                detail: `VID: ${p.vid !== null ? p.vid.toString(16).padStart(4, '0') : 'N/A'} PID: ${p.pid !== null ? p.pid.toString(16).padStart(4, '0') : 'N/A'}`,
+            };
+        });
+        getHostAdapter().showQuickPick(items, {
+            title: 'Available Serial Ports',
+            placeHolder: 'Serial ports found across connected probe hosts',
+        });
+
+        return sourced.map((s) => s.port);
     }
 
     private cleanupSerialConfig(args: ConfigurationArguments) {
@@ -542,32 +765,15 @@ export class SerialPortManager {
 
     public async createSerialPorts(args: ConfigurationArguments): Promise<void> {
         this.cleanupSerialConfig(args);
-        if (!args.serialConfig) {
+        if (!args.serialConfig || !args.serialConfig.enabled || !args.serialConfig.ports || args.serialConfig.ports.length === 0) {
             return;
         }
-        // TODO: We have a problem here. In the regular ssh case, we can have both a remote serial ports and
-        // local serial ports. But we have only one proxy connection that can be used to open remote serial ports.
-        // If we open a local serial port first, it will use the proxy connection and work fine. But then when we
-        // try to open a remote serial port, it will also try to use the same proxy connection, which will fail because
-        // the local serial port is already using it. On the other hand, if we open the remote serial port first, it will
-        // use the proxy connection and work fine, but then when we try to open a local serial port, it will also try to
-        // use the same proxy connection, which will fail because the remote serial port is already using it. So we need to
-        // open all remote serial ports first, and then open all local serial ports. This is not ideal, but it's a limitation
-        // of the current design of the proxy connection. We should consider redesigning the proxy connection in the future
-        // to allow multiple concurrent connections for different purposes (e.g. one for remote serial ports, one for local
-        // serial ports, etc.). For now, we will just open all remote serial ports first, and then open all local serial ports.
-
-        // In fact, it is possible that we can have MULTIPLE remote serial ports if the user is experimenting with various ssh
-        // configs. One launch.json config may point to one remote host and another launch.json config may point to another
-        // remote host. Or the user may switch between ssh and devcontainer remotes.
-        //
-        // This is generally not a problem for debug sessions because we will allow only one proxy per session (multi-core may
-        // violate this assumption but we will deal with that separately), but for serial ports, we want to be able to support multiple
-
-        // We could support, only in the case of pure ssh, one ssh remote and one local max. Everything else, the workspace type
-        // dictates what we do and there can only be one type of remote. So we can just check the workspace type and if it's ssh,
-        // we can allow both local and remote serial ports, but if it's devcontainer or wsl, we can only allow one type of serial port.
-        // This is not ideal, but it's a reasonable compromise given the limitations of the current proxy design.
+        // One debug session uses exactly one proxy (that proxy may host several
+        // sub-sessions in the multi-core case), so all of this session's ports
+        // are opened on a single connection resolved from the session's
+        // hostConfig. The manager keeps that connection in its registry, so a
+        // second session pointing at a different remote gets its own connection
+        // instead of tearing this one down.
         const rawHostConfig = typeof args?.hostConfig === "boolean"
             ? (args.hostConfig ? { enabled: true, type: "auto" as const } : undefined)
             : args?.hostConfig;
@@ -575,28 +781,27 @@ export class SerialPortManager {
             type: getHostAdapter().getRemoteName() ? "auto" : "local",
             enabled: true,
         };
-        this.isFunnelTransport = (tmpHostConfig.type === "ssh" || getHostAdapter().getRemoteName() !== undefined);
-        const resolvedHostConfig = await getProxyForSerialPorts(tmpHostConfig);
+        const resolvedHostConfig = await this.resolveProxy(tmpHostConfig);
         if (!resolvedHostConfig) {
             this.logError(`Failed to resolve proxy configuration for serial ports. Serial ports will not be available.`);
             return;
         }
-        const initDone = await this.connectToProxy(resolvedHostConfig);
+        const conn = this.getOrCreateConnection(resolvedHostConfig);
+        const initDone = await conn.connect(resolvedHostConfig);
         if (!initDone) {
             this.logError(`Failed to connect to proxy for serial ports. Serial ports will not be available.`);
             return;
         }
-        this.availablePorts = this.getCurrentSerialPorts();
         const serialConfig = args.serialConfig;
         for (const portConfig of serialConfig.ports) {
             try {
-                const pInfo = await this.openSerialPort(portConfig) as SerialPortInfo | null;
+                const pInfo = await conn.openSerialPort(portConfig) as SerialPortInfo | null;
                 if (!pInfo) {
-                    const sel = SerialPortManager.portSel(portConfig);
+                    const sel = portSel(portConfig);
                     this.logError(`Failed to open serial port ${sel}`);
                     continue;
                 }
-                this.createOrUpdateViewWithSerialInfo(pInfo, portConfig, true);
+                this.createOrUpdateViewWithSerialInfo(conn, pInfo, portConfig, true);
             } catch (e: any) {
                 const sel = portConfig.path ?? portConfig.serial ?? `vid=${portConfig.vid} pid=${portConfig.pid}`;
                 this.logError(`Failed to open serial port ${sel}: ${e.message}`);
@@ -608,35 +813,29 @@ export class SerialPortManager {
      * Create or update a view with the given serial port information.
      * @param pInfo - Return value of `openSerialPort()`
      * @param portConfig - Configuration of the serial port originally specification from launch.json
-     * @param log_file - Path to the log file
-     * @param input_mode - Input mode for the serial port
+     * @param isNew - Whether this is a fresh open (vs. a reconnect)
      */
-    private createOrUpdateViewWithSerialInfo(pInfo: SerialPortInfo, portConfig: SerialParams, isNew: boolean = false) {
+    private createOrUpdateViewWithSerialInfo(conn: ProxyConnection, pInfo: SerialPortInfo, portConfig: SerialParams, isNew: boolean = false) {
         const log_file = portConfig.log_file;
         const input_mode = portConfig.input_mode;
-        const actualPath: string = SerialPortManager.resolvedPath(pInfo) || portConfig.path || '';
-        this.serialPortConfigs.set(actualPath, { ...portConfig, path: actualPath });
-        let server: ProxySerialTcpServer | undefined;
+        const actualPath: string = resolvedPath(pInfo) || portConfig.path || '';
+        const key = this.ckey(conn, actualPath);
+        this.serialPortConfigs.set(key, { ...portConfig, path: actualPath });
+        let tcpPort = pInfo.tcp_port || 0;
         if (pInfo.channel_id) {
-            server = this.clientStreams.get(pInfo.channel_id);
-            if (server) {
-                server.setChannelId(pInfo.channel_id);
-            } else {
-                server = new ProxySerialTcpServer("127.0.0.1", actualPath, pInfo.channel_id, this);
-                this.clientStreams.set(pInfo.channel_id, server);
-            }
+            const server = conn.ensureStreamServer("127.0.0.1", actualPath, pInfo.channel_id);
+            tcpPort = pInfo.tcp_port || server.getPort() || 0;
         }
-        const tcpPort = pInfo.tcp_port || server?.getPort() || 0;
-        let view = this.serialPortViews.get(actualPath);
+        let view = this.serialPortViews.get(key);
         if (view) {
             view.setTcpPort(tcpPort);
             view.setLogFile(log_file ?? undefined);
             view.setInputMode(input_mode ?? undefined);
         } else {
             view = getHostAdapter().createSerialPortView(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
-            this.serialPortViews.set(actualPath, view);
+            this.serialPortViews.set(key, view);
             view.emitter.on("close", () => {
-                this.removeSerialPortTab(actualPath);
+                this.removeSerialPortTab(conn, actualPath);
             });
         }
         if (isNew) {
@@ -647,50 +846,56 @@ export class SerialPortManager {
     }
 
     public getSerialPortTab(path: string): ISerialPortView | null {
-        return this.serialPortViews.get(path) || null;
+        // No connection context here (unused externally today). Match on the
+        // path component of the composite key so it works across connections.
+        const suffix = `${KEY_SEP}${path}`;
+        for (const [key, view] of this.serialPortViews) {
+            if (key.endsWith(suffix)) {
+                return view;
+            }
+        }
+        return null;
     }
 
-    public removeSerialPortTab(path: string, skipSerialClose: boolean = false, keepConfig: boolean = false) {
-        const timer = this.reconnectTimers.get(path);
+    public removeSerialPortTab(conn: ProxyConnection, path: string, skipSerialClose: boolean = false, keepConfig: boolean = false) {
+        const key = this.ckey(conn, path);
+        const timer = this.reconnectTimers.get(key);
         if (timer) {
             clearTimeout(timer);
-            this.reconnectTimers.delete(path);
+            this.reconnectTimers.delete(key);
         }
         if (!keepConfig) {
-            this.serialPortConfigs.delete(path);
+            this.serialPortConfigs.delete(key);
         }
-        const view = this.serialPortViews.get(path);
-        if (view) {
-            this.serialPortViews.delete(path);
+        if (this.serialPortViews.get(key)) {
+            this.serialPortViews.delete(key);
         }
-        // Now that the view is removed, we can also close the serial port on the proxy side if it's still open. This is important to free up resources on the proxy side and also to allow the user to reopen the same port later if they want to.
-        const portInfo = this.getSerialPortInfo(path);
-        if (portInfo) {
-            if (!skipSerialClose) {
-                const controlMsg: ControlMessage = {
-                    seq: this.nextSeq++,
-                    method: "serial.close",
-                    params: { path },
-                };
-                this.sendControlCommand(controlMsg).catch((err) => {
-                    this.logError(`Failed to close serial port ${path}: ${err}`);
-                });
-            }
-            this.openPorts = this.openPorts.filter((p) => SerialPortManager.resolvedPath(p) !== path);
-            for (const [stream_id, server] of this.clientStreams.entries()) {
-                if (server.getPort() === portInfo?.tcp_port) {
-                    server.dataFromServer(Buffer.from(""), stream_id);   // Send an empty message to trigger any cleanup on the server side
-                    this.clientStreams.delete(stream_id);
-                    break;
-                }
-            }
+        // Now that the view is removed, we can also close the serial port on the proxy side if it's still open. This is
+        // important to free up resources on the proxy side and also to allow the user to reopen the same port later.
+        conn.closePort(path, skipSerialClose);
+    }
+
+    /**
+     * Tear down all connections and pending reconnect timers. Not wired into a
+     * session lifecycle yet (proxies persist across sessions by design), but the
+     * primitive exists so tests — and any future reset — can release sockets and
+     * the per-connection heartbeat intervals.
+     */
+    public dispose() {
+        for (const timer of this.reconnectTimers.values()) {
+            clearTimeout(timer);
         }
+        this.reconnectTimers.clear();
+        for (const conn of this.connections.values()) {
+            conn.dispose();
+        }
+        this.connections.clear();
     }
 }
 
 /**
  * Represents an active connection to a serial port on the proxy side, including the TCP server that the proxy helper creates for it and the socket
- * connection to that server. The SerialPortManager keeps track of these and routes data between the terminal and the socket.
+ * connection to that server. The owning {@link ProxyConnection} keeps track of these and routes data between the terminal and the socket.
  *
  * For non remote ports, the proxy server is already listening on a TCP port and we just need to connect to it and forward data. For remote ports, the proxy server creates a new TCP server for each port and reports the port number back to us, so we need to create a new socket connection for each port and manage those separately.
  */
@@ -699,11 +904,11 @@ export class ProxySerialTcpServer {
     private address: net.AddressInfo | null = null;
     private socket: net.Socket | null = null;
     private msgBuffer: string = "";
-    constructor(private host: string, private portPath: string, private stream_id: number, private manager: SerialPortManager) {
+    constructor(private host: string, private portPath: string, private stream_id: number, private conn: ProxyConnection) {
         this.server = net.createServer((socket) => {
-            this.manager.logInfo(`Client connected to TCP server for serial port ${portPath} (stream_id ${stream_id})`);
+            this.conn.logInfo(`Client connected to TCP server for serial port ${portPath} (stream_id ${stream_id})`);
             if (this.socket) {
-                this.manager.logError(`A client is already connected to TCP server for serial port ${portPath} (stream_id ${stream_id}). Closing previous connection.`);
+                this.conn.logError(`A client is already connected to TCP server for serial port ${portPath} (stream_id ${stream_id}). Closing previous connection.`);
                 this.socket.destroy();
             }
             this.socket = socket;
@@ -715,17 +920,17 @@ export class ProxySerialTcpServer {
                 this.dataFromTerminal(data);
             });
             socket.on("error", (err) => {
-                this.manager.logError(`Error on TCP server for serial port ${portPath} (stream_id ${stream_id}): ${err.message}`);
+                this.conn.logError(`Error on TCP server for serial port ${portPath} (stream_id ${stream_id}): ${err.message}`);
             });
             socket.on("close", () => {
-                this.manager.logInfo(`Client disconnected from TCP server for serial port ${portPath} (stream_id ${stream_id})`);
+                this.conn.logInfo(`Client disconnected from TCP server for serial port ${portPath} (stream_id ${stream_id})`);
             });
         });
         this.server.listen(0, this.host, () => {
             const address = this.server.address();
             if (address && typeof address === "object") {
                 this.address = address;
-                this.manager.logInfo(`TCP server for serial port ${portPath} (stream_id ${stream_id}) listening on ${this.address.address}:${this.address.port}`);
+                this.conn.logInfo(`TCP server for serial port ${portPath} (stream_id ${stream_id}) listening on ${this.address.address}:${this.address.port}`);
             }
         });
     }
@@ -742,8 +947,17 @@ export class ProxySerialTcpServer {
         return this.address ? this.address.port : 0;
     }
 
+    /** Close the local TCP listener and any connected client. */
+    close() {
+        if (this.socket) {
+            this.socket.destroy();
+            this.socket = null;
+        }
+        this.server.close();
+    }
+
     dataFromTerminal(data: Buffer) {
-        this.manager.sendCommandBytes(this.stream_id, data);
+        this.conn.sendCommandBytes(this.stream_id, data);
     }
 
     dataFromServer(data: Buffer, stream_id: number) {
@@ -752,7 +966,7 @@ export class ProxySerialTcpServer {
         } else {
             this.msgBuffer += data.toString();
             if (this.msgBuffer.length > 100 * 1024  /* 100KB */) {
-                this.manager.logError(`Message buffer overflow for serial port ${this.portPath} (stream_id ${stream_id})`);
+                this.conn.logError(`Message buffer overflow for serial port ${this.portPath} (stream_id ${stream_id})`);
                 this.msgBuffer = this.msgBuffer.slice(this.msgBuffer.length - 50 * 1024);   // Keep only the last 50KB to avoid unbounded growth
             }
         }

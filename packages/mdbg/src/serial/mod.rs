@@ -137,7 +137,7 @@ pub fn resolve_port(
 
     match matched.len() {
         0 => anyhow::bail!(
-            "no serial port matched selector (path={:?} serial={:?} vid={:?} pid={:?} match={:?})",
+            "no serial port matched selector (path={:?} serial={:?} vid={:?} pid={:?} desc={:?})",
             path,
             serial,
             vid,
@@ -166,7 +166,10 @@ pub fn resolve_port(
 pub fn list_available(filter_callout: bool) -> Vec<AvailablePort> {
     let ports = list_all();
     if filter_callout && cfg!(target_os = "macos") {
-        ports.into_iter().filter(|p| !p.path.starts_with("/dev/tty.")).collect()
+        ports
+            .into_iter()
+            .filter(|p| !p.path.starts_with("/dev/tty."))
+            .collect()
     } else {
         ports
     }
@@ -174,11 +177,19 @@ pub fn list_available(filter_callout: bool) -> Vec<AvailablePort> {
 
 fn list_all() -> Vec<AvailablePort> {
     #[cfg(target_os = "linux")]
-    { enumerate_linux::list() }
+    {
+        enumerate_linux::list()
+    }
     #[cfg(target_os = "windows")]
-    { enumerate_windows::list() }
+    {
+        enumerate_windows::list()
+    }
     #[cfg(target_os = "macos")]
-    { enumerate_macos::list() }
+    {
+        enumerate_macos::list()
+    }
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    { Vec::new() }
+    {
+        Vec::new()
+    }
 }

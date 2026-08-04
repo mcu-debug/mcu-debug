@@ -440,7 +440,27 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
 
 let currentPolicy: ProxyLaunchPolicy | null = null;
 let proxyLaunchResults: ProxyLaunchResults | null = null;
-let currentHostConfig: HostConfig | null = null;
+
+// Resolved hostConfigs cached per proxy request, keyed by the fields that
+// determine WHICH proxy a request resolves to (type, ssh host/port/token,
+// wslProxyPort, remote name). This replaces the single `currentHostConfig`
+// global whose one slot short-circuited *every* getProxyForSerialPorts call to
+// whatever was resolved first — the bug that made local + remote serial ports
+// impossible at the same time. A changed request produces a different key →
+// cache miss → re-resolve, so launch.json edits invalidate automatically.
+const resolvedHostConfigs = new Map<string, HostConfig>();
+
+function proxyRequestFingerprint(hc: HostConfig): string {
+    return JSON.stringify({
+        type: hc.type ?? null,
+        sshHost: hc.sshHost ?? null,
+        sshProxyPort: hc.sshProxyPort ?? null,
+        token: hc.token ?? null,
+        sshProxyServerPath: hc.sshProxyServerPath ?? null,
+        wslProxyPort: hc.wslProxyPort ?? null,
+        remoteName: getHostAdapter().getRemoteName() ?? null,
+    });
+}
 export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy): Promise<ProxyLaunchResults | null> {
     if (policy.mode.includes("wsl") || policy.mode === "local") {
         try {
@@ -546,7 +566,6 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 hostConfig.pvtProxyBindHost = "127.0.0.1";
                 hostConfig.pvtProxyPort = sshTunnelConfig?.localPort as number;
                 hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
-                currentHostConfig = { ...hostConfig };
             } catch (error) {
                 throw error;
             }
@@ -602,14 +621,12 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             hostConfig.pvtProxyHost = "127.0.0.1"; // DA connects to its loopback on the remote host
             hostConfig.pvtProxyPort = proxyLaunchResults.reverseTunnelPort;
             hostConfig.pvtProxyToken = proxyLaunchResults.token as string;
-            currentHostConfig = { ...hostConfig };
         } else if (resolvedMode === "local") {
             // This is allowed only in two circumstances:
             // 1) the user explicitly sets type: "local" -- and this is meant for testing. Not production
             // 2) for serial ports that are locallly accessible and there is no existing hostConfig alread existing
             try {
                 await handleLocalHostConfig(hostConfig);
-                currentHostConfig = { ...hostConfig };
             } catch (error) {
                 getHostAdapter().debugMessage(`Failed to start local proxy server: ${error}`);
                 getHostAdapter().showError(`Failed to start local proxy server: ${error}. Cannot use local proxy configuration.`);
@@ -688,7 +705,6 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             }
             hostConfig.pvtProxyPort = proxyLaunchResults!.serverPort as number;
             hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
-            currentHostConfig = { ...hostConfig };
         } else {
             getHostAdapter().showWarning(
                 `Unknown hostConfig.type "${hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`,
@@ -701,27 +717,45 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
 }
 
 /**
- * 
- * @param hostConfig - used when no previous result exists
- * @returns Either a cached and resolved HostConfig or a newly resolved one
- * 
- * Note: Do not cached this result at a higher level. Things can change underneath us (e.g. the user can change the
- * config via launch.json, or the SSH tunnel can drop) and we want to be resilient to that. The proxyLaunchResults are
- * cached and will be validated for staleness on each call, so we can rely on that for correctness.
+ * Resolve the proxy a set of serial ports should use, caching the result per
+ * request so distinct requests (e.g. a local request and an ssh request) each
+ * resolve independently instead of clobbering one shared slot.
+ *
+ * @param hostConfig - the desired host configuration; when omitted, defaults to
+ *   "auto" on a remote workspace and "local" otherwise.
+ * @returns the resolved HostConfig (with pvtProxy* fields populated), or null if
+ *   the request does not resolve to a usable proxy.
+ *
+ * Do not cache the return value at a higher level: the SSH tunnel can drop or
+ * the proxy can restart under the same identity. The cache here is keyed by the
+ * request fingerprint, so a launch.json edit changes the key and forces a fresh
+ * resolution; connection-level failures surface via ProxyConnection.connect().
  */
 export async function getProxyForSerialPorts(hostConfig: HostConfig | undefined): Promise<HostConfig | null> {
-    if (!proxyLaunchResults) {
-        try {
-            if (!hostConfig) {
-                hostConfig = {
-                    type: getHostAdapter().getRemoteName() ? "auto" : "local",
-                    enabled: true,
-                }
-            }
-            await handleHostConfig(hostConfig, () => { });
-        } catch (error) {
-            return null;
-        }
+    if (!hostConfig) {
+        hostConfig = {
+            type: getHostAdapter().getRemoteName() ? "auto" : "local",
+            enabled: true,
+        };
     }
-    return currentHostConfig;
+    const key = proxyRequestFingerprint(hostConfig);
+    const cached = resolvedHostConfigs.get(key);
+    if (cached) {
+        return cached;
+    }
+    try {
+        // handleHostConfig resolves the proxy (reusing an already-running tunnel
+        // / proxy where it can) and mutates hostConfig in place with pvtProxy*.
+        await handleHostConfig(hostConfig, () => { });
+    } catch (error) {
+        return null;
+    }
+    if (!hostConfig.pvtProxyPort) {
+        // Did not resolve to a proxy (e.g. auto-local: purely local, nothing to
+        // launch). Don't cache — a later, better-specified request can retry.
+        return null;
+    }
+    const resolved = { ...hostConfig };
+    resolvedHostConfigs.set(key, resolved);
+    return resolved;
 }

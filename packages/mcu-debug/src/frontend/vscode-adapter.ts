@@ -81,6 +81,20 @@ export class VscodeAdapter implements IHostAdapter {
         MCUDebugChannel.debugMessage(msg);
     }
 
+    debugConsoleMessage(msg: string): void {
+        if (vscode.debug.activeDebugConsole) {
+            vscode.debug.activeDebugConsole.appendLine(msg);
+        }
+        this.debugMessage(msg);
+    }
+
+    debugConsoleError(msg: string): void {
+        if (vscode.debug.activeDebugConsole) {
+            vscode.debug.activeDebugConsole.appendLine("Error:" + msg);
+        }
+        this.debugMessage("Error:" + msg);
+    }
+
     getRemoteName(): string | undefined {
         return vscode.env.remoteName;
     }

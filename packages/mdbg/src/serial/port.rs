@@ -181,6 +181,8 @@ pub struct SerialParams {
     /// Direct device path or glob (e.g. `/dev/ttyUSB0`, `/dev/tty.usbserial-*`, `COM3`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// USB Description string (e.g. `"STM32 STLink"`). Used for user-friendly display and matching.
+    pub description: Option<String>,
     /// USB serial number. Stable across reconnects and reboots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
@@ -436,7 +438,13 @@ impl PortHandle {
         if !history.is_empty() {
             let _ = tx.try_send(history);
         }
-        clients.insert(id, ClientSink { tx, drain: Some(drain) });
+        clients.insert(
+            id,
+            ClientSink {
+                tx,
+                drain: Some(drain),
+            },
+        );
     }
 
     /// Remove a previously registered client.

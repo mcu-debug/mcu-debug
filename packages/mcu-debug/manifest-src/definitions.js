@@ -521,6 +521,10 @@ module.exports = {
                         type: "string",
                         description: "Serial device path or glob. E.g. /dev/ttyUSB0, /dev/tty.usbserial-*, COM3, /dev/serial/by-id/usb-*. Optional if serial or vid/pid are specified.",
                     },
+                    description: {
+                        type: "string",
+                        description: "Optional description of the serial port, used for selection, along with path, serial, or vid/pid. E.g. 'Debug UART', 'Console', 'Trace'.",
+                    },
                     serial: {
                         type: "string",
                         description: "USB serial number. Stable across reconnects and reboots — preferred in lab environments with multiple boards of the same type.",

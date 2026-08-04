@@ -18,6 +18,10 @@ export type SerialParams = {
      */
     path?: string | null;
     /**
+     * USB Description string (e.g. `"STM32 STLink"`). Used for user-friendly display and matching.
+     */
+    description: string | null;
+    /**
      * USB serial number. Stable across reconnects and reboots.
      */
     serial?: string | null;
