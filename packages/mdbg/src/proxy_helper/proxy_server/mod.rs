@@ -376,6 +376,38 @@ impl ProxyServer {
                                     }
                                     Err(e) => {
                                         eprintln!("Failed to parse control message: {}", e);
+                                        // Reply with an error keyed by the request's seq so the
+                                        // client fails fast with an actionable message instead of
+                                        // blocking until its own request timeout. `seq` is a
+                                        // top-level field on ControlMessage (the method/params are
+                                        // `#[serde(flatten)]`ed), so it still parses even when the
+                                        // variant does not — e.g. an enum value with the wrong case.
+                                        #[derive(serde::Deserialize)]
+                                        struct SeqOnly {
+                                            seq: u64,
+                                        }
+                                        match serde_json::from_str::<SeqOnly>(&msg_str) {
+                                            Ok(SeqOnly { seq }) => {
+                                                ControlResponse::error(
+                                                    seq,
+                                                    format!("failed to parse control request: {e}"),
+                                                )
+                                                .send(&self.writer)
+                                                .unwrap_or_else(|send_err| {
+                                                    eprintln!(
+                                                        "Failed to send parse-error response: {}",
+                                                        send_err
+                                                    );
+                                                });
+                                            }
+                                            Err(_) => {
+                                                // No usable seq to correlate a reply — the client
+                                                // will fall back to its own timeout for this one.
+                                                eprintln!(
+                                                    "Unparseable control message had no usable seq; no error reply sent"
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             } else {

@@ -122,6 +122,11 @@ pub struct ProxyArgs {
     #[arg(long = "shutdown", default_value_t = false)]
     pub shutdown: bool,
 
+    /// With `--shutdown`, drain EVERY running instance instead of just the one
+    /// resolved from `--instance`. No effect on `--status` (already all-inclusive).
+    #[arg(long = "all", default_value_t = false)]
+    pub all: bool,
+
     /// Internal: marks the re-spawned, detached daemon so it runs the proxy
     /// instead of launching another daemon. Not for direct use.
     #[arg(long = "daemonized", hide = true, default_value_t = false)]
@@ -229,6 +234,16 @@ pub(crate) fn trigger_graceful_shutdown(stop_flag: &AtomicBool, local_port: u16)
 /// a proxy. A missing/unreachable endpoint is reported as `{ok:false,...}`, not
 /// an error, so scripts get a stable JSON shape.
 fn run_admin_client(args: &ProxyArgs) -> Result<()> {
+    // `--status` is instance-agnostic: it surveys every running instance so you
+    // never have to remember which instance name you used. `--shutdown` targets
+    // the single resolved instance unless `--all` fans out to every instance.
+    if args.status {
+        return print_status_all();
+    }
+    if args.shutdown && args.all {
+        return shutdown_all();
+    }
+
     let instance = singleton::Instance::resolve(&args.instance)?;
     let print = |resp: &admin::AdminResponse| -> Result<()> {
         println!("{}", serde_json::to_string_pretty(resp)?);
@@ -252,7 +267,7 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
     };
     let req = admin::AdminRequest {
         v: 1,
-        cmd: if args.shutdown { "shutdown" } else { "status" }.to_string(),
+        cmd: "shutdown".to_string(),
         token: endpoint.token.clone(),
         graceful: true,
         version: String::new(),
@@ -261,6 +276,103 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
         Ok(resp) => print(&resp),
         Err(e) => print(&not_running(format!("proxy not reachable ({e:#})"))),
     }
+}
+
+/// `--status` output: every running instance, with a `count` (which replaces the
+/// old boolean `ok` — a per-instance concept that had no meaning across many).
+#[derive(serde::Serialize)]
+struct StatusReport {
+    /// Number of instances that answered a status query (i.e. are actually running).
+    count: usize,
+    instances: Vec<admin::StatusInfo>,
+}
+
+/// Enumerate every instance dir, query the ones that are alive, and print them
+/// all as one report. Stale endpoint files (crashed proxies) refuse the
+/// connection immediately and are skipped, so the list reflects reality.
+fn print_status_all() -> Result<()> {
+    let mut instances = Vec::new();
+    for inst in singleton::list_instances()? {
+        let endpoint = match singleton::read_endpoint(&inst.endpoint_path) {
+            Ok(ep) => ep,
+            Err(_) => continue, // no discovery anchor → not running
+        };
+        let req = admin::AdminRequest {
+            v: 1,
+            cmd: "status".to_string(),
+            token: endpoint.token.clone(),
+            graceful: true,
+            version: String::new(),
+        };
+        if let Ok(resp) = admin::query(&endpoint, &req) {
+            if let Some(status) = resp.status {
+                instances.push(status);
+            }
+        }
+    }
+    let report = StatusReport {
+        count: instances.len(),
+        instances,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+/// One instance's graceful-shutdown outcome in a `--shutdown --all` report.
+#[derive(serde::Serialize)]
+struct ShutdownResult {
+    instance: String,
+    /// Whether the running proxy accepted the drain request.
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// `--shutdown --all` output: one entry per instance we asked to drain.
+#[derive(serde::Serialize)]
+struct ShutdownReport {
+    /// Number of running instances a drain request was sent to.
+    count: usize,
+    results: Vec<ShutdownResult>,
+}
+
+/// Ask every running instance to drain (graceful shutdown). Like `--status`,
+/// this is best-effort per instance: a stale endpoint from a dead proxy refuses
+/// fast and is skipped (nothing to shut down). The drain is graceful — each
+/// proxy stops accepting and exits once its active sessions finish.
+fn shutdown_all() -> Result<()> {
+    let mut results = Vec::new();
+    for inst in singleton::list_instances()? {
+        let endpoint = match singleton::read_endpoint(&inst.endpoint_path) {
+            Ok(ep) => ep,
+            Err(_) => continue, // no discovery anchor → not running
+        };
+        let req = admin::AdminRequest {
+            v: 1,
+            cmd: "shutdown".to_string(),
+            token: endpoint.token.clone(),
+            graceful: true,
+            version: String::new(),
+        };
+        // Only report instances that actually answered — a dead proxy's stale
+        // endpoint refuses the connection and needs no shutdown.
+        if let Ok(resp) = admin::query(&endpoint, &req) {
+            results.push(ShutdownResult {
+                instance: inst.name,
+                ok: resp.ok,
+                message: resp.message,
+                error: resp.error,
+            });
+        }
+    }
+    let report = ShutdownReport {
+        count: results.len(),
+        results,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 /// Acquire the per-(user, instance) singleton lock, or defer to a running proxy.
@@ -695,6 +807,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
                     idle_timeout: args.idle_timeout,
                     status: false,
                     shutdown: false,
+                    all: false,
                     daemonized: true,
                 };
                 let registry_clone = Arc::clone(&serial_registry);
@@ -793,6 +906,7 @@ mod tests {
             idle_timeout: 300,
             status: false,
             shutdown: false,
+            all: false,
             daemonized: false,
         };
 

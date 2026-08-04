@@ -57,17 +57,7 @@ impl Instance {
         {
             bail!("invalid proxy instance name: {name:?}");
         }
-        // Base is `~/.mcu-debug/proxy` by default; `MDBG_PROXY_STATE_DIR`
-        // overrides it (containers where $HOME isn't writable, tests, custom
-        // deployments).
-        let base = match std::env::var_os("MDBG_PROXY_STATE_DIR") {
-            Some(p) => PathBuf::from(p),
-            None => dirs::home_dir()
-                .context("could not determine the home directory")?
-                .join(".mcu-debug")
-                .join("proxy"),
-        };
-        let dir = base.join(name);
+        let dir = proxy_base()?.join(name);
         Ok(Instance {
             name: name.to_string(),
             lock_path: dir.join("proxy.lock"),
@@ -81,6 +71,47 @@ impl Instance {
         std::fs::create_dir_all(&self.dir)
             .with_context(|| format!("could not create proxy state dir {}", self.dir.display()))
     }
+}
+
+/// The base directory holding every per-instance state dir: `MDBG_PROXY_STATE_DIR`
+/// if set, else `~/.mcu-debug/proxy`. Instance dirs live directly under it.
+pub fn proxy_base() -> Result<PathBuf> {
+    // Overridden in containers where $HOME isn't writable, tests, and custom
+    // deployments.
+    Ok(match std::env::var_os("MDBG_PROXY_STATE_DIR") {
+        Some(p) => PathBuf::from(p),
+        None => dirs::home_dir()
+            .context("could not determine the home directory")?
+            .join(".mcu-debug")
+            .join("proxy"),
+    })
+}
+
+/// Every instance that currently has a state directory under the proxy base,
+/// sorted by name. A directory existing does NOT imply a live proxy — it may
+/// hold a stale `endpoint.json` from a crashed process, so callers must check
+/// liveness (e.g. by querying the endpoint). Empty when the base doesn't exist.
+pub fn list_instances() -> Result<Vec<Instance>> {
+    let base = proxy_base()?;
+    let entries = match std::fs::read_dir(&base) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(e).with_context(|| format!("could not read proxy base {}", base.display()))
+        }
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if let Some(name) = entry.file_name().to_str() {
+                if let Ok(inst) = Instance::resolve(name) {
+                    out.push(inst);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
 }
 
 /// The discovery anchor written by the proxy that owns the lock.

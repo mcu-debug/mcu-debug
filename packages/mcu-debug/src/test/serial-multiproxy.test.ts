@@ -33,6 +33,8 @@ interface CreatedView {
 class StubHostAdapter {
     createdViews: CreatedView[] = [];
     quickPickItems: any[] = [];
+    debugConsoleMessage(_m: string) { }
+    debugConsoleError(_m: string) { }
     debugMessage(_m: string) { }
     showError(_m: string) { }
     showWarning(_m: string) { }
@@ -64,13 +66,15 @@ function avail(path: string, description = ""): any {
 
 function makeParams(path: string): any {
     // transport is overwritten by ProxyConnection; the rest are just placeholders.
+    // Enum values match the ts-rs generated unions (lowercase) — the real proxy
+    // rejects "One"/"None" as unknown variants.
     return {
         path,
         baud_rate: 115200,
         data_bits: 8,
-        stop_bits: "One",
-        parity: "None",
-        flow_control: "None",
+        stop_bits: "one",
+        parity: "none",
+        flow_control: "none",
         transport: "direct",
     };
 }
@@ -329,8 +333,8 @@ test("portError is delegated with the originating connection", async (t) => {
 });
 
 test("funnel stream-id space is per-connection (channel 100 on A ≠ channel 100 on B)", async (t) => {
-    const fakeA = new FakeProxy([]);
-    const fakeB = new FakeProxy([]);
+    const fakeA = new FakeProxy([avail("/dev/x")]);
+    const fakeB = new FakeProxy([avail("/dev/x")]);
     await fakeA.listen();
     await fakeB.listen();
 
