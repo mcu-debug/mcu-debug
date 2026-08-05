@@ -95,31 +95,29 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
                 reject(new Error(`Failed to run 'cmd.exe ${args.join(" ")}': ${err}`));
             }
         });
+
+        // Resolve as soon as the discovery line shows up on stdout — do NOT wait
+        // for the child to exit. `child` here is `cmd.exe`, launched via WSL's
+        // Windows interop; its exit status has to be relayed back across that
+        // boundary and can lag well behind the data actually being written to
+        // the pipe, so gating on "exit" risks timing out even though the proxy
+        // is already up and the discovery line already arrived.
         child.stdout?.on("data", (d) => {
             stdout += d.toString();
-        });
-        child.stderr?.on("data", (d) => {
-            stderr += d.toString();
-        });
-
-        // The foreground launcher prints exactly one discovery JSON line and
-        // exits, so parse on exit.
-        child.on("exit", (code) => {
             if (settled) {
                 return;
             }
-            settled = true;
-            clearTimeout(timer);
             const line = stdout
                 .split(/\r?\n/)
                 .map((s) => s.trim())
                 .find((s) => s.startsWith("{"));
             if (!line) {
-                reject(new Error(`Proxy did not report readiness (exit ${code}). stdout=<${stdout}> stderr=<${stderr}>`));
                 return;
             }
             try {
                 const discovery = JSON.parse(line);
+                settled = true;
+                clearTimeout(timer);
                 resolve({
                     policy: proxyPolicy,
                     consoleMessages: [],
@@ -129,9 +127,23 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
                     // first launcher's token, not our NONCE.
                     token: discovery.token ?? NONCE,
                 });
-            } catch (err) {
-                reject(new Error(`Bad discovery JSON '${line}': ${err}`));
+            } catch {
+                // Partial JSON — wait for more stdout.
             }
+        });
+        child.stderr?.on("data", (d) => {
+            stderr += d.toString();
+        });
+
+        // If the launcher dies before ever printing a discovery line, surface
+        // that as a failure instead of waiting out the full timeout.
+        child.on("exit", (code) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            reject(new Error(`Proxy did not report readiness (exit ${code}). stdout=<${stdout}> stderr=<${stderr}>`));
         });
     });
 }
@@ -174,6 +186,12 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
                 resolve(null);
             }
         }, LAUNCH_TIMEOUT_MS);
+        const clear = () => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = undefined;
+            }
+        };
 
         const cmd = command.replace(prefix, "");
         const nonce = (Math.random() + Math.random()).toString(36).substring(2, 15).padEnd(16, '0');
@@ -201,17 +219,30 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
             logger.error(`Failed to run 'code ${spawnArgs.join(" ")}': ${err}`);
             resolve(null);
         });
-        child.on("exit", async (code) => {
-            if (code !== 0) {
+        // Don't gate the results-file poll on the child's "exit" event: `code`
+        // resolves on Windows via WSL interop, and that exit status has to be
+        // relayed back across the interop boundary — it can lag well behind the
+        // actual work (the URL handler runs inside the already-running VS Code
+        // instance, independent of this short-lived `code` CLI invocation), so
+        // waiting for it risks timing out even after the extension has already
+        // written the results file. Poll for the results file immediately and
+        // independently; only treat a nonzero exit as an early failure signal.
+        child.on("exit", (code) => {
+            if (code !== 0 && !resolved) {
                 resolved = true;
+                clear();
                 logger.error(`'code ${spawnArgs.join(" ")}' exited with code ${code}`);
                 resolve(null);
-                return;
             }
+        });
+        (async () => {
             while (!resolved) {
                 if (!fs.existsSync(params.resultsFile)) {
                     await new Promise(resolve => setTimeout(resolve, 500));
                     continue
+                }
+                if (resolved) {
+                    return;
                 }
                 clear();
                 resolved = true;
@@ -236,14 +267,7 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
                     resolve(null);
                 }
             }
-        });
-        // Clear the timeout if the child process exits or errors
-        const clear = () => {
-            if (timer) {
-                clearTimeout(timer);
-                timer = undefined;
-            }
-        };
+        })();
     });
 }
 
