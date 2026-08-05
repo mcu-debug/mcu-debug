@@ -33,7 +33,7 @@ import { ServerConsoleLog } from "../adapter/server-console-log";
 import { logger } from '../common/cli-logger';
 import { VscodeOutputChannelTransport } from './vscode-transport';
 import { isVarRefGlobalOrStatic } from "../adapter/var-scopes";
-import { getWSLNetworkingMode, ProvisioningResults, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
+import { getWSLNetworkingMode, ProvisioningResults, ProxyProvisionRequest, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
 import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
 import { AICockpit } from "./ai-cockpit";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
@@ -118,7 +118,9 @@ export class MCUDebugExtension {
 
         vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.VARIABLE_DISPLAY_MODE}`, config.get(MCUDebugKeys.VARIABLE_DISPLAY_MODE, true));
 
+        const uriHandler = new MyUriHandler(this.context);
         context.subscriptions.push(
+            vscode.window.registerUriHandler(uriHandler),
             vscode.commands.registerCommand("mcu-debug.varHexModeTurnOn", this.variablesNaturalMode.bind(this, false)),
             vscode.commands.registerCommand("mcu-debug.varHexModeTurnOff", this.variablesNaturalMode.bind(this, true)),
             vscode.commands.registerCommand("mcu-debug.toggleVariableHexFormat", this.toggleVariablesHexMode.bind(this)),
@@ -938,6 +940,110 @@ exec "${fSlashPath}" "\$@"
         } catch (error) {
             MCUDebugChannel.debugMessage(`Error writing provisioning results to file: ${error}`);
         }
+    }
+}
+
+function logTmp(msg: string) {
+    const tmpFile = os.tmpdir() + "/mcu-debug-uri.log";
+    const currentTime = new Date().toLocaleString();
+    fs.appendFileSync(tmpFile, currentTime + ": " + msg + "\n");
+}
+
+class MyUriHandler implements vscode.UriHandler {
+    constructor(private context: vscode.ExtensionContext) {
+        // Nothing to do in the constructor for now
+    }
+    // This function will get run when something redirects to VS Code
+    // with your extension id as the authority.
+    handleUri(uri: vscode.Uri): vscode.ProviderResult<void> {
+        // vscode.window.showInformationMessage(`[mcu-debug] handleUri called with URI: ${uri.toString()}`);
+        logTmp(`[mcu-debug] handleUri called with URI: ${uri.toString()}`);
+        if ((uri.path === "/provision") && uri.query) {
+            // The request is one JSON param (`req`) so every field keeps its real
+            // type — `v` is a number, `args` is an array. (URLSearchParams would
+            // otherwise String()-coerce everything to strings / "[object Object]".)
+            // A `const` (via IIFE) so the narrowing below survives into the async
+            // `.then()` closures where `obj` is used.
+            const obj: ProxyProvisionRequest | undefined = (() => {
+                const raw = new URLSearchParams(uri.query).get("req");
+                if (!raw) {
+                    return undefined;
+                }
+                try {
+                    return JSON.parse(raw) as ProxyProvisionRequest;
+                } catch {
+                    return undefined; // malformed JSON → treat as no valid request
+                }
+            })();
+            logTmp(`[mcu-debug] handleUri parsed request: ${JSON.stringify(obj)}`);
+            if (obj && obj.v === 1 && obj.api && obj.resultsFile) {
+                let error = "";
+                const cmd = `mcu-debug-proxy.${obj.api}`;
+                try {
+                    const args = obj.args || [];
+                    vscode.commands.executeCommand(cmd, ...args).then((res) => {
+                        if (res) {
+                            this.depositProvision(obj, "", res);
+                        } else {
+                            this.depositProvision(obj, `No result returned from command: ${cmd}`, undefined);
+                        }
+                    })
+                } catch (e) {
+                    this.depositProvision(obj, cmd + ': Error: ' + (e ? e.toString() : "unknown error"), undefined);
+                }
+            }
+        }
+    }
+
+    private depositProvision(obj: ProxyProvisionRequest, error: string, result: any) {
+        const results: ProvisioningResults = {
+            resultsFile: obj.resultsFile,
+            error: error,
+            result: result,
+        };
+        logTmp(`[mcu-debug] handleUri parsed request: ${JSON.stringify(obj)}`);
+        vscode.commands.executeCommand("mcu-debug.depositProvision", results).then((reason) => {
+            logTmp(`[mcu-debug] depositProvision completed: ${reason}`);
+        });
+    }
+
+    public validateAuthority(authority: string): Promise<boolean> {
+        return new Promise<boolean>(async (resolve) => {
+            let resolved = false;
+            let permissions = this.context.globalState.get<string[]>("mcu-debug-proxy.authorizedAuthorities", []);
+            if (permissions.includes(authority)) {
+                return resolve(true);
+            }
+            const timer = setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    return resolve(false);
+                }
+            }, 30_000); // 30 seconds timeout for user to respond
+            const choices = ["Deny", "Allow", "Always Allow"];
+            const result = await vscode.window.showWarningMessage(
+                `The authority "${authority}" is requesting access to the MCU Debug Proxy. Do you want to allow it?`,
+                { modal: true },
+                ...choices
+            );
+
+            if (result === choices[1] || result === choices[2]) {
+                if (result === choices[2]) {
+                    permissions.push(authority);
+                    this.context.globalState.update("mcu-debug-proxy.authorizedAuthorities", permissions);
+                }
+                if (!resolved) {
+                    clearTimeout(timer);
+                    resolved = true;
+                    return resolve(true);
+                }
+            }
+            if (!resolved) {
+                clearTimeout(timer);
+                resolved = true;
+                return resolve(false);
+            }
+        });
     }
 }
 

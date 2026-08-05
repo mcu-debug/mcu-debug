@@ -30,7 +30,8 @@
   "activationEvents": [
     "onDebugResolve:cortex-debug",
     "onDebugResolve:mcu-debug",
-    "onStartupFinished"
+    "onStartupFinished",
+    "onUri"
   ],
   "categories": [
     "Debuggers"

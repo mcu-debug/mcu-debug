@@ -303,6 +303,12 @@ export function activate(context: vscode.ExtensionContext) {
     };
 }
 
+function logTmp(msg: string) {
+    const tmpFile = os.tmpdir() + "/mcu-debug-proxy-uri.log";
+    const currentTime = new Date().toLocaleString();
+    fs.appendFileSync(tmpFile, currentTime + ": " + msg + "\n");
+}
+
 class MyUriHandler implements vscode.UriHandler {
     constructor(private context: vscode.ExtensionContext) {
         // Nothing to do in the constructor for now
@@ -310,6 +316,8 @@ class MyUriHandler implements vscode.UriHandler {
     // This function will get run when something redirects to VS Code
     // with your extension id as the authority.
     handleUri(uri: vscode.Uri): vscode.ProviderResult<void> {
+        vscode.window.showInformationMessage(`[mcu-debug-proxy] handleUri called with URI: ${uri.toString()}`);
+        logTmp(`[mcu-debug-proxy] handleUri called with URI: ${uri.toString()}`);
         if ((uri.path === "/provision") && uri.query) {
             // The request is one JSON param (`req`) so every field keeps its real
             // type — `v` is a number, `args` is an array. (URLSearchParams would
@@ -327,6 +335,7 @@ class MyUriHandler implements vscode.UriHandler {
                     return undefined; // malformed JSON → treat as no valid request
                 }
             })();
+            logTmp(`[mcu-debug-proxy] handleUri parsed request: ${JSON.stringify(obj)}`);
             if (obj && obj.v === 1 && obj.api && obj.resultsFile) {
                 let error = "";
                 let result: any = undefined;
@@ -394,7 +403,10 @@ class MyUriHandler implements vscode.UriHandler {
             error: error,
             result: result,
         };
-        vscode.commands.executeCommand("mcu-debug.depositProvision", results);
+        logTmp(`[mcu-debug-proxy] handleUri parsed request: ${JSON.stringify(obj)}`);
+        vscode.commands.executeCommand("mcu-debug.depositProvision", results).then((reason) => {
+            logTmp(`[mcu-debug-proxy] depositProvision completed: ${reason}`);
+        });
     }
 
     public validateAuthority(authority: string): Promise<boolean> {
