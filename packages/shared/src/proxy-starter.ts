@@ -203,7 +203,7 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
             args: args_,
             resultsFile: os.tmpdir() + `/mcu-debug-${nonce}.json`,      // nonce embedded in filename to avoid collisions
         };
-        const url = new URL(`vscode://mcu-debug.mcu-debug-proxy/provision`);
+        const url = new URL(`vscode://mcu-debug.mcu-debug/provision`);
         // Serialize the whole request as ONE JSON param. Handing the typed object
         // straight to URLSearchParams would String()-coerce every value — turning
         // `v: 1` into "1" and, worse, the `args` array into "[object Object]".
@@ -211,10 +211,7 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
         url.search = new URLSearchParams({ req: JSON.stringify(params) }).toString();
         try { fs.unlinkSync(params.resultsFile); } catch { }
 
-        // --reuse-window: without it, `code --open-url` can land in a fresh
-        // window instead of the caller's existing one, and every one of these
-        // short-lived internal RPC calls leaves that window sitting around.
-        const spawnArgs = ["--reuse-window", "--open-url", url.toString()];
+        const spawnArgs = ["--open-url", url.toString()];
         const child = spawn("code", spawnArgs, { stdio: "inherit", windowsHide: true });
         let resolved = false;
         child.on("error", (err) => {
