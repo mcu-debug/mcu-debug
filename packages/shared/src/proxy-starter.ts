@@ -210,7 +210,10 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
         url.search = new URLSearchParams({ req: JSON.stringify(params) }).toString();
         try { fs.unlinkSync(params.resultsFile); } catch { }
 
-        const spawnArgs = ["--open-url", url.toString()];
+        // --reuse-window: without it, `code --open-url` can land in a fresh
+        // window instead of the caller's existing one, and every one of these
+        // short-lived internal RPC calls leaves that window sitting around.
+        const spawnArgs = ["--reuse-window", "--open-url", url.toString()];
         const child = spawn("code", spawnArgs, { stdio: "inherit", windowsHide: true });
         let resolved = false;
         child.on("error", (err) => {

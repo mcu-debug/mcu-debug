@@ -310,8 +310,6 @@ class MyUriHandler implements vscode.UriHandler {
     // This function will get run when something redirects to VS Code
     // with your extension id as the authority.
     handleUri(uri: vscode.Uri): vscode.ProviderResult<void> {
-        // TODO: remove after testing
-        vscode.window.showInformationMessage(uri.toString());
         if ((uri.path === "/provision") && uri.query) {
             // The request is one JSON param (`req`) so every field keeps its real
             // type — `v` is a number, `args` is an array. (URLSearchParams would
