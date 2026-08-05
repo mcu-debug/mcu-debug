@@ -943,8 +943,9 @@ exec "${fSlashPath}" "\$@"
 
 export async function activate(context: vscode.ExtensionContext) {
     try {
+        console.log("[mcu-debug] Activating mcu-debug extension");
         if (context.extensionMode === vscode.ExtensionMode.Development) {
-            console.log("[mcu-debug-proxy] Running in development mode");
+            console.log("[mcu-debug] Running in development mode");
             setDevelopmentModeEnvVars();
         }
         setHostAdapter(new VscodeAdapter(context));
