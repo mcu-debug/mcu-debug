@@ -2,7 +2,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const readline = require("readline");
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 
 // 1. Verify Node.js Version
 const nodeMajorVersion = parseInt(process.versions.node.split(".")[0], 10);
@@ -14,9 +14,20 @@ if (nodeMajorVersion < 22) {
 const binDir = path.resolve(os.homedir(), ".mcu-debug", "bin");
 const delimiter = process.platform === "win32" ? ";" : ":";
 const pathEnv = process.env.PATH || "";
+const expandWindowsVars = (input) => input.replace(/%([^%]+)%/g, (_, key) => process.env[key] || "");
+const normalizePathEntry = (inputPath) => {
+    if (!inputPath) {
+        return "";
+    }
+    const trimmed = inputPath.trim().replace(/^"|"$/g, "");
+    const expanded = process.platform === "win32" ? expandWindowsVars(trimmed) : trimmed;
+    return path.resolve(expanded).toLowerCase();
+};
+
+const normalizedBinDir = normalizePathEntry(binDir);
 const isInPath = pathEnv.split(delimiter).some((p) => {
     try {
-        return path.resolve(p).toLowerCase() === binDir.toLowerCase();
+        return normalizePathEntry(p) === normalizedBinDir;
     } catch {
         return false;
     }
@@ -36,6 +47,10 @@ console.log("====================================================");
 console.log(`Wrapper scripts directory: ${binDir}\n`);
 
 if (process.platform === "win32") {
+    const runPowerShell = (command) => {
+        return execFileSync("powershell.exe", ["-NoProfile", "-Command", command], { encoding: "utf8" }).trim();
+    };
+
     // Windows PATH configuration
     console.log("We will add the mcu-debug bin folder to your Windows User Environment variables.");
     const rl = readline.createInterface({
@@ -46,13 +61,15 @@ if (process.platform === "win32") {
         if (answer.toLowerCase() === "y") {
             try {
                 const psGetCmd = `[Environment]::GetEnvironmentVariable('PATH', 'User')`;
-                const userPath = execSync(`powershell -NoProfile -Command "${psGetCmd}"`, { stdio: "pipe" }).toString().trim();
+                const userPath = runPowerShell(psGetCmd);
+                const userPathEntries = userPath.split(";").map((p) => normalizePathEntry(p));
+                const alreadyPresent = userPathEntries.includes(normalizedBinDir);
 
-                if (!userPath.toLowerCase().includes(binDir.toLowerCase())) {
+                if (!alreadyPresent) {
                     const separator = userPath.length > 0 && !userPath.endsWith(";") ? ";" : "";
                     const newPath = userPath + separator + binDir;
                     const psSetCmd = `[Environment]::SetEnvironmentVariable('PATH', '${newPath.replace(/'/g, "''")}', 'User')`;
-                    execSync(`powershell -NoProfile -Command "${psSetCmd}"`);
+                    runPowerShell(psSetCmd);
                     console.log("\n[SUCCESS] Added mcu-debug bin directory to your Windows User PATH!");
                     console.log("IMPORTANT: Please restart your terminal (or VS Code) for the PATH changes to take effect.\n");
                 } else {
