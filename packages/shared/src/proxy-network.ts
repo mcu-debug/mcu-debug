@@ -141,3 +141,18 @@ export function computeProxyLaunchPolicy(mode: ProxyNetworkMode): ProxyLaunchPol
         reason: "Fallback policy",
     };
 }
+
+export function getWslGatewayIp(): string | null {
+    try {
+        if (process.env.WSL_DISTRO_NAME) {
+            const output = child_process.execSync('wsl.exe -d Ubuntu -- ip route').toString();
+            const match = output.match(/default via ([\d.]+) dev/);
+            if (match) {
+                return match[1];
+            }
+        }
+    } catch (error) {
+        throw new Error(`Failed to get WSL gateway IP: ${error}`);
+    }
+    return null;
+}

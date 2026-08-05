@@ -19,7 +19,7 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { spawn } from "child_process";
-import { computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy } from "@mcu-debug/shared";
+import { computeProxyLaunchPolicy, getWslGatewayIp, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
 import { tcpReachable } from "./utils";
@@ -637,7 +637,8 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             let resolvedProxyHost = policy.proxyHostForDA;
 
             if (resolvedMode === "auto-wsl" && resolvedProxyHost === "<wsl-gateway-ip>") {
-                resolvedProxyHost = (await resolveWslGatewayHost()) || "127.0.0.1";
+                // resolvedProxyHost = (await resolveWslGatewayHost()) || "127.0.0.1";
+                resolvedProxyHost = getWslGatewayIp() || "127.0.0.1";
             }
 
             const isWslNatMode = resolvedMode === "auto-wsl" && resolvedProxyHost !== "127.0.0.1";

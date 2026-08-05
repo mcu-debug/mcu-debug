@@ -118,7 +118,7 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
                 const discovery = JSON.parse(line);
                 settled = true;
                 clearTimeout(timer);
-                resolve({
+                const ret: ProxyLaunchResults = {
                     policy: proxyPolicy,
                     consoleMessages: [],
                     consoleErrors: [],
@@ -126,7 +126,8 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
                     // The token the RUNNING proxy reports — on reuse this is the
                     // first launcher's token, not our NONCE.
                     token: discovery.token ?? NONCE,
-                });
+                };
+                resolve(ret);
             } catch {
                 // Partial JSON — wait for more stdout.
             }
