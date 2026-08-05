@@ -24,7 +24,7 @@ Debugging when the probe is physically connected to a remote server — for exam
   "hostConfig": {
     "enabled": true,
     "type": "ssh",
-    "host": "lab-server"
+    "host": "lab-server"  // Or use IP address
   }
 }
 ```

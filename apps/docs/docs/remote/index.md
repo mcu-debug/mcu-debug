@@ -8,7 +8,7 @@ title: Remote Debugging
 mcu-debug supports debugging scenarios where the debug probe is on a different machine or OS from your editor. This is common in Windows+WSL development workflows, Docker dev containers, and shared lab server setups.
 
 :::note
-For terminology, for example with WSL or Docker, `"remote"` is your host machine/OS and `"local"` is your WSL/Docker/Guest-VM environment. Local is where your files and build artifacts live. Remove is also where your debug probe is physically attached to.
+For terminology, for example with WSL or Docker, `"remote"` is your host machine/OS and `"local"` is your WSL/Docker/Guest-VM environment. Local is where your files and build artifacts live. Remote is also where your debug probe is physically attached to.
 :::
 
 ## Supported Topologies
@@ -57,12 +57,12 @@ Note that the gdb-server will be started on the remote server where the debug pr
 
 :::note
 - **The full path name to the gdb-server on the remote machine is needed** The `serverpath` in launch.json is needed because the remote server is not running in VSCode and does not have access to any VSCode settings.
-- `serverpath` is not needed if the server executable is installed globally and accessible via `$PATH` env. variable
+- `serverpath` is not needed if the server executable is installed globally and accessible via `$PATH` env. variable. You can also use VSCode workspace (or global) settings for your specific gdb-server path
 - Any files that the gdb-server needs need to be specified in terms of path-names on the remote
-- In openocd case, the `searchDir` needs to be in terms of the remote paths.
+- In openocd case, the `searchDir` needs to be in terms of the remote paths
 :::
 
-To this end, we provide a way to synchronize files between the two machines. Any paths relaive to the your launch.json `cwd` can be specified in the `syncFiles` and they will be copied to a temporary directory on the remote. Note that this is not meant to transport large amounts of data. It is currently limited to 20 files and no single file can exceed 10 MB. This file sizes have a very large impact on startup performance and our transport mechanism is not optimized for high throughput.
+To this end, we provide a way to synchronize files between the two machines. Any paths relative to the your launch.json `cwd` can be specified in the `syncFiles` and they will be copied to a temporary directory on the remote. Note that this is not meant to transport large amounts of data. It is currently limited to 20 files and no single file can exceed 10 MB. This file sizes have a very large impact on startup performance and our transport mechanism is not optimized for high throughput.
 
 The following is a complex example of `syncFiles` because there is quite a bit that is non-standard.
 
@@ -77,13 +77,13 @@ The following is a complex example of `syncFiles` because there is quite a bit t
       // In this case, we are loading via openocd. Not a normal flow but this is an example of how things
       {"local": "build/last_config/mtb-example-hal-hello-world.hex"}
   ],
-  // Note how the hex file is reference in openocd launch commands
-  "overrideLaunchCommands": [
-      "monitor program {build/last_config/mtb-example-hal-hello-world.hex}",
-      "monitor reset run",
-      "monitor psoc6 reset_halt sysresetreq"
-  ],
-}
+},
+// Note how the hex file is reference in openocd launch commands
+"overrideLaunchCommands": [
+  "monitor program {build/last_config/mtb-example-hal-hello-world.hex}",
+  "monitor reset run",
+  "monitor psoc6 reset_halt sysresetreq"
+],
 ```
 
 ### Rules for `syncFiles`
@@ -135,6 +135,6 @@ The debug adapter (running in VS Code or the CLI) connects to the proxy rather t
 
 ## Prerequisites
 
-- The `mcu-debug proxy` binary must be available on the host machine (the machine where the probe is connected)
+- The `mcu-debug proxy` binary must be available on the host machine (the machine where the probe is connected). Using the `mcu-debug-proxy` extension in VSCode makes this simple. Note: We create version independent scripts in `~/.mcu-debug/bin` directory to access the proxy server but you have to load the `mcu-debug` extension into VSCode atleast once per version. It is totally transparent using the `mcu-debug proxy` extension
 - For SSH mode: SSH access to the host (key-based authentication recommended)
-- For WSL and Docker: the proxy may need to be started manually if not using VS Code Remote extensions
+- For WSL and Docker: the proxy may need to be started manually if not using VS Code Remote extensions. See [SSH configuration](ssh.md)
