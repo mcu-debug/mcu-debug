@@ -75,7 +75,7 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
     }
 
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
-        const child = spawn("cmd.exe", args, { stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn("cmd.exe", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
         let stdout = "";
         let stderr = "";
         let settled = false;
@@ -193,7 +193,7 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
         try { fs.unlinkSync(params.resultsFile); } catch { }
 
         const spawnArgs = ["--open-url", url.toString()];
-        const child = spawn("code", spawnArgs, { stdio: "inherit" });
+        const child = spawn("code", spawnArgs, { stdio: "inherit", windowsHide: true });
         let resolved = false;
         child.on("error", (err) => {
             resolved = true;
@@ -291,10 +291,14 @@ export function startProxyServerWithPolicy(
         // This spawned process is the SHORT-LIVED foreground launcher. `mdbg proxy`
         // re-spawns a detached daemon itself, forwards the daemon's discovery line
         // to this process's stdout, and exits (owner OR reuse — both exit now).
-        // So we do NOT need detached / windowsHide / unref here — survival is the
-        // daemon's job. We just read the forwarded discovery line.
+        // So we do NOT need detached / unref here — survival is the daemon's job.
+        // We just read the forwarded discovery line. windowsHide IS still needed,
+        // though: it's unrelated to lifetime — without it, Windows pops a console
+        // window for this console-subsystem child since the extension host has
+        // none of its own to attach it to.
         const proxyProcess = spawn(proxyPath, args, {
             stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
         });
 
         proxyProcess.on("error", (err) => {

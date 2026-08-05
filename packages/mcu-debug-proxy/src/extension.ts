@@ -157,7 +157,7 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
             resolve(remotePort);
         };
 
-        const proc = spawn("ssh", args);
+        const proc = spawn("ssh", args, { windowsHide: true });
 
         proc.on("error", (err) => {
             fail(`SSH reverse tunnel process error (${cmdString}): ${err.message}`);

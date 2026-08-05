@@ -76,7 +76,7 @@ async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs =
     const sshHost = hostConfig.sshHost!;
     return new Promise<string>((resolve, reject) => {
         getHostAdapter().debugMessage(`Running SSH command on ${sshHost}: ${command}`);
-        const proc = spawn("ssh", [sshHost, command]);
+        const proc = spawn("ssh", [sshHost, command], { windowsHide: true });
         let stdout = "";
         let stderr = "";
 
@@ -140,7 +140,7 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
     await new Promise<void>((resolve, reject) => {
         const args = [sshHost, `mkdir -p ~/.mcu-debug/bin && rm -f ${REMOTE_HELPER_PATH} && cat > ${REMOTE_HELPER_PATH} && chmod +x ${REMOTE_HELPER_PATH}`];
         getHostAdapter().debugMessage(`Deploying helper binary ${localBinary} to ${sshHost}: ssh ${args.join(" ")}`);
-        const proc = spawn("ssh", args);
+        const proc = spawn("ssh", args, { windowsHide: true });
 
         let stderr = "";
         proc.stderr?.on("data", (d: Buffer) => {
@@ -203,7 +203,7 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
 
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
         getHostAdapter().debugMessage(`Starting SSH proxy server on ${sshHost} with command: ssh ${sshHost} ${remoteCmd}`);
-        const proc = spawn("ssh", [sshHost, remoteCmd]);
+        const proc = spawn("ssh", [sshHost, remoteCmd], { windowsHide: true });
         let settled = false;
         let stdoutBuf = "";
 
@@ -355,7 +355,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
 
     return new Promise<void>((resolve, reject) => {
         getHostAdapter().debugMessage(`Starting SSH tunnel with command: ${cmdString}`);
-        const proc = spawn("ssh", args);
+        const proc = spawn("ssh", args, { windowsHide: true });
         let settled = false;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         let pollHandle: ReturnType<typeof setTimeout> | undefined;

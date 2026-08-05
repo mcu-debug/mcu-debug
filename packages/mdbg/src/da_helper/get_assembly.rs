@@ -357,10 +357,10 @@ pub fn get_disasm_from_objdump(
     elf_path: &str,
 ) -> Result<AssemblyListing, Box<dyn Error>> {
     // Spawn objdump and stream its stdout to avoid allocating the whole output
-    let mut child = Command::new(objdump_path)
-        .args(["-Cd", elf_path])
-        .stdout(Stdio::piped())
-        .spawn()?;
+    let mut command = Command::new(objdump_path);
+    command.args(["-Cd", elf_path]).stdout(Stdio::piped());
+    crate::common::process::suppress_console_window(&mut command);
+    let mut child = command.spawn()?;
 
     let stdout = child
         .stdout

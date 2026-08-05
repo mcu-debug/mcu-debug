@@ -141,7 +141,8 @@ export class GDBServerSession extends EventEmitter {
                 this.process = child_process.spawn(executable, args, {
                     cwd: serverCwd,
                     env: env,
-                    stdio: "pipe"
+                    stdio: "pipe",
+                    windowsHide: true
                 });
             }
 

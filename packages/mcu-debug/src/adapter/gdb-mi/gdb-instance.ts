@@ -109,7 +109,7 @@ export class GdbInstance extends EventEmitter {
             }
 
             ServerConsoleLog(`Starting GDB: ${gdbPath} ${gdbArgs.join(" ")}, cwd=${cwd}`);
-            const child = spawn(gdbPath, gdbArgs, { cwd: cwd, env: process.env });
+            const child = spawn(gdbPath, gdbArgs, { cwd: cwd, env: process.env, windowsHide: true });
             this.process = child;
             this.pid = child.pid!;
             ServerConsoleLog(`Started GDB: PID=${this.pid}`);

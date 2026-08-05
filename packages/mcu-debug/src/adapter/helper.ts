@@ -152,6 +152,7 @@ export class DebugHelper {
             this.session.handleMsg(Stdout, `Starting helper process: ${helperPath} ${[...args, ...executables].join(" ")}`);
             this.helperProcess = spawn(helperPath, [...args, ...executables], {
                 stdio: ["pipe", "pipe", "pipe"],
+                windowsHide: true,
             });
 
             if (!this.helperProcess.stdout || !this.helperProcess.stderr) {

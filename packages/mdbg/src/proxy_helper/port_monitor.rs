@@ -116,10 +116,10 @@ pub fn wait_for_ports(
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
 
-            let output = std::process::Command::new(&prog)
-                .args(&args)
-                .output()
-                .map_err(|e| {
+            let mut command = std::process::Command::new(&prog);
+            command.args(&args);
+            crate::common::process::suppress_console_window(&mut command);
+            let output = command.output().map_err(|e| {
                     eprintln!("Failed to execute port waiter command '{}': {}", prog, e);
                     e
                 });

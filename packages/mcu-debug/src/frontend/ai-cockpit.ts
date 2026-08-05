@@ -259,7 +259,8 @@ export class AICockpit extends ManagedTab {
         this.process = ChildProcess.spawn(cmd, args, {
             cwd: root.uri.fsPath,
             env: process.env,
-            stdio: "pipe"
+            stdio: "pipe",
+            windowsHide: true
         });
         this.process.on("spawn", () => {
             this.setState({ kind: 'active' });

@@ -423,7 +423,7 @@ export class SymbolTable {
                 continue;
             }
             try {
-                const spawnOpts = { cwd: this.gdbSession.args.cwd };
+                const spawnOpts = { cwd: this.gdbSession.args.cwd, windowsHide: true };
                 // eslint-disable-next-line no-constant-condition
                 if (true) {
                     const objdumpStart = Date.now();

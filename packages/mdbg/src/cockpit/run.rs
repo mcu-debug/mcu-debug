@@ -41,8 +41,10 @@ pub fn get_node_program() -> String {
 /// Check that `node` is on PATH and is at least v`MIN_NODE_MAJOR`.
 fn check_node_version() -> Result<()> {
     let node_program = get_node_program();
-    let output = std::process::Command::new(node_program)
-        .arg("--version")
+    let mut command = std::process::Command::new(node_program);
+    command.arg("--version");
+    crate::common::process::suppress_console_window(&mut command);
+    let output = command
         .output()
         .with_context(|| format!("node is not installed or not on PATH — install Node.js v{MIN_NODE_MAJOR}+ from https://nodejs.org"))?;
 

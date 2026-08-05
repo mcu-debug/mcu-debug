@@ -47,12 +47,15 @@ pub fn find_node_cli() -> Option<PathBuf> {
 /// the log file or the socket interface to get the tagged stream data.
 pub fn spawn_node_cli_tui(cli_js: &PathBuf, extra_args: &[String]) -> Result<Child> {
     let node_program = get_node_program();
-    Command::new(node_program)
+    let mut command = Command::new(node_program);
+    command
         .arg(cli_js)
         .args(extra_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::common::process::suppress_console_window(&mut command);
+    command
         .spawn()
         .with_context(|| format!("failed to spawn node {}", cli_js.display()))
 }
@@ -63,12 +66,15 @@ pub fn spawn_node_cli_tui(cli_js: &PathBuf, extra_args: &[String]) -> Result<Chi
 /// agent reading our stdout) receives the tagged stream directly.
 pub fn spawn_node_cli_headless(cli_js: &PathBuf, extra_args: &[String]) -> Result<Child> {
     let node_program = get_node_program();
-    Command::new(node_program)
+    let mut command = Command::new(node_program);
+    command
         .arg(cli_js)
         .args(extra_args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    crate::common::process::suppress_console_window(&mut command);
+    command
         .spawn()
         .with_context(|| format!("failed to spawn node {}", cli_js.display()))
 }

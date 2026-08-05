@@ -266,14 +266,15 @@ impl ProxyServer {
                 .map(|p| (p.stream_id, p.port))
                 .collect();
             let dir = self.server_cwd.clone();
-            let child = match Command::new(server_path)
+            let mut command = Command::new(server_path);
+            command
                 .args(server_args)
                 .envs(server_env.as_ref().unwrap_or(&HashMap::new()))
                 .current_dir(dir)
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-            {
+                .stderr(std::process::Stdio::piped());
+            crate::common::process::suppress_console_window(&mut command);
+            let child = match command.spawn() {
                 Ok(child) => child,
                 Err(e) => {
                     eprintln!("Failed to launch gdb-server: {}", e);
