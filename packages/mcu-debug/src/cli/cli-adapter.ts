@@ -10,6 +10,7 @@ import { GraphConfiguration } from "../common/swo/common";
 import JSONC from 'jsonc-simple-parser';
 import { CLISerialPortView } from './cli-serial';
 import { ProxyLaunchPolicy, proxyServerCommand } from '@mcu-debug/shared';
+import { handleHostConfig } from '../common/proxy';
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
 // Return values match VS Code's remoteName strings so resolveProxyNetworkMode() works unchanged.
@@ -109,7 +110,7 @@ export class CliAdapter implements IHostAdapter {
         // No-op in CLI
     }
     handleHostConfig(hostConfig: HostConfig | undefined, onDelete: () => void): Promise<void> {
-        return Promise.resolve();
+        return handleHostConfig(hostConfig, onDelete);
     }
     getWorkspaceFilePath(): string | undefined {
         return undefined;

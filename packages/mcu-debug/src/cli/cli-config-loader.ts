@@ -254,6 +254,12 @@ export class CliConfigProvider extends McuDebugConfigurationProviderBase {
             this.logger.error("Error in resolveDebugConfiguration: " + (error instanceof Error ? error.message : String(error)));
             return undefined;
         }
+        try {
+            config = (await super.resolveDebugConfigurationWithSubstitutedVariables(folder, config)) as ConfigurationArguments;
+        } catch (error) {
+            this.logger.error("Error in resolveDebugConfigurationWithSubstitutedVariables: " + (error instanceof Error ? error.message : String(error)));
+            return undefined;
+        }
         if (!config) {
             this.logger.error("resolveDebugConfiguration returned undefined.");
             return undefined;

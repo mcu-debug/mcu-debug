@@ -67,8 +67,16 @@ export class ProxyClient extends EventEmitter {
         }
         const networkMode = this.args.hostConfig.pvtNetworkMode || this.args.hostConfig.type;
         const remoteHost = this.args.hostConfig.pvtProxyHost || "127.0.0.1";
-        const remotePort = this.args.hostConfig.pvtProxyPort || 4567;
-        const token = this.args.hostConfig.token || this.args.hostConfig.pvtProxyToken || "adis-ababa";
+        const remotePort = this.args.hostConfig.pvtProxyPort;
+        const token = this.args.hostConfig.token || this.args.hostConfig.pvtProxyToken;
+        if (!remotePort) {
+            this.logError(`Bug? Proxy port is not specified in hostConfig.pvtProxyPort`);
+            return false;
+        }
+        if (!token) {
+            this.logError(`Bug? Proxy token is not specified in hostConfig.token or hostConfig.pvtProxyToken`);
+            return false;
+        }
         this.logInfo(`Starting proxy client with network mode: ${networkMode}, remote host: ${remoteHost}, remote port: ${remotePort}, token: ${token}`);
         try {
             if (!(await this.connectToProxy(remoteHost, remotePort))) {
@@ -320,13 +328,6 @@ export class ProxyClient extends EventEmitter {
                 socket.destroy();
                 resolve(false);
             });
-            /*
-            socket.once("timeout", () => {
-                socket.destroy();
-                resolve(false);
-            });
-            socket.setTimeout(1000);
-            */
             socket.connect(port, host);
             socket.on("data", (data: Buffer) => {
                 this.handleProxyData(data);
@@ -337,21 +338,6 @@ export class ProxyClient extends EventEmitter {
                 this.socket = null;
             });
         });
-    }
-
-    private async waitForProxyReady(host: string, port: number, timeoutMs: number, retryDelayMs: number): Promise<boolean> {
-        const deadline = Date.now() + timeoutMs;
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2));
-        while (true) {
-            if (await this.connectToProxy(host, port)) {
-                return true;
-            }
-            if (Date.now() > deadline) {
-                return false;
-            }
-            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-        }
-        return false;
     }
 
     private streamStrToPortInfo: Map<string, PortReservedInfo> = new Map();
