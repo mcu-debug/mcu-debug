@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from "child_process";
+import * as os from "os";
 import { EventEmitter } from "events";
 import { parseGdbMiOut } from "./mi-parser";
 import { GdbEventNames, GdbMiRecord, Stderr, Stdout, Console, GdbMiOutput } from "./mi-types";
@@ -67,7 +68,7 @@ export class GdbInstance extends EventEmitter {
         // software can cause significant delays in process startup, so we want to be tolerant of that as well.
         // One user measured 20 (+/- 2) seconds startup time for GDB on Windows with IT forced antivirus, which is
         // unfortunately not uncommon, other have reported > 10 secs
-        const maxSeconds = 60;
+        const maxSeconds = os.platform() === "win32" ? 120 : 20;
         const start = Date.now();
         let msgTime = start;
         this.startupTimer = setInterval(() => {

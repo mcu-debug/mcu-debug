@@ -158,8 +158,8 @@ export class ProxyConnection {
         }
         this.lastProxyInfo = newProxyInfo;
         const host = hostConfig.pvtProxyHost || "127.0.0.1";
-        const port = hostConfig.pvtProxyPort || 4567;
-        const token = hostConfig.token || hostConfig.pvtProxyToken || "adis-ababa";
+        const port = hostConfig.pvtProxyPort || -3;
+        const token = hostConfig.token || hostConfig.pvtProxyToken || "";
         if (this.socket && !this.socket.destroyed) {
             if (this.socket.remoteAddress === host && this.socket.remotePort === port && this.proxyInfo?.token === token) {
                 return Promise.resolve(true);
@@ -587,7 +587,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
      */
     private proxyKeyFor(hostConfig: HostConfig): ProxyKey {
         const host = hostConfig.pvtProxyHost || "127.0.0.1";
-        const port = hostConfig.pvtProxyPort || 4567;
+        const port = hostConfig.pvtProxyPort || -2;
         return `${host}:${port}`;
     }
 
@@ -709,13 +709,15 @@ export class SerialPortManager implements ProxyConnectionDelegate {
             enabled: true,
         }
         const resolvedHostConfig = await this.resolveProxy(tmpHostConfig);
-        if (resolvedHostConfig) {
+        if (resolvedHostConfig && resolvedHostConfig.pvtProxyPort && resolvedHostConfig.pvtProxyPort > 0) {
             const conn = this.getOrCreateConnection(resolvedHostConfig);
             if (!(await conn.connect(resolvedHostConfig))) {
                 this.logError(`Failed to connect to proxy for serial ports.`);
+                return [];
             }
         } else {
             this.logError(`Failed to resolve proxy configuration for serial ports.`);
+            return [];
         }
 
         // Aggregate across every live connection (local + any remotes) so the
@@ -782,7 +784,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
             enabled: true,
         };
         const resolvedHostConfig = await this.resolveProxy(tmpHostConfig);
-        if (!resolvedHostConfig) {
+        if (!resolvedHostConfig || !resolvedHostConfig.pvtProxyPort || resolvedHostConfig.pvtProxyPort <= 0) {
             this.logError(`Failed to resolve proxy configuration for serial ports. Serial ports will not be available.`);
             return;
         }
