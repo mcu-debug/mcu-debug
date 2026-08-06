@@ -22,18 +22,24 @@ export class LineSplitter {
                 break;
             }
             let index: number;
+            let isCRLF: boolean = false;
             if (indexLF >= 0 && indexCR >= 0) {
                 if (indexLF === indexCR + 1) {
-                    index = indexCR;
-                } else if (indexCR === indexLF + 1) {
                     index = indexLF;
+                    isCRLF = true;
+                } else if (indexCR === indexLF + 1) {
+                    index = indexCR;
+                    isCRLF = true;
                 } else {
                     index = Math.min(indexLF, indexCR);
                 }
             } else {
                 index = Math.max(indexLF, indexCR);
             }
-            const line = this.buffer.slice(0, index);
+            let line = this.buffer.slice(0, index);
+            if (isCRLF) {
+                line = line.slice(0, -2) + '\n';
+            }
             this.callback(line, this.prefix, false);
             this.buffer = this.buffer.slice(index + 1);
         }
