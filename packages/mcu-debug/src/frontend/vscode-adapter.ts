@@ -54,7 +54,7 @@ export class VscodeAdapter implements IHostAdapter {
     }
 
     getGdbServerConsolePort(): Promise<number> {
-        return Promise.resolve(GDBServerConsole.BackendPort);
+        return GDBServerConsole.getBackendPort();
     }
 
     getUsedPorts(): number[] {

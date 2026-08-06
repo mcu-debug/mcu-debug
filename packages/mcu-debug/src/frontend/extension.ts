@@ -1075,8 +1075,14 @@ export async function activate(context: vscode.ExtensionContext) {
     } catch (_e) {
         /* empty */
     }
+
     const ret = new MCUDebugExtension(context);
-    await ret.initialize();
+    try {
+        await ret.initialize();
+    } catch (e) {
+        console.error(e);
+        vscode.window.showErrorMessage(`mcu-debug: Extension initialization failed. Some features may not work. Error: ${e}`);
+    }
     return ret;
 }
 

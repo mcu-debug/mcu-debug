@@ -132,20 +132,21 @@ export class GDBServerConsoleInstance {
         GDBServerConsole.debugMsgStatic(this.terminal, msg);
     }
 }
-
 export class GDBServerConsole {
     protected toBackendServer: net.Server | null = null;
     protected toBackend: net.Socket | null = null;
     protected toBackendPort: number = -1;
     protected logFName = "";
     protected allConsoles: GDBServerConsoleInstance[] = [];
-    public static BackendPort: number = -1;
+    private static BackendPort: number = -1;
+    private static thisInstance: GDBServerConsole | null = null;
 
     constructor(
         public context: vscode.ExtensionContext,
         public logFileName = "",
     ) {
         this.createLogFile(logFileName);
+        GDBServerConsole.thisInstance = this;
     }
 
     public createLogFile(logFileName: string) {
@@ -197,29 +198,41 @@ export class GDBServerConsole {
     // Create a server for the GDBServer running in the adapter process. Any data
     // from the gdb-server (like OpenOCD) is sent here and sent to the terminal
     // and any usr input in the terminal is sent back (like semi-hosting)
+    private startServerPromise: Promise<void> | null = null;
     public startServer(): Promise<void> {
-        return new Promise((resolve, reject) => {
-            getAnyFreePort(56878)
-                .then((p) => {
-                    this.toBackendPort = p;
-                    const newServer = net.createServer(this.onBackendConnect.bind(this));
-                    newServer.listen(this.toBackendPort, "127.0.0.1", () => {
-                        this.toBackendServer = newServer;
-                        GDBServerConsole.BackendPort = this.toBackendPort;
-                        resolve();
-                    });
-                    newServer.on("error", (e) => {
-                        console.error(e);
-                        reject(e);
-                    });
-                    newServer.on("close", () => {
-                        this.toBackendServer = null;
-                    });
-                })
-                .catch((e) => {
+        if (this.startServerPromise) {
+            return this.startServerPromise;
+        }
+        this.startServerPromise = new Promise(async (resolve, reject) => {
+            try {
+                const p = await getAnyFreePort(56878);
+                this.toBackendPort = p;
+                const newServer = net.createServer(this.onBackendConnect.bind(this));
+                newServer.listen(this.toBackendPort, "127.0.0.1", () => {
+                    this.toBackendServer = newServer;
+                    GDBServerConsole.BackendPort = this.toBackendPort;
+                    resolve();
+                });
+                newServer.on("error", (e) => {
+                    console.error(e);
                     reject(e);
                 });
+                newServer.on("close", () => {
+                    this.toBackendServer = null;
+                });
+            } catch (e) {
+                reject(e);
+            }
         });
+        return this.startServerPromise;
+    }
+
+    public static async getBackendPort(): Promise<number> {
+        if (GDBServerConsole.thisInstance) {
+            await GDBServerConsole.thisInstance.startServer();
+            return GDBServerConsole.thisInstance.toBackendPort;
+        }
+        throw new Error("GDBServerConsole instance not initialized");
     }
 
     // The gdb-server running in the backend (debug adapter)
