@@ -72,7 +72,7 @@ export class LiveWatchMonitor extends EventEmitter {
         gdbCommands.push('interpreter-exec console "set remote interrupt-on-connect off"');
         gdbCommands.push(...this.mainSession.getServerConnectCommands());
         this.gdbInstance
-            .start(exe, args, process.cwd(), [], 10 * 1000, false)
+            .start(exe, args, process.cwd(), [], false)
             .then(() => {
                 this.emit("started");
                 this.handleMsg(Stdout, `Started GDB process ${exe} ${args.join(" ")}\n`);

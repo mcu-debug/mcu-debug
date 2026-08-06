@@ -90,14 +90,14 @@ export class GdbInstance extends EventEmitter {
         }, 250);
     }
 
-    start(gdbPath: string, gdbArgs: string[], cwd: string | undefined, init: string[], timeout: number = 250, checkVers = true): Promise<void> {
+    start(gdbPath: string, gdbArgs: string[], cwd: string | undefined, init: string[], checkVers = true): Promise<void> {
         this.gdbPath = gdbPath;
         this.gdbArgs = gdbArgs;
         return new Promise(async (resolve, reject) => {
             const doInitCmds = async () => {
                 for (const cmd of init) {
                     try {
-                        await this.sendCommand(cmd, timeout);
+                        await this.sendCommand(cmd);
                     } catch (e) {
                         throw new Error(`Failed to execute init command '${cmd}': ${e}`);
                     }
