@@ -1,5 +1,5 @@
-import { execSync, spawn } from "child_process";
-import { ProxyLaunchPolicy, ProxyLaunchResults } from "./proxy-network";
+import { execSync, spawn, spawnSync } from "child_process";
+import { openRemoteUri, ProxyLaunchPolicy, ProxyLaunchResults } from "./proxy-network";
 import { commandExists } from "./command-exists";
 import * as fs from "fs";
 import * as os from "os";
@@ -30,7 +30,7 @@ function generateNonce(length: number = 16): string {
     return result;
 }
 
-const LAUNCH_TIMEOUT_MS = 5_000;
+const LAUNCH_TIMEOUT_MS = 15_000;
 
 /**
  * Launch-or-reuse the singleton proxy on the Windows host from a WSL guest.
@@ -166,24 +166,56 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
 type ProxyCommandLogger = {
     error: (msg: string) => void;
 };
+
+export function startProxyServerFromWsl(proxyPolicy: ProxyLaunchPolicy, logger: ProxyCommandLogger = console): ProxyLaunchResults | null {
+    const MDBG_PROXY_INSTANCE = process.env["MDBG_PROXY_INSTANCE"] || "default";
+    const command = `%USERPROFILE%\\.mcu-debug\\bin\\mcu-debug.cmd`;
+    const args = ["/D", "/C", `${command} proxy --instance ${MDBG_PROXY_INSTANCE} --token ${NONCE}`];
+    if (proxyPolicy?.bindHost) {
+        args.push("--host", proxyPolicy.bindHost);
+    }
+    try {
+        const result = spawnSync("cmd.exe", args, { stdio: "pipe", windowsHide: true, encoding: "utf8" });
+        const discovery = JSON.parse(result.stdout);
+        if (!discovery || !discovery.port || typeof discovery.port !== "number") {
+            logger.error(`Failed to start proxy server from WSL: ${result.stderr}`);
+            return null;
+        }
+        const ret: ProxyLaunchResults = {
+            policy: proxyPolicy,
+            consoleMessages: [],
+            consoleErrors: [result.stderr],
+            serverPort: discovery.port,
+            token: discovery.token ?? NONCE,
+        };
+        return ret;
+    } catch (err) {
+        logger.error(`Failed to start proxy server from WSL: ${err}`);
+        return null;
+    }
+}
+
 export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogger = console, ...args_: unknown[]): Promise<T | null> {
     return new Promise((resolve) => {
+        let resolved = false;
+        const useExternalUriMethod = true; // set to false to use the old method of spawning code.exe with --open-url
         const prefix = "mcu-debug-proxy.";
         if (!command.startsWith(prefix)) {
             logger.error(`Invalid proxy command: ${command}`);
             resolve(null);
             return;
         }
-        if (!commandExists("code")) {
-            logger.error("VS Code command 'code' not found.");
-            resolve(null);
-            return;
+        if (!useExternalUriMethod) {
+            if (!commandExists("code")) {
+                logger.error("VS Code command 'code' not found.");
+                resolve(null);
+                return;
+            }
         }
-
         let timer: NodeJS.Timeout | undefined = setTimeout(() => {
             if (!resolved) {
                 resolved = true;
-                logger.error(`'code ${spawnArgs.join(" ")}' timed out after ${LAUNCH_TIMEOUT_MS}ms`);
+                logger.error(`'open url ${url.toString()}' timed out after ${LAUNCH_TIMEOUT_MS}ms`);
                 resolve(null);
             }
         }, LAUNCH_TIMEOUT_MS);
@@ -211,31 +243,45 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
         url.search = new URLSearchParams({ req: JSON.stringify(params) }).toString();
         try { fs.unlinkSync(params.resultsFile); } catch { }
 
-        const spawnArgs = ["--open-url", url.toString()];
-        const child = spawn("code", spawnArgs, { stdio: "inherit", windowsHide: true });
-        let resolved = false;
-        child.on("error", (err) => {
-            resolved = true;
-            clear();
-            logger.error(`Failed to run 'code ${spawnArgs.join(" ")}': ${err}`);
-            resolve(null);
-        });
-        // Don't gate the results-file poll on the child's "exit" event: `code`
-        // resolves on Windows via WSL interop, and that exit status has to be
-        // relayed back across the interop boundary — it can lag well behind the
-        // actual work (the URL handler runs inside the already-running VS Code
-        // instance, independent of this short-lived `code` CLI invocation), so
-        // waiting for it risks timing out even after the extension has already
-        // written the results file. Poll for the results file immediately and
-        // independently; only treat a nonzero exit as an early failure signal.
-        child.on("exit", (code) => {
-            if (code !== 0 && !resolved) {
+        if (!useExternalUriMethod) {
+            // --open-url does not work in WSL or Docker containers, so we spawn the VS Code CLI
+            // to open the URL instead. The extension will handle the URL and write the results
+            // to a temporary file. Also, code may not be installed in the PATH
+            const spawnArgs = ["--open-url", url.toString()];
+            const child = spawn("code", spawnArgs, { stdio: "inherit", windowsHide: true });
+            child.on("error", (err) => {
                 resolved = true;
                 clear();
-                logger.error(`'code ${spawnArgs.join(" ")}' exited with code ${code}`);
+                logger.error(`Failed to run 'code ${spawnArgs.join(" ")}': ${err}`);
+                resolve(null);
+            });
+            // Don't gate the results-file poll on the child's "exit" event: `code`
+            // resolves on Windows via WSL interop, and that exit status has to be
+            // relayed back across the interop boundary — it can lag well behind the
+            // actual work (the URL handler runs inside the already-running VS Code
+            // instance, independent of this short-lived `code` CLI invocation), so
+            // waiting for it risks timing out even after the extension has already
+            // written the results file. Poll for the results file immediately and
+            // independently; only treat a nonzero exit as an early failure signal.
+            child.on("exit", (code) => {
+                if (code !== 0 && !resolved) {
+                    resolved = true;
+                    clear();
+                    logger.error(`'code ${spawnArgs.join(" ")}' exited with code ${code}`);
+                    resolve(null);
+                }
+            });
+        } else {
+            try {
+                openRemoteUri(url.toString());
+            } catch (error) {
+                resolved = true;
+                clear();
+                logger.error(`Failed to open remote URI: ${error instanceof Error ? error.message : String(error)}`);
                 resolve(null);
             }
-        });
+        }
+
         (async () => {
             while (!resolved) {
                 if (!fs.existsSync(params.resultsFile)) {

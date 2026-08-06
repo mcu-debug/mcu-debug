@@ -9,7 +9,7 @@ import { logger } from "../common/cli-logger";
 import { GraphConfiguration } from "../common/swo/common";
 import JSONC from 'jsonc-simple-parser';
 import { CLISerialPortView } from './cli-serial';
-import { ProxyLaunchPolicy, proxyServerCommand } from '@mcu-debug/shared';
+import { ProxyLaunchPolicy, proxyServerCommand, startProxyServerFromWsl } from '@mcu-debug/shared';
 import { handleHostConfig } from '../common/proxy';
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
@@ -139,6 +139,15 @@ export class CliAdapter implements IHostAdapter {
     }
     executeProxyCommand<T>(command: string, ...args: unknown[]): Promise<T | null> {
         logger.debug(`Proxy command: ${command}`);
+        if (command === "mcu-debug-proxy.startProxyServer") {
+            const policy = args[0] as ProxyLaunchPolicy;
+            if (policy && policy.mode.includes("wsl")) {
+                const ret = startProxyServerFromWsl(policy, logger);
+                if (ret) {
+                    return Promise.resolve(ret as T | null);
+                }
+            }
+        }
         return proxyServerCommand(command, logger, ...args) as Promise<T | null>;
     }
     createSWORTTWebView(extensionPath: string, graphs: GraphConfiguration[]): ISWORTTView {

@@ -13,6 +13,8 @@
 // limitations under the License.
 
 import * as child_process from "child_process";
+import * as fs from "fs";
+import { exec } from "child_process";
 
 export type ProxyHostType = "auto" | "ssh" | "local";
 
@@ -155,4 +157,37 @@ export function getWslGatewayIp(): string | null {
         throw new Error(`Failed to get WSL gateway IP: ${error}`);
     }
     return null;
+}
+
+export function openRemoteUri(targetUri: string) {
+    // const isWsl = process.platform === 'linux' && fs.readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft');
+    const isWsl = !!process.env.WSL_DISTRO_NAME;
+    const isDocker = fs.existsSync('/.dockerenv');
+
+    // 1. Handle WSL (Direct host interop via cmd.exe)
+    if (isWsl) {
+        exec(`cmd.exe /c start "" "${targetUri}"`, (err) => {
+            if (err) throw new Error(`WSL cmd.exe launch failed: ${err.message}`);
+        });
+    }
+    // 2. Handle Docker Containers (Use terminal browser hook)
+    else if (isDocker) {
+        if (process.env.BROWSER) {
+            exec(`"${process.env.BROWSER}" "${targetUri}"`, (err) => {
+                if (err) throw new Error(`Docker browser forwarder failed: ${err.message}`);
+            });
+        } else {
+            throw new Error("Error: Docker container must run inside a VS Code Integrated Terminal to forward URLs.");
+        }
+    }
+    // 3. Handle Native Environments (Non-remote Mac/Windows/Linux)
+    else {
+        if (process.platform === 'win32') {
+            exec(`start "" "${targetUri}"`);
+        } else if (process.platform === 'darwin') {
+            exec(`open "${targetUri}"`);
+        } else {
+            exec(`xdg-open "${targetUri}"`);
+        }
+    }
 }

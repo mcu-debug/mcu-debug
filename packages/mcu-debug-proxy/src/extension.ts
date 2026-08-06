@@ -258,7 +258,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
-    const uriHandler = new MyUriHandler(context);
     const disposables = [
         // The main command the mcu-debug extension calls to obtain the proxy. It
         // launches-or-reuses the singleton and returns its port + reported token.
@@ -292,8 +291,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("mcu-debug-proxy.getWslHostIp", () => {
             return getWslHostIp();
         }),
-        // And register it with VS Code. You can only register a single UriHandler for your extension.
-        vscode.window.registerUriHandler(uriHandler),
     ];
     context.subscriptions.push(...disposables);
     return {
@@ -301,152 +298,6 @@ export function activate(context: vscode.ExtensionContext) {
         computeLaunchPolicy,
         startProxyServer: startProxyServerWrapper,
     };
-}
-
-function logTmp(msg: string) {
-    const tmpFile = os.tmpdir() + "/mcu-debug-proxy-uri.log";
-    const currentTime = new Date().toLocaleString();
-    fs.appendFileSync(tmpFile, currentTime + ": " + msg + "\n");
-}
-
-class MyUriHandler implements vscode.UriHandler {
-    constructor(private context: vscode.ExtensionContext) {
-        // Nothing to do in the constructor for now
-    }
-    // This function will get run when something redirects to VS Code
-    // with your extension id as the authority.
-    handleUri(uri: vscode.Uri): vscode.ProviderResult<void> {
-        vscode.window.showInformationMessage(`[mcu-debug-proxy] handleUri called with URI: ${uri.toString()}`);
-        logTmp(`[mcu-debug-proxy] handleUri called with URI: ${uri.toString()}`);
-        if ((uri.path === "/provision") && uri.query) {
-            // The request is one JSON param (`req`) so every field keeps its real
-            // type — `v` is a number, `args` is an array. (URLSearchParams would
-            // otherwise String()-coerce everything to strings / "[object Object]".)
-            // A `const` (via IIFE) so the narrowing below survives into the async
-            // `.then()` closures where `obj` is used.
-            const obj: ProxyProvisionRequest | undefined = (() => {
-                const raw = new URLSearchParams(uri.query).get("req");
-                if (!raw) {
-                    return undefined;
-                }
-                try {
-                    return JSON.parse(raw) as ProxyProvisionRequest;
-                } catch {
-                    return undefined; // malformed JSON → treat as no valid request
-                }
-            })();
-            logTmp(`[mcu-debug-proxy] handleUri parsed request: ${JSON.stringify(obj)}`);
-            if (obj && obj.v === 1 && obj.api && obj.resultsFile) {
-                let error = "";
-                let result: any = undefined;
-                try {
-                    switch (obj.api) {
-                        case "startProxyServer": {
-                            const policy = obj.args?.[0] as ProxyLaunchPolicy;
-                            if (policy) {
-                                if (!obj.authority) {
-                                    error = "Missing authority for startProxyServer";
-                                    break;
-                                }
-                                this.validateAuthority(obj.authority).then((isAuthorized) => {
-                                    if (isAuthorized) {
-                                        startProxyServerWrapper(policy).then((result) => {
-                                            this.depositProvision(obj, "", result);
-                                        }).catch((err) => {
-                                            this.depositProvision(obj, `Failed to start proxy server: ${err.message}`, undefined);
-                                        });
-                                    } else {
-                                        this.depositProvision(obj, "Probe host declined permission", undefined);
-                                    }
-                                });
-                                return; // async, will call depositProvision later
-                            } else {
-                                error = "Missing or invalid policy argument for startProxyServer";
-                            }
-                            break;
-                        }
-                        // NOTE: `startReverseTunnel` is deliberately NOT exposed via the URI / CLI
-                        // path. The `ssh -R` reverse tunnel is a VS Code *Remote-SSH* concept — set
-                        // up FOR the DA in auto-ssh-remote mode. A plain-ssh CLI has no notion of
-                        // "ssh-remote" and cannot construct this request, so removing the entry
-                        // point is a hard guarantee against an accidental one — an unexpected
-                        // request just falls through to "unknown api". It also removes the lifetime
-                        // hazard regardless: the tunnel is a child of THIS extension host and dies
-                        // on `deactivate` (all windows closed), whereas a CLI outlives VS Code. For
-                        // a plain-ssh CLI, port forwarding is part of the user's own ssh setup
-                        // (their `-L`/`-R`, or a tunnel referenced via hostConfig).
-                        // The `mcu-debug-proxy.startReverseTunnel` *command* stays (below) for the
-                        // DA, which shares the extension's lifetime — there the tunnel dying with
-                        // the VS Code session is correct, because the DA session ends too.
-                        case "getRemoteSshHost": {
-                            result = getRemoteShhHost();
-                            break;
-                        }
-                        case "getWslHostIp": {
-                            result = getWslHostIp();
-                            break;
-                        }
-                        default:
-                            error = `Unknown API command: ${obj.api}`;
-                    }
-                } catch (err: any) {
-                    error = `Error processing API command ${obj.api}: ${err.message}`;
-                }
-                this.depositProvision(obj, error, result);
-            }
-        }
-    }
-
-    private depositProvision(obj: ProxyProvisionRequest, error: string, result: any) {
-        const results: ProvisioningResults = {
-            resultsFile: obj.resultsFile,
-            error: error,
-            result: result,
-        };
-        logTmp(`[mcu-debug-proxy] handleUri parsed request: ${JSON.stringify(obj)}`);
-        vscode.commands.executeCommand("mcu-debug.depositProvision", results).then((reason) => {
-            logTmp(`[mcu-debug-proxy] depositProvision completed: ${reason}`);
-        });
-    }
-
-    public validateAuthority(authority: string): Promise<boolean> {
-        return new Promise<boolean>(async (resolve) => {
-            let resolved = false;
-            let permissions = this.context.globalState.get<string[]>("mcu-debug-proxy.authorizedAuthorities", []);
-            if (permissions.includes(authority)) {
-                return resolve(true);
-            }
-            const timer = setTimeout(() => {
-                if (!resolved) {
-                    resolved = true;
-                    return resolve(false);
-                }
-            }, 30_000); // 30 seconds timeout for user to respond
-            const choices = ["Deny", "Allow", "Always Allow"];
-            const result = await vscode.window.showWarningMessage(
-                `The authority "${authority}" is requesting access to the MCU Debug Proxy. Do you want to allow it?`,
-                { modal: true },
-                ...choices
-            );
-
-            if (result === choices[1] || result === choices[2]) {
-                if (result === choices[2]) {
-                    permissions.push(authority);
-                    this.context.globalState.update("mcu-debug-proxy.authorizedAuthorities", permissions);
-                }
-                if (!resolved) {
-                    clearTimeout(timer);
-                    resolved = true;
-                    return resolve(true);
-                }
-            }
-            if (!resolved) {
-                clearTimeout(timer);
-                resolved = true;
-                return resolve(false);
-            }
-        });
-    }
 }
 
 function getRemoteShhHost() {
