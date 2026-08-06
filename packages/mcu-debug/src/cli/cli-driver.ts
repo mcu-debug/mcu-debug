@@ -230,18 +230,42 @@ export class CliSessionDriver {
         }
     }
 
+    private consoleOut = ""
+    private consoleOutTimer: NodeJS.Timeout | null = null;
     private startGDBServerConsole(message: string): Promise<void> {
         if (this.serverConsole) {
             return Promise.resolve();
         }
         return new Promise<void>(async (resolve, reject) => {
+            const clearTimer = () => {
+                if (this.consoleOutTimer) {
+                    clearTimeout(this.consoleOutTimer);
+                    this.consoleOutTimer = null;
+                }
+            }
             const port = await this.adapter.getGdbServerConsolePort();
+            const prefix = this.config?.servertype ?? 'gdb-server';
             const server = net.createServer((socket) => {
                 socket.on('data', (data) => {
-                    const str = data.toString().trimEnd();
-                    if (str) {
-                        const prefix = this.config?.servertype ?? 'gdb-server';
-                        this.gdbServerLogger.info(`[${prefix}] ${data.toString()}`);
+                    clearTimer();
+                    this.consoleOut += data.toString();
+                    const endsWithNewline = this.consoleOut.endsWith('\n') || this.consoleOut.endsWith('\r');
+                    const lines = this.consoleOut.split(/\r?\n/);
+                    for (let i = 0; i < lines.length - (endsWithNewline ? 0 : 1); i++) {
+                        if (lines[i].trim() === '') {
+                            continue;
+                        }
+                        this.gdbServerLogger.info(`[${prefix}] ${lines[i]}`);
+                    }
+                    this.consoleOut = endsWithNewline ? "" : lines[lines.length - 1];
+                    if (this.consoleOut) {
+                        this.consoleOutTimer = setTimeout(() => {
+                            if (this.consoleOut) {
+                                this.gdbServerLogger.info(`[${prefix}] ${this.consoleOut}`);
+                                this.consoleOutTimer = null;
+                            }
+                            this.consoleOutTimer = null;
+                        }, 500);
                     }
                 });
             });
