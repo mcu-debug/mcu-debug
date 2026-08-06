@@ -6,3 +6,4 @@ export * from "./run-decoder";
 export * from "./proxy-network";
 export * from "./cockpit-protocol";
 export * from "./proxy-starter";
+export * from "./line-splitter";

@@ -17,6 +17,7 @@ import { CDebugSession } from "../common/cli-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
+import { LineSplitter } from "../../../shared/lib/src/line-splitter";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -230,43 +231,22 @@ export class CliSessionDriver {
         }
     }
 
-    private consoleOut = ""
-    private consoleOutTimer: NodeJS.Timeout | null = null;
     private startGDBServerConsole(message: string): Promise<void> {
         if (this.serverConsole) {
             return Promise.resolve();
         }
         return new Promise<void>(async (resolve, reject) => {
-            const clearTimer = () => {
-                if (this.consoleOutTimer) {
-                    clearTimeout(this.consoleOutTimer);
-                    this.consoleOutTimer = null;
-                }
-            }
             const port = await this.adapter.getGdbServerConsolePort();
-            const prefix = this.config?.servertype ?? 'gdb-server';
             const server = net.createServer((socket) => {
+                const prefix = this.config?.servertype ?? 'gdb-server';
+                const splitter = new LineSplitter((line: string, prefix: string, partial: boolean) => {
+                    this.gdbServerLogger.info(`[${prefix}] ${line}`);
+                }, prefix, 500);
                 socket.on('data', (data) => {
-                    clearTimer();
-                    this.consoleOut += data.toString();
-                    const endsWithNewline = this.consoleOut.endsWith('\n') || this.consoleOut.endsWith('\r');
-                    const lines = this.consoleOut.split(/\r?\n/);
-                    for (let i = 0; i < lines.length - (endsWithNewline ? 0 : 1); i++) {
-                        if (lines[i].trim() === '') {
-                            continue;
-                        }
-                        this.gdbServerLogger.info(`[${prefix}] ${lines[i]}`);
-                    }
-                    this.consoleOut = endsWithNewline ? "" : lines[lines.length - 1];
-                    if (this.consoleOut) {
-                        this.consoleOutTimer = setTimeout(() => {
-                            if (this.consoleOut) {
-                                this.gdbServerLogger.info(`[${prefix}] ${this.consoleOut}`);
-                                this.consoleOutTimer = null;
-                            }
-                            this.consoleOutTimer = null;
-                        }, 500);
-                    }
+                    splitter.write(data.toString());
+                });
+                socket.on('end', () => {
+                    splitter.end();
                 });
             });
             server.listen(port, () => {
