@@ -29,15 +29,93 @@ interface findFreePortsOptions {
 }
 
 const MaxPort = 65535;
-const DefaultStartPort = 30000;
 
 /**
- * BSD-derived stacks (macOS) let a process bind a specific address even when another process
- * holds the wildcard address on the same port, so there we have to hold both to have a real
- * claim. On Linux and Windows the wildcard bind already covers every address -- and a second
- * bind from this very process would fail with EADDRINUSE against ourselves.
+ * The lowest ephemeral port on any platform we run on. Linux hands out 32768-60999
+ * (`/proc/sys/net/ipv4/ip_local_port_range`); Windows and macOS use 49152-65535
+ * (`netsh int ipv4 show dynamicport tcp`).
+ *
+ * Allocating in there means competing with the kernel for source ports, and on Windows it also
+ * overlaps the blocks Hyper-V/WSL/Docker reserve -- which fail to bind with EACCES and show
+ * nothing at all in netstat, because nothing is listening.
  */
-const claimNeedsAllHosts = process.platform === "darwin";
+const EphemeralPortStart = 32768;
+
+/**
+ * Default scan bases. All sit in 2000-3000: well above the privileged ports, well below every
+ * ephemeral range, and clear of the registered ports this audience is most likely to be running
+ * -- NFS (2049), ZooKeeper (2181), Docker (2375/2376), etcd (2379/2380).
+ *
+ * These are starting points, not reservations. The scanner walks upward from here, so a squatter
+ * on any individual port costs at most a few extra binds.
+ */
+export const DefaultPortBase = {
+    /** gdb-server ports (gdbPort/swoPort/tclPort/telnetPort/consolePort), up to 4 per core, consecutive. */
+    gdbServer: 2000,
+    /** RTT channel ports, whether served by the gdb-server or by our built-in RTT. Up to 16 channels. */
+    rtt: 2200,
+    /** GDBServerConsole -- the terminal the gdb-server's stdio is piped to. */
+    gdbServerConsole: 2400,
+    /** Local end of the `ssh -L` tunnel used by the LAB topology. */
+    sshTunnel: 2410,
+    /** The CLI's equivalent of the gdb-server console. */
+    cliConsole: 2420,
+    /** Fallback for callers that do not specify a start. */
+    scanner: 2500,
+    /** Hint sent to a remote Probe Agent, which allocates on its own machine by its own rules. */
+    proxyRemote: 2600,
+} as const;
+
+/**
+ * Do `127.0.0.1:P` and `0.0.0.0:P` behave as two independent endpoints on this machine?
+ *
+ * Windows and macOS say yes: two unrelated processes can each own one of them. That is why a
+ * wildcard-only probe is worthless there -- on Windows it walks straight past anything WSL's
+ * localhost forwarding (`wslrelay.exe`) has projected onto the loopback, and reports the port
+ * free right up until the caller binds the loopback and gets EADDRINUSE.
+ *
+ * Linux says no: the wildcard conflicts with every specific address on the port, in both
+ * directions. There, holding both from one process is impossible -- but it is also unnecessary,
+ * because that same symmetry makes a single wildcard bind a complete test.
+ *
+ * This is measured rather than derived from `process.platform`, because the answer belongs to
+ * the network stack we are actually running on -- WSL, containers and VMs all get this right
+ * without us maintaining a table. Take an ephemeral port on the loopback, then see whether the
+ * wildcard is still bindable underneath it.
+ *
+ * Worst case a transient failure makes us answer "no" when the truth is "yes"; that degrades us
+ * to a wildcard-only claim, which is never *wrong*, only weaker. The reverse cannot happen: we
+ * answer "yes" only after actually holding both at once.
+ */
+let hostsIndependentProbe: Promise<boolean> | undefined;
+
+function hostsAreIndependent(): Promise<boolean> {
+    if (!hostsIndependentProbe) {
+        hostsIndependentProbe = (async () => {
+            // Retry on distinct ephemeral ports: one unlucky collision on a stack that really is
+            // independent would silently drop us back to a wildcard-only claim, which is the very
+            // blind spot this exists to close. A single success proves independence; only a stack
+            // that conflicts can fail every attempt.
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const loopback = await tryListen(0, TcpPortScanner.LoopbackAddr);
+                if (!loopback) {
+                    continue;
+                }
+                const port = (loopback.address() as net.AddressInfo).port;
+                const wildcard = await tryListen(port, TcpPortScanner.AllInterfaces);
+                if (wildcard) {
+                    await closeServer(wildcard);
+                }
+                await closeServer(loopback);
+                if (wildcard) {
+                    return true;
+                }
+            }
+            return false;
+        })();
+    }
+    return hostsIndependentProbe;
+}
 
 /**
  * Try to take a listening socket on `port` for `host`. Resolves with the server on success, or
@@ -70,22 +148,31 @@ function closeServers(servers: net.Server[]): Promise<void[]> {
     return Promise.all(servers.map(closeServer));
 }
 
-/** The hosts we have to hold to consider a port truly ours. */
-function claimHosts(): string[] {
-    return claimNeedsAllHosts ? [TcpPortScanner.AllInterfaces, TcpPortScanner.LoopbackAddr] : [TcpPortScanner.AllInterfaces];
+/**
+ * The hosts we have to hold to consider a port truly ours.
+ *
+ * Where the two addresses are independent, both must be held -- a port is ours only if nobody
+ * owns either half. The loopback comes first: it is the address every one of our callers
+ * actually binds, and on Windows it is where WSL's forwarded ports live, so it rejects the
+ * common case on the first bind.
+ *
+ * Where they conflict, the wildcard alone is the stronger test: it fails if *any* address on
+ * that port is taken, including specific addresses on other interfaces.
+ */
+async function claimHosts(): Promise<string[]> {
+    return (await hostsAreIndependent()) ? [TcpPortScanner.LoopbackAddr, TcpPortScanner.AllInterfaces] : [TcpPortScanner.AllInterfaces];
 }
 
 /**
  * Claim a single port. Returns the sockets holding it, or `null` if it could not be claimed.
- * The wildcard address is bound first because on macOS the more specific bind is the one that
- * is allowed to follow a wildcard bind, not the other way around.
+ * Any host we cannot take means the port is not ours -- we never settle for a partial claim.
  */
 async function claimPort(port: number, avoid: Set<number> | undefined): Promise<net.Server[] | null> {
     if (avoid?.has(port) || TcpPortScanner.AvoidPorts.has(port)) {
         return null;
     }
     const servers: net.Server[] = [];
-    for (const host of claimHosts()) {
+    for (const host of await claimHosts()) {
         const server = await tryListen(port, host);
         if (!server) {
             await closeServers(servers);
@@ -207,7 +294,7 @@ export class TcpPortScanner {
      * @return a Promise with an array of ports
      */
     public static async findFreePorts(numPorts: number, options: findFreePortsOptions = {}): Promise<number[]> {
-        const lock = await findAvailablePortRange(numPorts, options.start ?? DefaultStartPort, options.consecutive ?? false, options.avoid);
+        const lock = await findAvailablePortRange(numPorts, options.start ?? DefaultPortBase.scanner, options.consecutive ?? false, options.avoid);
         heldLocks.push(lock);
         TcpPortScanner.EmitAllocated(lock.ports);
         return lock.ports;
@@ -227,11 +314,14 @@ export async function findAvailablePortRange(count: number, preferredStart: numb
         return new PortRangeLock([], []);
     }
 
-    const start = Math.min(Math.max(preferredStart || DefaultStartPort, 1), MaxPort);
+    const start = Math.min(Math.max(preferredStart || DefaultPortBase.scanner, 1), MaxPort);
+    // Never wander into the ephemeral range under our own steam. A caller that deliberately starts
+    // inside it -- an explicit port from launch.json -- is taken at its word and may scan to the top.
+    const ceiling = start >= EphemeralPortStart ? MaxPort : EphemeralPortStart - 1;
     let servers: net.Server[] = [];
     let ports: number[] = [];
 
-    for (let port = start; port <= MaxPort; port++) {
+    for (let port = start; port <= ceiling; port++) {
         const claimed = await claimPort(port, avoid);
         if (claimed) {
             servers.push(...claimed);
@@ -247,5 +337,5 @@ export async function findAvailablePortRange(count: number, preferredStart: numb
     }
 
     await closeServers(servers);
-    throw new Error(`Could not find ${count} ${consecutive ? "consecutive " : ""}free ports starting at ${start}`);
+    throw new Error(`Could not find ${count} ${consecutive ? "consecutive " : ""}free ports in ${start}-${ceiling}`);
 }

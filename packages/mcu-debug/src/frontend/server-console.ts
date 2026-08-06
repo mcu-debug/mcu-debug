@@ -6,6 +6,7 @@ import * as path from "path";
 import { createTerminalUniqueName, getUUidPrefixed, ManagedTabConsole } from "./views/ManagedTab";
 import { AnsiHelpers } from "../common/ansi-helpers";
 import { getAnyFreePort } from "../adapter/servers/common";
+import { DefaultPortBase } from "@mcu-debug/shared";
 
 //      vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name: 'myName' });
 
@@ -203,9 +204,9 @@ export class GDBServerConsole {
         if (this.startServerPromise) {
             return this.startServerPromise;
         }
-        this.startServerPromise = new Promise(async (resolve, reject) => {
+        const started = new Promise<void>(async (resolve, reject) => {
             try {
-                const p = await getAnyFreePort(56878);
+                const p = await getAnyFreePort(DefaultPortBase.gdbServerConsole);
                 this.toBackendPort = p;
                 const newServer = net.createServer(this.onBackendConnect.bind(this));
                 newServer.listen(this.toBackendPort, "127.0.0.1", () => {
@@ -224,7 +225,16 @@ export class GDBServerConsole {
                 reject(e);
             }
         });
-        return this.startServerPromise;
+        this.startServerPromise = started;
+        // Do not cache a failure. Now that this runs on the first debug session rather than at
+        // startup, a memoized rejection would leave the console dead for the life of the window
+        // with no way back but a reload -- so drop it and let the next session try again.
+        started.catch(() => {
+            if (this.startServerPromise === started) {
+                this.startServerPromise = null;
+            }
+        });
+        return started;
     }
 
     public static async getBackendPort(): Promise<number> {

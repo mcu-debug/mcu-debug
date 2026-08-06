@@ -9,7 +9,7 @@ import { logger } from "../common/cli-logger";
 import { GraphConfiguration } from "../common/swo/common";
 import JSONC from 'jsonc-simple-parser';
 import { CLISerialPortView } from './cli-serial';
-import { ProxyLaunchPolicy, proxyServerCommand, startProxyServerFromWsl } from '@mcu-debug/shared';
+import { DefaultPortBase, ProxyLaunchPolicy, proxyServerCommand, startProxyServerFromWsl } from '@mcu-debug/shared';
 import { handleHostConfig } from '../common/proxy';
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
@@ -96,7 +96,7 @@ export class CliAdapter implements IHostAdapter {
     }
     getGdbServerConsolePort(): Promise<number> {
         if (this.consolePort === 0) {
-            return getAnyFreePort(50500).then(port => {
+            return getAnyFreePort(DefaultPortBase.cliConsole).then(port => {
                 this.consolePort = port;
                 return port;
             });

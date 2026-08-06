@@ -14,7 +14,7 @@ import { ExternalServerController } from "./servers/external";
 import { GDBDebugSession } from "./gdb-session";
 import { createPortName, GDBServerController, GenericCustomEvent, quoteShellCmdLine, TcpPortDef, TcpPortDefMap } from "./servers/common";
 import { GdbEventNames, Stderr } from "./gdb-mi/mi-types";
-import { TcpPortScanner } from "@mcu-debug/shared";
+import { DefaultPortBase, TcpPortScanner } from "@mcu-debug/shared";
 import { AnsiHelpers } from "../common/ansi-helpers";
 import { ProxyClient } from "./proxy-client";
 import { ProbeRsServerController } from "./servers/probe-rs";
@@ -361,7 +361,7 @@ export class GDBServerSession extends EventEmitter {
 
     private getTCPPorts(useParent: boolean): Thenable<void> {
         return new Promise((resolve, reject) => {
-            const startPort = 35000;
+            const startPort = DefaultPortBase.gdbServer;
             if (useParent) {
                 this.ports = this.session.args.pvtPorts = this.session.args.pvtParent.pvtPorts;
                 this.serverController.ports = this.ports;

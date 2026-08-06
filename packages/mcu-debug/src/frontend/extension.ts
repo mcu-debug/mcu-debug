@@ -69,7 +69,7 @@ export class MCUDebugExtension {
     public async initialize() {
         const context: vscode.ExtensionContext = this.context;
         const config = vscode.workspace.getConfiguration("mcu-debug");
-        await this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Make this the first thing we do to be ready for the session
+        this.startServerConsole(context, config.get(MCUDebugKeys.SERVER_LOG_FILE_NAME, "")); // Creates the object only; the TCP server is started on first use
 
         try {
             // Auto-write/update wrapper scripts
@@ -220,14 +220,20 @@ export class MCUDebugExtension {
         vscode.commands.executeCommand("setContext", `mcu-debug:${MCUDebugKeys.HAS_STOPPED_SESSIONS}`, sessions.some((s) => s.status === "stopped"));
     }
 
-    private async startServerConsole(context: vscode.ExtensionContext, logFName: string = ""): Promise<void> {
+    /**
+     * Only constructs the console. The TCP server behind it is started lazily, on the first
+     * debug session that asks for its port -- we activate on `onStartupFinished`, so starting it
+     * here would bind a port in every window whether or not it is ever used to debug. A failure
+     * to bind now surfaces from resolveDebugConfiguration(), where it is in context and where the
+     * user can act on it.
+     */
+    private startServerConsole(context: vscode.ExtensionContext, logFName: string = ""): void {
         try {
             this.gdbServerConsole = new GDBServerConsole(context, logFName);
-            await this.gdbServerConsole.startServer();
         } catch (e: any) {
             this.gdbServerConsole?.dispose();
             this.gdbServerConsole = null;
-            vscode.window.showErrorMessage(`Could not create gdb-server-console. Extension startup failed. Please report this problem. ${e.toString()}`);
+            vscode.window.showErrorMessage(`Could not create gdb-server-console. Please report this problem. ${e.toString()}`);
         }
     }
 

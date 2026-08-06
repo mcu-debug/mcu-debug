@@ -5,6 +5,7 @@ import { GDBDebugSession } from "./gdb-session";
 import { GDBServerSession } from "./server-session";
 import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, awaitWithTimeout, processEnvForConfig } from "./servers/common";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
+import { DefaultPortBase } from "@mcu-debug/shared";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { PortReserved } from "@mcu-debug/shared/proxy-protocol/PortReserved";
 import { PortSet } from "@mcu-debug/shared/proxy-protocol/PortSet";
@@ -350,7 +351,7 @@ export class ProxyClient extends EventEmitter {
             this.clientPorts = ports;
             const portList = Object.keys(ports);
             const portSet: PortSet = {
-                start_port: 37000, // Just a random high port, proxy will find the actual free ports
+                start_port: DefaultPortBase.proxyRemote, // Only a hint; the proxy allocates on its own machine
                 port_ids: portList,
             };
             const portspec: PortAllocatorSpec = {

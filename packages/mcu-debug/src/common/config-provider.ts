@@ -55,7 +55,16 @@ export class McuDebugConfigurationProviderBase {
     }
 
     public async resolveDebugConfiguration(folderPath: string | undefined, config: ConfigOptions): Promise<ConfigOptions | undefined> {
-        const port = await this.hostAdapter.getGdbServerConsolePort();
+        // The console's TCP server is created on demand, here, rather than at extension startup.
+        // This is the first point where a failure to bind it can be reported, and the only one
+        // where the user has any context for it.
+        let port = 0;
+        try {
+            port = await this.hostAdapter.getGdbServerConsolePort();
+        } catch (e: any) {
+            this.hostAdapter.showError(`Could not start the gdb-server console: ${e?.message ?? e}`);
+            return undefined;
+        }
         if (port <= 0) {
             this.hostAdapter.showError("GDB server console not yet ready. Please try again. Report this problem");
             return undefined;

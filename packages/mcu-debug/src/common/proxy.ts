@@ -19,7 +19,7 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { spawn } from "child_process";
-import { computeProxyLaunchPolicy, getWslGatewayIp, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy } from "@mcu-debug/shared";
+import { DefaultPortBase, computeProxyLaunchPolicy, getWslGatewayIp, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
 import { tcpReachable } from "./utils";
@@ -349,7 +349,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
         throw new Error("SSH host or port not defined for SSH tunnel");
     }
 
-    const localPort = await getAnyFreePort(56978);
+    const localPort = await getAnyFreePort(DefaultPortBase.sshTunnel);
     const args = ["-N", "-L", `127.0.0.1:${localPort}:127.0.0.1:${sshPort}`, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshHost];
     const cmdString = `ssh ${args.join(" ")}`;
 

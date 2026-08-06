@@ -1,7 +1,7 @@
 import { Event } from "@vscode/debugadapter";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { EventEmitter } from "events";
-import { TcpPortScanner } from "@mcu-debug/shared";
+import { DefaultPortBase, TcpPortScanner } from "@mcu-debug/shared";
 import type { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import * as childProcess from "child_process";
 import * as fs from "fs";
@@ -510,7 +510,7 @@ export class RTTServerHelper {
     // For openocd, you cannot have have duplicate ports and neither can
     // a multiple clients connect to the same channel. Perhaps in the future
     // it wil
-    public allocateRTTPorts(cfg: RTTConfiguration, isBuiltin = false, startPort: number = 60000): Promise<any> {
+    public allocateRTTPorts(cfg: RTTConfiguration, isBuiltin = false, startPort: number = DefaultPortBase.rtt): Promise<any> {
         this.allocDone = true;
         if (!cfg || !cfg.enabled || !cfg.decoders || cfg.decoders.length === 0) {
             return Promise.resolve();
@@ -536,7 +536,9 @@ export class RTTServerHelper {
             }
         }
         const count = Object.keys(this.rttLocalPortMap).length;
-        startPort = startPort + 2000; // Avoid clashes with GDB server ports
+        // The RTT base already sits in its own band clear of the gdb-server ports (see
+        // DefaultPortBase), so no nudge is needed. J-Link passes its own base, 19021, which is
+        // the port its documentation tells users to expect for RTT telnet.
 
         if (isBuiltin && typeof cfg.useBuiltinRTT?.tcpPort === "number") {
             const specifiedPort = cfg.useBuiltinRTT.tcpPort;
