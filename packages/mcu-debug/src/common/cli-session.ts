@@ -140,7 +140,10 @@ export class CDebugSession {
     public static getAllUsedPorts(): number[] {
         const ports = new Set<number>();
         for (const s of CDebugSession.CurrentSessions) {
-            if (s.status === "started" || s.status === "stopped" || s.status === "running") {
+            // Status 'none' matters: the ports-allocated event can arrive before the session is
+            // marked started, and that is exactly the window where a sibling session is being
+            // resolved and needs to know these ports are taken.
+            if (s.status !== "exited") {
                 for (const p of s.usedPorts.values()) {
                     ports.add(p);
                 }

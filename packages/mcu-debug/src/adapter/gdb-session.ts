@@ -1231,12 +1231,30 @@ export class GDBDebugSession extends SeqDebugSession {
 
     private launchAttachInit(args: ConfigurationArguments) {
         this.args = this.normalizeArguments(args);
+        this.seedAvoidPorts();
         this.setupLogging();
         // We need go create the server session here now that args are normalized. In the ctor,
         // args are not available just had to keep the ts-compiler happy
         this.serverSession = new GDBServerSession(this);
         this.serverSession.serverController.on("event", this.serverControllerEvent.bind(this));
         this.rttTcpServer.on("event", this.serverControllerEvent.bind(this));
+    }
+
+    /**
+     * A port reservation is a live socket, so it cannot be held for the whole session -- the
+     * gdb-server has to bind it. The frontend closes that gap: it collects the ports of every
+     * live session (including the other cores of a multi-core group, whose ports the first core
+     * reserves up front) and hands them to us as `pvtAvoidPorts`. Those ports stay off-limits
+     * until the whole session group is gone.
+     *
+     * When debugging this extension we run in server mode, serving multiple debug sessions from
+     * one process, so clear whatever a previous session left behind and trust only the frontend.
+     */
+    private seedAvoidPorts() {
+        TcpPortScanner.AvoidPorts.clear();
+        for (const p of this.args.pvtAvoidPorts || []) {
+            TcpPortScanner.AvoidPorts.add(p);
+        }
     }
 
     private postInitComplete(): Promise<void> {

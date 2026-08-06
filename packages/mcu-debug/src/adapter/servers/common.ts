@@ -638,17 +638,14 @@ export function createPortName(procNum: number, prefix: string = "gdbPort"): str
     return prefix + (procNum === 0 ? "" : procNum.toString());
 }
 
-export function getAnyFreePort(preferred: number): Promise<number> {
-    return new Promise((resolve, reject) => {
-        TcpPortScanner.findFreePorts(1, { start: preferred, consecutive: false, avoid: undefined })
-            .then((ports) => {
-                TcpPortScanner.EmitAllocated(ports);
-                resolve(ports[0]);
-            })
-            .catch((e) => {
-                reject(e);
-            });
-    });
+// Every caller of this binds the port itself, immediately. The reservation only has to survive
+// the scan, so drop the holding socket before handing the port back -- the port stays in
+// TcpPortScanner.AvoidPorts so we will not offer it again.
+export async function getAnyFreePort(preferred: number): Promise<number> {
+    const ports = await TcpPortScanner.findFreePorts(1, { start: preferred, consecutive: false, avoid: undefined });
+    await TcpPortScanner.unlockPortsIfFree(ports);
+    TcpPortScanner.EmitAllocated(ports);
+    return ports[0];
 }
 
 export function parseHexOrDecInt(str: string): number {

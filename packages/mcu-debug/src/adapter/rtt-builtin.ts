@@ -9,7 +9,7 @@ import { parseAddress } from "../common/utils";
 import { RTTConfiguration, RTTServerHelper } from "./servers/common";
 import { EventEmitter } from "events";
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { Decoder, DecoderSpec } from "@mcu-debug/shared";
+import { Decoder, DecoderSpec, TcpPortScanner } from "@mcu-debug/shared";
 
 /**
  * RTT Up/Down-Buffer Descriptor Offsets (32-bit)
@@ -491,6 +491,10 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
             this.ports.set(channel, portNum);
         }
         const host = this.config?.useBuiltinRTT?.hostName || "127.0.0.1";
+        // Unlike the gdb-server RTT ports, these are bound by us. A reservation is a live listening
+        // socket, so it has to be handed back before start() can bind. Everything else was already
+        // released at 'ports-done', and no allocation happens after this point.
+        await TcpPortScanner.releaseHeldPorts();
         await this.start(host, helper);
         setTimeout(() => {
             helper.emitConfigures(this.config!, this);

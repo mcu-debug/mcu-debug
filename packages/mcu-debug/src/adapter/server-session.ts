@@ -91,6 +91,11 @@ export class GDBServerSession extends EventEmitter {
         const executable = this.usingParentServer ? null : this.serverController.serverExecutable();
         const args = this.usingParentServer ? [] : this.serverController.serverArguments();
         this.session.sendEvent(new GenericCustomEvent("ports-done", undefined)); // Should be no more TCP ports allocation
+        // Our port reservations are live listening sockets. Nothing below this point allocates,
+        // and everything below this point needs to actually bind those ports, so give them back
+        // now. They stay in TcpPortScanner.AvoidPorts, and the frontend hands them to sibling
+        // sessions via pvtAvoidPorts, so nobody re-uses them while this session lives.
+        await TcpPortScanner.releaseHeldPorts();
 
         if (!executable) {
             return;
