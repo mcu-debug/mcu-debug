@@ -910,11 +910,11 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         let view = this.serialPortViews.get(key);
         const host = SERIAL_VIEW_HOST;
         if (view) {
-            view.setTcpPort(host, tcpPort);
+            view.setTcpPort(tcpPort);
             view.setLogFile(log_file ?? undefined);
             view.setInputMode(input_mode ?? undefined);
         } else {
-            view = getHostAdapter().createSerialPortView(actualPath, { ...portConfig, path: actualPath }, isNew, host, tcpPort);
+            view = getHostAdapter().createSerialPortView(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
             this.serialPortViews.set(key, view);
             view.emitter.on("close", () => {
                 this.removeSerialPortTab(conn, actualPath);

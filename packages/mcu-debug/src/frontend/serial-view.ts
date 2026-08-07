@@ -33,7 +33,7 @@ export class SerialPortView extends ManagedTab implements ISerialPortView {
     readonly kind: TabKind = "uart";
     readonly direction = "both";
 
-    static createOrGetTab(device: string, serialConfig: SerialParams, doClear: boolean = false, host: string, tcpPort: number = 0): SerialPortView {
+    static createOrGetTab(device: string, serialConfig: SerialParams, doClear: boolean = false, tcpPort: number = 0): SerialPortView {
         const baseName = path.basename(device);
         const existing = CockpitPanel.instance?.findTabByLabel(baseName) as unknown as SerialPortView | null;
         if (existing) {
@@ -47,11 +47,11 @@ export class SerialPortView extends ManagedTab implements ISerialPortView {
             existing.setState({ kind: "active" });
             return existing;
         } else {
-            return new SerialPortView(device, serialConfig, doClear, host, tcpPort);
+            return new SerialPortView(device, serialConfig, doClear, tcpPort);
         }
     }
 
-    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private host: string, private tcpPort: number) {
+    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number) {
         const baseName = serialConfig.label || path.basename(device);
         super(
             `serial-${getUUidPrefixed('serial')}`,
@@ -104,11 +104,10 @@ export class SerialPortView extends ManagedTab implements ISerialPortView {
         this.setState({ kind: "active" });
     }
 
-    setTcpPort(host: string, port: number) {
-        if (this.tcpPort === port && this.host === host && this.socket && !this.socket.destroyed) {
+    setTcpPort(port: number) {
+        if (this.tcpPort === port && this.socket && !this.socket.destroyed) {
             return;
         }
-        this.host = host;
         this.tcpPort = port;
         this.restartSocket();
     }
@@ -156,9 +155,9 @@ export class SerialPortView extends ManagedTab implements ISerialPortView {
         this.destroySocket();
         // The helper will create a TCP server for this serial port and report the port number back to us. Once we have the port number, we can connect to it.
         const socket = new net.Socket();
-        socket.connect(this.tcpPort, this.host);
+        socket.connect(this.tcpPort, "127.0.0.1");
         socket.on("connect", () => {
-            MCUDebugChannel.debugMessage(`Connected to serial port ${this.device} at ${this.host}:${this.tcpPort}`);
+            MCUDebugChannel.debugMessage(`Connected to serial port ${this.device} at 127.0.0.1:${this.tcpPort}`);
             this.socket = socket;
         });
         socket.on("data", (data) => {

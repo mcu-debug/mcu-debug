@@ -36,7 +36,7 @@ export interface IDebugSession {
 
 export interface ISerialPortView {
     readonly emitter: EventEmitter;
-    setTcpPort(host: string, port: number): void;
+    setTcpPort(port: number): void;
     setLogFile(log_file: string | undefined): void;
     setInputMode(input_mode: string | undefined): void;
     notifyConnected(reason: string): void;
@@ -203,7 +203,7 @@ export interface IHostAdapter {
      * The VS Code adapter returns a ManagedTab-backed SerialPortView.
      * A CLI adapter may return a stdout/readline-based implementation.
      */
-    createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, host: string, tcpPort: number): ISerialPortView;
+    createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, tcpPort: number): ISerialPortView;
 
     /**
      * Show a quick-pick list of labeled items and return the selected label,
