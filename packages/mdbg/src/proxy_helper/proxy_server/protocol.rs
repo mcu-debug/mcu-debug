@@ -70,8 +70,11 @@ impl SessionThreadRole {
 /// through one channel so `message_loop` can block on `recv()` instead of
 /// polling + sleeping.
 pub enum ProxyEvent {
-    /// Raw bytes received from the client TCP connection.
-    IncomingData(Vec<u8>),
+    /// Raw bytes received from the client TCP connection, stamped when the reader
+    /// thread queued them. The message loop is single-threaded, so the gap between
+    /// this stamp and dispatch is time the request spent waiting behind other work
+    /// — the one delay a handler cannot measure about itself.
+    IncomingData(Vec<u8>, std::time::Instant),
     /// Client connection closed (EOF or error).
     IncomingClosed,
     /// A port waiter successfully connected to the gdb-server port.
@@ -265,6 +268,35 @@ pub enum ControlRequest {
     /// Unsubscribe this connection from available-port snapshots.
     #[serde(rename = "serial.unsubscribeAvailable")]
     SerialUnsubscribeAvailable,
+}
+
+impl ControlRequest {
+    /// The wire `method` name, for logging.
+    ///
+    /// Kept as an explicit match rather than derived from serde so that adding a
+    /// request variant fails to compile until it is named here — a request that
+    /// logs as "unknown" is worse than no log at all. These strings must match the
+    /// `#[serde(rename = ...)]` attributes above.
+    pub fn method_name(&self) -> &'static str {
+        match self {
+            ControlRequest::Initialize { .. } => "initialize",
+            ControlRequest::AllocatePorts { .. } => "allocatePorts",
+            ControlRequest::StartGdbServer { .. } => "startGdbServer",
+            ControlRequest::EndSession => "endSession",
+            ControlRequest::StreamStatus { .. } => "streamStatus",
+            ControlRequest::StartStream { .. } => "startStream",
+            ControlRequest::DuplicateStream { .. } => "duplicateStream",
+            ControlRequest::Heartbeat => "heartbeat",
+            ControlRequest::SyncFile { .. } => "syncFile",
+            ControlRequest::SerialOpen(..) => "serial.open",
+            ControlRequest::SerialClose { .. } => "serial.close",
+            ControlRequest::SerialListOpen => "serial.listOpen",
+            ControlRequest::SerialListAvailable => "serial.listAvailable",
+            ControlRequest::SerialIsOpen { .. } => "serial.isOpen",
+            ControlRequest::SerialSubscribeAvailable => "serial.subscribeAvailable",
+            ControlRequest::SerialUnsubscribeAvailable => "serial.unsubscribeAvailable",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]

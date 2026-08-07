@@ -82,6 +82,15 @@ impl ProxyServer {
     /// a transport channel. Idempotent per transport type. Returns an error if the
     /// port is already open with a *different* transport (close it first).
     pub(super) fn handle_serial_open(&mut self, seq: u64, params: SerialParams) {
+        // This runs on the single-threaded message loop, so anything slow here stalls
+        // every other control request behind it. Phase timings are recorded so a stall
+        // can be attributed rather than guessed at; see the summary at the end.
+        let t_start = std::time::Instant::now();
+        let t_resolved = std::cell::Cell::new(Duration::ZERO);
+        let t_locked = std::cell::Cell::new(Duration::ZERO);
+        let t_reconfigured = std::cell::Cell::new(Duration::ZERO);
+        let was_already_open = std::cell::Cell::new(false);
+
         let path = match crate::serial::resolve_port(
             params.path.as_deref(),
             params.serial.as_deref(),
@@ -92,6 +101,12 @@ impl ProxyServer {
         ) {
             Ok(p) => p,
             Err(e) => {
+                // Time this path too: a resolve that is both slow *and* failing would
+                // otherwise be invisible, and it is a prime suspect for a stalled loop.
+                let elapsed = t_start.elapsed();
+                if elapsed >= Duration::from_millis(250) {
+                    log::warn!("serial.open SLOW: seq {} failed to resolve after {:?}", seq, elapsed);
+                }
                 ControlResponse::error(seq, format!("serial.open failed: {e}"))
                     .send(&self.writer)
                     .unwrap_or_else(|e| {
@@ -111,21 +126,27 @@ impl ProxyServer {
             Error(anyhow::Error),
         }
 
+        t_resolved.set(t_start.elapsed());
+
         let phase1: Phase1Result = (|| {
             let mut reg = self.serial_registry.lock_recover();
+            t_locked.set(t_start.elapsed());
             if let Some((handle, backing)) = reg.get(&path) {
+                was_already_open.set(true);
                 // Port already open — check transport consistency.
                 match (&params.transport, backing) {
                     (SerialTransport::Direct, SerialPortBacking::Direct(bridge)) => {
                         if let Err(e) = handle.reconfigure(&params) {
                             return Phase1Result::Error(e);
                         }
+                        t_reconfigured.set(t_start.elapsed());
                         Phase1Result::DirectReady(bridge.tcp_port)
                     }
                     (SerialTransport::Funnel, SerialPortBacking::Funnel { .. }) => {
                         if let Err(e) = handle.reconfigure(&params) {
                             return Phase1Result::Error(e);
                         }
+                        t_reconfigured.set(t_start.elapsed());
                         // Allocate a new funnel channel (e.g. client reconnect).
                         Phase1Result::FunnelHandle(Arc::clone(handle))
                     }
@@ -172,6 +193,41 @@ impl ProxyServer {
                 .map(|cid| (None, Some(cid))),
             Phase1Result::Error(e) => Err(e),
         };
+
+        // Attribute the elapsed time to a phase. Each figure is cumulative from entry,
+        // so the phase that owns a stall is the one with the large step before it. A
+        // zero for lock/reconfigure means that phase was never reached.
+        let total = t_start.elapsed();
+        let timings = format!(
+            "seq {} '{}' total={:?} (resolve={:?} lock=+{:?} reconfigure=+{:?} phase2=+{:?})",
+            seq,
+            path,
+            total,
+            t_resolved.get(),
+            t_locked.get().saturating_sub(t_resolved.get()),
+            t_reconfigured.get().saturating_sub(t_locked.get()),
+            total.saturating_sub(t_reconfigured.get().max(t_locked.get())),
+        );
+        // A first open legitimately costs hundreds of milliseconds: the device is
+        // opened, a second handle taken for reconfiguration, and the TCP bridge started.
+        // A re-open of an already-open port should be almost free -- it looks the port
+        // up and returns the existing tcp_port. Holding both to the same threshold would
+        // either cry wolf on every session start or stay silent on a real regression.
+        let budget = if was_already_open.get() {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_millis(2000)
+        };
+        if total >= budget {
+            log::warn!(
+                "serial.open SLOW ({} budget {:?}): {}",
+                if was_already_open.get() { "re-open" } else { "first open" },
+                budget,
+                timings
+            );
+        } else {
+            log::debug!("serial.open timing: {}", timings);
+        }
 
         // Subscribe to fatal port errors — once per path per session. Without
         // this guard, every reconfigure of an already-open port (e.g. a UI

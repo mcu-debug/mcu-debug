@@ -263,20 +263,32 @@ export class ProxyClient extends EventEmitter {
 
         return new Promise((resolve, reject) => {
             let timer: NodeJS.Timeout | undefined;
+            // Log the send, and report the round trip on settle. Without the send time
+            // a response log tells you when the answer arrived but not how long it took,
+            // and the two sides' clocks cannot be assumed to agree.
+            const sentAt = Date.now();
+            this.logDebug(`Sending request: seq ${cmd.seq} '${cmd.method}'\n`);
             // Every exit goes through here, so the map entry and the timer are released exactly
             // once regardless of who wins -- response, timeout, or the socket closing.
-            const settle = (done: (arg?: any) => void, arg?: any) => {
+            //
+            // This is also the single place a request's outcome is logged. The response
+            // handler used to log its own line, which meant every request produced two
+            // entries saying the same thing -- and that line could not see a timeout or a
+            // dropped socket, because neither goes through it.
+            const settle = (ok: boolean, done: (arg?: any) => void, arg?: any) => {
                 if (timer) {
                     clearTimeout(timer);
                     timer = undefined;
                 }
                 this.pendingPromises.delete(cmd.seq);
+                const outcome = ok ? "ok" : `error: ${arg?.message ?? arg}`;
+                this.logDebug(`Settled request: seq ${cmd.seq} '${cmd.method}' ${outcome} after ${Date.now() - sentAt}ms\n`);
                 done(arg);
             };
 
             this.pendingPromises.set(cmd.seq, {
-                resolve: (value: any) => settle(resolve, value),
-                reject: (reason: any) => settle(reject, reason),
+                resolve: (value: any) => settle(true, resolve, value),
+                reject: (reason: any) => settle(false, reject, reason),
             });
 
             if (useTimeout > 0) {
@@ -285,7 +297,7 @@ export class ProxyClient extends EventEmitter {
                     // surfaced with the proxy's own message by the response handler.
                     const msg = `Proxy command '${cmd.method}' (seq ${cmd.seq}) timed out after ${useTimeout}ms`;
                     this.logError(msg);
-                    settle(reject, new Error(msg));
+                    settle(false, reject, new Error(msg));
                 }, useTimeout);
                 timer.unref();
             }
@@ -293,7 +305,7 @@ export class ProxyClient extends EventEmitter {
             try {
                 this.sendCommandBytes(0, Buffer.from(JSON.stringify(cmd), "utf-8"));
             } catch (e) {
-                settle(reject, e);
+                settle(false, reject, e);
             }
         });
     }
@@ -530,7 +542,8 @@ export class ProxyClient extends EventEmitter {
             } else if (msg.seq && this.pendingPromises.has(msg.seq)) {
                 const { resolve, reject } = this.pendingPromises.get(msg.seq)!;
                 this.pendingPromises.delete(msg.seq);
-                this.logDebug(`Received response for seq ${msg.seq}: ${JSON.stringify(msg)}`);
+                // Outcome is logged once, by settle() in sendControlCommand -- it sees this
+                // path plus timeouts and dropped sockets, which never reach here.
                 if (msg.success) {
                     resolve(msg.data);
                 } else {

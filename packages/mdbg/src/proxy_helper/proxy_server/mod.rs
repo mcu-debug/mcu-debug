@@ -293,7 +293,10 @@ impl ProxyServer {
                     }
                     Ok(n) => {
                         if event_tx
-                            .send(ProxyEvent::IncomingData(buf[..n].to_vec()))
+                            .send(ProxyEvent::IncomingData(
+                                buf[..n].to_vec(),
+                                std::time::Instant::now(),
+                            ))
                             .is_err()
                         {
                             break; // main thread exited
@@ -348,7 +351,7 @@ impl ProxyServer {
                     // PortFailed, …) already handled teardown, or on a panic there
                     // is nothing further to unwind for this role. Noted only.
                 }
-                ProxyEvent::IncomingData(bytes) => {
+                ProxyEvent::IncomingData(bytes, queued_at) => {
                     all_bytes.extend_from_slice(&bytes);
                     while !all_bytes.is_empty() {
                         if content_length.is_none() {
@@ -368,7 +371,54 @@ impl ProxyServer {
                                 let msg_str = String::from_utf8_lossy(&msg);
                                 match serde_json::from_str::<ControlMessage>(&msg_str) {
                                     Ok(control_msg) => {
+                                        // Control frames only -- stream data (stream_id != 0) is
+                                        // serial/gdb traffic and is deliberately not logged per
+                                        // packet; at that volume the logging would cost more than
+                                        // the forwarding and would perturb what it measures.
+                                        let queued = queued_at.elapsed();
+                                        // Heartbeats are the one control message that repeats
+                                        // forever and says nothing when healthy. At info they
+                                        // would bury the requests worth reading; a slow or
+                                        // failing one still surfaces through the checks below.
+                                        let routine =
+                                            control_msg.request.method_name() == "heartbeat";
+                                        let level = if routine {
+                                            log::Level::Debug
+                                        } else {
+                                            log::Level::Info
+                                        };
+                                        log::log!(
+                                            level,
+                                            "Received request: seq {} '{}' ({} bytes, queued {:?})",
+                                            control_msg.seq,
+                                            control_msg.request.method_name(),
+                                            msg_len,
+                                            queued,
+                                        );
+                                        if queued >= std::time::Duration::from_millis(250) {
+                                            log::warn!(
+                                                "Message loop was busy: seq {} '{}' waited {:?} before dispatch",
+                                                control_msg.seq,
+                                                control_msg.request.method_name(),
+                                                queued,
+                                            );
+                                        }
+                                        let started = std::time::Instant::now();
+                                        let seq = control_msg.seq;
+                                        let method = control_msg.request.method_name();
                                         self.handle_control_message(control_msg);
+                                        let took = started.elapsed();
+                                        log::log!(
+                                            if routine && took < std::time::Duration::from_millis(250) {
+                                                log::Level::Debug
+                                            } else {
+                                                log::Level::Info
+                                            },
+                                            "Handled request: seq {} '{}' in {:?}",
+                                            seq,
+                                            method,
+                                            took,
+                                        );
                                         if self.exit {
                                             eprintln!("Exiting message loop as requested by control message");
                                             return Ok(());

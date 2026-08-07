@@ -22,7 +22,10 @@
     "test:rust": "cargo test --manifest-path packages/mdbg/Cargo.toml --lib",
     "lint:rust": "cargo clippy --manifest-path packages/mdbg/Cargo.toml --all-targets -- -D warnings",
     "audit:rust": "cargo audit --file packages/mdbg/Cargo.lock",
-    "postinstall": "npm run build-cockpit --workspace=packages/mcu-debug"
+    "postinstall": "npm run build-cockpit --workspace=packages/mcu-debug",
+    "lint:rust:win": "cargo clippy --manifest-path packages/mdbg/Cargo.toml --lib --target x86_64-pc-windows-gnu -- -D warnings",
+    "lint:rust:linux": "cargo clippy --manifest-path packages/mdbg/Cargo.toml --lib --target x86_64-unknown-linux-musl -- -D warnings",
+    "lint:rust:all": "npm run lint:rust && npm run lint:rust:win && npm run lint:rust:linux"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",

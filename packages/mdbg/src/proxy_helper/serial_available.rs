@@ -45,6 +45,60 @@ struct HubState {
     subscribers: HashMap<u64, Sender<ProxyEvent>>,
 }
 
+/// The fields that make a port *that* port. Deliberately excludes `description`,
+/// which [`AvailablePort`] documents as informational and never an identity key.
+///
+/// This distinction is not pedantry. On Windows the description is assembled from
+/// `usb.manufacturer` and `usb.product`, and the serial number from
+/// `usb.serial_number` — all SetupDi registry reads that can transiently come back
+/// `None` for a composite device while one of its interfaces is open. Comparing
+/// whole `AvailablePort` values made every such blip look like a device change and
+/// broadcast a revision to every subscriber, once per poll, indefinitely.
+type PortIdentity<'a> = (&'a str, Option<u16>, Option<u16>, Option<&'a str>);
+
+fn identity(p: &AvailablePort) -> PortIdentity<'_> {
+    (p.path.as_str(), p.vid, p.pid, p.serial.as_deref())
+}
+
+/// Do these two snapshots describe the same set of devices? Both sides are sorted
+/// by path before this is called.
+fn same_devices(a: &[AvailablePort], b: &[AvailablePort]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| identity(x) == identity(y))
+}
+
+/// Merge a fresh reading over the stored one for a device we already knew about.
+///
+/// An empty description in the new reading is missing information, not news: keep
+/// what we had. A non-empty one wins, so a genuinely updated string still lands.
+fn merge_cosmetic(old: &AvailablePort, new: &AvailablePort) -> AvailablePort {
+    let mut merged = new.clone();
+    if merged.description.trim().is_empty() {
+        merged.description = old.description.clone();
+    }
+    merged
+}
+
+/// Human-readable diff for the log. Counts alone ("1 -> 1 ports") say nothing when
+/// the count is what stayed the same.
+fn describe_change(old: &[AvailablePort], new: &[AvailablePort]) -> String {
+    let mut parts = Vec::new();
+    for n in new {
+        if !old.iter().any(|o| identity(o) == identity(n)) {
+            parts.push(format!("+{}", n.path));
+        }
+    }
+    for o in old {
+        if !new.iter().any(|n| identity(n) == identity(o)) {
+            parts.push(format!("-{}", o.path));
+        }
+    }
+    if parts.is_empty() {
+        "no identity change".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
 /// Shared serial-availability snapshot and subscriber registry.
 pub struct SerialAvailabilityHub {
     state: Mutex<HubState>,
@@ -101,18 +155,36 @@ impl SerialAvailabilityHub {
 
         let (revision, snapshot, subscribers) = {
             let mut state = self.state.lock_recover();
-            if state.ports == new_ports {
-                log::debug!("Serial availability refresh: no change");
+
+            if same_devices(&state.ports, &new_ports) {
+                // Same devices. Absorb any improved metadata into the stored snapshot,
+                // but do not bump the revision and do not wake a single subscriber --
+                // nothing they care about has changed.
+                let merged: Vec<AvailablePort> = state
+                    .ports
+                    .iter()
+                    .zip(new_ports.iter())
+                    .map(|(old, new)| merge_cosmetic(old, new))
+                    .collect();
+                if merged != state.ports {
+                    log::debug!("Serial availability refresh: metadata updated, no device change");
+                    state.ports = merged;
+                } else {
+                    log::debug!("Serial availability refresh: no change");
+                }
                 return;
             }
+
             let old_count = state.ports.len();
+            let diff = describe_change(&state.ports, &new_ports);
             state.ports = new_ports;
             state.revision += 1;
             log::info!(
-                "Serial availability changed: revision {} ({} -> {} ports), subscribers={}",
+                "Serial availability changed: revision {} ({} -> {} ports) [{}], subscribers={}",
                 state.revision,
                 old_count,
                 state.ports.len(),
+                diff,
                 state.subscribers.len()
             );
             (
@@ -223,7 +295,10 @@ pub fn start_serial_available_watcher(hub: Arc<SerialAvailabilityHub>) -> Sender
                     break;
                 }
                 Ok(WatchSignal::Trigger) => {
-                    log::info!("Serial availability watcher trigger received");
+                    // Debug, not info: on Windows this is the poll timer and fires forever
+                    // whether or not anything changed. At info it reads like activity and
+                    // buries the "availability changed" lines that actually mean something.
+                    log::debug!("Serial availability watcher trigger received");
                     // Debounce bursty re-enumeration storms.
                     loop {
                         match signal_rx.recv_timeout(Duration::from_millis(250)) {
@@ -278,9 +353,21 @@ fn create_platform_watcher(signal_tx: Sender<WatchSignal>) -> anyhow::Result<imp
     Ok(watcher)
 }
 
+/// How often the Windows fallback re-enumerates.
+///
+/// This was 750ms, which combined with the 250ms debounce below to re-enumerate
+/// almost exactly once per second, forever. Device arrival and removal is a
+/// human-scale event; 2s is responsive enough and costs a quarter as much.
+///
+/// The real fix is a native watcher (`CM_Register_Notification` on
+/// `GUID_DEVINTERFACE_COMPORT`) so Windows behaves like macOS and Linux, where
+/// nothing is enumerated at all while nothing changes.
+#[cfg(target_os = "windows")]
+const WINDOWS_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
 #[cfg(target_os = "windows")]
 fn create_platform_watcher(signal_tx: Sender<WatchSignal>) -> anyhow::Result<impl PlatformWatcher> {
-    Ok(PollingWatcher::new(signal_tx, Duration::from_millis(750)))
+    Ok(PollingWatcher::new(signal_tx, WINDOWS_POLL_INTERVAL))
 }
 
 /// A drop-based guard that owns a background polling thread.
@@ -333,5 +420,124 @@ impl Drop for PollingWatcher {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn port(path: &str, desc: &str, serial: Option<&str>) -> AvailablePort {
+        AvailablePort {
+            path: path.to_string(),
+            description: desc.to_string(),
+            vid: Some(0x04b4),
+            pid: Some(0xf155),
+            serial: serial.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn identical_snapshots_are_the_same_devices() {
+        let a = vec![port("COM3", "KitProg3 USB-UART", Some("ABC123"))];
+        let b = a.clone();
+        assert!(same_devices(&a, &b));
+    }
+
+    /// The Windows storm: SetupDi intermittently returns partial USB metadata, so
+    /// the description flaps while the device list is completely unchanged.
+    #[test]
+    fn flapping_description_is_not_a_device_change() {
+        let a = vec![port("COM3", "Cypress KitProg3 USB-UART", Some("ABC123"))];
+        let b = vec![port("COM3", "", Some("ABC123"))];
+        assert_ne!(a, b, "whole-struct equality is what used to fire the storm");
+        assert!(same_devices(&a, &b), "identity must ignore description");
+    }
+
+    #[test]
+    fn flapping_serial_number_is_a_device_change() {
+        // serial IS identity: if it really changed, it is a different device.
+        let a = vec![port("COM3", "KitProg3", Some("ABC123"))];
+        let b = vec![port("COM3", "KitProg3", None)];
+        assert!(!same_devices(&a, &b));
+    }
+
+    #[test]
+    fn arrival_and_removal_are_device_changes() {
+        let one = vec![port("COM3", "KitProg3", Some("ABC123"))];
+        let two = vec![
+            port("COM3", "KitProg3", Some("ABC123")),
+            port("COM4", "FTDI", Some("FT9999")),
+        ];
+        assert!(!same_devices(&one, &two), "arrival");
+        assert!(!same_devices(&two, &one), "removal");
+        // Same count, different device — the case a count-based check would miss.
+        let swapped = vec![port("COM4", "FTDI", Some("FT9999"))];
+        assert!(!same_devices(&one, &swapped), "replacement");
+    }
+
+    #[test]
+    fn degraded_metadata_never_overwrites_good_metadata() {
+        let good = port("COM3", "Cypress KitProg3 USB-UART", Some("ABC123"));
+        let degraded = port("COM3", "   ", Some("ABC123"));
+        assert_eq!(
+            merge_cosmetic(&good, &degraded).description,
+            "Cypress KitProg3 USB-UART"
+        );
+    }
+
+    #[test]
+    fn genuinely_updated_metadata_wins() {
+        let old = port("COM3", "old text", Some("ABC123"));
+        let new = port("COM3", "new text", Some("ABC123"));
+        assert_eq!(merge_cosmetic(&old, &new).description, "new text");
+    }
+
+    #[test]
+    fn diff_names_the_ports_that_actually_changed() {
+        let old = vec![port("COM3", "KitProg3", Some("ABC123"))];
+        let new = vec![port("COM4", "FTDI", Some("FT9999"))];
+        let d = describe_change(&old, &new);
+        assert!(d.contains("+COM4"), "got {d}");
+        assert!(d.contains("-COM3"), "got {d}");
+        // A description-only difference is not an identity change.
+        let cosmetic = vec![port("COM3", "", Some("ABC123"))];
+        assert_eq!(describe_change(&old, &cosmetic), "no identity change");
+    }
+
+    /// End to end through the hub: a cosmetic-only refresh must not bump the
+    /// revision, because the revision is what wakes every subscriber.
+    #[test]
+    fn cosmetic_change_does_not_bump_revision() {
+        let hub = SerialAvailabilityHub {
+            state: Mutex::new(HubState {
+                next_subscriber_id: 1,
+                revision: 7,
+                ports: vec![port("COM3", "Cypress KitProg3", Some("ABC123"))],
+                subscribers: HashMap::new(),
+            }),
+        };
+        let (tx, rx) = mpsc::channel();
+        let (_id, rev, _snap) = hub.subscribe(tx);
+        assert_eq!(rev, 7);
+
+        {
+            let mut st = hub.state.lock_recover();
+            let merged: Vec<AvailablePort> = st
+                .ports
+                .iter()
+                .map(|o| merge_cosmetic(o, &port("COM3", "", Some("ABC123"))))
+                .collect();
+            assert!(same_devices(&st.ports, &merged));
+            st.ports = merged;
+        }
+
+        assert_eq!(hub.state.lock_recover().revision, 7, "revision must not move");
+        assert!(rx.try_recv().is_err(), "no subscriber may be woken");
+        assert_eq!(
+            hub.state.lock_recover().ports[0].description,
+            "Cypress KitProg3",
+            "good metadata survives a degraded reading"
+        );
     }
 }

@@ -262,18 +262,52 @@ fn open_port(
         .with_context(|| format!("failed to open serial port '{}'", path))
 }
 
-/// Apply all reconfigurable settings to an already-open serial port.
-fn apply_params(port: &mut Box<dyn serialport::SerialPort>, params: &SerialParams) -> Result<()> {
-    port.set_baud_rate(params.baud_rate)
-        .context("set_baud_rate")?;
-    port.set_data_bits(data_bits_to_serial(params.data_bits))
-        .context("set_data_bits")?;
-    port.set_stop_bits(params.stop_bits.into())
-        .context("set_stop_bits")?;
-    port.set_parity(params.parity.into())
-        .context("set_parity")?;
-    port.set_flow_control(params.flow_control.into())
-        .context("set_flow_control")?;
+/// The subset of [`SerialParams`] that is actually programmed into the UART. The
+/// rest (`label`, `log_file`, transport, selectors) never reaches the driver, so a
+/// change to any of them must not trigger the expensive work below.
+fn line_settings_equal(a: &SerialParams, b: &SerialParams) -> bool {
+    a.baud_rate == b.baud_rate
+        && a.data_bits == b.data_bits
+        && a.stop_bits == b.stop_bits
+        && a.parity == b.parity
+        && a.flow_control == b.flow_control
+}
+
+/// Reprogram only the line settings that differ from `current`.
+///
+/// Each setter is a `GetCommState`+`SetCommState` pair on Windows, and on a USB CDC
+/// device — especially a composite one like KitProg3, where the CDC function shares
+/// the USB pipe with debug traffic — each pair round-trips to the device. All five
+/// setters measured 3.37s on real hardware, on the single-threaded message loop.
+/// Only settings that genuinely changed are worth that.
+///
+/// A freshly opened port is configured by the `serialport` builder in [`open_port`],
+/// not here, so there is always a known current state to compare against.
+fn apply_params(
+    port: &mut Box<dyn serialport::SerialPort>,
+    params: &SerialParams,
+    current: &SerialParams,
+) -> Result<()> {
+    if current.baud_rate != params.baud_rate {
+        port.set_baud_rate(params.baud_rate)
+            .context("set_baud_rate")?;
+    }
+    if current.data_bits != params.data_bits {
+        port.set_data_bits(data_bits_to_serial(params.data_bits))
+            .context("set_data_bits")?;
+    }
+    if current.stop_bits != params.stop_bits {
+        port.set_stop_bits(params.stop_bits.into())
+            .context("set_stop_bits")?;
+    }
+    if current.parity != params.parity {
+        port.set_parity(params.parity.into())
+            .context("set_parity")?;
+    }
+    if current.flow_control != params.flow_control {
+        port.set_flow_control(params.flow_control.into())
+            .context("set_flow_control")?;
+    }
     Ok(())
 }
 
@@ -388,9 +422,24 @@ impl PortHandle {
     /// The new settings take effect on the reader thread's very next read because
     /// both `config_port` and the reader's clone share the same underlying fd.
     pub fn reconfigure(&self, params: &SerialParams) -> Result<()> {
+        // A re-open of an already-open port arrives here with the same settings it
+        // was opened with, and this is called from the single-threaded message loop.
+        // Reprogramming a UART to the values it already holds cost 3.37s of blocked
+        // loop on real hardware, so an unchanged request must do no I/O at all.
+        {
+            let current = self.params.lock_recover();
+            if line_settings_equal(&current, params) {
+                drop(current);
+                *self.params.lock_recover() = params.clone();
+                return Ok(());
+            }
+        }
+
         let mut port = self.config_port.lock_recover();
-        apply_params(&mut port, params)
+        let current = self.params.lock_recover().clone();
+        apply_params(&mut port, params, &current)
             .with_context(|| format!("reconfigure failed for '{}'", self.path))?;
+        drop(port);
         *self.params.lock_recover() = params.clone();
         Ok(())
     }
@@ -601,5 +650,84 @@ impl Drop for PortHandle {
     fn drop(&mut self) {
         self.close();
         // config_port Mutex drops here → second (last) fd reference released.
+    }
+}
+
+#[cfg(test)]
+mod line_settings_tests {
+    use super::*;
+
+    fn params() -> SerialParams {
+        SerialParams {
+            path: Some("COM3".into()),
+            description: None,
+            serial: None,
+            vid: None,
+            pid: None,
+            baud_rate: 115200,
+            data_bits: 8,
+            stop_bits: StopBits::One,
+            parity: Parity::None,
+            flow_control: FlowControl::None,
+            transport: SerialTransport::default(),
+            log_file: None,
+            input_mode: None,
+            label: None,
+        }
+    }
+
+    /// The re-open case: an already-open port is asked to open again with the very
+    /// same settings. Reprogramming the UART there cost 3.37s of blocked message
+    /// loop, so this must be recognised as a no-op.
+    #[test]
+    fn identical_params_need_no_reprogramming() {
+        assert!(line_settings_equal(&params(), &params()));
+    }
+
+    #[test]
+    fn each_line_setting_is_detected() {
+        let base = params();
+
+        let mut p = params();
+        p.baud_rate = 9600;
+        assert!(!line_settings_equal(&base, &p), "baud_rate");
+
+        let mut p = params();
+        p.data_bits = 7;
+        assert!(!line_settings_equal(&base, &p), "data_bits");
+
+        let mut p = params();
+        p.stop_bits = StopBits::Two;
+        assert!(!line_settings_equal(&base, &p), "stop_bits");
+
+        let mut p = params();
+        p.parity = Parity::Even;
+        assert!(!line_settings_equal(&base, &p), "parity");
+
+        let mut p = params();
+        p.flow_control = FlowControl::Hardware;
+        assert!(!line_settings_equal(&base, &p), "flow_control");
+    }
+
+    /// Fields that never reach the driver must not trigger device I/O.
+    #[test]
+    fn non_line_fields_do_not_force_reprogramming() {
+        let base = params();
+
+        let mut p = params();
+        p.label = Some("my board".into());
+        assert!(line_settings_equal(&base, &p), "label");
+
+        let mut p = params();
+        p.log_file = Some("/tmp/serial.log".into());
+        assert!(line_settings_equal(&base, &p), "log_file");
+
+        let mut p = params();
+        p.description = Some("kitprog3".into());
+        assert!(line_settings_equal(&base, &p), "description/selector");
+
+        let mut p = params();
+        p.input_mode = Some("raw".into());
+        assert!(line_settings_equal(&base, &p), "input_mode");
     }
 }
