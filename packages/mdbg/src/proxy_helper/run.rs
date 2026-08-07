@@ -138,7 +138,7 @@ fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
         .log_dir
         .clone()
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("mdbg").join("proxy-logs"));
+        .unwrap_or_else(|| std::env::temp_dir().join("mcu-debug").join("proxy-logs"));
 
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)

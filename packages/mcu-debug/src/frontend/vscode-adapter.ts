@@ -155,8 +155,8 @@ export class VscodeAdapter implements IHostAdapter {
         return result?.label;
     }
 
-    createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, tcpPort: number): ISerialPortView {
-        return SerialPortView.createOrGetTab(device, serialConfig, isNew, tcpPort);
+    createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, host: string, tcpPort: number): ISerialPortView {
+        return SerialPortView.createOrGetTab(device, serialConfig, isNew, host, tcpPort);
     }
 }
 export class VSCodeOutputChannel implements IOutputChannel {

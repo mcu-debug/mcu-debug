@@ -17,7 +17,7 @@ export class CLISerialPortView implements ISerialPortView {
     private lineBuffer: LineBuffer;
     private static existingPrefixes = new Set<string>();
 
-    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
+    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private host: string, private tcpPort: number = 0) {
         let label = serialConfig.label ? trimBrackets(serialConfig.label) : path.basename(device);
         let counter = 1;
         const baseLabel = label;
@@ -107,10 +107,11 @@ export class CLISerialPortView implements ISerialPortView {
         this.setState({ kind: "active" });
     }
 
-    setTcpPort(port: number) {
-        if (this.tcpPort === port && this.socket && !this.socket.destroyed) {
+    setTcpPort(host: string, port: number) {
+        if (this.tcpPort === port && this.host === host && this.socket && !this.socket.destroyed) {
             return;
         }
+        this.host = host;
         this.tcpPort = port;
         this.restartSocket();
     }
@@ -153,9 +154,9 @@ export class CLISerialPortView implements ISerialPortView {
         this.destroySocket();
         // The helper will create a TCP server for this serial port and report the port number back to us. Once we have the port number, we can connect to it.
         const socket = new net.Socket();
-        socket.connect(this.tcpPort, "127.0.0.1");
+        socket.connect(this.tcpPort, this.host);
         socket.on("connect", () => {
-            getHostAdapter().debugMessage(`Connected to serial port ${this.device} at 127.0.0.1:${this.tcpPort}`);
+            getHostAdapter().debugMessage(`Connected to serial port ${this.device} at ${this.host}:${this.tcpPort}`);
             this.socket = socket;
         });
         socket.on("data", (data) => {

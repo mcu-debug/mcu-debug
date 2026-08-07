@@ -156,8 +156,8 @@ export class CliAdapter implements IHostAdapter {
     loadFunctionSymbols(session: any): SymbolInformation[] {
         return [];
     }
-    createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, tcpPort: number): ISerialPortView {
-        const port = new CLISerialPortView(device, serialConfig, false, tcpPort);
+    createSerialPortView(device: string, serialConfig: SerialParams, isNew: boolean, host: string, tcpPort: number): ISerialPortView {
+        const port = new CLISerialPortView(device, serialConfig, false, host, tcpPort);
         this.serialPortViews.push(port);
         return port;
     }

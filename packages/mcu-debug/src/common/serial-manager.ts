@@ -147,6 +147,13 @@ export class ProxyConnection {
         }
     }
 
+    public getHostAddress(): string {   // Address or name to to use when making connections
+        if (this.socket && this.socket.remoteAddress) {
+            return this.socket.remoteAddress;
+        }
+        return this.proxyInfo?.host || "127.0.0.1";
+    }
+
     public connect(hostConfig: HostConfig): Promise<boolean> {
         // Transport is a property of THIS proxy's topology, not the workspace: a
         // local proxy is directly reachable; any remote proxy must funnel over
@@ -190,13 +197,6 @@ export class ProxyConnection {
                 socket.destroy();
                 resolve(false);
             });
-            /*
-            socket.once("timeout", () => {
-                socket.destroy();
-                resolve(false);
-            });
-            socket.setTimeout(1000);
-            */
             socket.connect(port, host);
         });
     }
@@ -803,6 +803,10 @@ export class SerialPortManager implements ProxyConnectionDelegate {
                     this.logError(`Failed to open serial port ${sel}`);
                     continue;
                 }
+                // TODO: Remove following debug stuff
+                const pInfoStr = JSON.stringify(pInfo);
+                const configStr = JSON.stringify(portConfig);
+                this.logInfo(`Serial port ${configStr} opened successfully on proxy ${pInfoStr}`);
                 this.createOrUpdateViewWithSerialInfo(conn, pInfo, portConfig, true);
             } catch (e: any) {
                 const sel = portConfig.path ?? portConfig.serial ?? `vid=${portConfig.vid} pid=${portConfig.pid}`;
@@ -824,24 +828,29 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         const key = this.ckey(conn, actualPath);
         this.serialPortConfigs.set(key, { ...portConfig, path: actualPath });
         let tcpPort = pInfo.tcp_port || 0;
-        if (pInfo.channel_id) {
+        if (pInfo.channel_id && !pInfo.tcp_port) {
             const server = conn.ensureStreamServer("127.0.0.1", actualPath, pInfo.channel_id);
-            tcpPort = pInfo.tcp_port || server.getPort() || 0;
+            tcpPort = server.getPort() || 0;
+        }
+        if (tcpPort <= 0) {
+            this.logError(`Serial port ${actualPath} has no TCP port assigned; cannot create view.`);
+            return;
         }
         let view = this.serialPortViews.get(key);
+        const host = conn.getHostAddress();
         if (view) {
-            view.setTcpPort(tcpPort);
+            view.setTcpPort(host, tcpPort);
             view.setLogFile(log_file ?? undefined);
             view.setInputMode(input_mode ?? undefined);
         } else {
-            view = getHostAdapter().createSerialPortView(actualPath, { ...portConfig, path: actualPath }, isNew, tcpPort);
+            view = getHostAdapter().createSerialPortView(actualPath, { ...portConfig, path: actualPath }, isNew, host, tcpPort);
             this.serialPortViews.set(key, view);
             view.emitter.on("close", () => {
                 this.removeSerialPortTab(conn, actualPath);
             });
         }
         if (isNew) {
-            view.notifyConnected(`Serial port ${actualPath} opened successfully on initial launch on tcp port 127.0.0.1:${tcpPort}`);
+            view.notifyConnected(`Serial port ${actualPath} opened successfully on initial launch on tcp port ${host}:${tcpPort}`);
         } else {
             view.notifyReconnected();
         }
