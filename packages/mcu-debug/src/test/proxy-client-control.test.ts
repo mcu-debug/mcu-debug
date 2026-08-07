@@ -76,8 +76,21 @@ function makeClient(): any {
     return new ProxyClient(session, {} as any);
 }
 
-async function connect(client: any, port: number): Promise<void> {
-    assert.equal(await client.connectToProxy("127.0.0.1", port), true, "fake proxy must accept the connection");
+/** Poll until `pred` holds. A fixed sleep here races the socket 'close' event. */
+async function waitFor(pred: () => boolean, what: string, ms = 5000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (!pred()) {
+        if (Date.now() > deadline) { throw new Error(`timed out waiting for: ${what}`); }
+        await new Promise((r) => setTimeout(r, 5));
+    }
+}
+
+async function connect(client: any, fake: FakeProxy): Promise<void> {
+    assert.equal(await client.connectToProxy("127.0.0.1", fake.port), true, "fake proxy must accept the connection");
+    // connectToProxy resolves on the *client's* connect event, which can run before the
+    // server has accepted. Tests that reach into fake.sockets (to drop the peer) need the
+    // accept to have happened, or they silently drop nothing and wait forever.
+    await waitFor(() => fake.sockets.length > 0, "fake proxy to accept the connection");
 }
 
 test("a control command that is never answered times out, names itself, and leaks nothing", async (t) => {
@@ -86,7 +99,7 @@ test("a control command that is never answered times out, names itself, and leak
     const client = makeClient();
     t.after(() => fake.close());
 
-    await connect(client, fake.port);
+    await connect(client, fake);
     const before = client.pendingPromises.size;
 
     const cmd = { seq: client.nextSeq++, method: "neverAnswered" };
@@ -105,7 +118,7 @@ test("an error reply is reported as the proxy's error, not as a timeout", async 
     const client = makeClient();
     t.after(() => fake.close());
 
-    await connect(client, fake.port);
+    await connect(client, fake);
     const err = await client
         .sendControlCommand({ seq: client.nextSeq++, method: "startGdbServer" }, 2000)
         .then(() => null, (e: Error) => e);
@@ -122,7 +135,7 @@ test("a successful command settles and removes its pending entry", async (t) => 
     const client = makeClient();
     t.after(() => fake.close());
 
-    await connect(client, fake.port);
+    await connect(client, fake);
     await client.sendControlCommand({ seq: client.nextSeq++, method: "initialize" }, 2000);
     assert.equal(client.pendingPromises.size, 0, "no entry left after a normal response");
 });
@@ -135,10 +148,9 @@ test("a dropped socket fails in-flight commands instead of hanging them", async 
     const client = makeClient();
     t.after(() => fake.close());
 
-    await connect(client, fake.port);
+    await connect(client, fake);
     // No timeout at all: the socket closing is the only thing that can settle this.
     const inFlight = client.sendControlCommand({ seq: client.nextSeq++, method: "slowOne" }, 0);
-    await new Promise((r) => setTimeout(r, 30));
     assert.equal(client.pendingPromises.size, 1, "command is in flight");
 
     fake.dropClients();
@@ -155,9 +167,11 @@ test("commands sent after the socket is gone reject immediately and name themsel
     const client = makeClient();
     t.after(() => fake.close());
 
-    await connect(client, fake.port);
+    await connect(client, fake);
     fake.dropClients();
-    await new Promise((r) => setTimeout(r, 30));
+    // The client only knows the socket is gone once its 'close' handler runs; sleeping a
+    // fixed interval here is a race, and made this test fail roughly two runs in five.
+    await waitFor(() => client.socket === null, "client to notice the socket closed");
 
     const err = await client
         .sendControlCommand({ seq: client.nextSeq++, method: "endSession" }, 2000)

@@ -25,6 +25,24 @@ import { getHostAdapter, ISerialPortView } from "./host-adapter";
 
 const PROXY_TIMOUT = 5000;
 
+/**
+ * Host a serial view connects to. Always loopback, and never the proxy's address.
+ *
+ * Both transports terminate at a loopback listener on *this* machine:
+ *
+ * - **Funnel** (remote proxies): the listener is ours — `ProxySerialTcpServer`,
+ *   created a few lines below and bound to this address. The bytes reach the
+ *   remote port through the control socket, not through this TCP connection.
+ * - **Direct** (local proxies only): the listener is the proxy's `TcpBridge`,
+ *   which binds `127.0.0.1` (see `proxy_server/serial.rs`). Direct is never
+ *   selected for a remote proxy, so the bridge is always on this machine.
+ *
+ * The control connection's host is a separate question with a separate answer —
+ * the proxy may be bound to `0.0.0.0` or reached over a WSL/vEthernet address —
+ * and using it here connects the view to the wrong machine, or to nothing.
+ */
+const SERIAL_VIEW_HOST = "127.0.0.1";
+
 interface ProxyConnectionInfo {
     host: string;
     port: number;
@@ -145,13 +163,6 @@ export class ProxyConnection {
             this.socket = null;
             this.proxyInfo = null;
         }
-    }
-
-    public getHostAddress(): string {   // Address or name to to use when making connections
-        if (this.socket && this.socket.remoteAddress) {
-            return this.socket.remoteAddress;
-        }
-        return this.proxyInfo?.host || "127.0.0.1";
     }
 
     public connect(hostConfig: HostConfig): Promise<boolean> {
@@ -889,7 +900,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         this.serialPortConfigs.set(key, { ...portConfig, path: actualPath });
         let tcpPort = pInfo.tcp_port || 0;
         if (pInfo.channel_id && !pInfo.tcp_port) {
-            const server = conn.ensureStreamServer("127.0.0.1", actualPath, pInfo.channel_id);
+            const server = conn.ensureStreamServer(SERIAL_VIEW_HOST, actualPath, pInfo.channel_id);
             tcpPort = server.getPort() || 0;
         }
         if (tcpPort <= 0) {
@@ -897,7 +908,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
             return;
         }
         let view = this.serialPortViews.get(key);
-        const host = conn.getHostAddress();
+        const host = SERIAL_VIEW_HOST;
         if (view) {
             view.setTcpPort(host, tcpPort);
             view.setLogFile(log_file ?? undefined);
