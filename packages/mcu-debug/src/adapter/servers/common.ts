@@ -1211,14 +1211,23 @@ export function copyInterfaceProperties<T extends object, S extends T>(source: S
 
 export function awaitWithTimeout<T>(p: Promise<T>, timeout: number): Promise<T> {
     // A promise that rejects after 'timeout' milliseconds
+    let timer: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
+        timer = setTimeout(() => {
             reject(new Error(`Execution timeout of ${timeout}ms reached`));
         }, timeout);
+        timer.unref();
     });
 
-    // Race the original promise against the timeout promise
-    return Promise.race([p, timeoutPromise]);
+    // Race the original promise against the timeout promise. Clear the timer however the race
+    // ends -- a bare race leaves it armed for the full duration even when `p` settled at once,
+    // holding the closure alive with it.
+    return Promise.race([p, timeoutPromise]).finally(() => {
+        if (timer) {
+            clearTimeout(timer);
+            timer = undefined;
+        }
+    });
 }
 
 /**

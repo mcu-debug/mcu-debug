@@ -100,7 +100,12 @@ class FakeProxy {
     // (frame atomicity — what the real funnel guarantees).
     private queues = new Map<net.Socket, { chunks: Buffer[]; draining: boolean }>();
 
-    constructor(private availablePorts: any[], private opts: { splitWrites?: boolean } = {}) {
+    constructor(
+        private availablePorts: any[],
+        // silent: methods to swallow entirely (forces the client-side timeout to fire)
+        // errors: methods to answer with success:false and the given message
+        private opts: { splitWrites?: boolean; silent?: string[]; errors?: Record<string, string> } = {},
+    ) {
         this.server = net.createServer((socket) => {
             this.sockets.push(socket);
             let buf = Buffer.alloc(0);
@@ -171,6 +176,14 @@ class FakeProxy {
 
     private onControl(socket: net.Socket, msg: any) {
         const seq = msg.seq;
+        if (this.opts.silent?.includes(msg.method)) {
+            return; // never answer — the client must time itself out
+        }
+        const errMsg = this.opts.errors?.[msg.method];
+        if (errMsg !== undefined) {
+            this.reply(socket, { seq, success: false, message: errMsg });
+            return;
+        }
         switch (msg.method) {
             case "serial.subscribeAvailable":
                 this.reply(socket, { seq, success: true, data: {} });
@@ -310,6 +323,67 @@ test("control frames split across TCP writes are reassembled", async (t) => {
     // subscribe reply + availableChanged both arrived split; the snapshot landed.
     await waitFor(() => conn.getCurrentSerialPorts().length === 1);
     assert.equal(conn.getCurrentSerialPorts()[0].path, "/dev/ttyACM0");
+});
+
+// sendControlCommand owns its own timeout so that (a) the message can name the command that
+// hung and (b) the pendingPromises entry is dropped. An outer awaitWithTimeout wrapper could do
+// neither — it abandoned the map entry, and it relabelled every failure as a timeout.
+test("a control command that is never answered times out, names itself, and leaks nothing", async (t) => {
+    const fake = new FakeProxy([avail("/dev/ttyACM0")], { silent: ["serial.listOpen"] });
+    await fake.listen();
+
+    const conn = new ProxyConnection("timeout", { onPortError() { } }, "local");
+    t.after(() => { conn.dispose(); fake.close(); });
+    assert.equal(await conn.connect(localCfg(fake.port)), true);
+
+    const priv = conn as any;
+    const pending: Map<number, unknown> = priv.pendingPromises;
+    const before = pending.size;
+
+    const cmd = { seq: priv.nextSeq++, method: "serial.listOpen" };
+    const err = await priv.sendControlCommand(cmd, 60).then(
+        () => null,
+        (e: Error) => e,
+    );
+
+    assert.ok(err, "must reject");
+    assert.match(err.message, /timed out after 60ms/, "reports a timeout");
+    assert.match(err.message, /serial\.listOpen/, "names the method that hung");
+    assert.match(err.message, new RegExp(`seq ${cmd.seq}`), "names the seq that hung");
+    assert.equal(pending.size, before, "the timed-out entry must not be left behind");
+});
+
+test("an error reply is reported as the proxy's error, not as a timeout", async (t) => {
+    const fake = new FakeProxy([avail("/dev/ttyACM0")], { errors: { "serial.listOpen": "device is busy" } });
+    await fake.listen();
+
+    const conn = new ProxyConnection("errreply", { onPortError() { } }, "local");
+    t.after(() => { conn.dispose(); fake.close(); });
+    assert.equal(await conn.connect(localCfg(fake.port)), true);
+
+    const priv = conn as any;
+    const err = await priv.sendControlCommand({ seq: priv.nextSeq++, method: "serial.listOpen" }, 2000).then(
+        () => null,
+        (e: Error) => e,
+    );
+
+    assert.ok(err, "must reject");
+    assert.equal(err.message, "device is busy", "surfaces the proxy's own message");
+    assert.doesNotMatch(err.message, /timed out/, "a proxy error is not a timeout");
+    assert.equal(priv.pendingPromises.size, 0, "answered entry is removed");
+});
+
+test("a successful command settles and removes its pending entry", async (t) => {
+    const fake = new FakeProxy([avail("/dev/ttyACM0")]);
+    await fake.listen();
+
+    const conn = new ProxyConnection("okreply", { onPortError() { } }, "local");
+    t.after(() => { conn.dispose(); fake.close(); });
+    assert.equal(await conn.connect(localCfg(fake.port)), true);
+
+    const priv = conn as any;
+    await priv.sendControlCommand({ seq: priv.nextSeq++, method: "serial.listOpen" }, 2000);
+    assert.equal(priv.pendingPromises.size, 0, "no entry left after a normal response");
 });
 
 test("portError is delegated with the originating connection", async (t) => {

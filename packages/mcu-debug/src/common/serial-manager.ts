@@ -18,7 +18,7 @@ import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { AvailablePort } from "@mcu-debug/shared/serial-helper/AvailablePort";
 import { SerialPortInfo } from "@mcu-debug/shared/proxy-protocol/SerialPortInfo";
 import { SerialErrorKind } from "@mcu-debug/shared/serial-helper/SerialErrorKind";
-import { awaitWithTimeout, ConfigurationArguments, HostConfig, SerialConfig } from "../adapter/servers/common";
+import { ConfigurationArguments, HostConfig, SerialConfig } from "../adapter/servers/common";
 import { getProxyForSerialPorts } from "./proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { getHostAdapter, ISerialPortView } from "./host-adapter";
@@ -189,7 +189,8 @@ export class ProxyConnection {
                 this.socket = socket;
                 this.proxyInfo = { host: host, port: port, token };
                 await this.subscribeToSerialAvailability();
-                this.startHeartbeat();
+                // TODO: See if we need a heartbeat and what its frequency should be
+                // this.startHeartbeat();
                 resolve(true);
             });
             socket.once("error", (e) => {
@@ -236,7 +237,7 @@ export class ProxyConnection {
             method: "serial.subscribeAvailable",
         };
         try {
-            await awaitWithTimeout(this.sendControlCommand(controlMsg), PROXY_TIMOUT);
+            await this.sendControlCommand(controlMsg, PROXY_TIMOUT);
             await this.waitForAvailableSnapshot(PROXY_TIMOUT);
         } catch (err) {
             this.logInfo(`serial.subscribeAvailable failed or timed out; falling back to on-demand list: ${err}`);
@@ -262,18 +263,58 @@ export class ProxyConnection {
         }, 30_000);
     }
 
-    private sendControlCommand(cmd: ControlMessage): Promise<any> {
+    /**
+     * Send a control command and wait for the proxy's response.
+     *
+     * The timeout belongs here rather than in a wrapper around the call, for two reasons. It can
+     * name the command that hung -- and it can drop the entry from `pendingPromises`. An outer
+     * timeout racing this promise abandons that entry forever, which against a wedged proxy makes
+     * the 30s heartbeat an unbounded leak.
+     *
+     * @param useTimeout milliseconds to wait. <= 0 waits indefinitely, until a response or dispose().
+     */
+    private sendControlCommand(cmd: ControlMessage, useTimeout: number = PROXY_TIMOUT): Promise<any> {
         if (!this.socket) {
             this.logError("Proxy socket is not connected");
-            return Promise.reject(new Error("Proxy socket is not connected"));
+            return Promise.reject(new Error(`Proxy socket is not connected ('${cmd.method}' seq ${cmd.seq})`));
         }
-        const msg = JSON.stringify(cmd);
-        const buffer = Buffer.from(msg, "utf-8");
-        this.sendCommandBytes(0, buffer);
-        const ret = new Promise((resolve, reject) => {
-            this.pendingPromises.set(cmd.seq, { resolve, reject });
+
+        return new Promise((resolve, reject) => {
+            let timer: NodeJS.Timeout | undefined;
+            // Every exit goes through here, so the map entry and the timer are released exactly
+            // once regardless of who wins the race -- response, timeout, or dispose().
+            const settle = (done: (arg?: any) => void, arg?: any) => {
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = undefined;
+                }
+                this.pendingPromises.delete(cmd.seq);
+                done(arg);
+            };
+
+            this.pendingPromises.set(cmd.seq, {
+                resolve: (value: any) => settle(resolve, value),
+                reject: (reason: any) => settle(reject, reason),
+            });
+
+            if (useTimeout > 0) {
+                timer = setTimeout(() => {
+                    // Only an actual timeout is reported as one. Errors returned by the proxy are
+                    // logged by the response handler; the previous version relabelled them all as
+                    // timeouts, including "socket is not connected".
+                    const msg = `Proxy command '${cmd.method}' (seq ${cmd.seq}) timed out after ${useTimeout}ms`;
+                    this.logError(msg);
+                    settle(reject, new Error(msg));
+                }, useTimeout);
+                timer.unref();
+            }
+
+            try {
+                this.sendCommandBytes(0, Buffer.from(JSON.stringify(cmd), "utf-8"));
+            } catch (e) {
+                settle(reject, e);
+            }
         });
-        return ret;
     }
 
     public sendCommandBytes(stream_id: number, data: Buffer) {
@@ -395,7 +436,7 @@ export class ProxyConnection {
                 seq: this.nextSeq++,
                 method: "serial.listOpen",
             };
-            const openPorts = await awaitWithTimeout(this.sendControlCommand(controlMsg), PROXY_TIMOUT);
+            const openPorts = await this.sendControlCommand(controlMsg, PROXY_TIMOUT);
             this.logInfo(`Open serial ports: ${JSON.stringify(openPorts)}`);
             this.openPorts = openPorts && openPorts["serial.listOpen"] ? openPorts["serial.listOpen"].ports : [];
             return this.openPorts;
@@ -421,7 +462,7 @@ export class ProxyConnection {
                 seq: this.nextSeq++,
                 method: "serial.listAvailable",
             };
-            const availPorts = await awaitWithTimeout(this.sendControlCommand(controlMsg), PROXY_TIMOUT);
+            const availPorts = await this.sendControlCommand(controlMsg, PROXY_TIMOUT);
             if (!silent) {
                 this.logInfo(`Available serial ports: ${JSON.stringify(availPorts)}`);
             }
@@ -445,7 +486,7 @@ export class ProxyConnection {
                 method: "serial.open",
                 params: serialParams,
             };
-            const result = await awaitWithTimeout(this.sendControlCommand(controlMsg), PROXY_TIMOUT);
+            const result = await this.sendControlCommand(controlMsg, PROXY_TIMOUT);
             const openInfo = (result && result["serial.open"] ? result["serial.open"] : null) as SerialPortInfo | null;
             if (!openInfo) {
                 return null;
@@ -797,7 +838,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         const serialConfig = args.serialConfig;
         for (const portConfig of serialConfig.ports) {
             try {
-                const pInfo = await conn.openSerialPort(portConfig) as SerialPortInfo | null;
+                const pInfo = await conn.openSerialPort(portConfig);
                 if (!pInfo) {
                     const sel = portSel(portConfig);
                     this.logError(`Failed to open serial port ${sel}`);
