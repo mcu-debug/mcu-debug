@@ -147,6 +147,17 @@ export class ProxyConnection {
     private availablePorts: AvailablePort[] = [];
     private openPorts: SerialPortInfo[] = [];
     private pendingAvailableSnapshotResolvers: Array<() => void> = [];
+    /**
+     * Funnel bytes that arrived before their stream was registered.
+     *
+     * The proxy allocates the channel and starts replaying the port's ring buffer as soon
+     * as `serial.open` is handled -- so the first bytes can share a TCP segment with the
+     * response itself. Registration happens several microtasks later, once the response
+     * has propagated back through openSerialPort to the view. Dropping what lands in that
+     * window discards exactly the buffered history the proxy keeps to solve the "boot
+     * banner lost" problem, so it is held here until the stream appears.
+     */
+    private earlyStreamData: Map<number, { chunks: Buffer[]; bytes: number }> = new Map();
 
     constructor(public readonly key: ProxyKey, private delegate: ProxyConnectionDelegate, public label: string = key) { }
 
@@ -397,11 +408,11 @@ export class ProxyConnection {
                     return;
                 }
                 */
-                let server = this.clientStreams.get(stream_id);
+                const server = this.clientStreams.get(stream_id);
                 if (server) {
                     server.dataFromServer(payload, stream_id);
                 } else {
-                    this.logError(`Received data for unknown stream_id ${stream_id}`);
+                    this.bufferEarlyStreamData(stream_id, payload);
                 }
                 return;
             }
@@ -563,6 +574,28 @@ export class ProxyConnection {
      * Get-or-create the funnel TCP server for a port's channel. The stream-id
      * space is owned by this connection, so the map of servers lives here.
      */
+    /** Cap per stream, matching the proxy's own ring so we hold what it would replay. */
+    private static readonly MaxEarlyStreamBytes = 1024 * 1024;
+
+    private bufferEarlyStreamData(stream_id: number, payload: Buffer) {
+        let held = this.earlyStreamData.get(stream_id);
+        if (!held) {
+            held = { chunks: [], bytes: 0 };
+            this.earlyStreamData.set(stream_id, held);
+        }
+        if (held.bytes + payload.length > ProxyConnection.MaxEarlyStreamBytes) {
+            // A stream that never registers must not grow without bound. Report once,
+            // when the cap is first crossed.
+            if (held.bytes <= ProxyConnection.MaxEarlyStreamBytes) {
+                this.logError(`Discarding data for unregistered stream_id ${stream_id}: exceeded ${ProxyConnection.MaxEarlyStreamBytes} bytes`);
+            }
+            held.bytes = ProxyConnection.MaxEarlyStreamBytes + 1;
+            return;
+        }
+        held.chunks.push(payload);
+        held.bytes += payload.length;
+    }
+
     public ensureStreamServer(host: string, path: string, channel_id: number): ProxySerialTcpServer {
         let server = this.clientStreams.get(channel_id);
         if (server) {
@@ -570,6 +603,16 @@ export class ProxyConnection {
         } else {
             server = new ProxySerialTcpServer(host, path, channel_id, this);
             this.clientStreams.set(channel_id, server);
+        }
+        // Hand over anything that arrived before this stream existed, in arrival order and
+        // ahead of any live byte, so the history the proxy replayed is not reordered.
+        const held = this.earlyStreamData.get(channel_id);
+        if (held) {
+            this.earlyStreamData.delete(channel_id);
+            this.logInfo(`Delivering ${held.bytes} byte(s) buffered for stream_id ${channel_id} before it was registered`);
+            for (const chunk of held.chunks) {
+                server.dataFromServer(chunk, channel_id);
+            }
         }
         return server;
     }
@@ -617,6 +660,7 @@ export class ProxyConnection {
             server.close();
         }
         this.clientStreams.clear();
+        this.earlyStreamData.clear();
         this.destroySocket();
         for (const { reject } of this.pendingPromises.values()) {
             reject(new Error("Proxy connection disposed"));
@@ -761,7 +805,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
                 if (actualPath !== configPath) {
                     this.serialPortConfigs.delete(this.ckey(conn, configPath ?? ''));
                 }
-                this.createOrUpdateViewWithSerialInfo(conn, result, reconnectViewConfig, false);
+                await this.createOrUpdateViewWithSerialInfo(conn, result, reconnectViewConfig, false);
                 return;
             }
         } catch {
@@ -878,7 +922,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
                 const pInfoStr = JSON.stringify(pInfo);
                 const configStr = JSON.stringify(portConfig);
                 this.logInfo(`Serial port ${configStr} opened successfully on proxy ${pInfoStr}`);
-                this.createOrUpdateViewWithSerialInfo(conn, pInfo, portConfig, true);
+                await this.createOrUpdateViewWithSerialInfo(conn, pInfo, portConfig, true);
             } catch (e: any) {
                 const sel = portConfig.path ?? portConfig.serial ?? `vid=${portConfig.vid} pid=${portConfig.pid}`;
                 this.logError(`Failed to open serial port ${sel}: ${e.message}`);
@@ -892,7 +936,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
      * @param portConfig - Configuration of the serial port originally specification from launch.json
      * @param isNew - Whether this is a fresh open (vs. a reconnect)
      */
-    private createOrUpdateViewWithSerialInfo(conn: ProxyConnection, pInfo: SerialPortInfo, portConfig: SerialParams, isNew: boolean = false) {
+    private async createOrUpdateViewWithSerialInfo(conn: ProxyConnection, pInfo: SerialPortInfo, portConfig: SerialParams, isNew: boolean = false): Promise<void> {
         const log_file = portConfig.log_file;
         const input_mode = portConfig.input_mode;
         const actualPath: string = resolvedPath(pInfo) || portConfig.path || '';
@@ -901,7 +945,11 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         let tcpPort = pInfo.tcp_port || 0;
         if (pInfo.channel_id && !pInfo.tcp_port) {
             const server = conn.ensureStreamServer(SERIAL_VIEW_HOST, actualPath, pInfo.channel_id);
-            tcpPort = server.getPort() || 0;
+            // listen() is asynchronous. Reading getPort() here used to return 0 every time,
+            // so the guard below rejected a port whose listener was about to come up one
+            // tick later -- the view was never created and the log said "no TCP port
+            // assigned" immediately before "listening on 127.0.0.1:<port>".
+            tcpPort = (await server.whenReady()) || 0;
         }
         if (tcpPort <= 0) {
             this.logError(`Serial port ${actualPath} has no TCP port assigned; cannot create view.`);
@@ -985,8 +1033,32 @@ export class ProxySerialTcpServer {
     private server: net.Server;
     private address: net.AddressInfo | null = null;
     private socket: net.Socket | null = null;
-    private msgBuffer: string = "";
+    /**
+     * Bytes waiting for a client to connect to this listener.
+     *
+     * Held as Buffers, never a string. This is a byte pipe: what the far end does with
+     * the bytes -- a UTF-8 terminal, latin1, or a binary decoder such as defmt-print --
+     * is its business, and decoding here destroys the data before it can get there.
+     *
+     * `msgBuffer += data.toString()` was lossy three ways. Any byte that is not valid
+     * UTF-8 became U+FFFD, irreversibly. A multi-byte character split across two TCP
+     * chunks decoded to two replacement characters even when the text was perfectly
+     * valid -- chunk boundaries are wherever TCP happened to segment. And `.length` on
+     * a string counts UTF-16 code units, so neither the cap nor the trim below was
+     * measured in bytes, and the trim could cut a surrogate pair in half.
+     */
+    private pending: Buffer[] = [];
+    private pendingBytes = 0;
+    /** Drop oldest above this; a console wants the most recent bytes, not the first. */
+    private static readonly MaxPendingBytes = 100 * 1024;
+    private static readonly KeepPendingBytes = 50 * 1024;
+    /** Resolves with the bound port. `listen()` is async: getPort() reads 0 until it fires. */
+    private readonly ready: Promise<number>;
+    private markReady!: (port: number) => void;
     constructor(private host: string, private portPath: string, private stream_id: number, private conn: ProxyConnection) {
+        this.ready = new Promise<number>((resolve) => {
+            this.markReady = resolve;
+        });
         this.server = net.createServer((socket) => {
             this.conn.logInfo(`Client connected to TCP server for serial port ${portPath} (stream_id ${stream_id})`);
             if (this.socket) {
@@ -994,9 +1066,10 @@ export class ProxySerialTcpServer {
                 this.socket.destroy();
             }
             this.socket = socket;
-            if (this.msgBuffer.length > 0) {
-                socket.write(this.msgBuffer);
-                this.msgBuffer = "";
+            if (this.pendingBytes > 0) {
+                socket.write(Buffer.concat(this.pending, this.pendingBytes));
+                this.pending = [];
+                this.pendingBytes = 0;
             }
             socket.on("data", (data: Buffer) => {
                 this.dataFromTerminal(data);
@@ -1014,6 +1087,11 @@ export class ProxySerialTcpServer {
                 this.address = address;
                 this.conn.logInfo(`TCP server for serial port ${portPath} (stream_id ${stream_id}) listening on ${this.address.address}:${this.address.port}`);
             }
+            this.markReady(this.address?.port ?? 0);
+        });
+        this.server.on("error", (err) => {
+            this.conn.logError(`TCP server for serial port ${portPath} (stream_id ${stream_id}) failed: ${err.message}`);
+            this.markReady(0); // never leave a caller awaiting a port that will not arrive
         });
     }
 
@@ -1027,6 +1105,11 @@ export class ProxySerialTcpServer {
 
     getPort(): number {
         return this.address ? this.address.port : 0;
+    }
+
+    /** Await the bound port. Resolves 0 if the listener failed to bind. */
+    whenReady(): Promise<number> {
+        return this.ready;
     }
 
     /** Close the local TCP listener and any connected client. */
@@ -1045,11 +1128,16 @@ export class ProxySerialTcpServer {
     dataFromServer(data: Buffer, stream_id: number) {
         if (this.socket && !this.socket.destroyed) {
             this.socket.write(data);
-        } else {
-            this.msgBuffer += data.toString();
-            if (this.msgBuffer.length > 100 * 1024  /* 100KB */) {
+        } else if (data.length > 0) {
+            this.pending.push(data);
+            this.pendingBytes += data.length;
+            if (this.pendingBytes > ProxySerialTcpServer.MaxPendingBytes) {
                 this.conn.logError(`Message buffer overflow for serial port ${this.portPath} (stream_id ${stream_id})`);
-                this.msgBuffer = this.msgBuffer.slice(this.msgBuffer.length - 50 * 1024);   // Keep only the last 50KB to avoid unbounded growth
+                // Drop whole chunks from the front rather than slicing bytes: cheaper, and
+                // it cannot leave a partial chunk behind.
+                while (this.pendingBytes > ProxySerialTcpServer.KeepPendingBytes && this.pending.length > 1) {
+                    this.pendingBytes -= this.pending.shift()!.length;
+                }
             }
         }
     }
