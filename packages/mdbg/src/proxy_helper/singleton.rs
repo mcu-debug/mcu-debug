@@ -123,8 +123,21 @@ pub struct Endpoint {
     pub pid: u32,
     /// semver of the running proxy binary (`CARGO_PKG_VERSION`).
     pub version: String,
-    /// Loopback port the funnel/control listener is bound to.
+    /// Port the funnel/control listener is bound to.
     pub port: u16,
+    /// Address the listener is actually bound to (e.g. `127.0.0.1`, `0.0.0.0`, or a
+    /// specific interface address).
+    ///
+    /// This is a *bind* address, not necessarily a *connect* address -- `0.0.0.0` is a
+    /// wildcard and is never a valid destination. A client maps this through its own
+    /// topology to decide what to dial; see `bindHost` vs `proxyHostForDA` in
+    /// `shared/src/proxy-network.ts`.
+    ///
+    /// What discovery could not previously answer is the question that matters: is this
+    /// proxy reachable at all from off-loopback? Without it a client had no choice but to
+    /// assume `127.0.0.1`, which silently fails for a WSL NAT or Docker guest.
+    #[serde(default = "default_bind_host")]
+    pub bind_host: String,
     /// Connection token (Tier-1 shared token; replaced by minted tokens later).
     #[serde(default)]
     pub token: String,
@@ -145,6 +158,13 @@ impl Endpoint {
 
 /// Parse a `major.minor.patch` version into a tuple, ignoring any pre-release /
 /// build suffix (`-alpha`, `+meta`). Missing components are 0.
+/// Records written before `bind_host` existed came from proxies that bound loopback
+/// unless explicitly launched with `--host`. Loopback is the safe assumption: it
+/// under-promises reachability, so a client widens rather than failing to connect.
+fn default_bind_host() -> String {
+    "127.0.0.1".to_string()
+}
+
 fn version_tuple(v: &str) -> (u64, u64, u64) {
     let mut parts = v.split(['.', '-', '+']).filter_map(|s| s.parse::<u64>().ok());
     (
@@ -231,5 +251,60 @@ mod tests {
         // Pre-release / build metadata is stripped: same numeric tuple → not newer.
         assert!(!is_newer("0.1.9-rc1", "0.1.9"));
         assert!(!is_newer("0.1.9+build5", "0.1.9"));
+    }
+}
+
+#[cfg(test)]
+mod endpoint_bind_host_tests {
+    use super::*;
+
+    /// A record written before `bind_host` existed must still parse. Those proxies bound
+    /// loopback, and loopback is also the safe default: it under-promises reachability, so
+    /// a client widens rather than silently failing to connect.
+    #[test]
+    fn v1_record_without_bind_host_defaults_to_loopback() {
+        let v1 = r#"{"v":1,"instance":"default","pid":42,"version":"0.1.9",
+                     "port":5000,"token":"t","state":"active","started_at_unix":1}"#;
+        let ep: Endpoint = serde_json::from_str(v1).expect("v1 record must still parse");
+        assert_eq!(ep.bind_host, "127.0.0.1");
+        assert_eq!(ep.port, 5000);
+    }
+
+    #[test]
+    fn bind_host_round_trips() {
+        for host in ["127.0.0.1", "0.0.0.0", "172.24.80.1"] {
+            let ep = Endpoint {
+                v: 2,
+                instance: "default".to_string(),
+                pid: 1,
+                version: "0.1.9".to_string(),
+                port: 5000,
+                bind_host: host.to_string(),
+                token: "t".to_string(),
+                state: "active".to_string(),
+                started_at_unix: 1,
+            };
+            let text = serde_json::to_string(&ep).unwrap();
+            let back: Endpoint = serde_json::from_str(&text).unwrap();
+            assert_eq!(back.bind_host, host);
+        }
+    }
+
+    /// A wildcard bind is reachable off-loopback; a loopback bind is not. This is the
+    /// question a client actually needs discovery to answer.
+    #[test]
+    fn loopback_bind_is_distinguishable_from_wildcard() {
+        let loopback: Endpoint = serde_json::from_str(
+            r#"{"v":2,"instance":"d","pid":1,"version":"0.1.9","port":1,
+                "bind_host":"127.0.0.1","token":"t","state":"active","started_at_unix":1}"#,
+        )
+        .unwrap();
+        let wildcard: Endpoint = serde_json::from_str(
+            r#"{"v":2,"instance":"d","pid":1,"version":"0.1.9","port":1,
+                "bind_host":"0.0.0.0","token":"t","state":"active","started_at_unix":1}"#,
+        )
+        .unwrap();
+        assert_eq!(loopback.bind_host, "127.0.0.1");
+        assert_ne!(wildcard.bind_host, loopback.bind_host);
     }
 }

@@ -637,11 +637,13 @@ pub fn run(args: ProxyArgs) -> Result<()> {
 
     // Publish the discovery anchor now that we own the lock and have a port.
     let endpoint = singleton::Endpoint {
-        v: 1,
+        v: 2,
         instance: instance.name.clone(),
         pid: std::process::id(),
         version: singleton::self_version(),
         port: local_port,
+        // Publish what we actually bound, so a client never has to assume loopback.
+        bind_host: host.to_string(),
         token: args.token.clone(),
         state: "active".to_string(),
         started_at_unix: singleton::Endpoint::now_unix(),
