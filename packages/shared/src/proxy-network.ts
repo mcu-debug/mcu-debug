@@ -14,6 +14,7 @@
 
 import * as child_process from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import { exec } from "child_process";
 
 export type ProxyHostType = "auto" | "ssh" | "local";
@@ -81,18 +82,77 @@ export function resolveProxyNetworkMode(hostType: ProxyHostType = "auto", remote
     return `auto-${remoteName}`;
 }
 
-export function getWSLNetworkingMode() {
+/** True when this process is running inside a WSL guest (as opposed to on the
+ *  Windows host). The WSL probes below need it because the same question is asked
+ *  with a different command on each side. */
+export function isInsideWslGuest(): boolean {
+    return process.platform === "linux" && !!process.env.WSL_DISTRO_NAME;
+}
+
+export function getWSLNetworkingMode(): string {
     try {
-        // This command is available in WSL 2.2.4+ 
-        const mode = child_process.execSync('wslinfo --networking-mode').toString().trim();
-        return mode; // Returns 'nat' or 'mirrored'
-    } catch (error) {
-        // Fallback for older WSL versions where wslinfo isn't available
-        return 'nat'; // Default mode in older versions
+        // `wslinfo` lives inside the distro (WSL 2.2.4+), so from the Windows host the
+        // question has to be relayed through the default distro. Without this the host
+        // always hit the catch below and *assumed* NAT.
+        const cmd = isInsideWslGuest() ? "wslinfo --networking-mode" : "wsl.exe -- wslinfo --networking-mode";
+        // stderr is ignored rather than inherited: on a machine with no WSL this
+        // command is expected to fail, and the noise would look like a real error.
+        return child_process.execSync(cmd, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+        // Older WSL without `wslinfo`, or no WSL at all. NAT was the only mode back then.
+        return "nat";
     }
 }
 
-export function computeProxyLaunchPolicy(mode: ProxyNetworkMode): ProxyLaunchPolicy {
+/** The Windows host's own IPv4 address on the WSL virtual ethernet adapter
+ *  ("vEthernet (WSL)", or "vEthernet (WSL (Hyper-V firewall))" when the Hyper-V
+ *  firewall is in play), or null if there is no such adapter.
+ *
+ *  Only meaningful when called ON the Windows host — from inside a guest,
+ *  `os.networkInterfaces()` reports the guest's interfaces, not the host's. */
+export function getWslHostAdapterIp(): string | null {
+    return findWslAdapterIp(os.networkInterfaces());
+}
+
+/** The adapter-matching half of [[getWslHostAdapterIp]], split out so the adapter
+ *  name patterns can be tested from any platform. */
+export function findWslAdapterIp(nets: NodeJS.Dict<os.NetworkInterfaceInfo[]>): string | null {
+    for (const name of Object.keys(nets)) {
+        if (/vEthernet.*WSL/i.test(name)) {
+            const entry = nets[name]?.find((n) => n.family === "IPv4" && !n.internal);
+            if (entry) {
+                return entry.address;
+            }
+        }
+    }
+    return null;
+}
+
+/** Pull the default gateway out of `ip route` output.
+ *
+ *  Split out from the command that produces it so the parsing is testable without a
+ *  WSL install. Anchored per-line so a route named "default-something" elsewhere in
+ *  the table cannot match. */
+export function parseDefaultGateway(ipRouteOutput: string): string | null {
+    const m = ipRouteOutput.match(/^\s*default\s+via\s+(\d{1,3}(?:\.\d{1,3}){3})\b/m);
+    return m ? m[1] : null;
+}
+
+/** Probes the WSL branch of the policy depends on.
+ *
+ *  Injectable so `computeProxyLaunchPolicy` can be tested on a machine with no WSL,
+ *  and so a test can pin the NAT/mirrored fork rather than inheriting the host's. */
+export interface WslProbes {
+    networkingMode: () => string;
+    gatewayIp: () => string | null;
+}
+
+const defaultWslProbes: WslProbes = {
+    networkingMode: getWSLNetworkingMode,
+    gatewayIp: getWslGatewayIp,
+};
+
+export function computeProxyLaunchPolicy(mode: ProxyNetworkMode, probes: WslProbes = defaultWslProbes): ProxyLaunchPolicy {
     if (mode === "local" || mode === "auto-local" || mode === "ssh" || mode === "auto-ssh-remote") {
         return {
             mode,
@@ -127,12 +187,41 @@ export function computeProxyLaunchPolicy(mode: ProxyNetworkMode): ProxyLaunchPol
     }
 
     if (mode === "auto-wsl") {
-        const wslNetworkingMode = getWSLNetworkingMode();
+        // Mirrored networking hands the guest the host's own interfaces, so loopback
+        // already reaches the proxy and there is nothing to widen.
+        if (probes.networkingMode() !== "nat") {
+            return {
+                mode,
+                bindHost: "127.0.0.1",
+                proxyHostForDA: "127.0.0.1",
+                reason: "WSL mirrored networking: the guest reaches the host over loopback",
+            };
+        }
+
+        // NAT: bind the gateway address itself, never `0.0.0.0`.
+        //
+        // In NAT mode the guest's default gateway *is* the Windows host's
+        // "vEthernet (WSL)" address, so one number answers both questions — which
+        // address the host binds, and which address the guest dials. It is also the
+        // narrowest thing that works: that adapter is host-local by construction,
+        // whereas `0.0.0.0` would expose the proxy on every interface including hotel
+        // wifi. And a *specific* address is the only kind that can be added alongside
+        // the existing loopback listener on all three platforms — see
+        // `proxy_helper/listeners.rs`.
+        const gateway = probes.gatewayIp();
+        if (!gateway) {
+            return {
+                mode,
+                bindHost: "127.0.0.1",
+                proxyHostForDA: "127.0.0.1",
+                reason: "WSL NAT: could not resolve the WSL gateway address; staying on loopback, which the guest cannot reach",
+            };
+        }
         return {
             mode,
-            bindHost: wslNetworkingMode === "nat" ? "0.0.0.0" : "127.0.0.1",
-            proxyHostForDA: wslNetworkingMode === "nat" ? "<wsl-gateway-ip>" : "127.0.0.1",
-            reason: "WSL mode may require host bind outside loopback for NAT",
+            bindHost: gateway,
+            proxyHostForDA: gateway,
+            reason: `WSL NAT: host binds its WSL gateway address ${gateway}`,
         };
     }
 
@@ -144,17 +233,29 @@ export function computeProxyLaunchPolicy(mode: ProxyNetworkMode): ProxyLaunchPol
     };
 }
 
+/** The Windows host's address on the WSL NAT network, or null if it cannot be found.
+ *
+ *  Returns null rather than throwing. The previous version threw from inside its own
+ *  catch, which escaped every `getWslGatewayIp() || "127.0.0.1"` fallback at the call
+ *  sites and failed the whole launch instead of degrading to loopback. */
 export function getWslGatewayIp(): string | null {
     try {
-        if (process.env.WSL_DISTRO_NAME) {
-            const output = child_process.execSync('wsl.exe -d Ubuntu -- ip route').toString();
-            const match = output.match(/default via ([\d.]+) dev/);
-            if (match) {
-                return match[1];
-            }
+        if (isInsideWslGuest()) {
+            // Ask the kernel we are already running on. The previous version shelled
+            // out to `wsl.exe -d Ubuntu -- ip route` from *inside* the guest: a round
+            // trip out to Windows and back that also hardcoded a distro name, so it
+            // answered for the wrong distro (or not at all) for anyone not on Ubuntu.
+            return parseDefaultGateway(child_process.execSync("ip route", { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }));
         }
-    } catch (error) {
-        throw new Error(`Failed to get WSL gateway IP: ${error}`);
+        if (process.platform === "win32") {
+            // On the host, read the adapter directly instead of shelling out to the
+            // guest. This is authoritative — the host knows its own adapter IPs — and
+            // it needs no running distro, no subprocess, and no assumption about which
+            // distro is default.
+            return getWslHostAdapterIp();
+        }
+    } catch {
+        // No WSL, no default distro, or the command is missing.
     }
     return null;
 }

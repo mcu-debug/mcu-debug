@@ -30,7 +30,6 @@
 
 import * as vscode from "vscode";
 import * as fs from "fs";
-import * as os from "os";
 import { ChildProcess, spawn } from "node:child_process";
 import { computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults, ProvisioningResults, ProxyProvisionRequest, startProxyServerWithPolicy, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
 
@@ -282,15 +281,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("mcu-debug-proxy.getRemoteSshHost", () => {
             return getRemoteShhHost();
         }),
-        // Returns the IPv4 address of the Windows host's WSL virtual ethernet adapter
-        // ("vEthernet (WSL)" or "vEthernet (WSL (Hyper-V firewall))").
-        // This is authoritative — the Windows host knows its own adapter IPs directly,
-        // whereas the WSL guest's /etc/resolv.conf nameserver entry may point to a
-        // Hyper-V DNS relay rather than the actual gateway. Returns null if the adapter
-        // is not found (e.g. not on Windows, or WSL not installed).
-        vscode.commands.registerCommand("mcu-debug-proxy.getWslHostIp", () => {
-            return getWslHostIp();
-        }),
     ];
     context.subscriptions.push(...disposables);
     return {
@@ -304,19 +294,6 @@ function getRemoteShhHost() {
     const authority = vscode.workspace.workspaceFolders?.[0]?.uri.authority ?? "";
     const host = authority.replace(/^ssh-remote\+/, "");
     return host || null;
-}
-
-function getWslHostIp() {
-    const nets = os.networkInterfaces();
-    for (const name of Object.keys(nets)) {
-        if (/vEthernet.*WSL/i.test(name)) {
-            const entry = nets[name]?.find((n) => n.family === "IPv4" && !n.internal);
-            if (entry) {
-                return entry.address;
-            }
-        }
-    }
-    return null;
 }
 
 export function deactivate() {

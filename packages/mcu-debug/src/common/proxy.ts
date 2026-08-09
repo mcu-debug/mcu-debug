@@ -19,7 +19,7 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { spawn } from "child_process";
-import { DefaultPortBase, computeProxyLaunchPolicy, getWslGatewayIp, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy } from "@mcu-debug/shared";
+import { DefaultPortBase, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
 import { tcpReachable } from "./utils";
@@ -493,33 +493,6 @@ function resolveNetworkMode(hostConfig: HostConfig): ProxyNetworkMode | undefine
 }
 
 
-async function resolveWslGatewayHost(): Promise<string | undefined> {
-    // Primary: ask the UI extension (mcu-debug-proxy) which runs on the Windows host.
-    // It reads os.networkInterfaces() directly and returns the IPv4 address of the
-    // WSL virtual ethernet adapter — authoritative, not subject to DNS relay quirks.
-    try {
-        const fromProxy = await getHostAdapter().executeProxyCommand<string | null>("mcu-debug-proxy.getWslHostIp");
-        if (fromProxy) {
-            return fromProxy;
-        }
-    } catch {
-        // mcu-debug-proxy not available or command failed — fall through to local fallback.
-    }
-    // Fallback: parse the nameserver from /etc/resolv.conf on the WSL guest side.
-    // Less reliable: on some configurations the nameserver is a Hyper-V DNS relay
-    // (168.63.x.x) rather than the WSL gateway IP. Kept as a safety net.
-    try {
-        const resolv = fs.readFileSync("/etc/resolv.conf", "utf8");
-        const match = resolv.match(/^nameserver\s+(\S+)$/m);
-        if (match && match[1]) {
-            return match[1].trim();
-        }
-    } catch {
-        // Ignore errors and fall back to loopback.
-    }
-    return undefined;
-}
-
 async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
     const promise = new Promise<void>((resolve, reject) => {
         // We need to spawn the proxy server on the local machine, but the DA will connect to it via the loopback interface,
@@ -634,19 +607,20 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             }
         } else if (resolvedMode) {
             const policy = computeProxyLaunchPolicy(resolvedMode);
-            let resolvedProxyHost = policy.proxyHostForDA;
+            // Already a concrete address: computeProxyLaunchPolicy resolves the WSL
+            // gateway itself now. It used to return the literal string
+            // "<wsl-gateway-ip>" for every caller to substitute, which meant any caller
+            // that trusted the field handed a bogus hostname to connect().
+            const resolvedProxyHost = policy.proxyHostForDA;
 
-            if (resolvedMode === "auto-wsl" && resolvedProxyHost === "<wsl-gateway-ip>") {
-                // resolvedProxyHost = (await resolveWslGatewayHost()) || "127.0.0.1";
-                resolvedProxyHost = getWslGatewayIp() || "127.0.0.1";
-            }
-
+            // Loopback here means either mirrored networking or a gateway lookup that
+            // failed — in both cases there is nothing to open a firewall port for.
             const isWslNatMode = resolvedMode === "auto-wsl" && resolvedProxyHost !== "127.0.0.1";
             if (isWslNatMode) {
-                // NAT mode: the Proxy Agent binds on 0.0.0.0. Windows Firewall will block
-                // OS-assigned ports UNLESS there is an application-level inbound rule for the
-                // helper executable (Windows prompts automatically on first run — clicking
-                // "Allow access" creates this rule). In that case any port works and
+                // NAT mode: the Proxy Agent binds the WSL gateway address. Windows Firewall
+                // will block OS-assigned ports UNLESS there is an application-level inbound
+                // rule for the helper executable (Windows prompts automatically on first run —
+                // clicking "Allow access" creates this rule). In that case any port works and
                 // wslProxyPort is not needed. It is only required on machines where the
                 // prompt was dismissed or group policy manages rules by port only.
                 if (hostConfig.wslProxyPort && hostConfig.wslProxyPort > 0) {

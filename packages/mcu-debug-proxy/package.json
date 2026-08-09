@@ -51,10 +51,6 @@
       {
         "command": "mcu-debug-proxy.getRemoteSshHost",
         "title": "Get Remote SSH Host"
-      },
-      {
-        "command": "mcu-debug-proxy.getWslHostIp",
-        "title": "Get WSL Host IP"
       }
     ]
   },
