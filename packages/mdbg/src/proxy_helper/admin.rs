@@ -160,6 +160,11 @@ pub struct AdminContext {
     /// successor owns it).
     pub superseded: Arc<AtomicBool>,
     pub stop_flag: Arc<AtomicBool>,
+    /// Needed to wake every blocked `accept()` on shutdown, not just the published
+    /// address. This is an `Arc` cycle (an accept loop holds this context, which holds
+    /// the set) but a self-limiting one: the accept threads exit during shutdown, which
+    /// drops their closures and breaks it.
+    pub accept_set: Arc<crate::proxy_helper::listeners::AcceptSet>,
     pub local_port: u16,
     pub endpoint_path: PathBuf,
     pub pid: u32,
@@ -231,7 +236,7 @@ fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
             "Superseded by v{} — releasing identity; {active} session(s) will finish here",
             req.version
         );
-        crate::proxy_helper::run::trigger_graceful_shutdown(&ctx.stop_flag, ctx.local_port);
+        crate::proxy_helper::run::trigger_graceful_shutdown(&ctx.stop_flag, &ctx.accept_set);
     }
     AdminResponse {
         ok: true,
@@ -259,7 +264,7 @@ fn begin_drain(ctx: &Arc<AdminContext>) -> AdminResponse {
             // Zero window → return as soon as the last ref drops.
             ctx.lifetime.wait_until_idle(Duration::ZERO);
             log::info!("Drain complete — no active sessions; shutting down");
-            crate::proxy_helper::run::trigger_graceful_shutdown(&ctx.stop_flag, ctx.local_port);
+            crate::proxy_helper::run::trigger_graceful_shutdown(&ctx.stop_flag, &ctx.accept_set);
         });
     }
 

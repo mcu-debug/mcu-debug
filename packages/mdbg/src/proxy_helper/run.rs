@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::{
     backtrace::Backtrace,
-    net::{Ipv4Addr, TcpListener, TcpStream},
+    net::{Ipv4Addr, TcpListener},
     panic,
     path::PathBuf,
     sync::{
@@ -37,7 +37,8 @@ use std::{
 
 use crate::proxy_helper::admin::{self, AdminContext};
 use crate::proxy_helper::lifetime::Lifetime;
-use crate::proxy_helper::proxy_server::{ProxyServer, SerialPortRegistry};
+use crate::proxy_helper::listeners;
+use crate::proxy_helper::proxy_server::SerialPortRegistry;
 use crate::proxy_helper::serial_available::{
     start_serial_available_watcher, SerialAvailabilityHub,
 };
@@ -55,7 +56,10 @@ pub enum PortWaitMode {
     Monitor,
 }
 
-#[derive(Args, Debug)]
+// Clone so an accept loop can stamp out a per-connection copy from a template
+// instead of rebuilding it field by field (which silently drifts when a field is
+// added).
+#[derive(Args, Debug, Clone)]
 pub struct ProxyArgs {
     /// Host to listen on (default: 127.0.0.1), alternatively specify `0.0.0.0` to listen on all interfaces
     #[arg(short = 'H', long = "host", default_value = "127.0.0.1")]
@@ -216,17 +220,15 @@ fn install_panic_hook() {
     });
 }
 
-/// Signal the accept loop to stop, then unblock it by self-connecting so the
-/// blocked `accept()` returns and the loop sees the flag and breaks. Used by the
-/// idle monitor and by admin drain.
-pub(crate) fn trigger_graceful_shutdown(stop_flag: &AtomicBool, local_port: u16) {
+/// Signal every accept loop to stop, then unblock each one by self-connecting so its
+/// blocked `accept()` returns and the loop sees the flag and breaks. Used by the idle
+/// monitor and by admin drain.
+///
+/// Every bound address must be woken, not just the published one: a widened listener
+/// is parked in its own `accept()` and would otherwise keep the process alive.
+pub(crate) fn trigger_graceful_shutdown(stop_flag: &AtomicBool, accept_set: &listeners::AcceptSet) {
     stop_flag.store(true, Ordering::SeqCst);
-    let addr = format!("127.0.0.1:{local_port}");
-    if let Err(e) = TcpStream::connect(&addr) {
-        log::warn!(
-            "Self-connect to {addr} failed during shutdown: {e} — accept loop may not unblock immediately"
-        );
-    }
+    accept_set.wake_all();
 }
 
 /// Client mode for `--status` / `--shutdown`: locate the running proxy for this
@@ -654,6 +656,10 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     // it and self-connect; the accept loop polls it after each accept and breaks.
     let stop_flag = Arc::new(AtomicBool::new(false));
 
+    // Every address we accept on. Starts as just the published one; widening for a
+    // WSL/Docker guest adds to it without touching the original listener.
+    let accept_set = Arc::new(listeners::AcceptSet::new());
+
     // Use-bounded lifetime: the proxy stays alive while any ref is held — one per
     // live session, plus a "window keep-alive" ref while --heartbeat pings arrive
     // (Phase B). When all refs drop, the idle monitor exits after --idle-timeout.
@@ -675,6 +681,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         draining: Arc::clone(&draining),
         superseded: Arc::clone(&superseded),
         stop_flag: stop_flag.clone(),
+        accept_set: Arc::clone(&accept_set),
         local_port,
         endpoint_path: instance.endpoint_path.clone(),
         pid: std::process::id(),
@@ -727,14 +734,16 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     if args.idle_timeout > 0 {
         let lifetime_monitor = Arc::clone(&lifetime);
         let stop_flag_monitor = stop_flag.clone();
+        let accept_set_monitor = Arc::clone(&accept_set);
         let idle = Duration::from_secs(args.idle_timeout);
+        let idle_timeout = args.idle_timeout;
         thread::spawn(move || {
             lifetime_monitor.wait_until_idle(idle);
             log::info!(
                 "Idle for {}s with no active sessions — shutting down",
-                args.idle_timeout
+                idle_timeout
             );
-            trigger_graceful_shutdown(&stop_flag_monitor, local_port);
+            trigger_graceful_shutdown(&stop_flag_monitor, &accept_set_monitor);
         });
     }
 
@@ -762,9 +771,6 @@ pub fn run(args: ProxyArgs) -> Result<()> {
 
     log::info!("Probe Agent listening on port {}", local_port);
 
-    // For cleanup later
-    let mut client_threads = Vec::new();
-
     // Serial ports outlive individual ProxyServer connections — the registry lives
     // here in the accept loop and is cloned (Arc) into each connection's ProxyServer.
     let serial_registry: SerialPortRegistry =
@@ -773,85 +779,38 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     let serial_available_watcher_stop =
         start_serial_available_watcher(Arc::clone(&serial_available_hub));
 
-    // Accept connection and run Funnel Protocol handler in a new thread
-    // We generally don't have multiple clients when running inside a VSCode extension,
-    // but we have a use case in multi-core debugging where each core needs its own proxy instance,
-    // so we should be prepared to handle multiple connections gracefully (e.g. by rejecting
-    // them with an error message). We don't need to know why we have multiple connections, we just
-    // need to make sure we don't crash or do something weird if it happens.
-    for stream in listener.incoming() {
-        // Graceful-shutdown check: the heartbeat watcher sets this flag then sends a
-        // self-connection to unblock accept(). When we see it, drop the stream and stop.
-        if stop_flag.load(Ordering::SeqCst) {
-            log::info!("Graceful shutdown requested — exiting accept loop");
-            break;
-        }
-        match stream {
-            Ok(stream) => {
-                // Draining (admin shutdown): refuse new connections; existing
-                // sessions run to completion, then the proxy exits.
-                if draining.load(Ordering::SeqCst) {
-                    log::info!("Draining — refusing new connection");
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    continue;
-                }
-                let args_clone = ProxyArgs {
-                    host: args.host.clone(),
-                    port: args.port,
-                    token: args.token.to_owned(),
-                    debug: args.debug,
-                    port_wait_mode: args.port_wait_mode,
-                    log_stderr: args.log_stderr,
-                    log_dir: args.log_dir.clone(),
-                    no_token: args.no_token,
-                    heartbeat: false, // watchdog already running on main thread; no second instance
-                    instance: args.instance.clone(),
-                    idle_timeout: args.idle_timeout,
-                    status: false,
-                    shutdown: false,
-                    all: false,
-                    daemonized: true,
-                };
-                let registry_clone = Arc::clone(&serial_registry);
-                let serial_available_hub_clone = Arc::clone(&serial_available_hub);
-                let lifetime_conn = Arc::clone(&lifetime);
-                let admin_ctx_conn = Arc::clone(&admin_ctx);
-                let handle = thread::spawn(move || match admin::discriminate(&stream) {
-                    admin::Kind::Session => {
-                        // Session ref held for the session's lifetime; its drop
-                        // (session end) may arm the idle timer.
-                        let _session_ref = lifetime_conn.acquire();
-                        let mut new_client = ProxyServer::new(
-                            args_clone,
-                            stream,
-                            registry_clone,
-                            serial_available_hub_clone,
-                        );
-                        new_client.message_loop().unwrap_or_else(|e| {
-                            log::error!("Error in client message loop: {}", e);
-                        });
-                    }
-                    admin::Kind::Admin => admin::handle(stream, &admin_ctx_conn),
-                    admin::Kind::Unknown => {
-                        log::warn!("Unrecognized connection (no session/admin prefix) — closing");
-                        let _ = stream.shutdown(std::net::Shutdown::Both);
-                    }
-                });
-                client_threads.push(handle);
-            }
-            Err(e) => {
-                if stop_flag.load(Ordering::SeqCst) {
-                    // Expected error from the self-connect wakeup; ignore it.
-                    log::info!(
-                        "Graceful shutdown: ignoring accept error during shutdown: {}",
-                        e
-                    );
-                    break;
-                }
-                log::error!("Connection failed: {}", e);
-            }
-        }
-    }
+    // Everything a connection needs, independent of which address it arrived on.
+    // Held by every accept loop, so widening later adds a listener without having to
+    // thread any new state through.
+    let accept_ctx = Arc::new(listeners::AcceptCtx {
+        conn_args: ProxyArgs {
+            // Watchdog already runs on the main thread; a child must not start another.
+            heartbeat: false,
+            // Admin-mode flags are for the CLI client, never for a served connection.
+            status: false,
+            shutdown: false,
+            all: false,
+            daemonized: true,
+            ..args.clone()
+        },
+        stop_flag: Arc::clone(&stop_flag),
+        draining: Arc::clone(&draining),
+        lifetime: Arc::clone(&lifetime),
+        admin_ctx: Arc::clone(&admin_ctx),
+        serial_registry,
+        serial_available_hub,
+        client_threads: Mutex::new(Vec::new()),
+    });
+
+    // Start accepting on the primary (published) address. Additional addresses can
+    // join this set later without disturbing this one — see `listeners` for why we
+    // add rather than rebind.
+    accept_set.add(listener, Arc::clone(&accept_ctx))?;
+
+    // Block until every accept loop has exited (global stop flag set + woken).
+    accept_set.join_all();
+
+    let client_threads = accept_ctx.take_client_threads();
 
     // Upgrade handover: if a newer proxy superseded us, release the lock NOW (so
     // it can bind) and leave endpoint.json alone (the successor owns it). We then
