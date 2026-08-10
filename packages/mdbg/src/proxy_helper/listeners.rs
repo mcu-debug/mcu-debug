@@ -525,6 +525,7 @@ mod tests {
             status: false,
             shutdown: false,
             all: false,
+            close_serial: None,
             daemonized: true,
         };
         let admin_ctx = Arc::new(AdminContext {
@@ -536,6 +537,7 @@ mod tests {
             // Shutdown-by-admin is not what these tests drive; they set the stop flag
             // and wake directly through the set under test.
             accept_set: Arc::new(AcceptSet::new()),
+            serial_registry: Arc::new(Mutex::new(HashMap::new())),
             local_port: 0,
             endpoint_path: std::path::PathBuf::from("/nonexistent/endpoint.json"),
             pid: std::process::id(),

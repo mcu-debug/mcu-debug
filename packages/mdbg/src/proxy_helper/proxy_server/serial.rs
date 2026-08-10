@@ -138,6 +138,92 @@ fn sorted_channel_ids(funnel: &HashMap<u8, u64>) -> Vec<u8> {
 /// Dropping an entry closes the port and every transport attached to it.
 pub type SerialPortRegistry = Arc<Mutex<HashMap<String, OpenPort>>>;
 
+/// Force-close serial ports regardless of who is using them.
+///
+/// This is the operator escape hatch behind `mdbg proxy --close-serial`. Normal
+/// `serial.close` is cooperative and per-client, so a wedged or crashed-but-not-yet
+/// reaped client can pin a device open indefinitely; nothing else can take it.
+///
+/// `path` selects one port, or [`CLOSE_ALL_SERIAL`] for every open port. Returns the
+/// paths actually closed.
+///
+/// Sessions still holding routing entries for these ports are *not* notified. They do
+/// not need to be: their `serial_funnel_write` entries are weak, so removing the
+/// registry entry here really does release the device, and each session drops its own
+/// stale entry the next time a client writes to it.
+pub fn force_close_serial(registry: &SerialPortRegistry, path: &str) -> Vec<String> {
+    // Take the entries out under the lock, then do the expensive teardown outside it:
+    // dropping an `OpenPort` joins the TCP bridge's accept thread and closes the
+    // device, and holding the registry lock through that would stall every session.
+    let retired: Vec<(String, OpenPort)> = {
+        let mut reg = registry.lock_recover();
+        if path == CLOSE_ALL_SERIAL {
+            reg.drain().collect()
+        } else {
+            reg.remove_entry(path).into_iter().collect()
+        }
+    };
+
+    let mut closed = Vec::with_capacity(retired.len());
+    for (path, open) in retired {
+        // Detach every client first so their writers stop being handed bytes, rather
+        // than letting them discover the closure through a write error.
+        for client_id in open.funnel.values() {
+            open.handle.detach_client(*client_id);
+        }
+        log::info!(
+            "Force-closed serial port '{}' ({} funnel channel(s), {} direct ref(s))",
+            path,
+            open.funnel.len(),
+            open.direct_refs
+        );
+        closed.push(path);
+        drop(open);
+    }
+    closed.sort();
+    closed
+}
+
+/// Sentinel `path` for [`force_close_serial`] meaning "every open port".
+///
+/// A magic value rather than the existing `--all` flag, which already means "every
+/// proxy *instance*" for `--shutdown`. Keeping them separate lets the two compose:
+/// `--close-serial all --all` is every port on every instance.
+pub const CLOSE_ALL_SERIAL: &str = "all";
+
+/// Snapshot of one open port for `--status`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerialStatus {
+    pub path: String,
+    /// TCP port of the direct bridge, if one is up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_port: Option<u16>,
+    /// Sessions holding a direct reference.
+    pub direct_refs: usize,
+    /// Funnel channels attached.
+    pub channels: usize,
+    /// Total attached client sinks, across both transports. Larger than `channels`
+    /// when direct clients are connected to the bridge.
+    pub clients: usize,
+}
+
+/// Open-port snapshot for `--status`, sorted by path so output is stable.
+pub fn serial_status(registry: &SerialPortRegistry) -> Vec<SerialStatus> {
+    let mut ports: Vec<SerialStatus> = registry
+        .lock_recover()
+        .iter()
+        .map(|(path, open)| SerialStatus {
+            path: path.clone(),
+            tcp_port: open.tcp_port(),
+            direct_refs: open.direct_refs,
+            channels: open.funnel.len(),
+            clients: open.handle.client_count(),
+        })
+        .collect();
+    ports.sort_by(|a, b| a.path.cmp(&b.path));
+    ports
+}
+
 /// Outcome of a session releasing its hold on a port.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Released {
@@ -446,10 +532,11 @@ impl ProxyServer {
             }),
         );
 
-        // Register the client→serial routing entry for inbound funnel frames.
+        // Register the client→serial routing entry for inbound funnel frames. Weak, so
+        // this entry never keeps the device alive past the registry's ownership.
         self.serial_funnel_write.insert(
             channel_id,
-            (Arc::clone(handle), client_id, path.to_string()),
+            (Arc::downgrade(handle), client_id, path.to_string()),
         );
 
         // Record the channel. This *adds* to the port's channel set rather than
@@ -545,9 +632,12 @@ impl ProxyServer {
             let mut reg = self.serial_registry.lock_recover();
             if let Some(open) = reg.get_mut(path) {
                 for stream_id in &my_channels {
-                    if let Some((handle, client_id, _)) = self.serial_funnel_write.remove(stream_id)
-                    {
-                        handle.detach_client(client_id);
+                    if let Some((weak, client_id, _)) = self.serial_funnel_write.remove(stream_id) {
+                        // A dead weak reference just means the port is already gone;
+                        // there is nothing left to detach from.
+                        if let Some(handle) = weak.upgrade() {
+                            handle.detach_client(client_id);
+                        }
                     }
                     open.funnel.remove(stream_id);
                 }
@@ -718,6 +808,32 @@ mod tests {
         // The direct-only case: a port can be open with a TCP bridge and zero funnel
         // channels, which must serialize as an empty list rather than being absent.
         assert!(sorted_channel_ids(&HashMap::new()).is_empty());
+    }
+
+    /// Force-close on an empty registry must be a benign no-op, not an error.
+    ///
+    /// `--close-serial <path>` asks for the port to end up closed. If nothing matches,
+    /// the caller's goal already holds, so this reports "closed nothing" rather than
+    /// failing — otherwise every script would have to special-case the benign outcome.
+    #[test]
+    fn force_closing_an_unknown_port_closes_nothing() {
+        let registry: SerialPortRegistry = Arc::new(Mutex::new(HashMap::new()));
+
+        assert!(force_close_serial(&registry, "/dev/nonexistent").is_empty());
+        // The "all" sentinel on an empty registry is equally uneventful.
+        assert!(force_close_serial(&registry, CLOSE_ALL_SERIAL).is_empty());
+        assert!(serial_status(&registry).is_empty());
+    }
+
+    /// The `all` sentinel must be a distinct value from any plausible device path, so
+    /// that selecting every port can never be confused with selecting one.
+    #[test]
+    fn the_close_all_sentinel_is_not_a_device_path() {
+        assert_eq!(CLOSE_ALL_SERIAL, "all");
+        // Real paths are absolute on unix and COM<n> on Windows; neither collides.
+        for path in ["/dev/ttyUSB0", "/dev/tty.usbmodem1234", "COM3", "COM12"] {
+            assert_ne!(path, CLOSE_ALL_SERIAL);
+        }
     }
 
     /// The release arithmetic, exercised without a device.

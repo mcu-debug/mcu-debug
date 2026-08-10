@@ -128,8 +128,18 @@ pub struct ProxyArgs {
 
     /// With `--shutdown`, drain EVERY running instance instead of just the one
     /// resolved from `--instance`. No effect on `--status` (already all-inclusive).
+    /// With `--close-serial`, target every instance rather than just the resolved one.
     #[arg(long = "all", default_value_t = false)]
     pub all: bool,
+
+    /// Client mode: force-close a serial port on the running proxy, whoever is using
+    /// it, then exit. Pass a device path (`/dev/ttyUSB0`, `COM3`) or `all` for every
+    /// open port. Combine with `--all` to do it on every instance.
+    ///
+    /// Normal `serial.close` is cooperative and per-client, so a wedged or crashed
+    /// client can pin a device open; this is the way to take it back.
+    #[arg(long = "close-serial", value_name = "PATH|all")]
+    pub close_serial: Option<String>,
 
     /// Internal: marks the re-spawned, detached daemon so it runs the proxy
     /// instead of launching another daemon. Not for direct use.
@@ -245,6 +255,13 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
     if args.shutdown && args.all {
         return shutdown_all();
     }
+    if let Some(path) = &args.close_serial {
+        return if args.all {
+            close_serial_all(path)
+        } else {
+            close_serial_one(&args.instance, path)
+        };
+    }
 
     let instance = singleton::Instance::resolve(&args.instance)?;
     let print = |resp: &admin::AdminResponse| -> Result<()> {
@@ -256,6 +273,7 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
         error: Some(msg),
         status: None,
         message: None,
+        closed: Vec::new(),
     };
 
     let endpoint = match singleton::read_endpoint(&instance.endpoint_path) {
@@ -273,11 +291,117 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
         token: endpoint.token.clone(),
         graceful: true,
         version: String::new(),
+        path: String::new(),
     };
     match admin::query(&endpoint, &req) {
         Ok(resp) => print(&resp),
         Err(e) => print(&not_running(format!("proxy not reachable ({e:#})"))),
     }
+}
+
+/// One instance's answer to `--close-serial`.
+#[derive(serde::Serialize)]
+struct CloseSerialResult {
+    instance: String,
+    ok: bool,
+    /// Paths actually closed on this instance.
+    closed: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct CloseSerialReport {
+    /// Instances that answered.
+    count: usize,
+    /// Total ports closed across all of them.
+    closed: usize,
+    results: Vec<CloseSerialResult>,
+}
+
+fn close_serial_request(endpoint: &singleton::Endpoint, path: &str) -> admin::AdminRequest {
+    admin::AdminRequest {
+        v: 1,
+        cmd: "serialClose".to_string(),
+        token: endpoint.token.clone(),
+        graceful: false,
+        version: String::new(),
+        path: path.to_string(),
+    }
+}
+
+/// `--close-serial <path>` against the single resolved instance.
+fn close_serial_one(instance_name: &str, path: &str) -> Result<()> {
+    let instance = singleton::Instance::resolve(instance_name)?;
+    let mut results = Vec::new();
+    if let Ok(endpoint) = singleton::read_endpoint(&instance.endpoint_path) {
+        let req = close_serial_request(&endpoint, path);
+        match admin::query(&endpoint, &req) {
+            Ok(resp) => results.push(CloseSerialResult {
+                instance: instance.name.clone(),
+                ok: resp.ok,
+                closed: resp.closed,
+                message: resp.message,
+                error: resp.error,
+            }),
+            Err(e) => results.push(CloseSerialResult {
+                instance: instance.name.clone(),
+                ok: false,
+                closed: Vec::new(),
+                message: None,
+                error: Some(format!("proxy not reachable ({e:#})")),
+            }),
+        }
+    } else {
+        // Not running means no port is held — the caller's goal already holds, so
+        // this is reported rather than treated as a failure.
+        results.push(CloseSerialResult {
+            instance: instance.name.clone(),
+            ok: true,
+            closed: Vec::new(),
+            message: Some(format!("no proxy running for instance '{}'", instance.name)),
+            error: None,
+        });
+    }
+    print_close_serial(results)
+}
+
+/// `--close-serial <path> --all`: every running instance. Same split as
+/// `--shutdown` / `shutdown_all` — `--all` selects instances, and the *path*
+/// (`"all"`) selects ports, so the two compose.
+fn close_serial_all(path: &str) -> Result<()> {
+    let mut results = Vec::new();
+    for inst in singleton::list_instances()? {
+        let endpoint = match singleton::read_endpoint(&inst.endpoint_path) {
+            Ok(ep) => ep,
+            Err(_) => continue, // no discovery anchor → not running
+        };
+        let req = close_serial_request(&endpoint, path);
+        // Only report instances that answered — a dead proxy's stale endpoint holds
+        // no serial port either.
+        if let Ok(resp) = admin::query(&endpoint, &req) {
+            results.push(CloseSerialResult {
+                instance: inst.name,
+                ok: resp.ok,
+                closed: resp.closed,
+                message: resp.message,
+                error: resp.error,
+            });
+        }
+    }
+    print_close_serial(results)
+}
+
+fn print_close_serial(results: Vec<CloseSerialResult>) -> Result<()> {
+    let report = CloseSerialReport {
+        count: results.len(),
+        closed: results.iter().map(|r| r.closed.len()).sum(),
+        results,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 /// `--status` output: every running instance, with a `count` (which replaces the
@@ -301,6 +425,7 @@ fn print_status_all() -> Result<()> {
         };
         let req = admin::AdminRequest {
             v: 1,
+            path: String::new(),
             cmd: "status".to_string(),
             token: endpoint.token.clone(),
             graceful: true,
@@ -357,6 +482,7 @@ fn shutdown_all() -> Result<()> {
             token: endpoint.token.clone(),
             graceful: true,
             version: String::new(),
+            path: String::new(),
         };
         // Only report instances that actually answered — a dead proxy's stale
         // endpoint refuses the connection and needs no shutdown.
@@ -574,7 +700,7 @@ fn detach_process(cmd: &mut std::process::Command) {
 pub fn run(args: ProxyArgs) -> Result<()> {
     // Client modes: query/command a running proxy and exit — do not start one.
     // Kept lightweight: no daemon logging setup.
-    if args.status || args.shutdown {
+    if args.status || args.shutdown || args.close_serial.is_some() {
         return run_admin_client(&args);
     }
 
@@ -674,7 +800,15 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     // endpoint.json on exit.
     let superseded = Arc::new(AtomicBool::new(false));
 
-    // Shared context for admin (`--status` / `--shutdown` / `upgrade`) connections.
+    // Serial ports outlive individual ProxyServer connections — the registry is owned
+    // here and cloned (Arc) into each connection's ProxyServer. It is created before
+    // the admin context because admin reports on it (`--status`) and force-closes
+    // through it (`--close-serial`).
+    let serial_registry: SerialPortRegistry =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+
+    // Shared context for admin (`--status` / `--shutdown` / `upgrade` /
+    // `--close-serial`) connections.
     let admin_ctx = Arc::new(AdminContext {
         token: args.token.clone(),
         lifetime: Arc::clone(&lifetime),
@@ -682,6 +816,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         superseded: Arc::clone(&superseded),
         stop_flag: stop_flag.clone(),
         accept_set: Arc::clone(&accept_set),
+        serial_registry: Arc::clone(&serial_registry),
         local_port,
         endpoint_path: instance.endpoint_path.clone(),
         pid: std::process::id(),
@@ -771,10 +906,6 @@ pub fn run(args: ProxyArgs) -> Result<()> {
 
     log::info!("Probe Agent listening on port {}", local_port);
 
-    // Serial ports outlive individual ProxyServer connections — the registry lives
-    // here in the accept loop and is cloned (Arc) into each connection's ProxyServer.
-    let serial_registry: SerialPortRegistry =
-        Arc::new(Mutex::new(std::collections::HashMap::new()));
     let serial_available_hub = Arc::new(SerialAvailabilityHub::new());
     let serial_available_watcher_stop =
         start_serial_available_watcher(Arc::clone(&serial_available_hub));
@@ -868,6 +999,7 @@ mod tests {
             status: false,
             shutdown: false,
             all: false,
+            close_serial: None,
             daemonized: false,
         };
 

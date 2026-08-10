@@ -155,6 +155,7 @@ fn test_proxy_server() {
             status: false,
             shutdown: false,
             all: false,
+            close_serial: None,
             daemonized: true, // run the proxy in-process; don't re-spawn a daemon
         };
         let _ = crate::proxy_helper::run::run(args);

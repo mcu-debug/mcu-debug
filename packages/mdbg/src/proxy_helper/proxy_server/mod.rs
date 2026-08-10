@@ -42,7 +42,10 @@ pub use protocol::*;
 
 mod gdb_server;
 mod serial;
-pub use serial::{FunnelWriter, OpenPort, SerialPortRegistry};
+pub use serial::{
+    force_close_serial, serial_status, FunnelWriter, OpenPort, SerialPortRegistry, SerialStatus,
+    CLOSE_ALL_SERIAL,
+};
 
 /// Spawn a session-owned background thread that can never die silently.
 ///
@@ -179,7 +182,13 @@ pub struct ProxyServer {
     serial_registry: SerialPortRegistry,
     /// Stream-ID → (port_handle, client_id, path) for inbound funnel frames.
     /// Provides O(1) routing without acquiring the registry lock on every byte.
-    serial_funnel_write: HashMap<u8, (Arc<PortHandle>, u64, String)>,
+    ///
+    /// The handle is **weak** on purpose. The registry is the sole owner of an open
+    /// port; if these were strong references, a session's routing entry would keep the
+    /// device open after the registry let go — which is exactly what made an
+    /// admin-level force-close impossible to implement. A dead weak reference means
+    /// the port was closed underneath us, and the entry is dropped on first use.
+    serial_funnel_write: HashMap<u8, (std::sync::Weak<PortHandle>, u64, String)>,
     serial_available_hub: Arc<SerialAvailabilityHub>,
     serial_available_sub_id: Option<u64>,
     /// Paths this session already has a `PortErrorEvent` forwarder thread
@@ -481,15 +490,29 @@ impl ProxyServer {
                                 }
                             } else {
                                 // Non-zero stream ID: check serial funnel channels first.
-                                if let Some((handle, _, _)) =
+                                if let Some((weak, _, _)) =
                                     self.serial_funnel_write.get(&stream_id)
                                 {
                                     // Route incoming bytes from client to the serial port.
-                                    if let Err(e) = handle.write_to_port(&msg) {
-                                        eprintln!(
-                                            "Serial funnel write to port failed for stream {}: {}",
-                                            stream_id, e
-                                        );
+                                    // Upgrading can fail: the port may have been closed
+                                    // by an admin force-close (or a fatal port error)
+                                    // while this client was still writing to it.
+                                    match weak.upgrade() {
+                                        Some(handle) => {
+                                            if let Err(e) = handle.write_to_port(&msg) {
+                                                eprintln!(
+                                                    "Serial funnel write to port failed for stream {}: {}",
+                                                    stream_id, e
+                                                );
+                                            }
+                                        }
+                                        None => {
+                                            eprintln!(
+                                                "Serial funnel stream {} refers to a closed port; dropping its routing entry",
+                                                stream_id
+                                            );
+                                            self.serial_funnel_write.remove(&stream_id);
+                                        }
                                     }
                                 } else {
                                     // Forward to the appropriate connected stream.

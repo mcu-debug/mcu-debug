@@ -14,7 +14,7 @@
 
 //! Admin control channel (Tier 1, Phase C).
 //!
-//! Proxy-global operations — `status`, `shutdown` — travel over the **same**
+//! Proxy-global operations — `status`, `shutdown`, `serialClose` — travel over the **same**
 //! listener as sessions. A newly accepted connection is discriminated by its
 //! first byte: a funnel session's first frame is a control message on stream 0
 //! (first byte `0x00`); an admin request is a single line of JSON (first byte
@@ -67,7 +67,7 @@ pub fn discriminate(stream: &TcpStream) -> Kind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminRequest {
     pub v: u32,
-    /// `"status"` | `"shutdown"` | `"upgrade"`.
+    /// `"status"` | `"shutdown"` | `"upgrade"` | `"serialClose"`.
     pub cmd: String,
     #[serde(default)]
     pub token: String,
@@ -78,6 +78,10 @@ pub struct AdminRequest {
     /// steps down only if this is strictly newer than its own.
     #[serde(default)]
     pub version: String,
+    /// For `serialClose`: the port path to force-close, or `"all"` for every open
+    /// port. Empty for every other command.
+    #[serde(default)]
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +94,10 @@ pub struct StatusInfo {
     /// Active refs = live sessions + (window keep-alive, if `--heartbeat`).
     pub active_refs: usize,
     pub uptime_secs: u64,
+    /// Serial ports this proxy currently holds open. `default` so a status reply
+    /// from an older proxy (during an upgrade handover) still parses.
+    #[serde(default)]
+    pub serial_ports: Vec<crate::proxy_helper::proxy_server::SerialStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +110,10 @@ pub struct AdminResponse {
     /// Human-readable note (e.g. "draining: 2 active session(s)").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// For `serialClose`: the port paths actually closed. Empty means nothing
+    /// matched, which is still `ok: true` — the requested end state holds either way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed: Vec<String>,
 }
 
 impl AdminResponse {
@@ -111,6 +123,7 @@ impl AdminResponse {
             error: Some(msg.into()),
             status: None,
             message: None,
+            closed: Vec::new(),
         }
     }
 }
@@ -165,6 +178,10 @@ pub struct AdminContext {
     /// the set) but a self-limiting one: the accept threads exit during shutdown, which
     /// drops their closures and breaks it.
     pub accept_set: Arc<crate::proxy_helper::listeners::AcceptSet>,
+    /// Open serial ports, for `--status` reporting and `--close-serial`. The admin
+    /// path is the only operator-level way to release a device that a wedged client
+    /// is still holding.
+    pub serial_registry: crate::proxy_helper::proxy_server::SerialPortRegistry,
     pub local_port: u16,
     pub endpoint_path: PathBuf,
     pub pid: u32,
@@ -205,10 +222,15 @@ fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
                 },
                 active_refs: ctx.lifetime.count(),
                 uptime_secs: Endpoint::now_unix().saturating_sub(ctx.started_at_unix),
+                serial_ports: crate::proxy_helper::proxy_server::serial_status(
+                    &ctx.serial_registry,
+                ),
             }),
+            closed: Vec::new(),
         },
         "shutdown" => begin_drain(ctx),
         "upgrade" => begin_upgrade(req, ctx),
+        "serialClose" => close_serial(req, ctx),
         other => AdminResponse::err(format!("unknown admin cmd: {other}")),
     }
 }
@@ -245,6 +267,7 @@ fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
         message: Some(format!(
             "superseded: releasing lock; {active} session(s) finish on the old proxy"
         )),
+        closed: Vec::new(),
     }
 }
 
@@ -275,6 +298,38 @@ fn begin_drain(ctx: &Arc<AdminContext>) -> AdminResponse {
         message: Some(format!(
             "draining: {active} active session(s); will exit when they finish"
         )),
+        closed: Vec::new(),
+    }
+}
+
+/// Force-close one serial port (or all of them), whoever is using it.
+///
+/// The operator counterpart to `serial.close`, which is cooperative and per-client:
+/// a wedged client that never closes would otherwise pin a device for the life of the
+/// proxy, with no way to take it back.
+///
+/// Closing nothing is **not** an error. `--close-serial <path>` asks for the port to
+/// end up closed, and if it was not open the caller's goal already holds; failing here
+/// would only make scripts special-case the benign outcome.
+fn close_serial(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
+    if req.path.is_empty() {
+        return AdminResponse::err("serialClose requires a path (or \"all\")");
+    }
+    let closed =
+        crate::proxy_helper::proxy_server::force_close_serial(&ctx.serial_registry, &req.path);
+    let message = match (closed.is_empty(), req.path.as_str()) {
+        (true, crate::proxy_helper::proxy_server::CLOSE_ALL_SERIAL) => {
+            "no serial ports are open".to_string()
+        }
+        (true, path) => format!("no open serial port matched '{path}'"),
+        (false, _) => format!("closed {} serial port(s)", closed.len()),
+    };
+    AdminResponse {
+        ok: true,
+        error: None,
+        status: None,
+        message: Some(message),
+        closed,
     }
 }
 
@@ -288,6 +343,7 @@ pub fn request_upgrade(endpoint: &Endpoint, my_version: &str) -> Result<AdminRes
         cmd: "upgrade".into(),
         token: endpoint.token.clone(),
         graceful: true,
+        path: String::new(),
         version: my_version.into(),
     };
     let resp = query(endpoint, &req)?;
