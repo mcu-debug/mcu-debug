@@ -114,7 +114,10 @@ pub enum ProxyEvent {
     /// A session-owned background thread exited — returned, errored, or panicked.
     /// Emitted by `spawn_session_thread` so the loop always learns of the death
     /// (even on panic) and can end the session for fatal roles or note the rest.
-    SessionThreadExited { role: SessionThreadRole, panicked: bool },
+    SessionThreadExited {
+        role: SessionThreadRole,
+        panicked: bool,
+    },
 }
 
 // ── Misc shared types ─────────────────────────────────────────────────────────
@@ -338,12 +341,12 @@ pub enum StreamStatus {
 pub struct SerialPortInfo {
     /// Current configuration (includes the `transport` field).
     pub params: SerialParams,
-    /// TCP port the direct bridge is listening on (`transport == "direct"`).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// TCP port the direct bridge is listening on, if any direct client asked for one.
     pub tcp_port: Option<u16>,
-    /// Funnel stream ID assigned to this port (`transport == "funnel"`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel_id: Option<u8>,
+    /// Funnel stream IDs attached to this port, ascending. Plural because transports
+    /// are additive: a port can carry several funnel channels (one per client, plus
+    /// one per reconnect) at the same time as a direct bridge.
+    pub channel_ids: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
@@ -395,8 +398,8 @@ pub enum ControlResponseData {
         open: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         tcp_port: Option<u16>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        channel_id: Option<u8>,
+        /// Funnel stream IDs on this port, ascending; empty when none are attached.
+        channel_ids: Vec<u8>,
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<SerialParams>,
     },

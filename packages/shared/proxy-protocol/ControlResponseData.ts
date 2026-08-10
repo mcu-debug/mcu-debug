@@ -31,7 +31,10 @@ export type ControlResponseData =
           "serial.isOpen": {
               open: boolean;
               tcp_port: number | null;
-              channel_id: number | null;
+              /**
+               * Funnel stream IDs on this port, ascending; empty when none are attached.
+               */
+              channel_ids: Array<number>;
               params: SerialParams | null;
           };
       }

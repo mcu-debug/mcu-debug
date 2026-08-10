@@ -92,14 +92,34 @@ function serialLogError(message: string) {
 }
 
 /**
- * Extract the resolved device path from a SerialPortInfo.
+ * The `serial.open` response: what *this* client got for the port it just opened.
  *
- * `serial.open` responses have shape { path, tcp_port, channel_id } at the
- * top level, while `serial.listOpen` entries have { params.path, ... }.
- * Both shapes live in openPorts[], so we check both.
+ * Distinct from `SerialPortInfo` (a `serial.listOpen` entry), which describes the
+ * port's whole state on the proxy — including every other client's channel. Open
+ * returns exactly one `channel_id` by construction; listOpen returns `channel_ids`,
+ * plural, because transports are additive on the proxy side.
+ *
+ * These were previously conflated under `SerialPortInfo`, which is why reading the
+ * path needed an `as any` cast: the two shapes carry it in different places.
  */
-function resolvedPath(info: SerialPortInfo): string | undefined {
-    return (info as any).path || info.params?.path || undefined;
+export interface SerialOpenInfo {
+    path?: string;
+    tcp_port?: number | null;
+    /** The funnel channel allocated to this open, when transport is "funnel". */
+    channel_id?: number | null;
+}
+
+/** Either shape can land in `openPorts[]` — open responses and listOpen entries. */
+type OpenPortEntry = SerialOpenInfo | SerialPortInfo;
+
+/**
+ * Extract the resolved device path from either shape.
+ *
+ * `serial.open` responses carry `path` at the top level; `serial.listOpen` entries
+ * carry it as `params.path`.
+ */
+function resolvedPath(info: OpenPortEntry): string | undefined {
+    return (info as SerialOpenInfo).path || (info as SerialPortInfo).params?.path || undefined;
 }
 
 /** Human-readable description of a port selector for log messages. */
@@ -145,7 +165,7 @@ export class ProxyConnection {
     private nextSeq: number = 1;
     private pendingPromises: Map<number, { resolve: (value: any) => void; reject: (reason?: any) => void }> = new Map();
     private availablePorts: AvailablePort[] = [];
-    private openPorts: SerialPortInfo[] = [];
+    private openPorts: OpenPortEntry[] = [];
     private pendingAvailableSnapshotResolvers: Array<() => void> = [];
     /**
      * Funnel bytes that arrived before their stream was registered.
@@ -479,8 +499,11 @@ export class ProxyConnection {
             };
             const openPorts = await this.sendControlCommand(controlMsg, PROXY_TIMOUT);
             this.logInfo(`Open serial ports: ${JSON.stringify(openPorts)}`);
-            this.openPorts = openPorts && openPorts["serial.listOpen"] ? openPorts["serial.listOpen"].ports : [];
-            return this.openPorts;
+            // Narrower than the openPorts[] union: a listOpen reply is always
+            // SerialPortInfo entries, so callers of this method get the precise type.
+            const ports: SerialPortInfo[] = openPorts && openPorts["serial.listOpen"] ? openPorts["serial.listOpen"].ports : [];
+            this.openPorts = ports;
+            return ports;
         } catch (err) {
             this.logError(`Failed to get serial ports list: ${err}`);
             this.openPorts = [];
@@ -488,7 +511,7 @@ export class ProxyConnection {
         }
     }
 
-    public getSerialPortInfo(path: string): SerialPortInfo | null {
+    public getSerialPortInfo(path: string): OpenPortEntry | null {
         for (const port of this.openPorts) {
             if (resolvedPath(port) === path) {
                 return port;
@@ -519,7 +542,7 @@ export class ProxyConnection {
         }
     }
 
-    public async openSerialPort(serialParams: SerialParams, silent: boolean = false): Promise<SerialPortInfo | null> {
+    public async openSerialPort(serialParams: SerialParams, silent: boolean = false): Promise<SerialOpenInfo | null> {
         try {
             serialParams.transport = this.isFunnelTransport ? "funnel" : "direct";   // Default to proxy transport for remote workspaces and direct transport for local workspaces. The proxy will handle the transport details on its side.
             const controlMsg: ControlMessage = {
@@ -528,7 +551,7 @@ export class ProxyConnection {
                 params: serialParams,
             };
             const result = await this.sendControlCommand(controlMsg, PROXY_TIMOUT);
-            const openInfo = (result && result["serial.open"] ? result["serial.open"] : null) as SerialPortInfo | null;
+            const openInfo = (result && result["serial.open"] ? result["serial.open"] : null) as SerialOpenInfo | null;
             if (!openInfo) {
                 return null;
             }
@@ -560,7 +583,7 @@ export class ProxyConnection {
         return this.availablePorts;
     }
 
-    public getCurrentOpenSerialPorts(): SerialPortInfo[] {
+    public getCurrentOpenSerialPorts(): OpenPortEntry[] {
         return this.openPorts;
     }
 
@@ -936,7 +959,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
      * @param portConfig - Configuration of the serial port originally specification from launch.json
      * @param isNew - Whether this is a fresh open (vs. a reconnect)
      */
-    private async createOrUpdateViewWithSerialInfo(conn: ProxyConnection, pInfo: SerialPortInfo, portConfig: SerialParams, isNew: boolean = false): Promise<void> {
+    private async createOrUpdateViewWithSerialInfo(conn: ProxyConnection, pInfo: SerialOpenInfo, portConfig: SerialParams, isNew: boolean = false): Promise<void> {
         const log_file = portConfig.log_file;
         const input_mode = portConfig.input_mode;
         const actualPath: string = resolvedPath(pInfo) || portConfig.path || '';

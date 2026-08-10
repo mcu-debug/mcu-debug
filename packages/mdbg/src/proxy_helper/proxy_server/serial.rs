@@ -61,26 +61,104 @@ impl Write for FunnelWriter {
     }
 }
 
-/// How a serial port's data channel is exposed to the client.
-pub enum SerialPortBacking {
-    /// A separate TCP listener; client connects to the returned `tcp_port`.
-    Direct(TcpBridge),
-    /// Bytes are framed in the Funnel protocol on the existing control connection.
-    /// `stream_id` is the dynamic stream ID returned to the client as `channel_id`.
-    Funnel { stream_id: u8 },
+/// One open serial port and every transport currently attached to it.
+///
+/// Transports are not exclusive. `PortHandle` already fans out to N clients through
+/// `attach_client`, which takes any `Write` — a `TcpStream` for direct, a
+/// [`FunnelWriter`] for funnel — and its reader thread cannot tell them apart. The
+/// old model stored a single backing per port and rejected a second transport as a
+/// conflict, but the exclusivity was bookkeeping, not a property of the data path.
+///
+/// It was also wrong for funnel alone: re-opening a funnel port deliberately
+/// allocates a *new* channel (client reconnect), and the single-backing entry
+/// overwrote the previous `stream_id`. Closing then detached only the most recent
+/// client and left the others attached and receiving — with their `Arc<PortHandle>`
+/// clones keeping the device open, so the port never actually closed.
+pub struct OpenPort {
+    pub handle: Arc<PortHandle>,
+    /// The direct-transport bridge, if a client has asked for one. At most one per
+    /// port: it is a TCP listener, and a second would be another door to the same
+    /// room. Additional direct clients are served by the same bridge.
+    pub direct: Option<TcpBridge>,
+    /// How many sessions asked for direct transport on this port. The bridge is
+    /// shared, so it can only be torn down once the last of them has closed —
+    /// counting is the only way to know when that is.
+    pub direct_refs: usize,
+    /// Funnel channels on this port: `stream_id` -> `PortHandle` client id. Many,
+    /// because every funnel client — and every reconnect — gets its own channel.
+    pub funnel: HashMap<u8, u64>,
+}
+
+impl OpenPort {
+    fn new(handle: Arc<PortHandle>) -> Self {
+        OpenPort {
+            handle,
+            direct: None,
+            direct_refs: 0,
+            funnel: HashMap::new(),
+        }
+    }
+
+    /// No client is using this port any more, so the device can be released.
+    pub fn is_idle(&self) -> bool {
+        port_is_idle(self.direct_refs, &self.funnel)
+    }
+
+    /// Port for direct clients to connect to, if a bridge is up.
+    fn tcp_port(&self) -> Option<u16> {
+        self.direct.as_ref().map(|b| b.tcp_port)
+    }
+
+    /// Funnel stream IDs, in a stable order so responses do not shuffle between calls.
+    fn channel_ids(&self) -> Vec<u8> {
+        sorted_channel_ids(&self.funnel)
+    }
+}
+
+/// Whether a port with these counts has any client left.
+///
+/// Free function rather than only a method so it is testable: building an `OpenPort`
+/// needs an `Arc<PortHandle>`, which needs a real serial device.
+fn port_is_idle(direct_refs: usize, funnel: &HashMap<u8, u64>) -> bool {
+    direct_refs == 0 && funnel.is_empty()
+}
+
+/// Ascending stream IDs from a port's funnel map.
+///
+/// Free function rather than only a method so it is testable: building an `OpenPort`
+/// needs an `Arc<PortHandle>`, which needs a real serial device.
+fn sorted_channel_ids(funnel: &HashMap<u8, u64>) -> Vec<u8> {
+    let mut ids: Vec<u8> = funnel.keys().copied().collect();
+    ids.sort_unstable();
+    ids
 }
 
 /// Registry of open serial ports shared across all `ProxyServer` sessions in
 /// one proxy process. Keyed by port path (e.g. `/dev/ttyUSB0` or `COM3`).
-/// Dropping an entry closes the port and its transport.
-pub type SerialPortRegistry = Arc<Mutex<HashMap<String, (Arc<PortHandle>, SerialPortBacking)>>>;
+/// Dropping an entry closes the port and every transport attached to it.
+pub type SerialPortRegistry = Arc<Mutex<HashMap<String, OpenPort>>>;
+
+/// Outcome of a session releasing its hold on a port.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Released {
+    /// This session had nothing open on that path.
+    NothingHeld,
+    /// Released, but other clients are still using the port.
+    StillOpen,
+    /// This was the last client — the device was closed.
+    PortClosed,
+}
 
 // ── Serial handlers on ProxyServer ───────────────────────────────────────────
 
 impl ProxyServer {
-    /// `serial.open` — open a port (or reconfigure it if already open) and start
-    /// a transport channel. Idempotent per transport type. Returns an error if the
-    /// port is already open with a *different* transport (close it first).
+    /// `serial.open` — open a port (or reconfigure it if already open) and attach a
+    /// transport channel.
+    ///
+    /// Transports are additive: a port already carrying funnel channels will happily
+    /// take a direct bridge as well, and vice versa. Direct is idempotent (all direct
+    /// clients share one bridge); funnel allocates a fresh channel per call, so a
+    /// reconnecting client gets its own.
     pub(super) fn handle_serial_open(&mut self, seq: u64, params: SerialParams) {
         // This runs on the single-threaded message loop, so anything slow here stalls
         // every other control request behind it. Phase timings are recorded so a stall
@@ -105,7 +183,11 @@ impl ProxyServer {
                 // otherwise be invisible, and it is a prime suspect for a stalled loop.
                 let elapsed = t_start.elapsed();
                 if elapsed >= Duration::from_millis(250) {
-                    log::warn!("serial.open SLOW: seq {} failed to resolve after {:?}", seq, elapsed);
+                    log::warn!(
+                        "serial.open SLOW: seq {} failed to resolve after {:?}",
+                        seq,
+                        elapsed
+                    );
                 }
                 ControlResponse::error(seq, format!("serial.open failed: {e}"))
                     .send(&self.writer)
@@ -128,32 +210,68 @@ impl ProxyServer {
 
         t_resolved.set(t_start.elapsed());
 
+        // Whether this session already holds a direct reference on this path. Read
+        // before taking the registry lock so the closure below borrows only the
+        // registry field. A session takes at most one reference per path no matter
+        // how many times it re-opens.
+        let session_holds_direct = self.serial_direct_paths.contains(&path);
+
         let phase1: Phase1Result = (|| {
             let mut reg = self.serial_registry.lock_recover();
             t_locked.set(t_start.elapsed());
-            if let Some((handle, backing)) = reg.get(&path) {
+            if let Some(open) = reg.get_mut(&path) {
                 was_already_open.set(true);
-                // Port already open — check transport consistency.
-                match (&params.transport, backing) {
-                    (SerialTransport::Direct, SerialPortBacking::Direct(bridge)) => {
-                        if let Err(e) = handle.reconfigure(&params) {
-                            return Phase1Result::Error(e);
-                        }
-                        t_reconfigured.set(t_start.elapsed());
-                        Phase1Result::DirectReady(bridge.tcp_port)
+
+                // A second client brings its own line settings, and `reconfigure`
+                // applies them to the one shared device — so an IDE session at 115200
+                // and a CLI monitor at 9600 will fight over the UART. This is not
+                // blocked, because re-opening with new settings is exactly how the UI
+                // changes baud rate on a live port and there is no way to tell the two
+                // apart here. It is logged instead: the symptom is garbled output in
+                // the *other* client, which is otherwise very hard to attribute.
+                if open.handle.settings_differ(&params) {
+                    let attached = open.handle.client_count();
+                    if attached > 0 {
+                        log::warn!(
+                            "serial.open: reconfiguring '{}' while {} client(s) are attached — their line settings change too",
+                            path,
+                            attached
+                        );
                     }
-                    (SerialTransport::Funnel, SerialPortBacking::Funnel { .. }) => {
-                        if let Err(e) = handle.reconfigure(&params) {
-                            return Phase1Result::Error(e);
+                }
+                if let Err(e) = open.handle.reconfigure(&params) {
+                    return Phase1Result::Error(e);
+                }
+                t_reconfigured.set(t_start.elapsed());
+
+                // Transports are additive. Whichever one this client asked for is
+                // attached alongside whatever is already there.
+                match params.transport {
+                    SerialTransport::Direct => {
+                        let tcp_port = match open.tcp_port() {
+                            // A bridge is already listening — direct clients share it.
+                            Some(tcp_port) => tcp_port,
+                            None => {
+                                let bridge = match TcpBridge::start(
+                                    "127.0.0.1",
+                                    0,
+                                    Arc::clone(&open.handle),
+                                ) {
+                                    Ok(b) => b,
+                                    Err(e) => return Phase1Result::Error(e),
+                                };
+                                let tcp_port = bridge.tcp_port;
+                                open.direct = Some(bridge);
+                                tcp_port
+                            }
+                        };
+                        if !session_holds_direct {
+                            open.direct_refs += 1;
                         }
-                        t_reconfigured.set(t_start.elapsed());
-                        // Allocate a new funnel channel (e.g. client reconnect).
-                        Phase1Result::FunnelHandle(Arc::clone(handle))
+                        Phase1Result::DirectReady(tcp_port)
                     }
-                    _ => Phase1Result::Error(anyhow::anyhow!(
-                        "port '{}' is already open with a different transport; close it first",
-                        path
-                    )),
+                    // Every funnel open gets its own channel, including a reconnect.
+                    SerialTransport::Funnel => Phase1Result::FunnelHandle(Arc::clone(&open.handle)),
                 }
             } else {
                 // New port — open the serial device.
@@ -169,10 +287,10 @@ impl ProxyServer {
                             Err(e) => return Phase1Result::Error(e),
                         };
                         let tcp_port = bridge.tcp_port;
-                        reg.insert(
-                            path.clone(),
-                            (new_handle, SerialPortBacking::Direct(bridge)),
-                        );
+                        let mut open = OpenPort::new(new_handle);
+                        open.direct = Some(bridge);
+                        open.direct_refs = 1;
+                        reg.insert(path.clone(), open);
                         Phase1Result::DirectReady(tcp_port)
                     }
                     SerialTransport::Funnel => {
@@ -187,7 +305,12 @@ impl ProxyServer {
 
         // Phase 2: for funnel, allocate the channel outside the registry lock.
         let result: anyhow::Result<(Option<u16>, Option<u8>)> = match phase1 {
-            Phase1Result::DirectReady(tcp_port) => Ok((Some(tcp_port), None)),
+            Phase1Result::DirectReady(tcp_port) => {
+                // Record the reference the registry just counted, so this session's
+                // close (or teardown) releases exactly the one it took.
+                self.serial_direct_paths.insert(path.clone());
+                Ok((Some(tcp_port), None))
+            }
             Phase1Result::FunnelHandle(handle) => self
                 .alloc_funnel_channel(&path, &handle)
                 .map(|cid| (None, Some(cid))),
@@ -221,7 +344,11 @@ impl ProxyServer {
         if total >= budget {
             log::warn!(
                 "serial.open SLOW ({} budget {:?}): {}",
-                if was_already_open.get() { "re-open" } else { "first open" },
+                if was_already_open.get() {
+                    "re-open"
+                } else {
+                    "first open"
+                },
                 budget,
                 timings
             );
@@ -237,8 +364,8 @@ impl ProxyServer {
             let (err_tx, err_rx) = mpsc::channel::<PortErrorEvent>();
             {
                 let reg = self.serial_registry.lock_recover();
-                if let Some((handle, _)) = reg.get(&path) {
-                    handle.subscribe_errors(err_tx);
+                if let Some(open) = reg.get(&path) {
+                    open.handle.subscribe_errors(err_tx);
                 }
             }
             let proxy_tx = self.event_tx.clone();
@@ -325,54 +452,136 @@ impl ProxyServer {
             (Arc::clone(handle), client_id, path.to_string()),
         );
 
-        // Update (or insert) the registry entry with the confirmed stream_id.
+        // Record the channel. This *adds* to the port's channel set rather than
+        // replacing it: the previous version overwrote a single stored `stream_id`, so
+        // a second funnel client made the first invisible to close and to listOpen.
         self.serial_registry
             .lock_recover()
             .entry(path.to_string())
-            .and_modify(|(_, b)| {
-                *b = SerialPortBacking::Funnel {
-                    stream_id: channel_id,
-                }
-            })
-            .or_insert_with(|| {
-                (
-                    Arc::clone(handle),
-                    SerialPortBacking::Funnel {
-                        stream_id: channel_id,
-                    },
-                )
-            });
+            .or_insert_with(|| OpenPort::new(Arc::clone(handle)))
+            .funnel
+            .insert(channel_id, client_id);
 
         Ok(channel_id)
     }
 
-    /// `serial.close` — close a previously opened serial port.
+    /// `serial.close` — release **this session's** hold on a port.
+    ///
+    /// Closing is per-client, not per-port. A session detaches its own funnel channels
+    /// and drops its direct reference; other sessions keep running untouched. The
+    /// device itself is closed only when the last client of any kind lets go.
+    ///
+    /// This used to evict the port for everyone, which was both too blunt (one window
+    /// closing killed another's live view) and unreachable as advice — the protocol
+    /// has no way to name "my" transport, so a client told to "close it first" could
+    /// only close it for all.
     pub(super) fn handle_serial_close(&mut self, seq: u64, path: &str) {
-        let removed = self.serial_registry.lock_recover().remove(path);
-        if let Some((handle, backing)) = removed {
-            // Allow a future reopen of this path to resubscribe — the next
-            // PortHandle will be a brand new instance with its own error_subs.
-            self.serial_error_subs.remove(path);
-            // If funnel transport, detach the client writer and remove the routing entry.
-            if let SerialPortBacking::Funnel { stream_id } = backing {
-                if let Some((_, client_id, _)) = self.serial_funnel_write.remove(&stream_id) {
-                    handle.detach_client(client_id);
+        match self.release_serial_port(path) {
+            Released::NothingHeld => {
+                ControlResponse::error(
+                    seq,
+                    format!("serial.close: '{path}' is not open by this session"),
+                )
+                .send(&self.writer)
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to send serial.close error: {e}");
+                    self.exit = true;
+                });
+            }
+            _ => {
+                ControlResponse::success(seq, Some(ControlResponseData::SerialClose))
+                    .send(&self.writer)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to send serial.close response: {e}");
+                        self.exit = true;
+                    });
+            }
+        }
+    }
+
+    /// Release every serial port this session holds. Called from `Drop`, so a session
+    /// that ends — cleanly, or by panicking — does not strand its clients on the
+    /// shared `PortHandle`.
+    pub(super) fn release_all_serial_ports(&mut self) {
+        // Collect first: `release_serial_port` mutates both maps as it goes.
+        let mut paths: std::collections::HashSet<String> = self.serial_direct_paths.clone();
+        for (_, _, path) in self.serial_funnel_write.values() {
+            paths.insert(path.clone());
+        }
+        for path in paths {
+            if matches!(self.release_serial_port(&path), Released::PortClosed) {
+                log::info!("Session teardown closed serial port '{path}' (last client)");
+            }
+        }
+    }
+
+    /// What releasing a session's hold on a port did.
+    ///
+    /// The caller needs the distinction: nothing held is a client error on an explicit
+    /// close, but is unremarkable during teardown.
+    fn release_serial_port(&mut self, path: &str) -> Released {
+        // This session's funnel channels on this path. Other sessions' channels live
+        // in *their* `serial_funnel_write`, so they are untouched by construction.
+        let my_channels: Vec<u8> = self
+            .serial_funnel_write
+            .iter()
+            .filter(|(_, (_, _, p))| p == path)
+            .map(|(stream_id, _)| *stream_id)
+            .collect();
+        let had_direct = self.serial_direct_paths.remove(path);
+
+        if my_channels.is_empty() && !had_direct {
+            return Released::NothingHeld;
+        }
+
+        // Anything whose Drop does real work (joining the bridge's accept thread,
+        // closing the device) is moved out here and dropped after the registry lock is
+        // released — dropping it inline would stall every other session's serial
+        // request behind a thread join.
+        let mut retired_bridge: Option<TcpBridge> = None;
+        let mut retired_port: Option<OpenPort> = None;
+
+        {
+            let mut reg = self.serial_registry.lock_recover();
+            if let Some(open) = reg.get_mut(path) {
+                for stream_id in &my_channels {
+                    if let Some((handle, client_id, _)) = self.serial_funnel_write.remove(stream_id)
+                    {
+                        handle.detach_client(client_id);
+                    }
+                    open.funnel.remove(stream_id);
+                }
+                if had_direct {
+                    open.direct_refs = open.direct_refs.saturating_sub(1);
+                    if open.direct_refs == 0 {
+                        // No session wants direct any more; the shared listener goes.
+                        retired_bridge = open.direct.take();
+                    }
+                }
+                if open.is_idle() {
+                    retired_port = reg.remove(path);
+                }
+            } else {
+                // The port is gone from under us (a fatal port error removed it).
+                // Still drop our routing entries so nothing keeps the handle alive.
+                for stream_id in &my_channels {
+                    self.serial_funnel_write.remove(stream_id);
                 }
             }
-            // For Direct, TcpBridge::drop handles the TCP listener and attached clients.
-            ControlResponse::success(seq, Some(ControlResponseData::SerialClose))
-                .send(&self.writer)
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to send serial.close response: {}", e);
-                    self.exit = true;
-                });
+        }
+
+        let closed = retired_port.is_some();
+        // Explicit, so the ordering above is not lost to a later refactor.
+        drop(retired_bridge);
+        drop(retired_port);
+
+        if closed {
+            // The next open of this path gets a brand new PortHandle, so this session
+            // must be allowed to resubscribe to its errors.
+            self.serial_error_subs.remove(path);
+            Released::PortClosed
         } else {
-            ControlResponse::error(seq, format!("serial.close: '{}' is not open", path))
-                .send(&self.writer)
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to send serial.close error: {}", e);
-                    self.exit = true;
-                });
+            Released::StillOpen
         }
     }
 
@@ -381,16 +590,10 @@ impl ProxyServer {
         let reg = self.serial_registry.lock_recover();
         let ports: Vec<SerialPortInfo> = reg
             .values()
-            .map(|(handle, backing)| {
-                let (tcp_port, channel_id) = match backing {
-                    SerialPortBacking::Direct(bridge) => (Some(bridge.tcp_port), None),
-                    SerialPortBacking::Funnel { stream_id } => (None, Some(*stream_id)),
-                };
-                SerialPortInfo {
-                    params: handle.params.lock_recover().clone(),
-                    tcp_port,
-                    channel_id,
-                }
+            .map(|open| SerialPortInfo {
+                params: open.handle.params.lock_recover().clone(),
+                tcp_port: open.tcp_port(),
+                channel_ids: open.channel_ids(),
             })
             .collect();
         drop(reg);
@@ -418,21 +621,17 @@ impl ProxyServer {
     /// `serial.isOpen` — pull-based status probe for a single port.
     pub(super) fn handle_serial_is_open(&mut self, seq: u64, path: &str) {
         let reg = self.serial_registry.lock_recover();
-        let (open, tcp_port, channel_id, params) = if let Some((handle, backing)) = reg.get(path) {
-            let p = handle.params.lock_recover().clone();
-            let (tcp_port, channel_id) = match backing {
-                SerialPortBacking::Direct(bridge) => (Some(bridge.tcp_port), None),
-                SerialPortBacking::Funnel { stream_id } => (None, Some(*stream_id)),
-            };
-            (true, tcp_port, channel_id, Some(p))
+        let (is_open, tcp_port, channel_ids, params) = if let Some(open) = reg.get(path) {
+            let p = open.handle.params.lock_recover().clone();
+            (true, open.tcp_port(), open.channel_ids(), Some(p))
         } else {
-            (false, None, None, None)
+            (false, None, Vec::new(), None)
         };
         drop(reg);
         let data = ControlResponseData::SerialIsOpen {
-            open,
+            open: is_open,
             tcp_port,
-            channel_id,
+            channel_ids,
             params,
         };
         ControlResponse::success(seq, Some(data))
@@ -490,5 +689,73 @@ impl ProxyServer {
                 eprintln!("Failed to send serial.unsubscribeAvailable response: {}", e);
                 self.exit = true;
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `serial.listOpen` and `serial.isOpen` document their channel list as ascending.
+    /// `HashMap` iteration order is deliberately unspecified (and randomized per
+    /// process), so without the sort the same port would report its channels in a
+    /// different order on consecutive calls and a client diffing the two would see
+    /// phantom changes.
+    #[test]
+    fn channel_ids_are_reported_in_ascending_order() {
+        let mut funnel: HashMap<u8, u64> = HashMap::new();
+        // Inserted out of order, and stream ids are not contiguous: a port picks up
+        // channels as clients arrive and lets them go as clients leave.
+        for (stream_id, client_id) in [(9u8, 40u64), (2, 10), (7, 30), (4, 20)] {
+            funnel.insert(stream_id, client_id);
+        }
+
+        assert_eq!(sorted_channel_ids(&funnel), vec![2, 4, 7, 9]);
+    }
+
+    #[test]
+    fn a_port_with_no_funnel_clients_reports_no_channels() {
+        // The direct-only case: a port can be open with a TCP bridge and zero funnel
+        // channels, which must serialize as an empty list rather than being absent.
+        assert!(sorted_channel_ids(&HashMap::new()).is_empty());
+    }
+
+    /// The release arithmetic, exercised without a device.
+    ///
+    /// `is_idle` is what decides whether a `serial.close` merely detaches one client or
+    /// actually releases the hardware, so the boundary cases matter: a port must not be
+    /// declared idle while *either* kind of client remains, and must be declared idle
+    /// the moment the last one of either kind goes.
+    ///
+    /// This mirrors the field manipulation in `release_serial_port` rather than calling
+    /// it, because that method needs a `ProxyServer` and an `Arc<PortHandle>` — and a
+    /// `PortHandle` needs a real serial device.
+    #[test]
+    fn a_port_is_idle_only_when_both_kinds_of_client_are_gone() {
+        let idle = port_is_idle;
+        let mut funnel: HashMap<u8, u64> = HashMap::new();
+
+        // Two sessions on direct, one on funnel.
+        let mut direct_refs = 2usize;
+        funnel.insert(5, 100);
+        assert!(!idle(direct_refs, &funnel));
+
+        // The funnel client leaves: direct sessions still hold the port.
+        funnel.remove(&5);
+        assert!(!idle(direct_refs, &funnel), "direct refs still outstanding");
+
+        // One direct session closes. The bridge is shared, so it must survive.
+        direct_refs = direct_refs.saturating_sub(1);
+        assert!(!idle(direct_refs, &funnel), "one direct session remains");
+
+        // The last one closes — now the device can go.
+        direct_refs = direct_refs.saturating_sub(1);
+        assert!(idle(direct_refs, &funnel));
+
+        // Releasing more times than were taken must not wrap around to a huge count,
+        // which would pin the port open forever.
+        direct_refs = direct_refs.saturating_sub(1);
+        assert_eq!(direct_refs, 0);
+        assert!(idle(direct_refs, &funnel));
     }
 }

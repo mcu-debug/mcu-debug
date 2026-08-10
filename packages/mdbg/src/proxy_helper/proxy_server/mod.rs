@@ -42,7 +42,7 @@ pub use protocol::*;
 
 mod gdb_server;
 mod serial;
-pub use serial::{FunnelWriter, SerialPortBacking, SerialPortRegistry};
+pub use serial::{FunnelWriter, OpenPort, SerialPortRegistry};
 
 /// Spawn a session-owned background thread that can never die silently.
 ///
@@ -65,8 +65,7 @@ pub(super) fn spawn_session_thread<F>(
     std::thread::Builder::new()
         .name(role.thread_name())
         .spawn(move || {
-            let panicked =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err();
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err();
             // Best-effort: if the loop is already gone, this send simply fails.
             let _ = exit_tx.send(ProxyEvent::SessionThreadExited { role, panicked });
         })
@@ -189,6 +188,14 @@ pub struct ProxyServer {
     /// Cleared whenever the underlying `PortHandle` goes away (explicit
     /// close or a fatal port error) so a fresh open resubscribes.
     serial_error_subs: std::collections::HashSet<String>,
+    /// Paths this session opened with `transport: "direct"`.
+    ///
+    /// The TCP bridge is shared by every direct client on a port, so it cannot be
+    /// torn down when any one of them closes. This set is the session's share of
+    /// that ownership: it holds at most one reference per path, matched by
+    /// `OpenPort::direct_refs`, and the bridge goes away when the last session
+    /// releases it.
+    serial_direct_paths: std::collections::HashSet<String>,
     /// Set by [`ProxyServer::cancel`] on teardown. Polled by the session's
     /// background threads that block on something other than the gdb-server
     /// child (port waiters mid-connect, the serial error forwarder) so they stop
@@ -203,6 +210,11 @@ impl Drop for ProxyServer {
     fn drop(&mut self) {
         self.cancel();
         self.unsubscribe_serial_available();
+        // Release this session's serial clients. Without this, a session that ended
+        // — cleanly or by crashing — left its funnel writers attached to the shared
+        // `PortHandle` and its `Arc` clones holding the device open. That is why a
+        // port, once opened, never went away for the life of the proxy.
+        self.release_all_serial_ports();
         self.end_process();
     }
 }
@@ -234,6 +246,7 @@ impl ProxyServer {
             serial_available_hub,
             serial_available_sub_id: None,
             serial_error_subs: std::collections::HashSet::new(),
+            serial_direct_paths: std::collections::HashSet::new(),
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -282,34 +295,38 @@ impl ProxyServer {
         // on a stream read in the main thread.
         let control_stream = self.writer.try_clone_stream()?;
         let event_tx = self.event_tx.clone();
-        spawn_session_thread(&self.event_tx, SessionThreadRole::ControlReader, move || {
-            let mut reader = control_stream;
-            let mut buf = [0u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => {
-                        event_tx.send(ProxyEvent::IncomingClosed).ok();
-                        break;
-                    }
-                    Ok(n) => {
-                        if event_tx
-                            .send(ProxyEvent::IncomingData(
-                                buf[..n].to_vec(),
-                                std::time::Instant::now(),
-                            ))
-                            .is_err()
-                        {
-                            break; // main thread exited
+        spawn_session_thread(
+            &self.event_tx,
+            SessionThreadRole::ControlReader,
+            move || {
+                let mut reader = control_stream;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => {
+                            event_tx.send(ProxyEvent::IncomingClosed).ok();
+                            break;
+                        }
+                        Ok(n) => {
+                            if event_tx
+                                .send(ProxyEvent::IncomingData(
+                                    buf[..n].to_vec(),
+                                    std::time::Instant::now(),
+                                ))
+                                .is_err()
+                            {
+                                break; // main thread exited
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Control stream read error: {}", e);
+                            event_tx.send(ProxyEvent::IncomingClosed).ok();
+                            break;
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Control stream read error: {}", e);
-                        event_tx.send(ProxyEvent::IncomingClosed).ok();
-                        break;
-                    }
                 }
-            }
-        });
+            },
+        );
 
         let mut content_length: Option<u32> = None;
         let mut stream_id = 0u8;
@@ -409,7 +426,9 @@ impl ProxyServer {
                                         self.handle_control_message(control_msg);
                                         let took = started.elapsed();
                                         log::log!(
-                                            if routine && took < std::time::Duration::from_millis(250) {
+                                            if routine
+                                                && took < std::time::Duration::from_millis(250)
+                                            {
                                                 log::Level::Debug
                                             } else {
                                                 log::Level::Info
@@ -605,9 +624,18 @@ impl ProxyServer {
                     // Port died — remove from registry (drops the backing and fd),
                     // then notify the client so it can update its UI.
                     let removed = self.serial_registry.lock_recover().remove(&err.path);
-                    if let Some((_, SerialPortBacking::Funnel { stream_id })) = removed {
-                        self.serial_funnel_write.remove(&stream_id);
+                    if let Some(open) = removed {
+                        // Drop the inbound routing for every channel on this port, not
+                        // just the most recent one — a stale entry would keep an
+                        // `Arc<PortHandle>` alive for a device that is already gone.
+                        for stream_id in open.funnel.keys() {
+                            self.serial_funnel_write.remove(stream_id);
+                        }
                     }
+                    // The port is gone, so this session no longer holds a direct
+                    // reference to it. Leaving it set would make a later close look
+                    // like it still had something to release.
+                    self.serial_direct_paths.remove(&err.path);
                     // Allow a future successful open of this path to resubscribe —
                     // the PortHandle it would subscribe to is a brand new instance.
                     self.serial_error_subs.remove(&err.path);

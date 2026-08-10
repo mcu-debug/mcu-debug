@@ -10,11 +10,13 @@ export type SerialPortInfo = {
      */
     params: SerialParams;
     /**
-     * TCP port the direct bridge is listening on (`transport == "direct"`).
+     * TCP port the direct bridge is listening on, if any direct client asked for one.
      */
     tcp_port: number | null;
     /**
-     * Funnel stream ID assigned to this port (`transport == "funnel"`).
+     * Funnel stream IDs attached to this port, ascending. Plural because transports
+     * are additive: a port can carry several funnel channels (one per client, plus
+     * one per reconnect) at the same time as a direct bridge.
      */
-    channel_id: number | null;
+    channel_ids: Array<number>;
 };

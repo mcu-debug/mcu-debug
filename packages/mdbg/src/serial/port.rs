@@ -450,6 +450,20 @@ impl PortHandle {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// How many clients are currently attached, across every transport.
+    ///
+    /// Used to warn when one client's `serial.open` is about to reprogram a device
+    /// that others are already reading — see `handle_serial_open`.
+    pub fn client_count(&self) -> usize {
+        self.shared.clients.lock_recover().len()
+    }
+
+    /// Whether `params` would actually change the line settings, i.e. whether a
+    /// [`reconfigure`](Self::reconfigure) with it would touch the device.
+    pub fn settings_differ(&self, params: &SerialParams) -> bool {
+        !line_settings_equal(&self.params.lock_recover(), params)
+    }
+
     /// Attach a client to receive serial bytes, seeded with buffered history.
     ///
     /// The ring snapshot is placed as the **first** item in the client's queue,
