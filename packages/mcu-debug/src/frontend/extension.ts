@@ -1092,4 +1092,6 @@ export async function activate(context: vscode.ExtensionContext) {
     return ret;
 }
 
-export async function deactivate() { }
+export async function deactivate() {
+    SerialPortManager.Dispose();
+}

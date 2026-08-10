@@ -96,6 +96,10 @@ export class CliSessionDriver {
         // This is already routed to the CLI, no need to also route it terminal again
         this.config.routeGdbServerOutputToDebugConsole = false;
 
+        process.on('exit', () => {
+            this.dispose();
+        });
+
         this.setState("not-started");
     }
 
@@ -1116,6 +1120,10 @@ export class CliSessionDriver {
                 logger.warn(`Failed to clean up socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
             }
         });
+    }
+
+    dispose() {
+        SerialPortManager.Dispose();
     }
 }
 class NotesManager {

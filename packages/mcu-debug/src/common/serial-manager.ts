@@ -1044,6 +1044,13 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         }
         this.connections.clear();
     }
+
+    public static Dispose() {
+        if (SerialPortManager.instance) {
+            SerialPortManager.instance.dispose();
+            SerialPortManager.instance = null;
+        }
+    }
 }
 
 /**

@@ -11,6 +11,44 @@ mcu-debug supports debugging scenarios where the debug probe is on a different m
 For terminology, for example with WSL or Docker, `"remote"` is your host machine/OS and `"local"` is your WSL/Docker/Guest-VM environment. Local is where your files and build artifacts live. Remote is also where your debug probe is physically attached to.
 :::
 
+## Architecture
+
+In the picture below, the "Workspace" and the "Probe Proxy" can be on very different comuters. The "proxy" server provides access to the HW Probe as if it is locally available. The connection is handled depending on the type of the environment each part is. The Workspace can in inside WSL or Docker. The "Probe" could like on a host machine hosting the WSL/Docker environment or some other machine The system automatically detects the type of the "Workspace" environment with the help of VSCode but you can always use `ssh` to connect the two environments. The same architecture is also used for CLI mode except VSCode services cannot be used but the Probe environment can be described in launch.json. For WSL, CLI mode will detect and make the connection automatically
+
+```mermaid
+flowchart
+  subgraph WS["Workspace"]
+     direction TD
+     SRC["Source code<br>Compilers<br>launch.json"]
+     MD["MCU Debug<br>Extension"]
+     DA["Debug Adapter"]
+     GDB["GDB"]
+     VIEWS["Views (RTT, SWO, UART<br>Memory, RTOS, SVD)"]
+  end
+  SRC --> MD
+  MD <--> DA
+  DA <--> GDB
+  DA --> VIEWS
+
+  subgraph PROXY["Probe Proxy"]
+     direction TD
+     MDP["MCU Debug<br>Proxy Extension"]
+     MDBG["MCU Debug Server"]
+     GDBS["Gdb server<br>(openocd, jlink)"]
+     PROBE["Debug Probe<br>(STLink, KitProg3, JLink)"]
+  end
+  MCU["MCU"]
+
+  MDP   --> MDBG
+  MDBG  --> GDBS
+  GDBS <--> GDB
+  GDBS <--> PROBE
+  PROBE <--> MCU
+  MDBG --> VIEWS
+
+  DA <--> MDBG
+```
+
 ## Supported Topologies
 
 | Topology                     | Use Case                                                | Setup                                                          |
