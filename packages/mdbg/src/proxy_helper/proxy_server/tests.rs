@@ -139,7 +139,7 @@ fn test_proxy_server() {
 
     thread::spawn(|| {
         let args = ProxyArgs {
-            host: "127.0.0.1".to_string(),
+            host: None,
             port: 4567,
             token: "adis-ababa".to_string(),
             debug: false,

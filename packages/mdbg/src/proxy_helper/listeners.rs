@@ -38,7 +38,7 @@
 //! already running.
 
 use std::collections::HashMap;
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -106,6 +106,12 @@ struct Bound {
 #[derive(Default)]
 pub struct AcceptSet {
     bound: Mutex<HashMap<SocketAddr, Bound>>,
+    /// Context handed to accept loops started *after* startup (the widen path).
+    ///
+    /// `Weak` breaks what would otherwise be a cycle: an `AcceptCtx` holds the
+    /// `AdminContext`, which holds this set. `run()` owns the only strong reference for
+    /// as long as the proxy is alive, so upgrading here fails only during teardown.
+    ctx: Mutex<Option<std::sync::Weak<AcceptCtx>>>,
 }
 
 impl AcceptSet {
@@ -113,16 +119,65 @@ impl AcceptSet {
         Self::default()
     }
 
+    /// Record the context later listeners should use. Called once, from `run()`, as
+    /// soon as the context exists.
+    pub fn set_ctx(&self, ctx: &Arc<AcceptCtx>) {
+        *self.ctx.lock_recover() = Some(Arc::downgrade(ctx));
+    }
+
     /// Addresses currently being accepted on, for `--status` and for waking.
     pub fn addrs(&self) -> Vec<SocketAddr> {
         self.bound.lock_recover().keys().copied().collect()
     }
 
-    /// Exercised by the tests below; the production caller arrives with the widen /
-    /// narrow admin commands.
-    #[allow(dead_code)]
     pub fn contains(&self, addr: &SocketAddr) -> bool {
         self.bound.lock_recover().contains_key(addr)
+    }
+
+    /// The IPv4 addresses being accepted on, as strings, ascending. For `--status`
+    /// and for the `hosts` list published in discovery and `endpoint.json`.
+    pub fn hosts(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = self
+            .addrs()
+            .into_iter()
+            .map(|a| a.ip().to_string())
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        hosts
+    }
+
+    /// Bind `host` on `port` and start accepting on it, leaving every existing
+    /// listener untouched.
+    ///
+    /// This is the widen path: a proxy that came up on loopback can be made reachable
+    /// by a WSL/Docker guest without a restart, so live debug sessions survive.
+    /// Already-bound is success — the caller asked for the address to be served, and
+    /// it is.
+    pub fn widen(&self, host: Ipv4Addr, port: u16) -> Result<SocketAddr, String> {
+        is_widenable(host)?;
+        let addr = SocketAddr::new(host.into(), port);
+        if self.contains(&addr) {
+            return Ok(addr);
+        }
+        let ctx = self
+            .ctx
+            .lock_recover()
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .ok_or_else(|| "proxy is shutting down".to_string())?;
+        let listener =
+            TcpListener::bind(addr).map_err(|e| format!("could not bind {addr}: {e}"))?;
+        self.add(listener, ctx)
+            .map_err(|e| format!("could not accept on {addr}: {e}"))
+    }
+
+    /// Stop accepting on `host`. The inverse of [`widen`](Self::widen).
+    pub fn narrow(&self, host: Ipv4Addr, port: u16) -> Result<bool, String> {
+        if host.is_loopback() {
+            return Err("refusing to stop accepting on loopback".to_string());
+        }
+        Ok(self.remove(&SocketAddr::new(host.into(), port)))
     }
 
     /// Start accepting on `listener` in its own thread. Returns the bound address.
@@ -159,12 +214,19 @@ impl AcceptSet {
     /// Live sessions that arrived on this address keep running — only the door closes.
     /// Returns false if the address was not in the set.
     ///
-    /// Exercised by the tests below; the production caller arrives with the narrow
-    /// admin command (and with narrowing when the last remote session ends).
-    #[allow(dead_code)]
+    /// Refuses to remove the last listener: a proxy with no way in is worse than one
+    /// bound too widely, and `endpoint.json` would still advertise the port.
     pub fn remove(&self, addr: &SocketAddr) -> bool {
-        let Some(mut entry) = self.bound.lock_recover().remove(addr) else {
-            return false;
+        let mut entry = {
+            let mut guard = self.bound.lock_recover();
+            if guard.len() <= 1 {
+                log::warn!("Refusing to stop accepting on {addr}: it is the only listener");
+                return false;
+            }
+            match guard.remove(addr) {
+                Some(e) => e,
+                None => return false,
+            }
         };
         entry.stop.store(true, Ordering::SeqCst);
         // The loop is parked in accept(); it only re-checks the flag after a
@@ -207,6 +269,46 @@ impl AcceptSet {
         }
         self.bound.lock_recover().clear();
     }
+}
+
+/// The addresses a freshly started proxy should bind, given what the caller asked for.
+///
+/// Loopback is always served, because local tooling (`--status`, the CLI, another
+/// window) must be able to reach the proxy no matter what the *first* caller happened
+/// to request. Before multi-listener support, `--host 172.28.240.1` bound only that
+/// address and left local clients with nothing to dial.
+///
+/// The wildcard is the one case where "also bind loopback" must not be taken
+/// literally: `0.0.0.0` already accepts loopback connections, and binding both on the
+/// same port is `EADDRINUSE` on Linux (Windows and macOS treat them as independent
+/// endpoints — see the module docs). So a wildcard request yields the wildcard alone.
+pub fn planned_bind_addrs(requested: Ipv4Addr) -> Vec<Ipv4Addr> {
+    if requested.is_unspecified() {
+        return vec![requested];
+    }
+    if requested == Ipv4Addr::LOCALHOST {
+        return vec![Ipv4Addr::LOCALHOST];
+    }
+    vec![Ipv4Addr::LOCALHOST, requested]
+}
+
+/// Whether `host` may be *added* to a running proxy.
+///
+/// Only concrete addresses. The wildcard is refused on purpose: it cannot be added
+/// alongside the existing loopback listener on Linux, and it would widen the proxy to
+/// every interface when the caller only needed one virtual adapter — a different
+/// security posture than the one the request implies.
+pub fn is_widenable(host: Ipv4Addr) -> Result<(), String> {
+    if host.is_unspecified() {
+        return Err(
+            "refusing to widen to the wildcard 0.0.0.0; name a specific interface address"
+                .to_string(),
+        );
+    }
+    if host.is_loopback() {
+        return Err("loopback is always bound; nothing to widen".to_string());
+    }
+    Ok(())
 }
 
 /// Unblock one `accept()` by connecting to it. The connection is discarded
@@ -300,7 +402,6 @@ fn accept_loop(listener: TcpListener, ctx: Arc<AcceptCtx>, stop: Arc<AtomicBool>
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::Ipv4Addr;
 
     /// Pick a free port by binding loopback and handing back the port. The listener is
     /// dropped, so the caller races anyone else on the machine — acceptable for a test,
@@ -405,16 +506,22 @@ mod tests {
 
     /// A stopped listener frees its port, and the accept thread exits rather than
     /// leaking. `remove` is the narrowing path.
+    ///
+    /// Two listeners are registered because the set refuses to remove the last one —
+    /// see `the_last_listener_cannot_be_removed`. They use different ports so the
+    /// release is observable: on a shared port, removing one address frees nothing.
     #[test]
     fn remove_stops_accepting_and_frees_the_port() {
         let ctx = Arc::new(test_ctx());
         let set = AcceptSet::new();
 
+        let keep = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind keeper");
+        set.add(keep, Arc::clone(&ctx)).expect("add keeper");
+
         let port = free_port();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("bind");
         let addr = set.add(listener, Arc::clone(&ctx)).expect("add");
         assert!(set.contains(&addr));
-        assert_eq!(set.addrs(), vec![addr]);
 
         assert!(
             set.remove(&addr),
@@ -425,6 +532,86 @@ mod tests {
 
         // The port is genuinely released once the accept thread has exited.
         TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("port must be free after remove");
+
+        ctx.stop_flag.store(true, Ordering::SeqCst);
+        set.wake_all();
+        set.join_all();
+    }
+
+    /// Loopback is always served, whatever the caller asked for. Before multi-listener
+    /// support, `--host 172.28.240.1` bound *only* that address and local tooling had
+    /// nothing to dial.
+    #[test]
+    fn a_specific_host_is_bound_alongside_loopback() {
+        let gateway = Ipv4Addr::new(172, 28, 240, 1);
+        let plan = planned_bind_addrs(gateway);
+
+        assert_eq!(plan, vec![Ipv4Addr::LOCALHOST, gateway]);
+        assert_eq!(
+            plan[0],
+            Ipv4Addr::LOCALHOST,
+            "loopback binds first, fixing the port"
+        );
+    }
+
+    /// The wildcard is the exception: it already accepts loopback, and binding both on
+    /// one port is EADDRINUSE on Linux. "Always serve loopback" is about reachability,
+    /// not about literally holding a second socket.
+    #[test]
+    fn the_wildcard_is_bound_alone() {
+        assert_eq!(
+            planned_bind_addrs(Ipv4Addr::UNSPECIFIED),
+            vec![Ipv4Addr::UNSPECIFIED]
+        );
+    }
+
+    /// Asking for loopback explicitly must not plan it twice — the second bind would
+    /// fail and be reported as an error for an address that is in fact served.
+    #[test]
+    fn requesting_loopback_plans_a_single_bind() {
+        assert_eq!(
+            planned_bind_addrs(Ipv4Addr::LOCALHOST),
+            vec![Ipv4Addr::LOCALHOST]
+        );
+    }
+
+    /// A running proxy may only be widened to a concrete address. The wildcard cannot
+    /// be added next to the existing loopback listener on Linux, and it would expose
+    /// every interface when the caller needed one virtual adapter.
+    #[test]
+    fn widening_rejects_the_wildcard_and_loopback() {
+        assert!(is_widenable(Ipv4Addr::new(172, 28, 240, 1)).is_ok());
+
+        let wildcard = is_widenable(Ipv4Addr::UNSPECIFIED).expect_err("wildcard must be refused");
+        assert!(
+            wildcard.contains("0.0.0.0"),
+            "the error names what was refused: {wildcard}"
+        );
+
+        // Not an error the caller can act on, but not a widening either.
+        assert!(is_widenable(Ipv4Addr::LOCALHOST).is_err());
+    }
+
+    /// Narrowing must never leave the proxy with no way in. `endpoint.json` would still
+    /// advertise the port, so every client would fail to connect with nothing to
+    /// explain why — strictly worse than staying bound one address too wide.
+    #[test]
+    fn the_last_listener_cannot_be_removed() {
+        let ctx = Arc::new(test_ctx());
+        let set = AcceptSet::new();
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        let addr = set.add(listener, Arc::clone(&ctx)).expect("add");
+
+        assert!(
+            !set.remove(&addr),
+            "the only listener must not be removable"
+        );
+        assert!(set.contains(&addr), "and it must still be accepting");
+
+        ctx.stop_flag.store(true, Ordering::SeqCst);
+        set.wake_all();
+        set.join_all();
     }
 
     /// Removing one address must leave the others accepting — this is exactly the
@@ -511,7 +698,7 @@ mod tests {
         let draining = Arc::new(AtomicBool::new(false));
         let lifetime = Lifetime::new();
         let conn_args = ProxyArgs {
-            host: "127.0.0.1".to_string(),
+            host: None,
             port: 0,
             token: "test-token".to_string(),
             debug: false,

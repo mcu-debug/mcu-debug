@@ -14,7 +14,7 @@ UART output appears in the mcu-debug output stream with a source tag, interleave
 ## launch.json Configuration
 
 ```json
-"uartConfig": {
+"serialConfig": {
   "enabled": true,
   "uarts": [
     {
@@ -29,7 +29,7 @@ UART output appears in the mcu-debug output stream with a source tag, interleave
 Multiple UARTs are supported:
 
 ```json
-"uartConfig": {
+"serialConfig": {
   "enabled": true,
   "uarts": [
     {
@@ -39,7 +39,7 @@ Multiple UARTs are supported:
     },
     {
       "label": "Bootloader",
-      "port": "/dev/ttyUSB1",
+      "description": "kitprog3",    // Matches serial ports that has this string in the deescrioption
       "baud": 9600
     }
   ]
@@ -81,7 +81,7 @@ DEBUG_PORT=/dev/ttyUSB0
 ```
 
 ```json
-"uartConfig": {
+"serialConfig": {
   "enabled": true,
   "uarts": [
     {

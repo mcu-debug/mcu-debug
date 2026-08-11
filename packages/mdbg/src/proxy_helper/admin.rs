@@ -67,7 +67,7 @@ pub fn discriminate(stream: &TcpStream) -> Kind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminRequest {
     pub v: u32,
-    /// `"status"` | `"shutdown"` | `"upgrade"` | `"serialClose"`.
+    /// `"status"` | `"shutdown"` | `"upgrade"` | `"serialClose"` | `"widen"` | `"narrow"`.
     pub cmd: String,
     #[serde(default)]
     pub token: String,
@@ -82,6 +82,10 @@ pub struct AdminRequest {
     /// port. Empty for every other command.
     #[serde(default)]
     pub path: String,
+    /// For `widen`/`narrow`: the interface address to start or stop accepting on.
+    /// Empty for every other command.
+    #[serde(default)]
+    pub host: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +98,10 @@ pub struct StatusInfo {
     /// Active refs = live sessions + (window keep-alive, if `--heartbeat`).
     pub active_refs: usize,
     pub uptime_secs: u64,
+    /// Every address this proxy accepts on. `default` so a status reply from an older
+    /// proxy (during an upgrade handover) still parses.
+    #[serde(default)]
+    pub hosts: Vec<String>,
     /// Serial ports this proxy currently holds open. `default` so a status reply
     /// from an older proxy (during an upgrade handover) still parses.
     #[serde(default)]
@@ -114,6 +122,9 @@ pub struct AdminResponse {
     /// matched, which is still `ok: true` — the requested end state holds either way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closed: Vec<String>,
+    /// For `widen`/`narrow`: every address the proxy accepts on after the change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
 }
 
 impl AdminResponse {
@@ -124,6 +135,7 @@ impl AdminResponse {
             status: None,
             message: None,
             closed: Vec::new(),
+            hosts: Vec::new(),
         }
     }
 }
@@ -193,18 +205,24 @@ pub struct AdminContext {
 /// Handle one admin connection: read the request line, act, reply, close.
 pub fn handle(mut stream: TcpStream, ctx: &Arc<AdminContext>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    // Some commands are restricted to local callers, so the peer address has to be
+    // read from the socket -- never from the request, which the peer controls.
+    let peer_is_loopback = stream
+        .peer_addr()
+        .map(|a| a.ip().is_loopback())
+        .unwrap_or(false);
     let resp = match read_line(&mut stream).and_then(|l| {
         serde_json::from_str::<AdminRequest>(l.trim()).context("invalid admin request JSON")
     }) {
         Ok(req) if req.token != ctx.token => AdminResponse::err("bad token"),
-        Ok(req) => dispatch(&req, ctx),
+        Ok(req) => dispatch(&req, ctx, peer_is_loopback),
         Err(e) => AdminResponse::err(format!("{e:#}")),
     };
     let _ = write_line(&mut stream, &resp);
     let _ = stream.shutdown(Shutdown::Both);
 }
 
-fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
+fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool) -> AdminResponse {
     match req.cmd.as_str() {
         "status" => AdminResponse {
             ok: true,
@@ -222,15 +240,19 @@ fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
                 },
                 active_refs: ctx.lifetime.count(),
                 uptime_secs: Endpoint::now_unix().saturating_sub(ctx.started_at_unix),
+                hosts: ctx.accept_set.hosts(),
                 serial_ports: crate::proxy_helper::proxy_server::serial_status(
                     &ctx.serial_registry,
                 ),
             }),
             closed: Vec::new(),
+            hosts: Vec::new(),
         },
         "shutdown" => begin_drain(ctx),
         "upgrade" => begin_upgrade(req, ctx),
         "serialClose" => close_serial(req, ctx),
+        "widen" => widen(req, ctx, peer_is_loopback),
+        "narrow" => narrow(req, ctx, peer_is_loopback),
         other => AdminResponse::err(format!("unknown admin cmd: {other}")),
     }
 }
@@ -268,6 +290,7 @@ fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
             "superseded: releasing lock; {active} session(s) finish on the old proxy"
         )),
         closed: Vec::new(),
+        hosts: Vec::new(),
     }
 }
 
@@ -299,6 +322,7 @@ fn begin_drain(ctx: &Arc<AdminContext>) -> AdminResponse {
             "draining: {active} active session(s); will exit when they finish"
         )),
         closed: Vec::new(),
+        hosts: Vec::new(),
     }
 }
 
@@ -330,6 +354,84 @@ fn close_serial(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
         status: None,
         message: Some(message),
         closed,
+        hosts: Vec::new(),
+    }
+}
+
+/// Start accepting on an additional interface address, without disturbing any
+/// existing listener or live session.
+///
+/// **Loopback callers only.** The token is a shared secret readable from
+/// `endpoint.json` by any local user, which is an acceptable boundary for a local
+/// tool. Once the proxy is bound off-loopback, that same token would let a remote
+/// caller widen it further — so reachability must only ever be *granted* from the
+/// machine the proxy runs on, never from the network it was just exposed to.
+fn widen(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool) -> AdminResponse {
+    if !peer_is_loopback {
+        return AdminResponse::err("widen may only be requested from loopback");
+    }
+    let host = match req.host.parse::<std::net::Ipv4Addr>() {
+        Ok(h) => h,
+        Err(e) => return AdminResponse::err(format!("invalid host '{}': {e}", req.host)),
+    };
+    match ctx.accept_set.widen(host, ctx.local_port) {
+        Ok(addr) => {
+            let hosts = ctx.accept_set.hosts();
+            publish_hosts(ctx, &hosts);
+            log::info!("Widened: now accepting on {addr}");
+            AdminResponse {
+                ok: true,
+                error: None,
+                status: None,
+                message: Some(format!("accepting on {addr}")),
+                closed: Vec::new(),
+                hosts,
+            }
+        }
+        Err(e) => AdminResponse::err(e),
+    }
+}
+
+/// Stop accepting on an address added by [`widen`]. Sessions already accepted there
+/// keep running; only the door closes.
+fn narrow(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool) -> AdminResponse {
+    if !peer_is_loopback {
+        return AdminResponse::err("narrow may only be requested from loopback");
+    }
+    let host = match req.host.parse::<std::net::Ipv4Addr>() {
+        Ok(h) => h,
+        Err(e) => return AdminResponse::err(format!("invalid host '{}': {e}", req.host)),
+    };
+    match ctx.accept_set.narrow(host, ctx.local_port) {
+        Ok(removed) => {
+            let hosts = ctx.accept_set.hosts();
+            publish_hosts(ctx, &hosts);
+            AdminResponse {
+                ok: true,
+                error: None,
+                status: None,
+                message: Some(if removed {
+                    format!("stopped accepting on {host}")
+                } else {
+                    format!("was not accepting on {host}")
+                }),
+                closed: Vec::new(),
+                hosts,
+            }
+        }
+        Err(e) => AdminResponse::err(e),
+    }
+}
+
+/// Republish the endpoint's host list so a later discovery read reflects reality.
+/// Best-effort: the proxy is already serving the new address either way, and failing
+/// the request over a file write would be worse than a stale anchor.
+fn publish_hosts(ctx: &Arc<AdminContext>, hosts: &[String]) {
+    if let Ok(mut ep) = singleton::read_endpoint(&ctx.endpoint_path) {
+        ep.hosts = hosts.to_vec();
+        if let Err(e) = singleton::write_endpoint_atomic(&ctx.endpoint_path, &ep) {
+            log::warn!("could not republish endpoint hosts: {e:#}");
+        }
     }
 }
 
@@ -344,6 +446,7 @@ pub fn request_upgrade(endpoint: &Endpoint, my_version: &str) -> Result<AdminRes
         token: endpoint.token.clone(),
         graceful: true,
         path: String::new(),
+        host: String::new(),
         version: my_version.into(),
     };
     let resp = query(endpoint, &req)?;

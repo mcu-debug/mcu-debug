@@ -61,9 +61,17 @@ pub enum PortWaitMode {
 // added).
 #[derive(Args, Debug, Clone)]
 pub struct ProxyArgs {
-    /// Host to listen on (default: 127.0.0.1), alternatively specify `0.0.0.0` to listen on all interfaces
-    #[arg(short = 'H', long = "host", default_value = "127.0.0.1")]
-    pub host: String,
+    /// Address to listen on, in addition to loopback (which is always bound).
+    ///
+    /// `Option` rather than a defaulted `String` so we can tell "the caller asked for
+    /// this address" from "the caller said nothing". That distinction is what lets a
+    /// plain `mdbg proxy` reuse a running daemon untouched, while
+    /// `mdbg proxy --host 172.28.240.1` asks that daemon to *widen* to that address.
+    ///
+    /// `0.0.0.0` listens on every interface and is bound alone (it already accepts
+    /// loopback); it cannot be added to a running proxy.
+    #[arg(short = 'H', long = "host")]
+    pub host: Option<String>,
 
     /// TCP port to listen on (0 = auto-assign)
     #[arg(short = 'p', long = "port", default_value_t = 0)]
@@ -230,6 +238,20 @@ fn install_panic_hook() {
     });
 }
 
+/// Parse `--host`, defaulting to loopback when the caller said nothing.
+///
+/// Kept separate from the bind so the "no address requested" case is explicit at every
+/// call site: a plain `mdbg proxy` must not look like a request to widen a running
+/// daemon to `127.0.0.1`.
+pub(crate) fn parse_host_arg(host: Option<&str>) -> Result<Ipv4Addr> {
+    match host {
+        None => Ok(Ipv4Addr::LOCALHOST),
+        Some(h) => h
+            .parse::<Ipv4Addr>()
+            .with_context(|| format!("invalid host IP address: '{h}'")),
+    }
+}
+
 /// Signal every accept loop to stop, then unblock each one by self-connecting so its
 /// blocked `accept()` returns and the loop sees the flag and breaks. Used by the idle
 /// monitor and by admin drain.
@@ -274,6 +296,7 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
         status: None,
         message: None,
         closed: Vec::new(),
+        hosts: Vec::new(),
     };
 
     let endpoint = match singleton::read_endpoint(&instance.endpoint_path) {
@@ -292,6 +315,7 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
         graceful: true,
         version: String::new(),
         path: String::new(),
+        host: String::new(),
     };
     match admin::query(&endpoint, &req) {
         Ok(resp) => print(&resp),
@@ -329,6 +353,7 @@ fn close_serial_request(endpoint: &singleton::Endpoint, path: &str) -> admin::Ad
         graceful: false,
         version: String::new(),
         path: path.to_string(),
+        host: String::new(),
     }
 }
 
@@ -430,6 +455,7 @@ fn print_status_all() -> Result<()> {
             token: endpoint.token.clone(),
             graceful: true,
             version: String::new(),
+            host: String::new(),
         };
         if let Ok(resp) = admin::query(&endpoint, &req) {
             if let Some(status) = resp.status {
@@ -483,6 +509,7 @@ fn shutdown_all() -> Result<()> {
             graceful: true,
             version: String::new(),
             path: String::new(),
+            host: String::new(),
         };
         // Only report instances that actually answered — a dead proxy's stale
         // endpoint refuses the connection and needs no shutdown.
@@ -501,6 +528,60 @@ fn shutdown_all() -> Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+/// Ask a running proxy to also accept on `--host`, if one was requested and it is not
+/// already served. Returns the daemon's resulting host list and any bind failure.
+///
+/// Never fatal. A proxy we could not widen is still a proxy the caller can use on
+/// loopback, and only the caller knows whether the missing address was the point —
+/// so the outcome is reported rather than acted on here.
+fn widen_running_proxy(
+    ep: &singleton::Endpoint,
+    args: &ProxyArgs,
+) -> (Vec<String>, Vec<singleton::BindError>) {
+    let known = ep.host_list();
+    let Some(requested) = args.host.as_deref() else {
+        return (known, Vec::new()); // nothing asked for; leave the daemon alone
+    };
+    let fail = |msg: String| -> (Vec<String>, Vec<singleton::BindError>) {
+        (
+            ep.host_list(),
+            vec![singleton::BindError {
+                host: requested.to_string(),
+                error: msg,
+            }],
+        )
+    };
+    let host = match parse_host_arg(Some(requested)) {
+        Ok(h) => h,
+        Err(e) => return fail(format!("{e:#}")),
+    };
+    // Loopback is always bound, and an address already served needs no request.
+    if host.is_loopback() || known.iter().any(|h| h == requested) {
+        return (known, Vec::new());
+    }
+    let req = admin::AdminRequest {
+        v: 1,
+        cmd: "widen".to_string(),
+        token: ep.token.clone(),
+        graceful: false,
+        version: String::new(),
+        path: String::new(),
+        host: host.to_string(),
+    };
+    match admin::query(ep, &req) {
+        Ok(resp) if resp.ok => (
+            if resp.hosts.is_empty() {
+                known
+            } else {
+                resp.hosts
+            },
+            Vec::new(),
+        ),
+        Ok(resp) => fail(resp.error.unwrap_or_else(|| "widen refused".to_string())),
+        Err(e) => fail(format!("proxy not reachable ({e:#})")),
+    }
 }
 
 /// Acquire the per-(user, instance) singleton lock, or defer to a running proxy.
@@ -546,7 +627,12 @@ fn acquire_or_reuse<'a>(
                 ep.pid,
                 ep.port
             );
-            singleton::print_discovery(ep.port, ep.pid, token);
+            // Reuse is also the widen path. Starting the proxy is a single idiom —
+            // "run it and read the discovery line" — so asking for an address the
+            // running daemon does not yet serve must work the same way, rather than
+            // needing a separate command the caller has to know to issue.
+            let (hosts, bind_errors) = widen_running_proxy(&ep, args);
+            singleton::print_discovery(ep.port, ep.pid, token, &hosts, bind_errors);
             return Ok(None);
         }
 
@@ -559,7 +645,8 @@ fn acquire_or_reuse<'a>(
         );
         if let Err(e) = admin::request_upgrade(&ep, mine) {
             log::warn!("Handover request failed: {e:#}; reusing the existing proxy");
-            singleton::print_discovery(ep.port, ep.pid, token);
+            let (hosts, bind_errors) = widen_running_proxy(&ep, args);
+            singleton::print_discovery(ep.port, ep.pid, token, &hosts, bind_errors);
             return Ok(None);
         }
     }
@@ -597,10 +684,13 @@ fn run_foreground_launcher(args: &ProxyArgs) -> Result<()> {
 
     let exe = std::env::current_exe().context("could not determine own executable path")?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("proxy")
-        .arg("--host")
-        .arg(&args.host)
-        .arg("--port")
+    cmd.arg("proxy");
+    // Forward --host only when the caller actually passed one, so the daemon sees the
+    // same "was an address requested?" distinction this process saw.
+    if let Some(host) = &args.host {
+        cmd.arg("--host").arg(host);
+    }
+    cmd.arg("--port")
         .arg(args.port.to_string())
         .arg("--token")
         .arg(&args.token)
@@ -747,31 +837,63 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     };
 
     // TODO: Maybe allow Ipv6 in the future, but for now we can just require IPv4 for simplicity
-    let host = match args.host.parse::<Ipv4Addr>() {
-        Ok(ip) => ip,
-        Err(e) => {
-            log::error!("Invalid host IP address: {}", args.host);
-            return Err(e.into());
-        }
-    };
-    let listener = match TcpListener::bind((host, args.port)) {
+    let requested_host = parse_host_arg(args.host.as_deref())?;
+
+    // Loopback is always served; a specific requested address is served *as well*.
+    // See `listeners::planned_bind_addrs` for why the wildcard is the exception.
+    let plan = listeners::planned_bind_addrs(requested_host);
+
+    // Bind the first address before the rest: with `--port 0` the OS assigns the port
+    // here, and every other address must share that same number.
+    let primary = plan[0];
+    let listener = match TcpListener::bind((primary, args.port)) {
         Ok(listener) => listener,
         Err(e) => {
-            log::error!("Failed to bind to {}:{}", args.host, args.port);
+            log::error!("Failed to bind to {}:{}", primary, args.port);
             return Err(e.into());
         }
     };
     let local_port = listener.local_addr()?.port();
 
+    // Additional addresses are best-effort. Failing to bind the WSL gateway must not
+    // stop a proxy that is perfectly usable locally — but the caller has to be told,
+    // because only it knows whether that address was the whole point. The report rides
+    // out on the discovery line (see `print_discovery`).
+    let mut pending: Vec<TcpListener> = vec![listener];
+    let mut bind_errors: Vec<singleton::BindError> = Vec::new();
+    for extra in &plan[1..] {
+        match TcpListener::bind((*extra, local_port)) {
+            Ok(l) => pending.push(l),
+            Err(e) => {
+                log::warn!("Failed to also bind {extra}:{local_port}: {e}");
+                bind_errors.push(singleton::BindError {
+                    host: extra.to_string(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+    let bound_hosts: Vec<String> = pending
+        .iter()
+        .filter_map(|l| l.local_addr().ok())
+        .map(|a| a.ip().to_string())
+        .collect();
+
     // Publish the discovery anchor now that we own the lock and have a port.
     let endpoint = singleton::Endpoint {
-        v: 2,
+        v: 3,
         instance: instance.name.clone(),
         pid: std::process::id(),
         version: singleton::self_version(),
         port: local_port,
-        // Publish what we actually bound, so a client never has to assume loopback.
-        bind_host: host.to_string(),
+        // The address a client most likely wants to dial: what was asked for, if it
+        // bound, else the primary. `hosts` below is the complete, authoritative list.
+        bind_host: if bound_hosts.contains(&requested_host.to_string()) {
+            requested_host.to_string()
+        } else {
+            primary.to_string()
+        },
+        hosts: bound_hosts.clone(),
         token: args.token.clone(),
         state: "active".to_string(),
         started_at_unix: singleton::Endpoint::now_unix(),
@@ -886,7 +1008,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     log::info!(
         "Proxy helper startup: pid={}, host={}, port={}, log_stderr={}, stdin_watchdog={}",
         std::process::id(),
-        args.host,
+        bound_hosts.join(","),
         local_port,
         args.log_stderr,
         args.heartbeat
@@ -902,6 +1024,8 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         } else {
             Some(args.token.as_str())
         },
+        &bound_hosts,
+        std::mem::take(&mut bind_errors),
     );
 
     log::info!("Probe Agent listening on port {}", local_port);
@@ -933,10 +1057,15 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         client_threads: Mutex::new(Vec::new()),
     });
 
-    // Start accepting on the primary (published) address. Additional addresses can
-    // join this set later without disturbing this one — see `listeners` for why we
-    // add rather than rebind.
-    accept_set.add(listener, Arc::clone(&accept_ctx))?;
+    // Hand the set the context that later listeners will need, so an admin `widen`
+    // can start an accept loop without any of this being threaded through it.
+    accept_set.set_ctx(&accept_ctx);
+
+    // Start accepting on every address we bound. More can join this set later without
+    // disturbing these — see `listeners` for why we add rather than rebind.
+    for l in pending {
+        accept_set.add(l, Arc::clone(&accept_ctx))?;
+    }
 
     // Block until every accept loop has exited (global stop flag set + woken).
     accept_set.join_all();
@@ -985,7 +1114,7 @@ mod tests {
     fn panic_in_thread_does_not_kill_process() {
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let args = ProxyArgs {
-            host: "127.0.0.1".to_string(),
+            host: None,
             port: 0,
             token: "test-token".to_string(),
             debug: true,

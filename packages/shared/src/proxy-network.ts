@@ -49,6 +49,8 @@ export interface ProxyLaunchResults {
     consoleErrors: string[];
     token: string;
     serverPort: number;
+    hosts: string[];
+    bindErrors: string[] | null;
     /** Set when ProxyLaunchPolicy.reverseTunnelSshHost was provided.
      *  The port on the remote SSH host's loopback that forwards back to serverPort here. */
     reverseTunnelPort?: number;

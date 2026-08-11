@@ -32,6 +32,14 @@ function generateNonce(length: number = 16): string {
 
 const LAUNCH_TIMEOUT_MS = 15_000;
 
+export function fmtBindErrors(obj: any): string[] | null {
+    const errs = obj?.bind_errors;
+    if (!errs || !Array.isArray(errs) || errs.length === 0) {
+        return null;
+    }
+    return errs.map((e: any) => JSON.stringify(e));
+}
+
 /**
  * Launch-or-reuse the singleton proxy on the Windows host from a WSL guest.
  *
@@ -123,6 +131,8 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
                     consoleMessages: [],
                     consoleErrors: [],
                     serverPort: discovery.port,
+                    hosts: discovery.hosts ?? [],
+                    bindErrors: fmtBindErrors(discovery),
                     // The token the RUNNING proxy reports — on reuse this is the
                     // first launcher's token, not our NONCE.
                     token: discovery.token ?? NONCE,
@@ -181,11 +191,18 @@ export function startProxyServerFromWsl(proxyPolicy: ProxyLaunchPolicy, logger: 
             logger.error(`Failed to start proxy server from WSL: ${result.stderr}`);
             return null;
         }
+        const bindErrors = fmtBindErrors(discovery);
+        if (bindErrors && bindErrors.length > 0) {
+            logger.error(`Proxy server reported bind errors: ${bindErrors.join("\t\n")}`);
+            return null;
+        }
         const ret: ProxyLaunchResults = {
             policy: proxyPolicy,
             consoleMessages: [],
             consoleErrors: [result.stderr],
             serverPort: discovery.port,
+            hosts: discovery.hosts ?? [],
+            bindErrors: null,
             token: discovery.token ?? NONCE,
         };
         return ret;
@@ -350,6 +367,8 @@ export function startProxyServerWithPolicy(
                     consoleErrors: errors,
                     serverPort: -1,
                     token: NONCE,
+                    bindErrors: null,
+                    hosts: [],
                 });
             }
         };
@@ -407,6 +426,8 @@ export function startProxyServerWithPolicy(
                         // Use the token the RUNNING proxy reports — on reuse this
                         // is the first launcher's token, not our nonce.
                         token: json.token ?? NONCE,
+                        hosts: json.hosts ?? [],
+                        bindErrors: fmtBindErrors(json),
                     };
                     resolve(baseResults);
                 }

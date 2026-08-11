@@ -19,7 +19,7 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { spawn } from "child_process";
-import { DefaultPortBase, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy } from "@mcu-debug/shared";
+import { DefaultPortBase, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy, fmtBindErrors } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
 import { tcpReachable } from "./utils";
@@ -186,6 +186,7 @@ interface RemoteProxyOutput {
     port: number;
     pid: number;
     token: string;
+    bind_errors?: string[];
 }
 // Starts the proxy server on the remote host via SSH by running the deployed helper binary with appropriate arguments.
 // The token is generated here and passed as --token; the binary echoes it back in the Discovery JSON so we can verify
@@ -246,6 +247,13 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
                 return;
             }
 
+            const bindErrors = fmtBindErrors(parsed);
+            if (bindErrors && bindErrors.length > 0) {
+                const str = bindErrors.join("\t\n");
+                getHostAdapter().debugMessage(`SSH proxy agent on ${sshHost} reported bind errors: ${str}`);
+                return;
+            }
+
             if (!parsed.port || parsed.port <= 0) {
                 fail(`SSH proxy agent on ${sshHost} reported invalid port: ${parsed.port}`);
                 return;
@@ -271,6 +279,8 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
                 consoleErrors: [],
                 token,
                 serverPort: parsed.port,
+                hosts: [],
+                bindErrors: null,
             });
         });
 
@@ -465,6 +475,12 @@ export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy):
     if (policy.mode.includes("wsl") || policy.mode === "local") {
         try {
             const result = await startOrReuseProxyServerOnWslHost(policy);
+            const bindErrors = fmtBindErrors(result);
+            if (bindErrors && bindErrors.length > 0) {
+                getHostAdapter().showError(`Proxy server reported bind errors: ${bindErrors.join("\t\n")}`);
+                return null
+            }
+            return result;
         } catch (error) {
             // We could remove this in the future
             getHostAdapter().showError(`Failed to quick-start proxy server on WSL host: ${error}. Trying another way`);
@@ -473,6 +489,11 @@ export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy):
     try {
         const command = "mcu-debug-proxy.startProxyServer";
         const value = await getHostAdapter().executeProxyCommand<ProxyLaunchResults | null>(command, policy);
+        const bindErrors = fmtBindErrors(value);
+        if (bindErrors && bindErrors.length > 0) {
+            getHostAdapter().showError(`Proxy server reported bind errors: ${bindErrors.join("\t\n")}`);
+            return null
+        }
         proxyLaunchResults = value;
         currentPolicy = policy;
         return value;

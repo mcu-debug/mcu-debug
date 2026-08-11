@@ -50,11 +50,7 @@ impl Instance {
     /// `name` must be a single path segment (no separators, no `..`) so it can
     /// never escape the proxy directory.
     pub fn resolve(name: &str) -> Result<Instance> {
-        if name.is_empty()
-            || name.contains(['/', '\\'])
-            || name == ".."
-            || name == "."
-        {
+        if name.is_empty() || name.contains(['/', '\\']) || name == ".." || name == "." {
             bail!("invalid proxy instance name: {name:?}");
         }
         let dir = proxy_base()?.join(name);
@@ -138,6 +134,16 @@ pub struct Endpoint {
     /// assume `127.0.0.1`, which silently fails for a WSL NAT or Docker guest.
     #[serde(default = "default_bind_host")]
     pub bind_host: String,
+    /// **Every** address the listener currently accepts on, `bind_host` included.
+    ///
+    /// `bind_host` names the address this proxy was started with and never changes;
+    /// this list grows when a later caller widens the proxy for a WSL/Docker guest
+    /// (see `listeners::AcceptSet`). A client that needs to know whether some
+    /// specific address is reachable must consult this, not `bind_host`.
+    ///
+    /// Defaults to `[bind_host]` so a v1/v2 record still parses.
+    #[serde(default)]
+    pub hosts: Vec<String>,
     /// Connection token (Tier-1 shared token; replaced by minted tokens later).
     #[serde(default)]
     pub token: String,
@@ -161,12 +167,28 @@ impl Endpoint {
 /// Records written before `bind_host` existed came from proxies that bound loopback
 /// unless explicitly launched with `--host`. Loopback is the safe assumption: it
 /// under-promises reachability, so a client widens rather than failing to connect.
+impl Endpoint {
+    /// Every address this proxy accepts on.
+    ///
+    /// Falls back to `[bind_host]` for a v1/v2 record, which predates the list — those
+    /// proxies bound exactly one address, so the fallback is exact rather than a guess.
+    pub fn host_list(&self) -> Vec<String> {
+        if self.hosts.is_empty() {
+            vec![self.bind_host.clone()]
+        } else {
+            self.hosts.clone()
+        }
+    }
+}
+
 fn default_bind_host() -> String {
     "127.0.0.1".to_string()
 }
 
 fn version_tuple(v: &str) -> (u64, u64, u64) {
-    let mut parts = v.split(['.', '-', '+']).filter_map(|s| s.parse::<u64>().ok());
+    let mut parts = v
+        .split(['.', '-', '+'])
+        .filter_map(|s| s.parse::<u64>().ok());
     (
         parts.next().unwrap_or(0),
         parts.next().unwrap_or(0),
@@ -187,10 +209,9 @@ pub fn self_version() -> String {
 
 /// Read and parse `endpoint.json`.
 pub fn read_endpoint(path: &std::path::Path) -> Result<Endpoint> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("could not read {}", path.display()))?;
-    serde_json::from_slice(&bytes)
-        .with_context(|| format!("could not parse {}", path.display()))
+    let bytes =
+        std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("could not parse {}", path.display()))
 }
 
 /// Read `endpoint.json`, retrying briefly.
@@ -213,8 +234,7 @@ pub fn read_endpoint_retry(path: &std::path::Path) -> Result<Endpoint> {
 pub fn write_endpoint_atomic(path: &std::path::Path, ep: &Endpoint) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_vec_pretty(ep)?;
-    std::fs::write(&tmp, &json)
-        .with_context(|| format!("could not write {}", tmp.display()))?;
+    std::fs::write(&tmp, &json).with_context(|| format!("could not write {}", tmp.display()))?;
     std::fs::rename(&tmp, path)
         .with_context(|| format!("could not rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
@@ -225,11 +245,63 @@ pub fn write_endpoint_atomic(path: &std::path::Path, ep: &Endpoint) -> Result<()
 /// caller does not care which happened.
 ///
 /// `{"status": "ready", "port": <port>, "pid": <pid>[, "token": "<token>"]}`
-pub fn print_discovery(port: u16, pid: u32, token: Option<&str>) {
-    let out_token = token
-        .map(|t| format!(", \"token\": \"{t}\""))
-        .unwrap_or_default();
-    println!("{{\"status\": \"ready\", \"port\": {port}, \"pid\": {pid}{out_token}}}");
+/// One requested-but-unbindable address, reported alongside a successful discovery.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BindError {
+    pub host: String,
+    pub error: String,
+}
+
+/// The single line of JSON `mdbg proxy` prints on stdout before exiting.
+///
+/// This is the **only** channel back to the caller that survives. The launcher always
+/// exits after printing, so every TS launch path ignores the exit code once this line
+/// has been seen (`proxy-starter.ts`) — a non-zero exit afterwards is indistinguishable
+/// from normal completion. Anything the caller must react to therefore belongs here.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Discovery {
+    pub status: String,
+    pub port: u16,
+    pub pid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Every address the proxy accepts on. The caller compares what it asked for
+    /// against this to decide whether its topology is actually served.
+    pub hosts: Vec<String>,
+    /// Addresses that were requested but could not be bound. Present *with* a
+    /// `"ready"` status: the proxy is usable, just not everywhere it was asked to be,
+    /// and only the caller knows whether the missing one mattered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bind_errors: Vec<BindError>,
+}
+
+pub fn print_discovery(
+    port: u16,
+    pid: u32,
+    token: Option<&str>,
+    hosts: &[String],
+    bind_errors: Vec<BindError>,
+) {
+    let d = Discovery {
+        status: "ready".to_string(),
+        port,
+        pid,
+        token: token.map(|t| t.to_string()),
+        hosts: hosts.to_vec(),
+        bind_errors,
+    };
+    match serde_json::to_string(&d) {
+        Ok(line) => println!("{line}"),
+        // Fall back to the minimal hand-built line rather than printing nothing —
+        // a caller with no discovery line at all cannot proceed.
+        Err(e) => {
+            log::error!("failed to serialize discovery: {e}");
+            let out_token = token
+                .map(|t| format!(", \"token\": \"{t}\""))
+                .unwrap_or_default();
+            println!("{{\"status\": \"ready\", \"port\": {port}, \"pid\": {pid}{out_token}}}");
+        }
+    }
     let _ = std::io::stdout().flush();
 }
 
@@ -274,12 +346,13 @@ mod endpoint_bind_host_tests {
     fn bind_host_round_trips() {
         for host in ["127.0.0.1", "0.0.0.0", "172.24.80.1"] {
             let ep = Endpoint {
-                v: 2,
+                v: 3,
                 instance: "default".to_string(),
                 pid: 1,
                 version: "0.1.9".to_string(),
                 port: 5000,
                 bind_host: host.to_string(),
+                hosts: vec!["127.0.0.1".to_string(), host.to_string()],
                 token: "t".to_string(),
                 state: "active".to_string(),
                 started_at_unix: 1,
@@ -287,6 +360,7 @@ mod endpoint_bind_host_tests {
             let text = serde_json::to_string(&ep).unwrap();
             let back: Endpoint = serde_json::from_str(&text).unwrap();
             assert_eq!(back.bind_host, host);
+            assert!(back.hosts.contains(&host.to_string()));
         }
     }
 

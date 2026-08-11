@@ -57,7 +57,7 @@ Deliberate behavior. Users who plugged in a board, configured their UART, and cl
 `launch.json` references UARTs by label rather than defining them inline:
 
 ```jsonc
-"uartConfig": {
+"serialConfig": {
   "enabled": true,
   "autoOpen": ["DebugUART", "Telemetry"]   // ensure these are open on debug start
 }
@@ -532,10 +532,10 @@ This doubles as the "tee to file" backbone referenced in the AI architecture ([A
 
 UART config has **two coequal sources**. Neither is "primary"; they compose.
 
-| Source | Edited via | Persistence | Role |
-|---|---|---|---|
-| **Workspace state** | `MCU DEBUG` panel UI (`+`, per-tab settings) | `context.workspaceState` (Memento) | User's current UARTs for this workspace; survives across VS Code restarts |
-| **`launch.json`** | Hand-edited JSON (or IDE) | File, checked into VCS | Debug-config-specific UARTs + overrides; also the SSOT for CLI/AI modes where no workspace state exists |
+| Source              | Edited via                                   | Persistence                        | Role                                                                                                    |
+| ------------------- | -------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Workspace state** | `MCU DEBUG` panel UI (`+`, per-tab settings) | `context.workspaceState` (Memento) | User's current UARTs for this workspace; survives across VS Code restarts                               |
+| **`launch.json`**   | Hand-edited JSON (or IDE)                    | File, checked into VCS             | Debug-config-specific UARTs + overrides; also the SSOT for CLI/AI modes where no workspace state exists |
 
 ### Why both
 
@@ -569,7 +569,7 @@ Created and edited via the panel UI. Full schema per UART:
 First-class configuration — not a legacy/migration path. A debug config declares the UARTs it wants, with only `path` required; everything else is optional and layered on top of any matching UI entry:
 
 ```jsonc
-"uartConfig": {
+"serialConfig": {
   "enabled": true,                   // master toggle — keep config when disabled
   "uarts": [
     {

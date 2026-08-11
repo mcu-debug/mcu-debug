@@ -57,13 +57,13 @@ Most properties carry over unchanged. The following table covers the common ones
 
 Properties that exist only in mcu-debug (no Cortex-Debug equivalent):
 
-| Property     | Description                                               |
-| ------------ | --------------------------------------------------------- |
-| `uartConfig` | UART serial debug output — a first-class channel like RTT |
-| `hostConfig` | Remote debugging configuration (WSL, Docker, SSH)         |
-| `env`        | Specify additional environment variables for substituion  |
-| `envFile`    | Load environment variables from a `.env` file             |
-| `debugFlags` | Debug output controls (`gdbTraces`, etc.)                 |
+| Property       | Description                                               |
+| -------------- | --------------------------------------------------------- |
+| `serialConfig` | UART serial debug output — a first-class channel like RTT |
+| `hostConfig`   | Remote debugging configuration (WSL, Docker, SSH)         |
+| `env`          | Specify additional environment variables for substituion  |
+| `envFile`      | Load environment variables from a `.env` file             |
+| `debugFlags`   | Debug output controls (`gdbTraces`, etc.)                 |
 
 ## Debug Flags
 

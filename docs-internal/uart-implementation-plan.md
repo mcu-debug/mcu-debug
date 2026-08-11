@@ -46,7 +46,7 @@ Critical path: **4 → 6 → 7 → 8 → 11**. Everything else can parallelize a
 
 ## Phase 6 — Config + polish
 
-- [ ] **18.** `launch.json` schema — add `uartConfig` block with `enabled` + `autoOpen` (by-label). Validation + hover docs in the JSON schema.
+- [ ] **18.** `launch.json` schema — add `serialConfig` block with `enabled` + `autoOpen` (by-label). Validation + hover docs in the JSON schema.
 - [ ] **19.** Legacy inline `uarts: [...]` migration — on first load, promote into workspace state, leave a one-time notice.
 - [ ] **20.** Log-file wiring — share pipeline with RTT/SWO logging; write from the same reader thread that fills the ring.
 

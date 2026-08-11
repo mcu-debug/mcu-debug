@@ -354,7 +354,7 @@ UART is supported alongside RTT and SWO with the same model: tagged stream, bidi
 #### **`launch.json` schema**
 
 ```jsonc
-"uartConfig": {
+"serialConfig": {
   "enabled": true,                     // master toggle — keep config when disabled
   "uarts": [
     {
@@ -391,6 +391,6 @@ Existing collision-resolution logic (already in place for RTT/SWO labels) handle
 
 #### **Discovery helper (optional)**
 
-`mdbg serial list` enumerates available ports with VID/PID, useful when first authoring `uartConfig`. Not required to use UARTs, but lowers the "what port am I on?" friction.
+`mdbg serial list` enumerates available ports with VID/PID, useful when first authoring `serialConfig`. Not required to use UARTs, but lowers the "what port am I on?" friction.
 
 ---

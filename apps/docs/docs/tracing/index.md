@@ -9,11 +9,11 @@ mcu-debug supports three channels for capturing debug output from your firmware 
 
 ## Channels at a Glance
 
-| Channel | Pins Required | Setup Complexity | Performance | Recommended |
-|---------|--------------|-----------------|-------------|-------------|
-| [RTT](./rtt.md) | None (uses SWD) | Easy | High (hundreds of KB/s) | Yes — for most projects |
-| [UART](./uart.md) | One TX pin | Easy | Medium | Yes — when UART is already available |
-| [SWO](./swo.md) | SWO pin | Complex | Low | Limited — see SWO page |
+| Channel           | Pins Required   | Setup Complexity | Performance             | Recommended                          |
+| ----------------- | --------------- | ---------------- | ----------------------- | ------------------------------------ |
+| [RTT](./rtt.md)   | None (uses SWD) | Easy             | High (hundreds of KB/s) | Yes — for most projects              |
+| [UART](./uart.md) | One TX pin      | Easy             | Medium                  | Yes — when UART is already available |
+| [SWO](./swo.md)   | SWO pin         | Complex          | Low                     | Limited — see SWO page               |
 
 ## Output Tagging
 
@@ -38,7 +38,7 @@ All three channels can be active in the same session:
     "enabled": true,
     "decoders": [{ "port": 0, "type": "console" }]
   },
-  "uartConfig": {
+  "serialConfig": {
     "enabled": true,
     "uarts": [{ "label": "Debug UART", "port": "/dev/ttyUSB0", "baud": 115200 }]
   }

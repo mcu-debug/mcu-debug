@@ -83,11 +83,11 @@ VS Code IntelliSense provides inline documentation and autocompletion when editi
 
 ## UART
 
-| Property             | Description                                                                |
-| -------------------- | -------------------------------------------------------------------------- |
-| `uartConfig`         | UART configuration block — see [UART](../tracing/uart.md) for full details |
-| `uartConfig.enabled` | Enable UART                                                                |
-| `uartConfig.uarts`   | Array of UART port configurations (port, baud, label)                      |
+| Property               | Description                                                                |
+| ---------------------- | -------------------------------------------------------------------------- |
+| `serialConfig`         | UART configuration block — see [UART](../tracing/uart.md) for full details |
+| `serialConfig.enabled` | Enable UART                                                                |
+| `serialConfig.uarts`   | Array of UART port configurations (port, baud, label)                      |
 
 ## SWO
 
