@@ -18,7 +18,6 @@
 //! `ts_rs::TS`) generate TypeScript type definitions in the shared package.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
 use std::net::TcpStream;
@@ -46,6 +45,8 @@ pub enum SessionThreadRole {
     PortMonitor,
     /// Forwards fatal serial-port errors into the event loop.
     SerialErrorForwarder,
+    /// Waits for the gdb-server child to exit on its own.
+    GdbReaper,
 }
 
 impl SessionThreadRole {
@@ -103,6 +104,13 @@ pub enum ProxyEvent {
     StreamData { stream_id: u8, data: Vec<u8> },
     /// A forwarded stream closed.
     StreamClosed { stream_id: u8 },
+    /// The gdb-server exited without us asking it to — crashed, was signalled, or
+    /// returned on its own (openocd exits when no probe is found, for instance).
+    ///
+    /// `exit_code` follows the shell convention on Unix when the process was killed by
+    /// a signal: `128 + signo`, so a segfault reports 139. `ExitStatus::code()` is
+    /// `None` in that case, and the wire field is a plain `i32`.
+    GdbServerExited { pid: u32, exit_code: i32 },
     /// A serial port's reader thread hit a fatal error.
     /// The port should be removed from the registry and the client notified.
     SerialPortError(PortErrorEvent),
@@ -121,10 +129,6 @@ pub enum ProxyEvent {
 }
 
 // ── Misc shared types ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
-#[ts(type = "any", export, export_to = "proxy-protocol/")]
-pub struct JsonValue(pub Value);
 
 #[derive(Debug, Serialize, Deserialize, Hash, Eq, PartialEq, ts_rs::TS)]
 #[ts(type = "any", export, export_to = "proxy-protocol/")]
@@ -213,16 +217,12 @@ pub enum ControlRequest {
 
     #[serde(rename = "startGdbServer")]
     StartGdbServer {
-        /** Launch configuration arguments */
-        config_args: JsonValue,
         /** Path to the gdb-server executable on the host machine */
         server_path: String,
         /** Arguments to launch the gdb-server with */
         server_args: Vec<String>,
         /** Environment variables for the gdb-server process */
         server_env: Option<HashMap<String, String>>,
-        /** Required: Regex patterns to identify the gdb-server process from its output (e.g. "Listening on port (\d+)"), used for auto-detecting the port if not specified in server_args */
-        server_regexes: Vec<String>,
     },
 
     #[serde(rename = "endSession")]

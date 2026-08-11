@@ -165,7 +165,15 @@ pub struct PortInfoListner {
 pub struct ProxyServer {
     args: ProxyArgs,
     writer: FrameWriter,
-    process: Option<Child>,
+    /// The gdb-server child, shared with the reaper thread that watches for it to
+    /// exit. `Arc<Mutex<..>>` because both need it: the reaper polls `try_wait` and
+    /// `end_process` calls `kill`. `try_wait` never blocks, so the lock is never held
+    /// for long.
+    process: Option<Arc<Mutex<Child>>>,
+    /// Set before we deliberately kill the gdb-server, so the reaper can tell an
+    /// exit *we* caused from one we need to report. Without it every normal session
+    /// end would look like a crash.
+    intentional_stop: Arc<AtomicBool>,
     /// Per-stream TCP connections to the gdb-server.
     streams: HashMap<u8, PortInfo>,
     /// Counter for assigning unique dynamic stream IDs (starts at 3; 0–2 are reserved).
@@ -241,6 +249,7 @@ impl ProxyServer {
             args,
             writer: FrameWriter::new(stream),
             process: None,
+            intentional_stop: Arc::new(AtomicBool::new(false)),
             streams: HashMap::new(),
             exit: false,
             reserved_ports: Vec::new(),
@@ -290,10 +299,14 @@ impl ProxyServer {
 
     pub fn end_process(&mut self) {
         self.stop_port_monitor();
-        if let Some(child) = &mut self.process {
+        if let Some(child) = self.process.take() {
+            // Tell the reaper this exit is ours before causing it, so it stays quiet.
+            // The client asked for this teardown and does not need to be told the
+            // server it just stopped has stopped.
+            self.intentional_stop.store(true, Ordering::SeqCst);
+            let mut child = child.lock_recover();
             let _ = child.kill();
             let _ = child.wait();
-            self.process = None;
         }
     }
 
@@ -490,8 +503,7 @@ impl ProxyServer {
                                 }
                             } else {
                                 // Non-zero stream ID: check serial funnel channels first.
-                                if let Some((weak, _, _)) =
-                                    self.serial_funnel_write.get(&stream_id)
+                                if let Some((weak, _, _)) = self.serial_funnel_write.get(&stream_id)
                                 {
                                     // Route incoming bytes from client to the serial port.
                                     // Upgrading can fail: the port may have been closed
@@ -642,6 +654,20 @@ impl ProxyServer {
                     self.streams.remove(&stream_id);
                     let event = ProxyServerEvents::StreamClosed { stream_id };
                     send_or_break!(event.send(&self.writer));
+                }
+                ProxyEvent::GdbServerExited { pid, exit_code } => {
+                    // The server died on its own — crashed, was signalled, or returned
+                    // (openocd exits when it finds no probe). Tell the client, then end
+                    // the session: that is what a native launch does, and leaving a
+                    // session alive around a dead server serves nobody.
+                    eprintln!("gdb-server pid {pid} exited (code {exit_code}) — ending session");
+                    // Already reaped by the reaper's `try_wait`; drop the handle so
+                    // `end_process` does not kill a pid the OS may have reused.
+                    self.process = None;
+                    let event = ProxyServerEvents::GdbServerExited { pid, exit_code };
+                    send_or_break!(event.send(&self.writer));
+                    self.end_process();
+                    break;
                 }
                 ProxyEvent::SerialPortError(err) => {
                     // Port died — remove from registry (drops the backing and fd),

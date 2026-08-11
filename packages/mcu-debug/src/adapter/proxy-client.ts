@@ -450,7 +450,24 @@ export class ProxyClient extends EventEmitter {
         });
     }
 
-    async launchServer(executable: string, args: string[], serverCwd: string, regexes: RegExp[]): Promise<void> {
+    /**
+     * Launch the gdb-server on the proxy.
+     *
+     * Deliberately takes no cwd. The server's working directory is always the
+     * session directory, which the proxy established at `initialize` and which is
+     * where `syncFiles` puts everything — so workspace-relative paths from
+     * launch.json resolve on the far side without rewriting. Letting a caller
+     * override it would break that, and the file sync along with it.
+     *
+     * A server with its own launch-directory requirement (ST-LINK_gdbserver has
+     * historically needed to run from its install dir so its libraries resolve) is a
+     * *different* concept and needs its own field — reusing this one would give the
+     * same name two meanings depending on server type.
+     *
+     * Output regexes are not sent either: the adapter matches them against the
+     * forwarded streams itself, in one place (see `server-session.ts`'s `matchRegex`).
+     */
+    async launchServer(executable: string, args: string[]): Promise<void> {
         // TODO: See if we need a heartbeat and what its frequency should be
         // this.startHeartbeat();
         await this.syncFiles();
@@ -458,12 +475,9 @@ export class ProxyClient extends EventEmitter {
             seq: this.nextSeq++,
             method: "startGdbServer",
             params: {
-                config_args: this.session.args,
                 server_path: executable,
                 server_args: args,
                 server_env: processEnvForConfig(this.session.args),
-                // server_cwd: serverCwd,
-                server_regexes: regexes.map((r) => r.source),
             },
         };
         return this.sendControlCommand(cmd);
@@ -562,7 +576,10 @@ export class ProxyClient extends EventEmitter {
     }
 
     private handleGdbServerExited(pid: any, exit_code: any) {
-        this.emit("gdbServerExited", { pid, exit_code });
+        // Let any streams drain before we emit the serverExited event, so that the streams can be closed gracefully
+        setTimeout(() => {
+            this.emit("serverExited", { pid, exit_code });
+        }, 100);
     }
 
     private startHeartbeat() {

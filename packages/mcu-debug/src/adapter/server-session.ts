@@ -1,7 +1,6 @@
 import { EventEmitter } from "events";
 import * as child_process from "child_process";
 import * as net from "net";
-import path from "path";
 import { JLinkServerController } from "./servers/jlink";
 import { OpenOCDServerController } from "./servers/openocd";
 import { STUtilServerController } from "./servers/stutil";
@@ -101,7 +100,7 @@ export class GDBServerSession extends EventEmitter {
             return;
         }
 
-        const serverCwd = this.getServerCwd(executable);
+        const serverCwd = this.getServerCwd();
         return new Promise<void>(async (resolve, reject) => {
             // Connect to the frontend console
             this.serverResolve = resolve;
@@ -136,7 +135,7 @@ export class GDBServerSession extends EventEmitter {
                     this.proxyClient?.on("serverExited", (code: number, signal: NodeJS.Signals) => {
                         serverExited(code, signal);
                     });
-                    await this.proxyClient.launchServer(executable, args, serverCwd, this.matchRegex ? [this.matchRegex] : []);
+                    await this.proxyClient.launchServer(executable, args);
                 } catch (e: any) {
                     reject(new Error(`Failed to launch gdb-server via proxy: ${e.message}`));
                     return;
@@ -408,23 +407,25 @@ export class GDBServerSession extends EventEmitter {
     }
 
     //
-    // Following function should never exist. The only way ST tools work is if the are run from the dir. where the
-    // executable lives. Tried setting LD_LIBRARY_PATH, worked for some people and broke other peoples environments.
-    // Normally, we NEED the server's CWD to be same as what the user wanted from the config. Because this where
-    // the server scripts (OpenOCD, JLink, etc.) live and changing cwd for all servers will break for other servers
-    // that are not so quirky.
+    // The server's cwd is the user's configured directory, because that is where the
+    // server's own scripts live (OpenOCD's .cfg, JLink's, ...) and they are referenced
+    // relatively. There is deliberately no per-server override: under the proxy this
+    // directory is the session directory that `syncFiles` populates, so overriding it
+    // would break file sync on remote sessions and not merely path resolution.
     //
-    private getServerCwd(serverExe: string) {
-        let serverCwd = this.session.args.cwd || process.cwd();
-        if (this.session.args.serverCwd) {
-            serverCwd = this.session.args.serverCwd;
-        } else if (this.session.args.servertype === "stlink") {
-            serverCwd = path.dirname(serverExe) || ".";
-            if (serverCwd !== ".") {
-                this.session.handleMsg(Stderr, `Setting GDB-Server CWD: ${serverCwd}\n`);
-            }
-        }
-        return serverCwd;
+    // This used to carry a special case for `servertype === "stlink"`, which forced the
+    // cwd to the executable's directory: ST-LINK_gdbserver could not find
+    // libSTLinkUSBDriver otherwise. That is fixed. Its binaries now resolve the library
+    // through a self-relative rpath (`@executable_path` on macOS, `$ORIGIN` on Linux)
+    // and Windows searches the executable's own directory ahead of the cwd, so all
+    // three platforms load correctly from any working directory -- verified against
+    // STM32CubeCLT 1.17/1.20/1.22 and the standalone bundles. If a report ever comes
+    // back from a much older install, the fix is theirs to ship, not ours to work
+    // around: forcing the cwd here breaks every server whose scripts are relative to
+    // the user's project.
+    //
+    private getServerCwd() {
+        return this.session.args.cwd || process.cwd();
     }
 }
 

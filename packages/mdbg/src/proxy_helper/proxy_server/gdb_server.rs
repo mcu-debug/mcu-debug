@@ -21,9 +21,9 @@ use std::env;
 use std::fs;
 use std::io::Read;
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -248,18 +248,28 @@ impl ProxyServer {
         }
     }
 
+    /// Watch the gdb-server child and report an exit we did not cause.
+    ///
+    /// Polling rather than a blocking `wait()`: `end_process` needs the same `Child` to
+    /// `kill()` it, and a thread parked in `wait()` would hold the lock forever. The
+    /// same poll-plus-flag shape as the serial error forwarder.
+    fn spawn_gdb_reaper(&mut self, pid: u32, child: Arc<Mutex<Child>>) {
+        let event_tx = self.event_tx.clone();
+        let cancel = self.cancel.clone();
+        let intentional = Arc::clone(&self.intentional_stop);
+        spawn_session_thread(&self.event_tx, SessionThreadRole::GdbReaper, move || {
+            reap_gdb_server(pid, child, cancel, intentional, event_tx, REAP_POLL_START);
+        });
+    }
+
     pub(super) fn handle_start_gdb_server(&mut self, msg: &ControlMessage) {
         if let ControlRequest::StartGdbServer {
-            config_args,
             server_path,
             server_args,
             server_env,
-            server_regexes,
         } = &msg.request
         {
             self.stop_port_monitor();
-            let _ = config_args;
-            let _ = server_regexes;
             let ports: Vec<(u8, u16)> = self
                 .reserved_ports
                 .drain(..)
@@ -286,20 +296,34 @@ impl ProxyServer {
                 }
             };
 
-            self.process = Some(child);
+            let pid = child.id();
+            let child = Arc::new(Mutex::new(child));
+            self.process = Some(Arc::clone(&child));
+            // A fresh server means a fresh verdict: any earlier intentional stop must
+            // not silence the reaper for this one.
+            self.intentional_stop.store(false, Ordering::SeqCst);
 
-            if let Some(stdout) = self.process.as_mut().unwrap().stdout.take() {
+            // Take the pipes before the reaper can start reaping, so no read is racing
+            // a `wait()` that would close them.
+            let stdout = child.lock_recover().stdout.take();
+            let stderr = child.lock_recover().stderr.take();
+            if let Some(stdout) = stdout {
                 let tx = self.event_tx.clone();
                 spawn_session_thread(&self.event_tx, SessionThreadRole::GdbStdout, move || {
                     read_and_forward(StreamId::Stdout.to_u8(), stdout, tx);
                 });
             }
-            if let Some(stderr) = self.process.as_mut().unwrap().stderr.take() {
+            if let Some(stderr) = stderr {
                 let tx = self.event_tx.clone();
                 spawn_session_thread(&self.event_tx, SessionThreadRole::GdbStderr, move || {
                     read_and_forward(StreamId::Stderr.to_u8(), stderr, tx);
                 });
             }
+
+            // Watch for the server exiting on its own. Nothing did this before, so a
+            // crashed openocd left a zombie, and the client learned of it only
+            // indirectly when gdb's RSP connection dropped — with no exit code.
+            self.spawn_gdb_reaper(pid, Arc::clone(&child));
 
             match self.session_port_wait_mode {
                 PortWaitMode::ConnectHold => {
@@ -313,17 +337,19 @@ impl ProxyServer {
                     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
                     self.monitor_stop_tx = Some(stop_tx);
                     let event_tx = self.event_tx.clone();
-                    spawn_session_thread(&self.event_tx, SessionThreadRole::PortMonitor, move || {
-                        if let Err(e) = wait_for_ports(ports, event_tx, stop_rx) {
-                            eprintln!("Port monitor exited with error: {}", e);
-                        }
-                    });
+                    spawn_session_thread(
+                        &self.event_tx,
+                        SessionThreadRole::PortMonitor,
+                        move || {
+                            if let Err(e) = wait_for_ports(ports, event_tx, stop_rx) {
+                                eprintln!("Port monitor exited with error: {}", e);
+                            }
+                        },
+                    );
                 }
             }
 
-            let data = ControlResponseData::StartGdbServer {
-                pid: self.process.as_ref().unwrap().id(),
-            };
+            let data = ControlResponseData::StartGdbServer { pid };
             ControlResponse::success(msg.seq, Some(data))
                 .send(&self.writer)
                 .unwrap_or_else(|e| {
@@ -576,5 +602,321 @@ impl ProxyServer {
                 .send(&self.writer)
                 .ok();
         }
+    }
+}
+
+/// Collapse an `ExitStatus` into the single `i32` the wire carries.
+///
+/// `code()` is `None` on Unix when the child was killed by a signal, which is exactly
+/// the crash case worth reporting. Map those to the shell's `128 + signo`, so a
+/// segfault reports 139 and a SIGKILL 137 — conventional and recognisable — rather
+/// than a sentinel that means nothing to anyone reading a log.
+fn exit_code_of(status: &std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return 128 + sig;
+        }
+    }
+    // No code and no signal: nothing better to say than "failed".
+    -1
+}
+
+/// How soon after spawning the reaper first asks whether the child has exited.
+///
+/// Deliberately short: gdb-server failures cluster at the very start of a session —
+/// no probe attached, a bad config, a device already claimed — and openocd and friends
+/// exit within a few hundred milliseconds when that happens. Detecting it fast turns a
+/// port-wait timeout into an immediate, accurate error.
+const REAP_POLL_START: Duration = Duration::from_millis(50);
+
+/// The interval the reaper settles at once a session is up and running, where an exit
+/// means something rare (a physical unplug) rather than a misconfiguration. Half a
+/// second either way is imperceptible there, so the wakeups are not worth spending.
+const REAP_POLL_MAX: Duration = Duration::from_millis(250);
+
+/// Poll `child` until it exits, then report an exit we did not cause.
+///
+/// A free function so the three outcomes can be tested directly: reported exit,
+/// silence after our own kill, and silence on cancel. Spawning it is all the method
+/// above does.
+fn reap_gdb_server(
+    pid: u32,
+    child: Arc<Mutex<Child>>,
+    cancel: Arc<AtomicBool>,
+    intentional: Arc<AtomicBool>,
+    event_tx: std::sync::mpsc::Sender<ProxyEvent>,
+    initial_poll: Duration,
+) {
+    // Back off from `initial_poll` toward `REAP_POLL_MAX`: fast while a startup failure
+    // is likely, then cheap for the rest of the session. Never below the caller's
+    // starting value, so a test can ask for a long, unambiguous interval.
+    let mut poll = initial_poll;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+        // Bind the result before matching on it. A temporary in a `match` scrutinee
+        // lives until the end of the whole match, so matching on
+        // `child.lock_recover().try_wait()` directly would hold the lock across the
+        // `sleep` below — stalling `end_process`'s `kill()`, on the message-loop
+        // thread, for up to a full poll interval.
+        //
+        // `try_wait` also reaps, so a self-exited child never lingers as a zombie the
+        // way it used to until session teardown.
+        let polled = child.lock_recover().try_wait();
+        let status = match polled {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                std::thread::sleep(poll);
+                poll = (poll * 2).min(initial_poll.max(REAP_POLL_MAX));
+                continue;
+            }
+            Err(e) => {
+                eprintln!("gdb-server reaper could not poll pid {pid}: {e}");
+                return;
+            }
+        };
+        if intentional.load(Ordering::SeqCst) {
+            // We killed it; the client asked for that and needs no event.
+            return;
+        }
+        let exit_code = exit_code_of(&status);
+        eprintln!("gdb-server pid {pid} exited on its own with code {exit_code}");
+        let _ = event_tx.send(ProxyEvent::GdbServerExited { pid, exit_code });
+        return;
+    }
+}
+
+#[cfg(test)]
+mod reaper_tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+
+    /// A child that exits immediately with `code`, portable across the platforms we ship.
+    fn exits_with(code: i32) -> Child {
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", &format!("exit {code}")]);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", &format!("exit {code}")]);
+            c
+        };
+        cmd.spawn().expect("spawn test child")
+    }
+
+    /// A child that outlives the test unless killed.
+    fn long_running() -> Child {
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping -n 60 127.0.0.1 > NUL"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("60");
+            c
+        };
+        cmd.spawn().expect("spawn test child")
+    }
+
+    fn reap(
+        child: Child,
+        intentional: bool,
+        cancel: bool,
+    ) -> (std::sync::mpsc::Receiver<ProxyEvent>, u32) {
+        let pid = child.id();
+        let (tx, rx) = channel();
+        reap_gdb_server(
+            pid,
+            Arc::new(Mutex::new(child)),
+            Arc::new(AtomicBool::new(cancel)),
+            Arc::new(AtomicBool::new(intentional)),
+            tx,
+            Duration::from_millis(10),
+        );
+        (rx, pid)
+    }
+
+    /// The case that had no code path at all: the server exits on its own and the
+    /// client has to be told. A non-zero code is the openocd-found-no-probe shape.
+    #[test]
+    fn an_unexpected_exit_is_reported_with_its_code() {
+        let (rx, pid) = reap(exits_with(3), false, false);
+
+        match rx.try_recv() {
+            Ok(ProxyEvent::GdbServerExited {
+                pid: got_pid,
+                exit_code,
+            }) => {
+                assert_eq!(got_pid, pid);
+                assert_eq!(exit_code, 3);
+            }
+            other => panic!("expected GdbServerExited, got {:?}", other.is_ok()),
+        }
+    }
+
+    /// A clean exit is reported too. Some servers return 0 after `monitor shutdown`,
+    /// and the client still needs to know its server is gone — it branches on the code.
+    #[test]
+    fn a_clean_exit_is_also_reported() {
+        let (rx, _) = reap(exits_with(0), false, false);
+
+        match rx.try_recv() {
+            Ok(ProxyEvent::GdbServerExited { exit_code, .. }) => assert_eq!(exit_code, 0),
+            _ => panic!("a zero exit must still be reported"),
+        }
+    }
+
+    /// When *we* stopped the server, the client asked for it and needs no event.
+    /// Without this flag every normal session end would look like a crash.
+    #[test]
+    fn an_exit_we_caused_is_not_reported() {
+        let mut child = long_running();
+        let _ = child.kill();
+        let (rx, _) = reap(child, true, false);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "an intentional stop must not raise GdbServerExited"
+        );
+    }
+
+    /// Session teardown sets `cancel`; the reaper must return rather than outlive the
+    /// session waiting on a child that is about to be killed anyway.
+    #[test]
+    fn a_cancelled_reaper_returns_without_reporting() {
+        let child = long_running();
+        let pid = child.id();
+        let child = Arc::new(Mutex::new(child));
+        let (tx, rx) = channel();
+
+        reap_gdb_server(
+            pid,
+            Arc::clone(&child),
+            Arc::new(AtomicBool::new(true)), // cancel
+            Arc::new(AtomicBool::new(false)),
+            tx,
+            Duration::from_millis(10),
+        );
+
+        assert!(rx.try_recv().is_err(), "cancel must not raise an event");
+        let mut c = child.lock_recover();
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+
+    /// The backoff must actually be bounded, and must start where the caller asked.
+    ///
+    /// This mirrors the arithmetic in `reap_gdb_server` rather than driving it, because
+    /// observing the schedule from outside would mean timing several sleeps — flaky for
+    /// no extra confidence. What is worth pinning is that it climbs and then stops:
+    /// an unbounded doubling would eventually take minutes to notice a dead server.
+    #[test]
+    fn the_poll_interval_backs_off_to_a_bound() {
+        let mut poll = REAP_POLL_START;
+        let cap = REAP_POLL_START.max(REAP_POLL_MAX);
+
+        assert!(
+            REAP_POLL_START < REAP_POLL_MAX,
+            "starting fast is the whole point: failures cluster at session start"
+        );
+
+        let mut seen = vec![poll];
+        for _ in 0..10 {
+            poll = (poll * 2).min(cap);
+            seen.push(poll);
+        }
+
+        assert_eq!(
+            *seen.last().unwrap(),
+            REAP_POLL_MAX,
+            "must settle at the cap"
+        );
+        assert!(
+            seen.windows(2).all(|w| w[0] <= w[1]),
+            "the interval must never shrink: {seen:?}"
+        );
+        // Today's schedule reaches the cap quickly, so a startup failure is caught in
+        // the first few polls rather than after the session has already timed out.
+        assert!(
+            seen[3] <= REAP_POLL_MAX,
+            "the cap should be reached within a handful of polls"
+        );
+    }
+
+    /// The reaper must not hold the child's lock while it sleeps between polls.
+    ///
+    /// `end_process` runs on the message loop and needs that same lock to `kill()`.
+    /// Holding it across the sleep stalls the whole session for up to a poll interval —
+    /// which is easy to reintroduce, because a temporary in a `match` scrutinee lives
+    /// until the end of the match, so matching on `lock().try_wait()` directly does
+    /// exactly this.
+    ///
+    /// The poll interval here is deliberately long so the margin is unambiguous: with
+    /// the bug the lock takes ~2s to acquire, without it, microseconds.
+    #[test]
+    fn the_reaper_does_not_hold_the_child_lock_while_sleeping() {
+        let child = long_running();
+        let pid = child.id();
+        let child = Arc::new(Mutex::new(child));
+        let (tx, _rx) = channel();
+
+        let reaper = {
+            let child = Arc::clone(&child);
+            std::thread::spawn(move || {
+                reap_gdb_server(
+                    pid,
+                    child,
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(AtomicBool::new(true)), // stay quiet when we kill it
+                    tx,
+                    Duration::from_secs(2),
+                )
+            })
+        };
+
+        // Let the reaper reach its first sleep.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let start = std::time::Instant::now();
+        let mut guard = child.lock_recover();
+        let waited = start.elapsed();
+        let _ = guard.kill();
+        let _ = guard.wait();
+        drop(guard);
+
+        assert!(
+            waited < Duration::from_millis(500),
+            "acquiring the child lock took {waited:?} — the reaper is holding it while sleeping"
+        );
+        reaper.join().expect("reaper thread");
+    }
+
+    /// A signalled child has no exit code of its own, which is precisely the crash we
+    /// most want reported. `128 + signo` is the shell convention, so SIGKILL reads as
+    /// 137 and a segfault as 139 rather than as some invented sentinel.
+    #[cfg(unix)]
+    #[test]
+    fn a_signalled_child_reports_128_plus_the_signal() {
+        let mut child = long_running();
+        let _ = child.kill(); // SIGKILL
+        let status = child.wait().expect("wait");
+
+        assert_eq!(exit_code_of(&status), 128 + 9, "SIGKILL must map to 137");
+    }
+
+    /// A child that exited normally keeps its own code, untouched by the signal path.
+    #[test]
+    fn a_normal_exit_keeps_its_code() {
+        let mut child = exits_with(42);
+        let status = child.wait().expect("wait");
+
+        assert_eq!(exit_code_of(&status), 42);
     }
 }

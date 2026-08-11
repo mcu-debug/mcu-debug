@@ -24,7 +24,6 @@ fn ensure_ts_exports() {
     PortAllocatorSpec::export(&config).unwrap();
     PortReserved::export(&config).unwrap();
     PortSet::export(&config).unwrap();
-    JsonValue::export(&config).unwrap();
     SerialPortInfo::export(&config).unwrap();
     // Serial types (exported to serial-helper/)
     SerialParams::export(&config).unwrap();
