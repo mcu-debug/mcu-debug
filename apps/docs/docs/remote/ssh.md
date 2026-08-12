@@ -7,6 +7,11 @@ title: SSH / Lab Server
 
 Debugging when the probe is physically connected to a remote server — for example, a shared lab server with embedded hardware, while you develop on a laptop.
 
+:::warning
+This document may not be accurate. It will be updated as we finish testing ssh fully
+:::
+
+
 > [!IMPORTANT]
 > The remote SSH host must be running a Unix-based operating system (Linux or macOS). Windows is not supported as a remote SSH server for debugging due to shell command and architecture detection requirements.
 

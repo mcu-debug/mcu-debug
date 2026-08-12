@@ -60,33 +60,23 @@ When running in VS Code Remote - WSL, the VS Code extension on Windows handles s
 
 When using the CLI from WSL without VS Code:
 
-1. On Windows, open PowerShell or Command Prompt and run:
-   ```powershell
-   mcu-debug proxy
-   ```
+1. On Windows, there is nothing to do except installing both extensions - `mcu-debug` and `mcu-debug-proxy`.
 
-2. In WSL, start your debug session normally:
+2. On the WSL side, launch a VSCode session with a WSL workspace at least once per version and run `MCU Debug: Install CLI Tools` from the command pallete. This will make `mcu-debug` as a command on the WSL side. You may have to start a new shell for the PATH to get updated
+
+3. In WSL, start your debug session normally:
    ```sh
    mcu-debug debug -c "My Config"
    ```
 
-The CLI auto-discovers the proxy via the WSL gateway address.
+The CLI auto-discovers the proxy via the WSL gateway address and starts the proxy server if not already started
 
 ## Troubleshooting
-
-### Proxy not found
-
-If auto-detection fails, explicitly configure the host:
-
-```json
-"serverpath": "<path-to-gdb-server-on-remote>",
-"hostConfig": {
-  "enabled": true,
-  "type": "wsl",
-  "host": "127.0.0.1"
-}
-```
 
 ### USB device not accessible in Windows
 
 Ensure the probe is attached to Windows (not passed through to WSL via usbipd). The gdb-server runs on Windows and needs native USB access.
+
+### Could not launch gdb-server (openocd, stlink-gdb-server, etc)
+
+Make sure the exectuables are in your PATH on Windows side or specified in your launch.json or VSCode settings on the WSL side.

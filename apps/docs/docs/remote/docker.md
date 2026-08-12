@@ -7,6 +7,10 @@ title: Docker
 
 Debugging from a Docker dev container when the debug probe is connected to the Docker host machine.
 
+:::warning
+This document may not be accurate. It will be updated as we finish testing containers fully
+:::
+
 ## How It Works
 
 mcu-debug detects it is running inside Docker via `/.dockerenv`. The Docker host is reachable from the container at a known address. mcu-debug connects to a proxy running on the host.
