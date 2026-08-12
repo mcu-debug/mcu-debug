@@ -20,12 +20,18 @@ const SHARED = path.join(ROOT, 'packages', 'shared');
 const GENERATED = ['dasm-helper', 'proxy-protocol', 'serial-helper'].map((d) => path.join(SHARED, d));
 const PRINT_WIDTH = '120'; // keep in sync with scripts/build-binaries.sh
 
+// Run from the crate directory, NOT the repo root with --manifest-path. Cargo
+// discovers .cargo/config.toml by walking up from the *current directory*; the manifest
+// path does not affect it. packages/mdbg/.cargo/config.toml sets TS_RS_EXPORT_DIR, so
+// running from elsewhere silently exports the bindings into packages/mdbg/bindings/
+// instead of packages/shared/ — tests pass, nothing looks wrong, and the shared types
+// are simply never regenerated.
 const args = process.argv.slice(2);
-const test = spawnSync(
-    'cargo',
-    ['test', '--manifest-path', path.join(ROOT, 'packages', 'mdbg', 'Cargo.toml'), '--lib', ...args],
-    { stdio: 'inherit', shell: false },
-);
+const test = spawnSync('cargo', ['test', '--lib', ...args], {
+    cwd: path.join(ROOT, 'packages', 'mdbg'),
+    stdio: 'inherit',
+    shell: false,
+});
 
 const prettier = path.join(ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'prettier.cmd' : 'prettier');
 const fmt = spawnSync(prettier, ['--write', '--print-width', PRINT_WIDTH, '--log-level', 'warn', ...GENERATED], {

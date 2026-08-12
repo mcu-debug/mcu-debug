@@ -181,8 +181,16 @@ pub struct SerialParams {
     /// Direct device path or glob (e.g. `/dev/ttyUSB0`, `/dev/tty.usbserial-*`, `COM3`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// USB Description string (e.g. `"STM32 STLink"`). Used for user-friendly display and matching.
-    pub description: Option<String>,
+    /// Case-insensitive substring matched against a port's enumerated `description`
+    /// (e.g. `"STM32 STLink"`). A *selector*, not a label.
+    ///
+    /// Named `match` rather than `description` because the two were previously the same
+    /// word for opposite roles: this is a pattern the caller supplies to choose a port,
+    /// while [`AvailablePort::description`] is text the OS reports about a port it found.
+    /// `r#match` is the raw identifier for the `match` keyword; the wire name is plain
+    /// `match`.
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub r#match: Option<String>,
     /// USB serial number. Stable across reconnects and reboots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
@@ -674,7 +682,7 @@ mod line_settings_tests {
     fn params() -> SerialParams {
         SerialParams {
             path: Some("COM3".into()),
-            description: None,
+            r#match: None,
             serial: None,
             vid: None,
             pid: None,
@@ -737,8 +745,8 @@ mod line_settings_tests {
         assert!(line_settings_equal(&base, &p), "log_file");
 
         let mut p = params();
-        p.description = Some("kitprog3".into());
-        assert!(line_settings_equal(&base, &p), "description/selector");
+        p.r#match = Some("kitprog3".into());
+        assert!(line_settings_equal(&base, &p), "match/selector");
 
         let mut p = params();
         p.input_mode = Some("raw".into());

@@ -39,7 +39,7 @@ Multiple UARTs are supported:
     },
     {
       "label": "Bootloader",
-      "description": "kitprog3",    // Matches serial ports that has this string in the deescrioption
+      "match": "kitprog3",    // Matches serial ports that has this sub-string in the deescrioption
       "baud": 9600
     }
   ]

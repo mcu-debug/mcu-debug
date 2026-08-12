@@ -18,9 +18,16 @@ export type SerialParams = {
      */
     path?: string | null;
     /**
-     * USB Description string (e.g. `"STM32 STLink"`). Used for user-friendly display and matching.
+     * Case-insensitive substring matched against a port's enumerated `description`
+     * (e.g. `"STM32 STLink"`). A *selector*, not a label.
+     *
+     * Named `match` rather than `description` because the two were previously the same
+     * word for opposite roles: this is a pattern the caller supplies to choose a port,
+     * while [`AvailablePort::description`] is text the OS reports about a port it found.
+     * `r#match` is the raw identifier for the `match` keyword; the wire name is plain
+     * `match`.
      */
-    description: string | null;
+    match?: string | null;
     /**
      * USB serial number. Stable across reconnects and reboots.
      */

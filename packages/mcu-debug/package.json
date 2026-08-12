@@ -1352,9 +1352,9 @@
                         "type": "string",
                         "description": "Serial device path or glob. E.g. /dev/ttyUSB0, /dev/tty.usbserial-*, COM3, /dev/serial/by-id/usb-*. Optional if serial or vid/pid are specified."
                       },
-                      "description": {
+                      "match": {
                         "type": "string",
-                        "description": "Optional description of the serial port, used for selection, along with path, serial, or vid/pid. E.g. 'Debug UART', 'Console', 'Trace'."
+                        "description": "Case-insensitive substring matched against the port's description as reported by the OS (e.g. 'STM32 STLink', 'FTDI'). Used for selection, along with path, serial, or vid/pid. Use 'label' to name the port in the UI."
                       },
                       "serial": {
                         "type": "string",
@@ -2944,9 +2944,9 @@
                         "type": "string",
                         "description": "Serial device path or glob. E.g. /dev/ttyUSB0, /dev/tty.usbserial-*, COM3, /dev/serial/by-id/usb-*. Optional if serial or vid/pid are specified."
                       },
-                      "description": {
+                      "match": {
                         "type": "string",
-                        "description": "Optional description of the serial port, used for selection, along with path, serial, or vid/pid. E.g. 'Debug UART', 'Console', 'Trace'."
+                        "description": "Case-insensitive substring matched against the port's description as reported by the OS (e.g. 'STM32 STLink', 'FTDI'). Used for selection, along with path, serial, or vid/pid. Use 'label' to name the port in the UI."
                       },
                       "serial": {
                         "type": "string",

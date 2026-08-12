@@ -126,7 +126,9 @@ function resolvedPath(info: OpenPortEntry): string | undefined {
 function portSel(p: SerialParams): string {
     if (p.path) { return p.path; }
     if (p.serial) { return `serial=${p.serial}`; }
-    return `vid=${p.vid} pid=${p.pid}`;
+    if (p.match) { return `match=${p.match}`; }
+    if (p.vid || p.pid) { return `vid=${p.vid} pid=${p.pid}`; }
+    return "<no selector>";
 }
 
 /**
@@ -887,8 +889,8 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         const ports: SerialParams[] = [];
         if (serialConfig?.enabled && ports && ports.length > 0) {
             for (const portConfig of ports) {
-                if (!portConfig.path && !portConfig.serial && !portConfig.vid && !portConfig.pid) {
-                    this.logError(`Invalid serial port configuration: ${JSON.stringify(portConfig)}. Each port must have at least one of path/serial/vid/pid. This port configuration will be ignored.`);
+                if (!portConfig.path && !portConfig.serial && !portConfig.vid && !portConfig.pid && !portConfig.match) {
+                    this.logError(`Invalid serial port configuration: ${JSON.stringify(portConfig)}. Each port must have at least one of path/serial/vid/pid/match. This port configuration will be ignored.`);
                 } else {
                     ports.push(portConfig);
                 }
@@ -947,7 +949,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
                 this.logInfo(`Serial port ${configStr} opened successfully on proxy ${pInfoStr}`);
                 await this.createOrUpdateViewWithSerialInfo(conn, pInfo, portConfig, true);
             } catch (e: any) {
-                const sel = portConfig.path ?? portConfig.serial ?? `vid=${portConfig.vid} pid=${portConfig.pid}`;
+                const sel = JSON.stringify(portConfig);
                 this.logError(`Failed to open serial port ${sel}: ${e.message}`);
             }
         }
