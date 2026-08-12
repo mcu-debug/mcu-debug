@@ -13,7 +13,7 @@ For terminology, for example with WSL or Docker, `"remote"` is your host machine
 
 ## Architecture
 
-In the picture below, the "Workspace" and the "Probe Proxy" can be on very different comuters. The "proxy" server provides access to the HW Probe as if it is locally available. The connection is handled depending on the type of the environment each part is. The Workspace can in inside WSL or Docker. The "Probe" could like on a host machine hosting the WSL/Docker environment or some other machine The system automatically detects the type of the "Workspace" environment with the help of VSCode but you can always use `ssh` to connect the two environments. The same architecture is also used for CLI mode except VSCode services cannot be used but the Probe environment can be described in launch.json. For WSL, CLI mode will detect and make the connection automatically
+In the picture below, the "Workspace" and the "Probe Proxy" can be on very different comuters. The "proxy" server provides access to the HW Probe as if it is locally available. The connection is handled depending on the type of the environment each part is. The Workspace can be inside WSL or Docker. The "Probe" could be on a host machine hosting the WSL/Docker environment or some other machine The system automatically detects the type of the "Workspace" environment with the help of VSCode. But you can always use `ssh` to connect the two environments. The same architecture is also used for CLI mode except VSCode services cannot be used but the Probe environment can be described in launch.json. However, for WSL, CLI mode will detect and make the connection automatically
 
 ```mermaid
 flowchart
