@@ -25,11 +25,17 @@ Debugging from WSL (Windows Subsystem for Linux) when the debug probe is physica
 
 ## How It Works
 
-When you run VS Code Remote - WSL, the mcu-debug extension runs inside the WSL instance. But USB devices (including debug probes) attach to Windows. mcu-debug detects this situation and automatically routes the gdb-server through a proxy on the Windows side via another helper extension "mch-debug-proxy also called the UI extension.
+When you run VS Code Remote - WSL, the mcu-debug extension runs inside the WSL instance. But USB devices (including debug probes) attach to Windows. mcu-debug detects this situation and automatically routes the gdb-server through a proxy on the Windows side via another helper extension "mcu-debug-proxy also called the UI extension.
 
 ## Auto-Detection
 
-When being used inside VSCode, its APIs tell use if you are running in a WSL environment. For CLI mcu-debug detects WSL via the `WSL_DISTRO_NAME` environment variable. When this variable is set, remote mode is activated automatically — no complicated `hostConfig` needed in most cases.
+When being used inside VSCode, its APIs tell use if you are running in a WSL environment. For CLI mcu-debug detects WSL via the `WSL_DISTRO_NAME` environment variable. When this variable is set, remote mode is activated automatically — no complicated `hostConfig` needed in most cases. The bare minimum configuration required in your `launch.json` is
+
+```json
+"hostConfig": true
+```
+
+Do not forget to point your `serverpath` (or appropriate settings) to a valid path on Windows side.
 
 ## Networking Modes
 
