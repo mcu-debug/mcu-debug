@@ -24,14 +24,18 @@ import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } fro
 import { getHostAdapter } from "./host-adapter";
 import { tcpReachable } from "./utils";
 
-let localProxyProcess: ChildProcess | null = null;
-
 interface SshTunnelConfig {
     sshHost: string;
     sshPort: number;
     localPort: number;
     args: string[];
     fingerprint: string; // key over all config fields that affect what tunnel/agent is running
+    /** Token of the Probe Agent this tunnel reaches.
+     *
+     *  Lives here rather than in a module-wide slot because it is a property of *this*
+     *  tunnel: `killSshTunnel()` clears this object, which invalidates the token at
+     *  exactly the moment it stops being valid. */
+    token: string;
 }
 
 // Stable string over every config field that determines whether an existing SSH tunnel+agent can be reused.
@@ -301,6 +305,9 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
     });
 }
 
+// Sets `hostConfig.pvtProxy{Host,Port,Token}` on success — all three, on both the
+// reuse and fresh-launch paths, so no caller has to reach for the agent's token from
+// somewhere else.
 async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     if (!hostConfig?.enabled || hostConfig?.pvtNetworkMode !== "ssh") {
         return;
@@ -310,6 +317,9 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
         throw new Error("SSH host not defined for SSH tunnel");
     }
     let sshPort = hostConfig.sshProxyPort || hostConfig.pvtProxyPort;
+    // Daemon mode supplies the token in launch.json; otherwise the agent we start below
+    // mints one and reports it in its discovery line.
+    let agentToken = (hostConfig.token as string) || "";
     if (!sshPort) {
         // Clear any existing token if port is not defined, to avoid confusion with stale tunnels. If we are going to be starting a
         // tunnel, any existing token would be invalid anyway, so better to require a clean slate.
@@ -321,7 +331,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
         const fingerprintMatch = sshTunnelConfig?.fingerprint === fingerprint;
         const agentAlive = isDaemonMode || !!sshAgentProcess; // daemon has no extension-managed agent process
         if (fingerprintMatch && agentAlive) {
-            hostConfig.pvtProxyToken = (proxyLaunchResults!.token as string) || hostConfig.token;
+            hostConfig.pvtProxyToken = sshTunnelConfig!.token || (hostConfig.token as string);
             hostConfig.pvtProxyPort = sshTunnelConfig!.localPort;
             hostConfig.pvtProxyHost = "127.0.0.1";
             return; // reuse existing tunnel
@@ -345,7 +355,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
         }
         try {
             const result = await startSshProxyServer(hostConfig);
-            proxyLaunchResults = result;
+            agentToken = (result.token as string) || agentToken;
             getHostAdapter().debugMessage(`SSH proxy server started on ${sshHost} with port ${result.serverPort}`);
             sshPort = result && result.serverPort ? result.serverPort : undefined;
         } catch (error) {
@@ -395,7 +405,8 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
             settled = true;
             cleanup();
             sshTunnelProcess = proc;
-            sshTunnelConfig = { sshHost, sshPort, localPort, args, fingerprint };
+            sshTunnelConfig = { sshHost, sshPort, localPort, args, fingerprint, token: agentToken };
+            hostConfig.pvtProxyToken = agentToken;
             getHostAdapter().showInfo(`SSH tunnel started: ${cmdString}`);
             getHostAdapter().debugMessage(`SSH tunnel started for ${sshHost} on local port ${localPort}`);
             resolve();
@@ -448,8 +459,6 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     });
 }
 
-let currentPolicy: ProxyLaunchPolicy | null = null;
-let proxyLaunchResults: ProxyLaunchResults | null = null;
 
 // Resolved hostConfigs cached per proxy request, keyed by the fields that
 // determine WHICH proxy a request resolves to (type, ssh host/port/token,
@@ -494,12 +503,8 @@ export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy):
             getHostAdapter().showError(`Proxy server reported bind errors: ${bindErrors.join("\t\n")}`);
             return null
         }
-        proxyLaunchResults = value;
-        currentPolicy = policy;
         return value;
     } catch (error) {
-        proxyLaunchResults = null;
-        currentPolicy = null;
         getHostAdapter().showError(`Failed to launch proxy server: ${error}, mcu-debug-proxy extension not activated? Please try again. Report this problem if it continues to happen`);
         return null;
     }
@@ -556,10 +561,11 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             // launch the Probe Agent on the remote host, and establish an SSH -L tunnel so the DA
             // can reach the agent via 127.0.0.1:<localPort>.
             try {
+                // startSshTunnel sets pvtProxyHost/Port/Token for both the fresh and
+                // reused-tunnel paths.
                 await startSshTunnel(hostConfig);
                 hostConfig.pvtProxyBindHost = "127.0.0.1";
                 hostConfig.pvtProxyPort = sshTunnelConfig?.localPort as number;
-                hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
             } catch (error) {
                 throw error;
             }
@@ -602,19 +608,20 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             if (!current) {
                 throw new Error("Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated? Please try again.");
             }
-            if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
-                getHostAdapter().showError("mcu-debug-proxy did not return a valid port");
-                throw new Error("mcu-debug-proxy did not return a valid port");
+            if (current.serverPort == null || current.serverPort <= 0) {
+                const msg = `mcu-debug-proxy did not return a valid port ${JSON.stringify(current)}`;
+                getHostAdapter().showError(msg);
+                throw new Error(msg);
             }
-            if (!proxyLaunchResults.reverseTunnelPort || proxyLaunchResults.reverseTunnelPort <= 0) {
+            if (!current.reverseTunnelPort || current.reverseTunnelPort <= 0) {
                 const msg = `SSH reverse tunnel to ${sshHostForReverse} did not return a valid remote port`;
                 getHostAdapter().showError(msg);
                 throw new Error(msg);
             }
 
             hostConfig.pvtProxyHost = "127.0.0.1"; // DA connects to its loopback on the remote host
-            hostConfig.pvtProxyPort = proxyLaunchResults.reverseTunnelPort;
-            hostConfig.pvtProxyToken = proxyLaunchResults.token as string;
+            hostConfig.pvtProxyPort = current.reverseTunnelPort;
+            hostConfig.pvtProxyToken = current.token as string;
         } else if (resolvedMode === "local") {
             // This is allowed only in two circumstances:
             // 1) the user explicitly sets type: "local" -- and this is meant for testing. Not production
@@ -662,9 +669,10 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                     "Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated?. Please try again. Report this problem if it continues to happen",
                 );
             }
-            if (proxyLaunchResults?.serverPort == null || proxyLaunchResults.serverPort <= 0) {
-                getHostAdapter().showError("mcu-debug-proxy did not return a valid port");
-                throw new Error("mcu-debug-proxy did not return a valid port");
+            if (current.serverPort == null || current.serverPort <= 0) {
+                const msg = `mcu-debug-proxy did not return a valid port ${JSON.stringify(current)}`;
+                getHostAdapter().showError(msg);
+                throw new Error(msg);
             }
             if (isWslNatMode) {
                 // Probe reachability now, while we still have access to the VS Code UI.
@@ -676,22 +684,22 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 // Windows, click "Allow access", alt-tab back, and click Retry — all
                 // without restarting the debug session. On subsequent runs the first probe
                 // succeeds and this modal is never shown.
-                let reachable = await tcpReachable(resolvedProxyHost, proxyLaunchResults.serverPort, 2000);
+                let reachable = await tcpReachable(resolvedProxyHost, current.serverPort, 2000);
                 if (!reachable) {
                     const choice = await getHostAdapter().showErrorWithChoice(
-                        `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
+                        `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${current.serverPort}. ` +
                         "A Windows Security Alert may have appeared — switch to Windows, click \"Allow access\", " +
                         "then click Retry.",
                         true,
                         "Retry",
                     );
                     if (choice !== "Retry") {
-                        throw new Error(`WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. Cancelled.`);
+                        throw new Error(`WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${current.serverPort}. Cancelled.`);
                     }
-                    reachable = await tcpReachable(resolvedProxyHost, proxyLaunchResults.serverPort, 2000);
+                    reachable = await tcpReachable(resolvedProxyHost, current.serverPort, 2000);
                     if (!reachable) {
                         const msg =
-                            `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${proxyLaunchResults.serverPort}. ` +
+                            `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${current.serverPort}. ` +
                             "Windows Firewall is still blocking the connection. " +
                             "Set hostConfig.wslProxyPort to a port you have opened in Windows Firewall.";
                         getHostAdapter().showError(msg);
@@ -699,8 +707,8 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                     }
                 }
             }
-            hostConfig.pvtProxyPort = proxyLaunchResults!.serverPort as number;
-            hostConfig.pvtProxyToken = proxyLaunchResults!.token as string;
+            hostConfig.pvtProxyPort = current.serverPort as number;
+            hostConfig.pvtProxyToken = current.token as string;
         } else {
             getHostAdapter().showWarning(
                 `Unknown hostConfig.type "${hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`,
