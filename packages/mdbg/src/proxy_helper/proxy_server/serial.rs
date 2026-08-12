@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use crate::common::sync::MutexExt;
@@ -69,11 +69,11 @@ impl Write for FunnelWriter {
 /// old model stored a single backing per port and rejected a second transport as a
 /// conflict, but the exclusivity was bookkeeping, not a property of the data path.
 ///
-/// It was also wrong for funnel alone: re-opening a funnel port deliberately
-/// allocates a *new* channel (client reconnect), and the single-backing entry
-/// overwrote the previous `stream_id`. Closing then detached only the most recent
-/// client and left the others attached and receiving — with their `Arc<PortHandle>`
-/// clones keeping the device open, so the port never actually closed.
+/// It was also wrong for funnel alone: re-opening a funnel port allocated a *new*
+/// channel each time, and the single-backing entry overwrote the previous `stream_id`.
+/// Closing then detached only the most recent client and left the others attached and
+/// receiving — with their `Arc<PortHandle>` clones keeping the device open, so the port
+/// never actually closed.
 pub struct OpenPort {
     pub handle: Arc<PortHandle>,
     /// The direct-transport bridge, if a client has asked for one. At most one per
@@ -84,9 +84,21 @@ pub struct OpenPort {
     /// shared, so it can only be torn down once the last of them has closed —
     /// counting is the only way to know when that is.
     pub direct_refs: usize,
-    /// Funnel channels on this port: `stream_id` -> `PortHandle` client id. Many,
-    /// because every funnel client — and every reconnect — gets its own channel.
-    pub funnel: HashMap<u8, u64>,
+    /// Funnel channels on this port: `PortHandle` client id -> that session's stream id.
+    ///
+    /// Keyed by **client id**, which `PortHandle` allocates and is therefore unique
+    /// across every session using this port. Stream ids are *not* usable as a key here:
+    /// `next_stream_id` is per-session and starts at 3, so two sessions both call their
+    /// first serial channel 3. Keying by stream id let the second session's insert
+    /// overwrite the first — the map showed one channel with two writers attached, and
+    /// when either session closed, the single entry went with it, `is_idle()` turned
+    /// true, and the device was closed underneath the session still using it.
+    ///
+    /// One entry per *session* that opened this port with funnel transport, not one per
+    /// `serial.open` — see [`find_reusable_channel`]. Several sessions on one port is
+    /// normal (two windows watching the same UART); several entries for one session is
+    /// not, and used to accumulate one per debug-session start.
+    pub funnel: HashMap<u64, u8>,
 }
 
 impl OpenPort {
@@ -115,20 +127,52 @@ impl OpenPort {
     }
 }
 
+/// The channel this session already holds for `path`, if it is still usable.
+///
+/// Reuse requires the routing entry to point at *this* `PortHandle`, not merely at the
+/// same path. After a port dies and is re-opened the handle is a new instance, and the
+/// old writer was detached with it — reusing that channel would hand the client a
+/// stream that never delivers.
+///
+/// Generic over the handle type purely so it can be tested without a real serial
+/// device; the logic needs nothing from `PortHandle`.
+fn find_reusable_channel<T>(
+    entries: &HashMap<u8, (Weak<T>, u64, String)>,
+    path: &str,
+    handle: &Arc<T>,
+) -> Option<u8> {
+    let mut found: Option<u8> = None;
+    for (stream_id, (weak, _, entry_path)) in entries {
+        if entry_path != path {
+            continue;
+        }
+        let Some(live) = weak.upgrade() else { continue };
+        if !Arc::ptr_eq(&live, handle) {
+            continue;
+        }
+        // Lowest id wins so the answer does not depend on `HashMap` iteration order.
+        found = Some(found.map_or(*stream_id, |f: u8| f.min(*stream_id)));
+    }
+    found
+}
+
 /// Whether a port with these counts has any client left.
 ///
 /// Free function rather than only a method so it is testable: building an `OpenPort`
 /// needs an `Arc<PortHandle>`, which needs a real serial device.
-fn port_is_idle(direct_refs: usize, funnel: &HashMap<u8, u64>) -> bool {
+fn port_is_idle(direct_refs: usize, funnel: &HashMap<u64, u8>) -> bool {
     direct_refs == 0 && funnel.is_empty()
 }
 
 /// Ascending stream IDs from a port's funnel map.
 ///
+/// Duplicates are kept, so the length always matches the channel count: stream ids are
+/// per-connection, so two sessions can legitimately both be using id 3 on this port.
+///
 /// Free function rather than only a method so it is testable: building an `OpenPort`
 /// needs an `Arc<PortHandle>`, which needs a real serial device.
-fn sorted_channel_ids(funnel: &HashMap<u8, u64>) -> Vec<u8> {
-    let mut ids: Vec<u8> = funnel.keys().copied().collect();
+fn sorted_channel_ids(funnel: &HashMap<u64, u8>) -> Vec<u8> {
+    let mut ids: Vec<u8> = funnel.values().copied().collect();
     ids.sort_unstable();
     ids
 }
@@ -168,7 +212,7 @@ pub fn force_close_serial(registry: &SerialPortRegistry, path: &str) -> Vec<Stri
     for (path, open) in retired {
         // Detach every client first so their writers stop being handed bytes, rather
         // than letting them discover the closure through a write error.
-        for client_id in open.funnel.values() {
+        for client_id in open.funnel.keys() {
             open.handle.detach_client(*client_id);
         }
         log::info!(
@@ -515,6 +559,25 @@ impl ProxyServer {
     /// Caller **must not** hold the registry lock — this method takes the lock
     /// itself to update the backing.
     fn alloc_funnel_channel(&mut self, path: &str, handle: &Arc<PortHandle>) -> anyhow::Result<u8> {
+        // One channel per (session, port), reused on re-open — the same contract direct
+        // already has, where a session holds at most one reference however many times it
+        // opens.
+        //
+        // Without this, every `serial.open` allocated a fresh channel *and* attached a
+        // fresh writer. The debug adapter re-opens its ports on each session start, so a
+        // developer's third session had the port fanning every byte out to three writers,
+        // two of them feeding views nobody was watching. It leaked on the client too:
+        // `ensureStreamServer` keys its TCP servers by `channel_id`, so a new id meant a
+        // new listener while the old one lingered.
+        //
+        // `serial.open` is documented as "open (or reconfigure if already open)", which
+        // reads as idempotent. Enforcing that here protects every caller rather than
+        // relying on each one to track what it already has.
+        if let Some(existing) = find_reusable_channel(&self.serial_funnel_write, path, handle) {
+            log::debug!("serial.open: reusing funnel channel {existing} for '{path}'");
+            return Ok(existing);
+        }
+
         let channel_id = self.next_stream_id;
         self.next_stream_id += 1;
 
@@ -547,7 +610,7 @@ impl ProxyServer {
             .entry(path.to_string())
             .or_insert_with(|| OpenPort::new(Arc::clone(handle)))
             .funnel
-            .insert(channel_id, client_id);
+            .insert(client_id, channel_id);
 
         Ok(channel_id)
     }
@@ -638,8 +701,10 @@ impl ProxyServer {
                         if let Some(handle) = weak.upgrade() {
                             handle.detach_client(client_id);
                         }
+                        // Remove by client id, never by stream id: another session may
+                        // be using the same stream id on this port.
+                        open.funnel.remove(&client_id);
                     }
-                    open.funnel.remove(stream_id);
                 }
                 if had_direct {
                     open.direct_refs = open.direct_refs.saturating_sub(1);
@@ -793,11 +858,11 @@ mod tests {
     /// phantom changes.
     #[test]
     fn channel_ids_are_reported_in_ascending_order() {
-        let mut funnel: HashMap<u8, u64> = HashMap::new();
+        let mut funnel: HashMap<u64, u8> = HashMap::new();
         // Inserted out of order, and stream ids are not contiguous: a port picks up
         // channels as clients arrive and lets them go as clients leave.
-        for (stream_id, client_id) in [(9u8, 40u64), (2, 10), (7, 30), (4, 20)] {
-            funnel.insert(stream_id, client_id);
+        for (client_id, stream_id) in [(40u64, 9u8), (10, 2), (30, 7), (20, 4)] {
+            funnel.insert(client_id, stream_id);
         }
 
         assert_eq!(sorted_channel_ids(&funnel), vec![2, 4, 7, 9]);
@@ -808,6 +873,128 @@ mod tests {
         // The direct-only case: a port can be open with a TCP bridge and zero funnel
         // channels, which must serialize as an empty list rather than being absent.
         assert!(sorted_channel_ids(&HashMap::new()).is_empty());
+    }
+
+    /// Two sessions on one port must each get an entry, even though their stream ids
+    /// collide.
+    ///
+    /// `next_stream_id` is per-session and starts at 3, so the first serial channel in
+    /// every session is id 3. Keying this map by stream id therefore let the second
+    /// session overwrite the first: the port reported one channel with two writers
+    /// attached, and closing either one emptied the map, made `is_idle()` true, and
+    /// closed the device under the session still using it. Client ids come from the
+    /// shared `PortHandle`, so they never collide.
+    #[test]
+    fn two_sessions_with_the_same_stream_id_each_get_an_entry() {
+        let mut funnel: HashMap<u64, u8> = HashMap::new();
+
+        // Session A: its first channel, stream id 3, client id 1.
+        funnel.insert(1, 3);
+        // Session B on the same port: also its first channel, so also stream id 3 —
+        // but a different client id, because PortHandle allocated it.
+        funnel.insert(2, 3);
+
+        assert_eq!(funnel.len(), 2, "both sessions must be represented");
+        assert!(!port_is_idle(0, &funnel));
+
+        // Session A closes: removal is by client id, so B survives.
+        funnel.remove(&1);
+        assert_eq!(funnel.len(), 1);
+        assert!(
+            !port_is_idle(0, &funnel),
+            "the port must stay open while session B is still attached"
+        );
+
+        // Reporting keeps duplicates so the count matches the id list.
+        funnel.insert(1, 3);
+        assert_eq!(sorted_channel_ids(&funnel), vec![3, 3]);
+    }
+
+    /// Re-opening the same port from the same session must hand back the channel it
+    /// already has.
+    ///
+    /// This is the bug that made `channels` and `clients` climb by one on every debug
+    /// session start: each `serial.open` allocated a channel *and* attached a writer,
+    /// so a port ended up fanning out to several sinks feeding views nobody watched.
+    #[test]
+    fn an_existing_channel_is_reused_for_the_same_port() {
+        // Stands in for Arc<PortHandle>; the predicate needs nothing from that type.
+        let handle = Arc::new("port-a".to_string());
+        let mut entries: HashMap<u8, (Weak<String>, u64, String)> = HashMap::new();
+        entries.insert(7, (Arc::downgrade(&handle), 100, "/dev/ttyUSB0".into()));
+
+        assert_eq!(
+            find_reusable_channel(&entries, "/dev/ttyUSB0", &handle),
+            Some(7)
+        );
+    }
+
+    /// A different port on the same session gets its own channel.
+    #[test]
+    fn a_different_path_does_not_reuse() {
+        let handle = Arc::new("port-a".to_string());
+        let mut entries: HashMap<u8, (Weak<String>, u64, String)> = HashMap::new();
+        entries.insert(7, (Arc::downgrade(&handle), 100, "/dev/ttyUSB0".into()));
+
+        assert_eq!(
+            find_reusable_channel(&entries, "/dev/ttyUSB1", &handle),
+            None
+        );
+    }
+
+    /// After a port dies and is re-opened the handle is a new instance. Matching on the
+    /// path alone would hand the client a channel whose writer was detached with the old
+    /// handle — a stream that never delivers a byte.
+    #[test]
+    fn a_reopened_port_does_not_reuse_the_old_channel() {
+        let old_handle = Arc::new("port-a".to_string());
+        let mut entries: HashMap<u8, (Weak<String>, u64, String)> = HashMap::new();
+        entries.insert(7, (Arc::downgrade(&old_handle), 100, "/dev/ttyUSB0".into()));
+
+        // Same path, same contents — but a different allocation, as after a reopen.
+        let new_handle = Arc::new("port-a".to_string());
+        assert_eq!(
+            find_reusable_channel(&entries, "/dev/ttyUSB0", &new_handle),
+            None,
+            "reuse must compare identity, not path or value"
+        );
+    }
+
+    /// A routing entry whose port is already gone must never be reused. The entries are
+    /// weak precisely so a closed port does not linger.
+    #[test]
+    fn a_dead_entry_does_not_reuse() {
+        let mut entries: HashMap<u8, (Weak<String>, u64, String)> = HashMap::new();
+        let handle = Arc::new("port-a".to_string());
+        {
+            let doomed = Arc::new("port-a".to_string());
+            entries.insert(7, (Arc::downgrade(&doomed), 100, "/dev/ttyUSB0".into()));
+        } // `doomed` drops here, so the weak reference no longer upgrades.
+
+        assert_eq!(
+            find_reusable_channel(&entries, "/dev/ttyUSB0", &handle),
+            None
+        );
+    }
+
+    /// `HashMap` iteration order is randomized per process, so a port that somehow holds
+    /// two matching channels must still answer the same way every time.
+    #[test]
+    fn reuse_is_deterministic_when_several_channels_match() {
+        let handle = Arc::new("port-a".to_string());
+        let mut entries: HashMap<u8, (Weak<String>, u64, String)> = HashMap::new();
+        for id in [9u8, 3, 6] {
+            entries.insert(
+                id,
+                (Arc::downgrade(&handle), id as u64, "/dev/ttyUSB0".into()),
+            );
+        }
+
+        assert_eq!(
+            find_reusable_channel(&entries, "/dev/ttyUSB0", &handle),
+            Some(3),
+            "the lowest channel id must win regardless of iteration order"
+        );
     }
 
     /// Force-close on an empty registry must be a benign no-op, not an error.
@@ -849,15 +1036,15 @@ mod tests {
     #[test]
     fn a_port_is_idle_only_when_both_kinds_of_client_are_gone() {
         let idle = port_is_idle;
-        let mut funnel: HashMap<u8, u64> = HashMap::new();
+        let mut funnel: HashMap<u64, u8> = HashMap::new();
 
         // Two sessions on direct, one on funnel.
         let mut direct_refs = 2usize;
-        funnel.insert(5, 100);
+        funnel.insert(100, 5);
         assert!(!idle(direct_refs, &funnel));
 
         // The funnel client leaves: direct sessions still hold the port.
-        funnel.remove(&5);
+        funnel.remove(&100);
         assert!(!idle(direct_refs, &funnel), "direct refs still outstanding");
 
         // One direct session closes. The bridge is shared, so it must survive.

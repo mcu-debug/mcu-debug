@@ -673,14 +673,20 @@ impl ProxyServer {
                     // Port died — remove from registry (drops the backing and fd),
                     // then notify the client so it can update its UI.
                     let removed = self.serial_registry.lock_recover().remove(&err.path);
-                    if let Some(open) = removed {
-                        // Drop the inbound routing for every channel on this port, not
-                        // just the most recent one — a stale entry would keep an
-                        // `Arc<PortHandle>` alive for a device that is already gone.
-                        for stream_id in open.funnel.keys() {
-                            self.serial_funnel_write.remove(stream_id);
-                        }
+                    // Drop *this session's* inbound routing for the dead port. Selected by
+                    // path rather than from the registry entry's channel list, because
+                    // stream ids are per-session: another session's id could collide with
+                    // one of ours and remove the wrong entry.
+                    let mine: Vec<u8> = self
+                        .serial_funnel_write
+                        .iter()
+                        .filter(|(_, (_, _, path))| *path == err.path)
+                        .map(|(stream_id, _)| *stream_id)
+                        .collect();
+                    for stream_id in mine {
+                        self.serial_funnel_write.remove(&stream_id);
                     }
+                    drop(removed);
                     // The port is gone, so this session no longer holds a direct
                     // reference to it. Leaving it set would make a later close look
                     // like it still had something to release.
