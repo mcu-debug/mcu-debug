@@ -77,6 +77,13 @@ On a shared lab server, each user runs their own proxy instance on a different p
 
 SSH tunneling adds latency to every GDB RSP packet. For typical embedded debugging this is negligible. For heavy use of memory read-intensive features (Live Watch, Memory View scanning), you may notice slower update rates compared to local debugging.
 
+## VS Code Port Forwarding
+
+VS Code automatically forwards the debug-adapter's internal ports back to your local machine and
+offers to open them in a browser. Opening a gdb port that way can abort the gdb-server. See
+[VS Code Port Forwarding](./index.md#vs-code-port-forwarding) for the `settings.json` snippet that
+turns this off — it applies to every remote topology, not just this one.
+
 ## Troubleshooting
 
 ### SSH connection refused

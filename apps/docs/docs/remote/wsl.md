@@ -77,6 +77,13 @@ When using the CLI from WSL without VS Code:
 
 The CLI auto-discovers the proxy via the WSL gateway address and starts the proxy server if not already started
 
+## VS Code Port Forwarding
+
+VS Code automatically forwards the debug-adapter's internal ports back to your local machine and
+offers to open them in a browser. Opening a gdb port that way can abort the gdb-server. See
+[VS Code Port Forwarding](./index.md#vs-code-port-forwarding) for the `settings.json` snippet that
+turns this off — it applies to every remote topology, not just this one.
+
 ## Troubleshooting
 
 ### USB device not accessible in Windows

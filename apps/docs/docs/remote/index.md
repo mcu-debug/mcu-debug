@@ -22,18 +22,20 @@ flowchart
      SRC["Source code<br>Compilers<br>launch.json"]
      MD["MCU Debug<br>Extension"]
      DA["Debug Adapter"]
+     PC["Proxy Client"]
      GDB["GDB"]
      VIEWS["Views (RTT, SWO, UART<br>Memory, RTOS, SVD)"]
   end
   SRC --> MD
   MD <--> DA
-  DA <--> GDB
-  DA --> VIEWS
+  DA <--> PC
+  PC <--> GDB
+  PC --> VIEWS
 
   subgraph PROXY["Probe Proxy"]
      direction TD
      MDP["MCU Debug<br>Proxy Extension"]
-     MDBG["MCU Debug Server"]
+     MDBG["MCU Debug<br>Proxy Server"]
      GDBS["Gdb server<br>(openocd, jlink)"]
      PROBE["Debug Probe<br>(STLink, KitProg3, JLink)"]
   end
@@ -41,12 +43,11 @@ flowchart
 
   MDP   --> MDBG
   MDBG  --> GDBS
-  GDBS <--> GDB
   GDBS <--> PROBE
   PROBE <--> MCU
   MDBG --> VIEWS
 
-  DA <--> MDBG
+  PC <--> MDBG
 ```
 
 ## Supported Topologies
@@ -170,6 +171,102 @@ mcu-debug runs a small **proxy agent** on the machine where the probe is physica
 - Handles GDB RSP and RTT traffic over the same tunnel
 
 The debug adapter (running in VS Code or the CLI) connects to the proxy rather than directly to the gdb-server. Everything else — GDB, RTT, UART, the launch.json configuration — works identically to local debugging.
+
+## VS Code Port Forwarding
+
+:::caution
+This affects **every** remote topology — WSL, Docker dev containers, and Remote-SSH. Configure it
+once and it applies to all of them.
+:::
+
+During a remote session the debug adapter opens listeners on the **workspace** side — one per
+gdb-server stream (gdb, tcl, telnet, SWO) plus one per serial view. GDB and the views connect to
+them from that same machine. Nothing outside needs them.
+
+VS Code's Remote extensions scan the remote for listening ports and automatically forward them
+back to your local machine, then offer to open them in a browser. That is exactly right for a web
+server, and wrong here:
+
+- **It can break a running session.** Opening a gdb port in a browser sends `GET / HTTP/1.1` into
+  the gdb-server's remote-serial-protocol parser. openocd may abort. The tcl and telnet ports are
+  command interfaces and will act on whatever they manage to parse.
+- **It exposes debug control.** A forwarded tcl or telnet port is full command access to the
+  gdb-server, reachable from the machine it is forwarded to.
+
+VS Code is not misbehaving. Forwarding loopback listeners *is* the feature — a dev server binds
+`127.0.0.1:3000` for safety and you still want it in your browser — and nothing in a TCP listener
+distinguishes "web server a human wants" from "debug endpoint that must stay put".
+
+### Recommended settings
+
+mcu-debug binds these listeners to `127.0.0.1` rather than to all interfaces, which is enough for
+VS Code to leave them alone in a Docker dev container. If you see the prompts anyway — WSL and
+Remote-SSH detect loopback listeners differently — add this to your **workspace or user
+`settings.json`** (the one on the workspace side — inside
+WSL, the container, or on the SSH host):
+
+```json
+{
+  "remote.portsAttributes": {
+    "2000-2099": {
+      "label": "mcu-debug: gdb-server ports",
+      "onAutoForward": "ignore"
+    },
+    "2200-2299": {
+      "label": "mcu-debug: RTT channels",
+      "onAutoForward": "ignore"
+    },
+    "2400-2499": {
+      "label": "mcu-debug: consoles",
+      "onAutoForward": "ignore"
+    }
+  }
+}
+```
+
+`onAutoForward: "ignore"` means *do not forward at all*. Use it rather than `"silent"`, which still
+forwards the port and only hides the notification.
+
+The first block is the one that matters for safety — those are the gdb, tcl and telnet ports. The
+other two only suppress noise.
+
+`2000-2099` is room for about 25 cores' worth of gdb-server ports, which is far more than the two
+or three probes a developer machine typically drives. Widen it if the prompts reappear: port
+allocation skips ports that are already in use, so unrelated programs occupying part of the range
+push our ports upward and eventually past the end of it.
+
+If you use a dev container, the same keys work in `.devcontainer/devcontainer.json`, without the
+`remote.` prefix:
+
+```json
+{
+  "portsAttributes": {
+    "2000-2099": { "onAutoForward": "ignore" }
+  }
+}
+```
+
+### Serial views use unpredictable ports
+
+Serial views bind an OS-assigned port rather than one from the ranges above, so no range can cover
+them. If the prompts bother you, or the remote is used only for embedded debugging, suppress
+everything not explicitly listed:
+
+```json
+{
+  "remote.otherPortsAttributes": { "onAutoForward": "ignore" }
+}
+```
+
+That also stops VS Code forwarding a web server you *do* want. If you need both, change how ports
+are discovered instead — this stops the scan for listening processes while still forwarding
+anything that prints a URL in the terminal:
+
+```json
+{
+  "remote.autoForwardPortsSource": "output"
+}
+```
 
 ## Prerequisites
 
