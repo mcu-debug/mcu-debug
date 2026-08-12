@@ -253,7 +253,10 @@ export class CliSessionDriver {
                     splitter.end();
                 });
             });
-            server.listen(port, () => {
+            // Loopback, explicitly -- matching `server-console.ts`, which is the frontend's
+            // equivalent of this console. `listen(port)` with no host binds 0.0.0.0 and would
+            // expose the gdb-server's stdio stream to the network.
+            server.listen(port, "127.0.0.1", () => {
                 this.serverConsole = server;
                 resolve();
             });

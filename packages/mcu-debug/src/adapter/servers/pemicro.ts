@@ -25,7 +25,7 @@ export class PEServerController extends EventEmitter implements GDBServerControl
     public connectCommands(): string[] {
         const gdbport = this.ports[createPortName(this.args.targetProcessor)].localPort;
 
-        return [`target-select extended-remote localhost:${gdbport}`];
+        return [`target-select extended-remote 127.0.0.1:${gdbport}`];
     }
 
     public launchCommands(): string[] {

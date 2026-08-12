@@ -287,10 +287,13 @@ impl ProxyServer {
             let child = match command.spawn() {
                 Ok(child) => child,
                 Err(e) => {
-                    eprintln!("Failed to launch gdb-server: {}", e);
-                    ControlResponse::error(msg.seq, format!("Failed to launch gdb-server: {}", e))
-                        .send(&self.writer)
-                        .ok();
+                    eprintln!("Failed to launch gdb-server: {}: {}", server_path, e);
+                    ControlResponse::error(
+                        msg.seq,
+                        format!("Failed to launch gdb-server: {}: {}", server_path, e),
+                    )
+                    .send(&self.writer)
+                    .ok();
                     self.exit = true;
                     return;
                 }

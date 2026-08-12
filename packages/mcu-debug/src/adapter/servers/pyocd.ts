@@ -25,7 +25,7 @@ export class PyOCDServerController extends EventEmitter implements GDBServerCont
         const gdbport = this.ports[createPortName(this.args.targetProcessor)].localPort;
 
         return [
-            `target-select extended-remote localhost:${gdbport}`,
+            `target-select extended-remote 127.0.0.1:${gdbport}`,
             // Following needed for SWO and accessing some peripherals.
             // Generally not a good thing to do
             'interpreter-exec console "set mem inaccessible-by-default off"',

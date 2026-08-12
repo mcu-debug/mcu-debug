@@ -760,7 +760,13 @@ export class RemoteServer {
                 this.proxyManager.logDebug(`Local server for stream ${this.pInfo.stream_id_str} is listening on port ${this.portDef.localPort}, forwarding to remote port ${this.pInfo.port}`);
                 this.proxyManager.emit("streamStarted", this.portDef);
             })
-            .listen(this.portDef.localPort);
+            // Loopback, explicitly. `listen(port)` with no host binds 0.0.0.0, which put the
+            // gdb-server's RSP, tcl and telnet endpoints on every interface -- tcl and telnet
+            // are full command channels, so that is remote control of the debug session to
+            // anything that can route here. Nothing legitimate needs them off-box: gdb runs on
+            // this machine by construction, and the far side is reached through the proxy's
+            // control socket, never through this listener.
+            .listen(this.portDef.localPort, "127.0.0.1");
     }
 
     private startStream(stream: RemoteStream, method: "startStream" | "duplicateStream" = "startStream"): Promise<boolean> {
