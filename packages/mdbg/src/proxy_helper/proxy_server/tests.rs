@@ -1,8 +1,8 @@
 use super::*;
+use crate::common::sync::MutexExt;
 use crate::serial::port::{
     FlowControl, Parity, SerialErrorKind, SerialParams, SerialTransport, StopBits,
 };
-use crate::common::sync::MutexExt;
 use crate::serial::AvailablePort;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::Mutex;

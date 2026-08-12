@@ -120,9 +120,9 @@ pub fn wait_for_ports(
             command.args(&args);
             crate::common::process::suppress_console_window(&mut command);
             let output = command.output().map_err(|e| {
-                    eprintln!("Failed to execute port waiter command '{}': {}", prog, e);
-                    e
-                });
+                eprintln!("Failed to execute port waiter command '{}': {}", prog, e);
+                e
+            });
             let output = match output {
                 Ok(output) => output,
                 Err(_) => break,

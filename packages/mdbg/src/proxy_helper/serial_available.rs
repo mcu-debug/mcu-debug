@@ -63,7 +63,10 @@ fn identity(p: &AvailablePort) -> PortIdentity<'_> {
 /// Do these two snapshots describe the same set of devices? Both sides are sorted
 /// by path before this is called.
 fn same_devices(a: &[AvailablePort], b: &[AvailablePort]) -> bool {
-    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| identity(x) == identity(y))
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| identity(x) == identity(y))
 }
 
 /// Merge a fresh reading over the stored one for a device we already knew about.
@@ -532,7 +535,11 @@ mod tests {
             st.ports = merged;
         }
 
-        assert_eq!(hub.state.lock_recover().revision, 7, "revision must not move");
+        assert_eq!(
+            hub.state.lock_recover().revision,
+            7,
+            "revision must not move"
+        );
         assert!(rx.try_recv().is_err(), "no subscriber may be woken");
         assert_eq!(
             hub.state.lock_recover().ports[0].description,

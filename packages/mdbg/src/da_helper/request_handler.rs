@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::da_helper::protocol::DisasmRequest;
-use crate::common::utils::CanonicalPath;
-/// Request parsing and dispatch for the main request loop.
-use crate::da_helper::helper_requests::*;
+//! Request parsing and dispatch for the main request loop.
+
 use crate::common::transport;
+use crate::common::utils::CanonicalPath;
 use crate::da_helper::elf_items::ObjectInfo;
+use crate::da_helper::helper_requests::*;
+use crate::da_helper::protocol::DisasmRequest;
 use serde_json::Value;
 use std::string;
 use std::sync::mpsc::Sender;

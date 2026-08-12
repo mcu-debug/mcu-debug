@@ -166,8 +166,13 @@ heavier than a Rust-only build. Reach for `npm run build:rust:dev`/`build:rust:p
 when you only touched Rust code.
 
 **How to apply:** When Rust structs change, prefer `npm run build:rust:dev` to regenerate and
-reformat the generated TS files in one step. If you instead run the underlying cargo tests
-directly for speed:
+reformat the generated TS files in one step. For tests, use **`npm run test:rust`** (not bare
+`cargo test`): it wraps the suite and runs the same prettier pass afterwards, so a test run
+never leaves whitespace-only churn behind. Note the print width is **120**, deliberately
+narrower than the project's 200 — formatting these files with the default collapses the
+generated type literals onto one line and *creates* drift rather than removing it.
+
+If you instead run the underlying cargo tests directly for speed:
 
 ```bash
   cd packages/mdbg && cargo test --lib da_helper::helper_requests::tests::ensure_ts_exports --quiet
@@ -186,6 +191,16 @@ There is no `npm run build:types` — an earlier version of this repo had one, b
 from a defunct Go-based codegen pipeline (`packages/proxy-server` + `tygo`) that no longer exists,
 and it silently reported success while doing nothing. It was removed; use `npm run build:rust:dev`
 for a Rust-only build instead.
+
+## Rust formatting
+
+`npm run fmt:rust` (`cargo fmt` over the whole crate) is safe and idempotent — the crate is
+fully formatted, so it will only ever touch what you changed. `npm run fmt:rust:check` reports
+without writing, and is what CI should use.
+
+Do **not** run `rustfmt <file>` on individual files. `rustfmt` follows `mod` declarations, so
+formatting `mod.rs` reformats every child module with it, quietly dragging unrelated files into
+your diff. Use `cargo fmt` instead.
 
 ## Rust linting (clippy)
 
