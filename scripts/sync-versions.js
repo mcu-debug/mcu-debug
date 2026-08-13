@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Edit VERSION here to update all packages in sync.
-const VERSION = "0.1.10";
+const VERSION = "0.1.11";
 
 const fs = require("fs");
 const path = require("path");
