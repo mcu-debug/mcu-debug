@@ -294,7 +294,11 @@ export interface HostConfig {
     type: "auto" | "ssh" | "local"; // "local" is internal/testing only, not exposed in package.json schema
     sshHost?: string; // Required when type === "ssh"
     sshProxyPort?: number; // SSH type, daemon mode: port the pre-running Probe Agent is listening on (connect-to-existing)
-    wslProxyPort?: number; // auto type, WSL NAT mode: fixed port for the agent to bind to (must be open in Windows Firewall)
+    /** Connect to a Probe Agent the user started themselves. When set, all topology
+     *  detection, launching and tunnelling is skipped — the DA dials host:port with
+     *  token. All three fields are required; see `definitions.js` for why. Not used for
+     *  the SSH topologies, which need their tunnel established first (see sshProxyPort). */
+    proxy?: { host: string; port: number; token: string };
     sshProxyServerPath?: string; // Path to a pre-installed mcu-debug on the remote host. When set, skips binary deployment entirely.
     token?: string; // Override for daemon-mode token; auto-managed when absent (do not commit to source control)
     syncFiles?: { local: string; remote?: string }[]; // List of files to sync (host-local path glob patterns and optional remote path)

@@ -101,11 +101,12 @@ VS Code IntelliSense provides inline documentation and autocompletion when editi
 
 ## Remote
 
-| Property          | Description                                                            |
-| ----------------- | ---------------------------------------------------------------------- |
-| `hostConfig`      | Remote host configuration — see [Remote Debugging](../remote/index.md) |
-| `hostConfig.type` | `"auto"`, `"wsl"`, `"docker"`, `"ssh"`                                 |
-| `hostConfig.host` | SSH hostname or alias (SSH mode only)                                  |
+| Property             | Description                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------- |
+| `hostConfig`         | Remote host configuration — see [Remote Debugging](../remote/index.md)                            |
+| `hostConfig.type`    | `"auto"` (detects WSL / Dev Container / Remote-SSH), `"ssh"``                                     |
+| `hostConfig.sshHost` | SSH hostname or alias, resolved via `~/.ssh/config` (`"ssh"` type only)                           |
+| `hostConfig.proxy`   | `{ host, port, token }` — connect to an agent you started yourself; skips detection and launching |
 
 ## Other
 

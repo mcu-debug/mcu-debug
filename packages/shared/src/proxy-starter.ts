@@ -78,9 +78,6 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
     if (proxyPolicy?.bindHost) {
         args.push("--host", proxyPolicy.bindHost);
     }
-    if (proxyPolicy?.fixedPort) {
-        args.push("--port", proxyPolicy.fixedPort.toString());
-    }
 
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
         const child = spawn("cmd.exe", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -352,7 +349,10 @@ export function startProxyServerWithPolicy(
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
         const messages: string[] = [];
         const errors: string[] = [];
-        const port = proxyPolicy!.fixedPort ?? 0; // 0 → OS-assigned; non-zero → fixed port (WSL NAT firewall scenario)
+        // Always OS-assigned. Pinning the port was only ever for a WSL-firewall corner
+        // case; that is now served by starting the agent yourself and pointing
+        // `hostConfig.proxy` at it, which needs no launch-side option.
+        const port = 0;
         let resolved = false;
         let ready = false;
 

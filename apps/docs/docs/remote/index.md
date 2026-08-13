@@ -88,6 +88,51 @@ For explicit SSH configuration:
 }
 ```
 
+## Connecting to an Agent You Started Yourself
+
+Every topology above detects your environment and launches the Probe Agent for you. When
+that is not what you want — a CLI-only container, a CI runner, a shared lab machine, or
+anywhere the agent's lifetime is managed outside the editor — name the endpoint directly
+and mcu-debug will skip detection entirely:
+
+```json
+"hostConfig": {
+  "enabled": true,
+  "proxy": {
+    "host": "172.28.240.1",
+    "port": 55555,
+    "token": "${env:MDBG_PROXY_TOKEN}"
+  }
+}
+```
+
+Start the agent yourself on the machine with the probe:
+
+```sh
+export MDBG_PROXY_TOKEN=$(openssl rand -hex 16)   # any value, as long as both ends agree
+mcu-debug proxy --host 172.28.240.1 --port 55555
+```
+
+`mcu-debug proxy --status` reports the `port` and the `hosts` it is bound to — use those
+values. The `host` must be an address the agent is actually bound to *and* that the debug
+adapter can reach; those are two different questions when a container or VM is involved.
+
+:::note
+**All three fields are required.** An endpoint without a token is rejected by the agent
+at connect time, which surfaces far from the mistake and is hard to diagnose, so
+mcu-debug reports the incomplete configuration up front instead. The one flexibility:
+the token may come from the `MDBG_PROXY_TOKEN` environment variable instead of
+`launch.json`, which is the recommended way — a token in `launch.json` is a shared secret
+committed to source control. The agent reads the same variable, so one export configures
+both ends.
+:::
+
+When `proxy` is set, `type` is ignored — you have told mcu-debug where the agent is, so
+there is nothing left to detect. This does **not** apply to the SSH topologies: `ssh`
+needs its `-L` tunnel established before any endpoint exists, and VS Code Remote-SSH
+needs its reverse tunnel. For a pre-running agent on a lab server over SSH, use
+`sshProxyPort` instead.
+
 ## Configuring the gdb-server for remote
 
 Some gdb servers require bare minimum configuration. Others like openocd may need quite a bit depending on your MCU

@@ -1297,12 +1297,32 @@
                     "maximum": 65535,
                     "description": "SSH type only — daemon mode. Port the Probe Agent is already listening on at the lab server. When set, the extension connects to the pre-running agent at this port rather than launching a new one. The SSH -L tunnel is established from a local OS-assigned port to this port. When omitted, the extension launches a new Probe Agent per debug session via SSH and reads the port from its Discovery JSON. Set this when the Probe Agent is started manually or managed by a system service on the probe host."
                   },
-                  "wslProxyPort": {
-                    "type": "number",
-                    "multipleOf": 1,
-                    "minimum": 1024,
-                    "maximum": 65535,
-                    "description": "auto type, WSL NAT mode only. Fixed port for the Probe Agent to bind to on the Windows host. Normally not needed: when the Probe Agent runs for the first time, Windows shows a Security Alert — clicking 'Allow access' creates an application-level inbound rule that permits the executable on any port. Set this only if that prompt was dismissed or blocked, or if group policy restricts inbound rules to specific ports. The extension starts the Probe Agent with --port <N> --host 0.0.0.0 so the WSL guest can reach it via the gateway IP. Not needed for WSL Mirrored mode (Windows 11) where loopback is shared. Ignored for all other auto sub-modes (local, Dev Container, Remote SSH)."
+                  "proxy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "host",
+                      "port",
+                      "token"
+                    ],
+                    "description": "Connect to a Probe Agent you started yourself, instead of detecting the topology and launching one. When present, no auto-detection, no launching, and no SSH tunnel: the extension connects directly to host:port with token. Use it for a CLI-only container, a CI runner, a shared lab machine, or any setup where the agent's lifetime is managed outside the editor. All three fields are required — an endpoint without a token is rejected at the agent, which surfaces much later and is hard to diagnose. Not for SSH topologies: 'ssh' needs its -L tunnel established first, and Remote-SSH needs its reverse tunnel, so use sshProxyPort for a pre-running agent there.",
+                    "properties": {
+                      "host": {
+                        "type": "string",
+                        "description": "Address the debug adapter should dial to reach the Probe Agent, from wherever the adapter runs. Examples: \"127.0.0.1\" for the same machine, \"host.docker.internal\" from a Docker Desktop container, or a WSL gateway / LAN address. Must be an address the agent is actually bound to — check with `mcu-debug proxy --status` and look at `hosts`."
+                      },
+                      "port": {
+                        "type": "number",
+                        "multipleOf": 1,
+                        "minimum": 1024,
+                        "maximum": 65535,
+                        "description": "Port the Probe Agent is listening on. Shown as `port` in `mcu-debug proxy --status`."
+                      },
+                      "token": {
+                        "type": "string",
+                        "description": "Authentication token the agent was started with. Prefer \"${env:MDBG_PROXY_TOKEN}\" over a literal — a token committed to source control is a shared secret in your repository. The agent reads the same MDBG_PROXY_TOKEN variable, so one export configures both ends."
+                      }
+                    }
                   },
                   "sshProxyServerPath": {
                     "type": "string",
@@ -2889,12 +2909,32 @@
                     "maximum": 65535,
                     "description": "SSH type only — daemon mode. Port the Probe Agent is already listening on at the lab server. When set, the extension connects to the pre-running agent at this port rather than launching a new one. The SSH -L tunnel is established from a local OS-assigned port to this port. When omitted, the extension launches a new Probe Agent per debug session via SSH and reads the port from its Discovery JSON. Set this when the Probe Agent is started manually or managed by a system service on the probe host."
                   },
-                  "wslProxyPort": {
-                    "type": "number",
-                    "multipleOf": 1,
-                    "minimum": 1024,
-                    "maximum": 65535,
-                    "description": "auto type, WSL NAT mode only. Fixed port for the Probe Agent to bind to on the Windows host. Normally not needed: when the Probe Agent runs for the first time, Windows shows a Security Alert — clicking 'Allow access' creates an application-level inbound rule that permits the executable on any port. Set this only if that prompt was dismissed or blocked, or if group policy restricts inbound rules to specific ports. The extension starts the Probe Agent with --port <N> --host 0.0.0.0 so the WSL guest can reach it via the gateway IP. Not needed for WSL Mirrored mode (Windows 11) where loopback is shared. Ignored for all other auto sub-modes (local, Dev Container, Remote SSH)."
+                  "proxy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "host",
+                      "port",
+                      "token"
+                    ],
+                    "description": "Connect to a Probe Agent you started yourself, instead of detecting the topology and launching one. When present, no auto-detection, no launching, and no SSH tunnel: the extension connects directly to host:port with token. Use it for a CLI-only container, a CI runner, a shared lab machine, or any setup where the agent's lifetime is managed outside the editor. All three fields are required — an endpoint without a token is rejected at the agent, which surfaces much later and is hard to diagnose. Not for SSH topologies: 'ssh' needs its -L tunnel established first, and Remote-SSH needs its reverse tunnel, so use sshProxyPort for a pre-running agent there.",
+                    "properties": {
+                      "host": {
+                        "type": "string",
+                        "description": "Address the debug adapter should dial to reach the Probe Agent, from wherever the adapter runs. Examples: \"127.0.0.1\" for the same machine, \"host.docker.internal\" from a Docker Desktop container, or a WSL gateway / LAN address. Must be an address the agent is actually bound to — check with `mcu-debug proxy --status` and look at `hosts`."
+                      },
+                      "port": {
+                        "type": "number",
+                        "multipleOf": 1,
+                        "minimum": 1024,
+                        "maximum": 65535,
+                        "description": "Port the Probe Agent is listening on. Shown as `port` in `mcu-debug proxy --status`."
+                      },
+                      "token": {
+                        "type": "string",
+                        "description": "Authentication token the agent was started with. Prefer \"${env:MDBG_PROXY_TOKEN}\" over a literal — a token committed to source control is a shared secret in your repository. The agent reads the same MDBG_PROXY_TOKEN variable, so one export configures both ends."
+                      }
+                    }
                   },
                   "sshProxyServerPath": {
                     "type": "string",

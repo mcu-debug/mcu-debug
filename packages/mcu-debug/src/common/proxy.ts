@@ -462,7 +462,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
 
 // Resolved hostConfigs cached per proxy request, keyed by the fields that
 // determine WHICH proxy a request resolves to (type, ssh host/port/token,
-// wslProxyPort, remote name). This replaces the single `currentHostConfig`
+// proxy override, remote name). This replaces the single `currentHostConfig`
 // global whose one slot short-circuited *every* getProxyForSerialPorts call to
 // whatever was resolved first — the bug that made local + remote serial ports
 // impossible at the same time. A changed request produces a different key →
@@ -476,7 +476,7 @@ function proxyRequestFingerprint(hc: HostConfig): string {
         sshProxyPort: hc.sshProxyPort ?? null,
         token: hc.token ?? null,
         sshProxyServerPath: hc.sshProxyServerPath ?? null,
-        wslProxyPort: hc.wslProxyPort ?? null,
+        proxy: hc.proxy ?? null,
         remoteName: getHostAdapter().getRemoteName() ?? null,
     });
 }
@@ -538,8 +538,97 @@ async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
     return promise;
 }
 
+/** Name of the environment variable both ends read for the shared token. */
+export const PROXY_TOKEN_ENV = "MDBG_PROXY_TOKEN";
+
+/**
+ * Expand a `${env:NAME}` reference. VS Code does this for launch.json before the DA
+ * ever sees it, but the CLI has no such preprocessing — so the same config text has to
+ * work in both, and this makes it so.
+ */
+function expandEnvRef(value: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+    const m = value?.match(/^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/);
+    return m ? env[m[1]] : value;
+}
+
+/**
+ * Validate and resolve `hostConfig.proxy` into a concrete endpoint.
+ *
+ * Pure and exported so the rules can be tested without a host adapter or a live proxy.
+ * Returns null when no override is configured. Throws when one is present but cannot be
+ * completed — a partial endpoint has nothing to fall back on, and every way of guessing
+ * fails late and obscurely (a connection timeout, or an auth rejection from the agent)
+ * rather than here, where the mistake actually is.
+ *
+ * The token may come from the config or from `MDBG_PROXY_TOKEN`. The environment is not
+ * a guess: the operator set it deliberately, and the agent reads the same variable — so
+ * one export configures both ends and keeps the secret out of source control. What is
+ * never assumed is the agent's *built-in* default token.
+ */
+export function resolveProxyOverride(
+    override: { host?: string; port?: number; token?: string } | undefined,
+    env: NodeJS.ProcessEnv = process.env,
+): { host: string; port: number; token: string } | null {
+    if (!override) {
+        return null;
+    }
+    const host = override.host?.trim();
+    const port = override.port;
+    const token = expandEnvRef(override.token, env)?.trim() || env[PROXY_TOKEN_ENV]?.trim();
+
+    const missing: string[] = [];
+    if (!host) {
+        missing.push("host");
+    }
+    if (port === undefined || port === null || !Number.isInteger(port) || port <= 0 || port > 65535) {
+        missing.push("port");
+    }
+    if (!token) {
+        missing.push(`token (or set ${PROXY_TOKEN_ENV})`);
+    }
+    if (missing.length > 0) {
+        throw new Error(
+            `hostConfig.proxy is incomplete: missing ${missing.join(", ")}. ` +
+                "All of host, port and token are required — they describe a Probe Agent you started yourself, " +
+                "so there is nothing to fall back on. Run `mcu-debug proxy --status` on the machine with the probe " +
+                "to read its port and its bound addresses.",
+        );
+    }
+    return { host: host as string, port: port as number, token: token as string };
+}
+
+/**
+ * Apply `hostConfig.proxy` to the `pvtProxy*` fields, short-circuiting all detection.
+ * Returns false when no override is configured.
+ */
+function applyProxyOverride(hostConfig: HostConfig): boolean {
+    let endpoint;
+    try {
+        endpoint = resolveProxyOverride(hostConfig.proxy);
+    } catch (e: any) {
+        getHostAdapter().showError(e.message);
+        throw e;
+    }
+    if (!endpoint) {
+        return false;
+    }
+    hostConfig.pvtNetworkMode = "override";
+    hostConfig.pvtProxyHost = endpoint.host;
+    hostConfig.pvtProxyPort = endpoint.port;
+    hostConfig.pvtProxyToken = endpoint.token;
+    hostConfig.pvtResolved = true;
+    getHostAdapter().debugMessage(`Using hostConfig.proxy override: ${endpoint.host}:${endpoint.port} (no detection, no launch)`);
+    return true;
+}
+
 export async function handleHostConfig(hostConfig: HostConfig | undefined, delConfig: () => void): Promise<void> {
     if (hostConfig && hostConfig.enabled) {
+        // Checked before `type`: the override says "I manage the agent", which makes the
+        // topology irrelevant. Requiring a meaningful `type` alongside it would be asking
+        // for information we have just been told not to use.
+        if (applyProxyOverride(hostConfig)) {
+            return;
+        }
         if (!hostConfig.type || typeof hostConfig.type !== "string" || !["local", "ssh", "auto"].includes(hostConfig.type)) {
             getHostAdapter().showWarning(
                 'hostConfig.type is required when hostConfig.enabled is true. Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).',
@@ -643,18 +732,14 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
 
             // Loopback here means either mirrored networking or a gateway lookup that
             // failed — in both cases there is nothing to open a firewall port for.
+            // NAT mode: the Proxy Agent binds the WSL gateway address, which is not
+            // loopback, so Windows Firewall blocks it until there is an inbound rule for
+            // the executable. Windows prompts on first run and "Allow access" creates an
+            // application-level rule that permits any port, so the OS-assigned port is
+            // fine. A fixed port is only useful where rules are managed by port instead —
+            // and that case is served by starting the agent yourself and pointing
+            // `hostConfig.proxy` at it, rather than by a launch option here.
             const isWslNatMode = resolvedMode === "auto-wsl" && resolvedProxyHost !== "127.0.0.1";
-            if (isWslNatMode) {
-                // NAT mode: the Proxy Agent binds the WSL gateway address. Windows Firewall
-                // will block OS-assigned ports UNLESS there is an application-level inbound
-                // rule for the helper executable (Windows prompts automatically on first run —
-                // clicking "Allow access" creates this rule). In that case any port works and
-                // wslProxyPort is not needed. It is only required on machines where the
-                // prompt was dismissed or group policy manages rules by port only.
-                if (hostConfig.wslProxyPort && hostConfig.wslProxyPort > 0) {
-                    policy.fixedPort = hostConfig.wslProxyPort;
-                }
-            }
 
             if (!hostConfig.pvtProxyBindHost) {
                 hostConfig.pvtProxyBindHost = policy.bindHost;
@@ -701,7 +786,8 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                         const msg =
                             `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${current.serverPort}. ` +
                             "Windows Firewall is still blocking the connection. " +
-                            "Set hostConfig.wslProxyPort to a port you have opened in Windows Firewall.";
+                            "Allow the mdbg executable through the firewall, or start the Probe Agent yourself " +
+                            "on a port you have opened and point hostConfig.proxy at it.";
                         getHostAdapter().showError(msg);
                         throw new Error(msg);
                     }

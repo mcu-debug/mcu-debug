@@ -77,8 +77,17 @@ pub struct ProxyArgs {
     #[arg(short = 'p', long = "port", default_value_t = 0)]
     pub port: u16,
 
-    /// Authentication token for client connections
-    #[arg(short = 't', long = "token", default_value = "adis-ababa")]
+    /// Authentication token for client connections.
+    ///
+    /// `MDBG_PROXY_TOKEN` lets an operator set this without putting the secret on a
+    /// command line (visible in `ps`) or in a `launch.json` under source control. The
+    /// client reads the same variable, so one export configures both ends.
+    #[arg(
+        short = 't',
+        long = "token",
+        env = "MDBG_PROXY_TOKEN",
+        default_value = "adis-ababa"
+    )]
     pub token: String,
 
     /// If true, do not include the token in the discovery JSON output (for security through obscurity)

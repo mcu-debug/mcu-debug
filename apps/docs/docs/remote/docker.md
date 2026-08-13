@@ -10,11 +10,11 @@ Debugging from a Docker dev container when the debug probe is connected to the D
 :::note
 We tested the debugger from within VSCode as a normal debugging session and it works. We also tested it from the CLI but only using the builtin VSCode terminals and our own **MCU Debug->AI Cockpit"** panel. We have not tested it from outside VSCode environment yet and is likely going to need some enhancements to our extensions.
 
-Two things depend on VS Code specifically, so a container with no VS Code in it will need
-work: the host-side proxy is started through a VS Code command on the host, and there is no
-`launch.json` option yet for pointing at a proxy you started yourself. If you want to try it
-anyway, start the proxy manually as described in
-[Starting the Host Proxy](#starting-the-host-proxy).
+One thing still depends on VS Code: the host-side proxy is normally started through a VS
+Code command on the host. A container with no VS Code in it must start the agent itself
+and name the endpoint — see
+[Connecting to an Agent You Started Yourself](./index.md#connecting-to-an-agent-you-started-yourself).
+That path needs no VS Code at either end, but we have not tested it yet.
 :::
 
 ## How It Works
@@ -89,6 +89,11 @@ mcu-debug proxy --host <host-bridge-address>
 Running `mcu-debug proxy` again with a different `--host` does not start a second proxy; it asks
 the running one to also listen on that address, leaving existing sessions untouched. The reply
 lists every address it ended up bound to.
+
+If nothing on the container side can start the agent for you — a CLI-only container or a CI
+runner — point `launch.json` at the endpoint directly with
+[`hostConfig.proxy`](./index.md#connecting-to-an-agent-you-started-yourself), which skips
+detection and launching entirely.
 
 :::note
 The address the container **dials** and the address the host proxy **binds** are two different
