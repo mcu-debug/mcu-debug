@@ -130,9 +130,13 @@ turns this off — it applies to every remote topology, not just this one.
 
 ### Cannot connect to proxy
 
-- On the host, verify `mcu-debug proxy --status` shows it running, and note both the `port` and
-  the `hosts` list. If `hosts` is only `127.0.0.1`, the container cannot reach it — see
-  [Starting it yourself](#starting-it-yourself).
+- On the host, verify `mcu-debug proxy --status` shows it running, and note the `port`.
+  On **Docker Desktop**, `"hosts": ["127.0.0.1"]` is expected and fine — its networking
+  terminates on the host's loopback, so a loopback-only proxy is reachable from the
+  container. Only on **native Linux Docker** does the container arrive at the host's bridge
+  address instead, and need it bound — see [Starting it yourself](#starting-it-yourself).
+  (WSL NAT is a different topology and *does* require a non-loopback bind; see
+  [WSL](./wsl.md).)
 - From the container, check the name resolves *and* the port answers. `ping` only proves the
   first, and many slim images have no `ping` at all:
 
