@@ -121,6 +121,18 @@ export class CLIConfigLoader {
         return substitutedConfig;
     }
 
+    private printConfigs(configurations: any[], args: ConfigLoaderArgs): void {
+        configurations = configurations.filter((c: any) => c.type === "mcu-debug");
+        if (configurations.length === 0) {
+            this.logger.info(`No configurations of type "mcu-debug" found in ${args.json}`);
+            return;
+        }
+        this.logger.info(`Available 'mcu-debug' configurations in ${args.json}:`);
+        configurations.forEach((config: any, index: number) => {
+            this.logger.info(`  [${index}] ${config.name}`);
+        });
+    }
+
     private selectConfiguration(configurations: any[], args: ConfigLoaderArgs): any | undefined {
         // Look for a configuration with a name that exactly matches the provided config argument. Case-sensitive match first since that's more intuitive and most users will expect it to be case-sensitive. If that fails, we'll try a case-insensitive match before giving up.
         let selectedConfig = configurations.find((c: any) => c.name === args.config);
@@ -153,6 +165,7 @@ export class CLIConfigLoader {
             return selectedConfig;
         } else if (globMatches.length > 1) {
             this.logger.error(`Multiple configurations match the glob pattern "${args.config}" in ${args.json}. Please specify a more specific name or index.`);
+            this.printConfigs(configurations, args);
             process.exit(1);
         } else {
             this.logger.error(`Configuration with name "${args.config}" not found in ${args.json}`);
@@ -161,12 +174,8 @@ export class CLIConfigLoader {
         // Lets prompt to get configuration. First llist all available configurations in the log so the user knows
         // what they are. We could also consider implementing an interactive prompt to select the configuration, but
         // for now we'll just log the available configurations and ask the user to specify one using the --config argument.
-        let ix = 0;
-        this.logger.info(`Available 'mcu-debug' configurations in ${args.json}:`);
-        for (const config of configurations) {
-            this.logger.info(`  [${ix}] ${config.name}`);
-            ix++;
-        }
+        this.printConfigs(configurations, args);
+
         // If stdin is a TTY or TUI, maybe we should promppt the user to select a configuration instead of just giving up?
         // For now, we'll just give up since implementing a prompt is a bit more work and we want to get this out. We can
         // always add a prompt later if users want it. We also don't know if we are in a TUI
@@ -207,7 +216,7 @@ export class CLIConfigLoader {
             const unsubstitutedVars = substitutedContent.match(varRegex);
             if (unsubstitutedVars) {
                 const uniqueVars = Array.from(new Set(unsubstitutedVars));
-                this.logger.warn(`The following variables in ${fileName} were not substituted. This may indicate a mistake in the launch.json if these variables were intended to be substituted at this stage. If these variables are intended to be substituted later by the debug adapter or by the user during the debug session, then you can ignore this warning. Unsubstituted variables: ${uniqueVars.join(", ")}`);
+                this.logger.warn(`The following variables in configuration '${config.name}' from '${fileName}' were not substituted. This may indicate a mistake in the launch.json if these variables were intended to be substituted at this stage. If these variables are intended to be substituted later by the debug adapter or by the user during the debug session, then you can ignore this warning. Unsubstituted variables: ${uniqueVars.join(", ")}`);
             }
             return config;
         } catch (error) {

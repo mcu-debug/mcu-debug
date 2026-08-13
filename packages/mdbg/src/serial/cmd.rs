@@ -29,6 +29,10 @@ pub struct SerialArgs {
     #[arg(long, global = true)]
     pub all: bool,
 
+    /// Print in json format for machine parsing for 'list' command
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: SerialCommand,
 }
@@ -123,16 +127,21 @@ fn emit_status(status: &ServeStatus) {
 
 pub fn run(args: SerialArgs) -> Result<()> {
     let filter = !args.all;
+    let format: bool = args.json;
     match args.command {
-        SerialCommand::List => run_list(filter),
+        SerialCommand::List => run_list(filter, format),
         SerialCommand::Serve(serve) => run_serve(serve, filter),
     }
 }
 
-fn run_list(filter: bool) -> Result<()> {
+fn run_list(filter: bool, is_json: bool) -> Result<()> {
     let ports = list_available(filter);
     if ports.is_empty() {
-        println!("No serial ports found.");
+        if is_json {
+            println!("[]");
+        } else {
+            println!("No serial ports found.");
+        }
         return Ok(());
     }
 
@@ -144,25 +153,40 @@ fn run_list(filter: bool) -> Result<()> {
         .unwrap_or(11)
         .max(11);
 
-    println!(
-        "{:<path_w$}  {:<desc_w$}  VID    PID    SERIAL",
-        "PATH",
-        "DESCRIPTION",
-        path_w = path_w,
-        desc_w = desc_w,
-    );
-    println!("{}", "-".repeat(path_w + desc_w + 30));
-    for p in &ports {
+    if !is_json {
         println!(
-            "{:<path_w$}  {:<desc_w$}  {:5}  {:5}  {}",
-            p.path,
-            p.description,
-            p.vid.map(|v| format!("{:04x}", v)).unwrap_or_default(),
-            p.pid.map(|v| format!("{:04x}", v)).unwrap_or_default(),
-            p.serial.as_deref().unwrap_or(""),
+            "{:<path_w$}  {:<desc_w$}  VID    PID    SERIAL",
+            "PATH",
+            "DESCRIPTION",
             path_w = path_w,
             desc_w = desc_w,
         );
+        println!("{}", "-".repeat(path_w + desc_w + 30));
+        for p in &ports {
+            println!(
+                "{:<path_w$}  {:<desc_w$}  {:5}  {:5}  {}",
+                p.path,
+                p.description,
+                p.vid.map(|v| format!("{:04x}", v)).unwrap_or_default(),
+                p.pid.map(|v| format!("{:04x}", v)).unwrap_or_default(),
+                p.serial.as_deref().unwrap_or(""),
+                path_w = path_w,
+                desc_w = desc_w,
+            );
+        }
+    } else {
+        println!("[");
+        for p in &ports {
+            let j = serde_json::json!({
+                "path": p.path,
+                "vid": p.vid.map(|v| format!("{:04x}", v)),
+                "pid": p.pid.map(|v| format!("{:04x}", v)),
+                "serial": p.serial.as_deref().unwrap_or(""),
+                "description": p.description,
+            });
+            println!("  {}", serde_json::to_string(&j).unwrap());
+        }
+        println!("]");
     }
     Ok(())
 }
