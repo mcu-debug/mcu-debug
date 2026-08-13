@@ -13,9 +13,7 @@
 // limitations under the License.
 
 import * as vscode from "vscode";
-import * as path from "path";
-import { getNonce } from "../../adapter/servers/common";
-import type { FromUi } from "@mcu-debug/shared";
+import { generateNonce, type FromUi } from "@mcu-debug/shared";
 import { ManagedTab, type CockpitPanelSink } from "./ManagedTab";
 
 /**
@@ -227,7 +225,7 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         const resetIconUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, "images", "reset.svg"),
         );
-        const nonce = getNonce();
+        const nonce = generateNonce();
 
         return /* html */ `<!DOCTYPE html>
 <html lang="en">

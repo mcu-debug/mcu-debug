@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use std::io;
 use std::net::TcpStream;
 
-use crate::proxy_helper::run::PortWaitMode;
 use crate::serial::port::{PortErrorEvent, SerialErrorKind, SerialParams};
 use crate::serial::AvailablePort;
 
@@ -41,7 +40,7 @@ pub enum SessionThreadRole {
     GdbStderr,
     /// Waits for a gdb-server port to open, then forwards it.
     PortWaiter,
-    /// Monitors gdb-server ports (`PortWaitMode::Monitor`).
+    /// Watches gdb-server ports for readiness.
     PortMonitor,
     /// Forwards fatal serial-port errors into the event loop.
     SerialErrorForwarder,
@@ -115,17 +114,11 @@ pub enum ProxyEvent {
     /// The port should be removed from the registry and the client notified.
     SerialPortError(PortErrorEvent),
     /// Full-snapshot update of available serial ports.
-    SerialAvailableChanged {
-        revision: u64,
-        ports: Vec<AvailablePort>,
-    },
+    SerialAvailableChanged { revision: u64, ports: Vec<AvailablePort> },
     /// A session-owned background thread exited — returned, errored, or panicked.
     /// Emitted by `spawn_session_thread` so the loop always learns of the death
     /// (even on panic) and can end the session for fatal roles or note the rest.
-    SessionThreadExited {
-        role: SessionThreadRole,
-        panicked: bool,
-    },
+    SessionThreadExited { role: SessionThreadRole, panicked: bool },
 }
 
 // ── Misc shared types ─────────────────────────────────────────────────────────
@@ -205,8 +198,6 @@ pub enum ControlRequest {
         workspace_uid: String,
         /** Unique identifier for the session */
         session_uid: String,
-        /** Port wait mode for this session */
-        port_wait_mode: Option<PortWaitMode>,
     },
 
     #[serde(rename = "allocatePorts")]
@@ -241,10 +232,7 @@ pub enum ControlRequest {
     Heartbeat,
 
     #[serde(rename = "syncFile")]
-    SyncFile {
-        relative_path: String,
-        content: Vec<u8>,
-    },
+    SyncFile { relative_path: String, content: Vec<u8> },
 
     /// Open (or reconfigure) a serial port. The `transport` field in `SerialParams`
     /// selects `direct` (TCP bridge) or `funnel` (multiplexed on this connection).
@@ -478,10 +466,7 @@ pub enum ProxyServerEvents {
 
     /// Debounced full snapshot of currently available serial ports.
     #[serde(rename = "serial.availableChanged")]
-    SerialAvailableChanged {
-        revision: u64,
-        ports: Vec<AvailablePort>,
-    },
+    SerialAvailableChanged { revision: u64, ports: Vec<AvailablePort> },
 }
 
 impl ProxyServerEvents {

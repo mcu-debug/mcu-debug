@@ -762,6 +762,7 @@ dependencies = [
  "dunce",
  "fd-lock",
  "flexi_logger",
+ "getrandom 0.2.17",
  "gimli",
  "libc",
  "log",

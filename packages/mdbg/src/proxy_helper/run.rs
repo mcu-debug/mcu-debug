@@ -18,10 +18,7 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
-use clap::ValueEnum;
 use flexi_logger::{Age, Cleanup, Criterion, Duplicate, FileSpec, Logger, LoggerHandle, Naming};
-use serde::Deserialize;
-use serde::Serialize;
 use std::{
     backtrace::Backtrace,
     net::{Ipv4Addr, TcpListener},
@@ -39,22 +36,8 @@ use crate::proxy_helper::admin::{self, AdminContext};
 use crate::proxy_helper::lifetime::Lifetime;
 use crate::proxy_helper::listeners;
 use crate::proxy_helper::proxy_server::SerialPortRegistry;
-use crate::proxy_helper::serial_available::{
-    start_serial_available_watcher, SerialAvailabilityHub,
-};
+use crate::proxy_helper::serial_available::{start_serial_available_watcher, SerialAvailabilityHub};
 use crate::proxy_helper::singleton;
-
-#[derive(Clone, Copy, Debug, ValueEnum, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "proxy-protocol/")]
-#[serde(rename_all = "camelCase")]
-pub enum PortWaitMode {
-    /// Existing behavior: proactively connect and keep forwarding stream open.
-    ConnectHold,
-    /// Probe with a connect attempt but do not hold the stream open.
-    ConnectProbe,
-    /// Non-invasive monitor mode (lsof/netstat) that reports readiness.
-    Monitor,
-}
 
 // Clone so an accept loop can stamp out a per-connection copy from a template
 // instead of rebuilding it field by field (which silently drifts when a field is
@@ -79,28 +62,20 @@ pub struct ProxyArgs {
 
     /// Authentication token for client connections.
     ///
+    /// Omit it and a fresh random one is generated for this proxy and reported in the
+    /// discovery line. There is deliberately **no fixed default**: a constant compiled
+    /// into a public repository is a shared secret everybody already knows, and the
+    /// proxy can now bind addresses reachable from off-box.
+    ///
     /// `MDBG_PROXY_TOKEN` lets an operator set this without putting the secret on a
     /// command line (visible in `ps`) or in a `launch.json` under source control. The
     /// client reads the same variable, so one export configures both ends.
-    #[arg(
-        short = 't',
-        long = "token",
-        env = "MDBG_PROXY_TOKEN",
-        default_value = "adis-ababa"
-    )]
-    pub token: String,
-
-    /// If true, do not include the token in the discovery JSON output (for security through obscurity)
-    #[arg(long = "no-token", default_value_t = false)]
-    pub no_token: bool,
+    #[arg(short = 't', long = "token", env = "MDBG_PROXY_TOKEN")]
+    pub token: Option<String>,
 
     /// Enable debug output
     #[arg(short = 'd', long = "debug", default_value_t = false)]
     pub debug: bool,
-
-    /// Strategy to detect stream-port readiness
-    #[arg(long = "port-wait-mode", value_enum, default_value_t = PortWaitMode::Monitor)]
-    pub port_wait_mode: PortWaitMode,
 
     /// Also emit log lines to stderr (file logging is always enabled)
     #[arg(long = "log-stderr", default_value_t = false)]
@@ -120,11 +95,7 @@ pub struct ProxyArgs {
     /// Singleton instance name. One proxy runs per (user, instance); a distinct
     /// name (e.g. `dev`) runs an isolated proxy that never collides with the
     /// default one — handy when debugging `mdbg` itself.
-    #[arg(
-        long = "instance",
-        env = "MDBG_PROXY_INSTANCE",
-        default_value = "default"
-    )]
+    #[arg(long = "instance", env = "MDBG_PROXY_INSTANCE", default_value = "default")]
     pub instance: String,
 
     /// Seconds with no active session (and no `--heartbeat` window keep-alive)
@@ -164,6 +135,43 @@ pub struct ProxyArgs {
     pub daemonized: bool,
 }
 
+/// Shortest token we accept from an operator.
+///
+/// Not arbitrary: this token is the only thing standing between a proxy and anyone who
+/// can reach it, and the proxy can now bind addresses that are reachable from off-box.
+/// Sixteen characters is also what the extension's own generator produces, so the floor
+/// costs nothing in the automated path.
+const MIN_TOKEN_LEN: usize = 16;
+
+/// 128 bits from the OS CSPRNG, hex-encoded.
+fn generate_token() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| anyhow::anyhow!("could not read OS entropy to generate a token: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The token this proxy will accept: whatever was supplied, or a freshly minted one.
+///
+/// There is no fixed fallback. A constant compiled into a public repository is a secret
+/// everybody already has, and it would be silently reused by every hand-started daemon —
+/// exactly the lab-server case where the proxy is most likely to be reachable from
+/// somewhere other than loopback.
+fn resolve_token(supplied: Option<&str>) -> Result<String> {
+    let Some(token) = supplied else {
+        return generate_token();
+    };
+    let token = token.trim();
+    if token.chars().count() < MIN_TOKEN_LEN {
+        anyhow::bail!(
+            "--token must be at least {MIN_TOKEN_LEN} characters (got {}). \
+             Omit it entirely to have one generated, or set MDBG_PROXY_TOKEN.",
+            token.chars().count()
+        );
+    }
+    Ok(token.to_string())
+}
+
 fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
     let log_dir = args
         .log_dir
@@ -192,11 +200,7 @@ fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
             .discriminant(launch_id)
             .suffix("log"),
     )
-    .rotate(
-        Criterion::Age(Age::Day),
-        Naming::Timestamps,
-        Cleanup::KeepLogFiles(14),
-    )
+    .rotate(Criterion::Age(Age::Day), Naming::Timestamps, Cleanup::KeepLogFiles(14))
     .duplicate_to_stderr(if args.log_stderr {
         Duplicate::All
     } else {
@@ -206,10 +210,7 @@ fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
     match logger.start() {
         Ok(handle) => Some(handle),
         Err(e) => {
-            eprintln!(
-                "Logger initialization failed, continuing without file logger: {}",
-                e
-            );
+            eprintln!("Logger initialization failed, continuing without file logger: {}", e);
             None
         }
     }
@@ -545,10 +546,7 @@ fn shutdown_all() -> Result<()> {
 /// Never fatal. A proxy we could not widen is still a proxy the caller can use on
 /// loopback, and only the caller knows whether the missing address was the point —
 /// so the outcome is reported rather than acted on here.
-fn widen_running_proxy(
-    ep: &singleton::Endpoint,
-    args: &ProxyArgs,
-) -> (Vec<String>, Vec<singleton::BindError>) {
+fn widen_running_proxy(ep: &singleton::Endpoint, args: &ProxyArgs) -> (Vec<String>, Vec<singleton::BindError>) {
     let known = ep.host_list();
     let Some(requested) = args.host.as_deref() else {
         return (known, Vec::new()); // nothing asked for; leave the daemon alone
@@ -580,14 +578,7 @@ fn widen_running_proxy(
         host: host.to_string(),
     };
     match admin::query(ep, &req) {
-        Ok(resp) if resp.ok => (
-            if resp.hosts.is_empty() {
-                known
-            } else {
-                resp.hosts
-            },
-            Vec::new(),
-        ),
+        Ok(resp) if resp.ok => (if resp.hosts.is_empty() { known } else { resp.hosts }, Vec::new()),
         Ok(resp) => fail(resp.error.unwrap_or_else(|| "widen refused".to_string())),
         Err(e) => fail(format!("proxy not reachable ({e:#})")),
     }
@@ -615,11 +606,8 @@ fn acquire_or_reuse<'a>(
 
     if held_by_other {
         let ep = singleton::read_endpoint_retry(&instance.endpoint_path)?;
-        let token = if args.no_token {
-            None
-        } else {
-            Some(ep.token.as_str())
-        };
+        // The running proxy's token, so a reusing client can authenticate to it.
+        let token = Some(ep.token.as_str());
 
         if !singleton::is_newer(mine, &ep.version) {
             // Same or older → reuse the running proxy.
@@ -701,23 +689,16 @@ fn run_foreground_launcher(args: &ProxyArgs) -> Result<()> {
     }
     cmd.arg("--port")
         .arg(args.port.to_string())
-        .arg("--token")
-        .arg(&args.token)
         .arg("--instance")
         .arg(&args.instance)
         .arg("--idle-timeout")
         .arg(args.idle_timeout.to_string())
-        .arg("--port-wait-mode")
-        .arg(
-            args.port_wait_mode
-                .to_possible_value()
-                .expect("port-wait-mode has a value name")
-                .get_name(),
-        )
         // The marker that tells the child it IS the daemon (don't re-launch).
         .arg("--daemonized");
-    if args.no_token {
-        cmd.arg("--no-token");
+    // Forward the resolved token so the daemon uses the same one this process settled
+    // on -- including a freshly generated one, which the child could not reproduce.
+    if let Some(token) = &args.token {
+        cmd.arg("--token").arg(token);
     }
     if args.debug {
         cmd.arg("--debug");
@@ -745,9 +726,7 @@ fn run_foreground_launcher(args: &ProxyArgs) -> Result<()> {
     let (tx, rx) = mpsc::channel::<std::io::Result<String>>();
     thread::spawn(move || {
         let mut line = String::new();
-        let res = std::io::BufReader::new(stdout)
-            .read_line(&mut line)
-            .map(|_| line);
+        let res = std::io::BufReader::new(stdout).read_line(&mut line).map(|_| line);
         let _ = tx.send(res);
     });
 
@@ -796,7 +775,14 @@ fn detach_process(cmd: &mut std::process::Command) {
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
 }
 
-pub fn run(args: ProxyArgs) -> Result<()> {
+pub fn run(mut args: ProxyArgs) -> Result<()> {
+    // Resolve the token before anything else, so every later reader sees a concrete
+    // value and the failure for a too-short one lands on the command line rather than
+    // as a rejected connection later. The launcher resolves it too, then forwards the
+    // result, so the daemon it spawns uses the same token rather than minting a second.
+    args.token = Some(resolve_token(args.token.as_deref())?);
+    let token = args.token.clone().expect("token resolved on the line above");
+
     // Client modes: query/command a running proxy and exit — do not start one.
     // Kept lightweight: no daemon logging setup.
     if args.status || args.shutdown || args.close_serial.is_some() {
@@ -903,7 +889,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
             primary.to_string()
         },
         hosts: bound_hosts.clone(),
-        token: args.token.clone(),
+        token: token.clone(),
         state: "active".to_string(),
         started_at_unix: singleton::Endpoint::now_unix(),
     };
@@ -935,13 +921,12 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     // here and cloned (Arc) into each connection's ProxyServer. It is created before
     // the admin context because admin reports on it (`--status`) and force-closes
     // through it (`--close-serial`).
-    let serial_registry: SerialPortRegistry =
-        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let serial_registry: SerialPortRegistry = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     // Shared context for admin (`--status` / `--shutdown` / `upgrade` /
     // `--close-serial`) connections.
     let admin_ctx = Arc::new(AdminContext {
-        token: args.token.clone(),
+        token: token.clone(),
         lifetime: Arc::clone(&lifetime),
         draining: Arc::clone(&draining),
         superseded: Arc::clone(&superseded),
@@ -1005,15 +990,11 @@ pub fn run(args: ProxyArgs) -> Result<()> {
         let idle_timeout = args.idle_timeout;
         thread::spawn(move || {
             lifetime_monitor.wait_until_idle(idle);
-            log::info!(
-                "Idle for {}s with no active sessions — shutting down",
-                idle_timeout
-            );
+            log::info!("Idle for {}s with no active sessions — shutting down", idle_timeout);
             trigger_graceful_shutdown(&stop_flag_monitor, &accept_set_monitor);
         });
     }
 
-    log::info!("Port wait mode: {:?}", args.port_wait_mode);
     log::info!(
         "Proxy helper startup: pid={}, host={}, port={}, log_stderr={}, stdin_watchdog={}",
         std::process::id(),
@@ -1028,11 +1009,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     singleton::print_discovery(
         local_port,
         std::process::id(),
-        if args.no_token {
-            None
-        } else {
-            Some(args.token.as_str())
-        },
+        Some(token.as_str()),
         &bound_hosts,
         std::mem::take(&mut bind_errors),
     );
@@ -1040,8 +1017,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
     log::info!("Probe Agent listening on port {}", local_port);
 
     let serial_available_hub = Arc::new(SerialAvailabilityHub::new());
-    let serial_available_watcher_stop =
-        start_serial_available_watcher(Arc::clone(&serial_available_hub));
+    let serial_available_watcher_stop = start_serial_available_watcher(Arc::clone(&serial_available_hub));
 
     // Everything a connection needs, independent of which address it arrived on.
     // Held by every accept loop, so widening later adds a listener without having to
@@ -1095,10 +1071,7 @@ pub fn run(args: ProxyArgs) -> Result<()> {
 
     // Wait for all client handler threads so their ProxyServer instances are fully dropped
     // (killing any still-running gdb-server/openocd children) before we return.
-    log::info!(
-        "Waiting for {} client thread(s) to finish",
-        client_threads.len()
-    );
+    log::info!("Waiting for {} client thread(s) to finish", client_threads.len());
     for handle in client_threads {
         handle.join().ok();
     }
@@ -1119,18 +1092,69 @@ pub fn run(args: ProxyArgs) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Omitting `--token` must mint a fresh secret, never fall back to a constant.
+    ///
+    /// A default compiled into a public repository is a secret everybody already has,
+    /// and it would be reused by every hand-started daemon — precisely the lab-server
+    /// case where the proxy is most likely bound somewhere other than loopback.
+    #[test]
+    fn an_omitted_token_is_generated_and_unpredictable() {
+        let a = resolve_token(None).expect("generation must succeed");
+        let b = resolve_token(None).expect("generation must succeed");
+
+        assert!(
+            a.chars().count() >= MIN_TOKEN_LEN,
+            "generated token is long enough: {a}"
+        );
+        assert_ne!(a, b, "each proxy must get its own token");
+        assert!(
+            a.chars().all(|c| c.is_ascii_alphanumeric()),
+            "safe to pass as an argument: {a}"
+        );
+    }
+
+    /// A short token is refused at startup, where the operator can see it, rather than
+    /// becoming a connection that is rejected much later for reasons that look unrelated.
+    #[test]
+    fn a_short_token_is_refused_with_a_useful_message() {
+        let err = resolve_token(Some("hunter2")).expect_err("must be refused");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains(&MIN_TOKEN_LEN.to_string()),
+            "states the requirement: {msg}"
+        );
+        assert!(msg.contains("MDBG_PROXY_TOKEN"), "points at the alternative: {msg}");
+    }
+
+    /// Whitespace is not length. A padded short token is still a short token.
+    #[test]
+    fn a_token_is_trimmed_before_it_is_measured() {
+        assert!(resolve_token(Some("   short   ")).is_err());
+
+        let ok = resolve_token(Some("  0123456789abcdef  ")).expect("long enough once trimmed");
+        assert_eq!(ok, "0123456789abcdef", "stored without the padding");
+    }
+
+    /// Exactly at the boundary is acceptable -- and is what the extension generates, so
+    /// tightening this further would break the automated path.
+    #[test]
+    fn a_token_of_exactly_the_minimum_length_is_accepted() {
+        let token = "a".repeat(MIN_TOKEN_LEN);
+
+        assert_eq!(resolve_token(Some(&token)).expect("accepted"), token);
+    }
+
     #[test]
     fn panic_in_thread_does_not_kill_process() {
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let args = ProxyArgs {
             host: None,
             port: 0,
-            token: "test-token".to_string(),
+            token: Some("test-token-0123456789".to_string()),
             debug: true,
-            port_wait_mode: PortWaitMode::ConnectHold,
             log_stderr: false,
             log_dir: Some(temp.path().to_string_lossy().to_string()),
-            no_token: false,
             heartbeat: false,
             instance: "default".to_string(),
             idle_timeout: 300,

@@ -5,8 +5,8 @@ import * as path from "path";
 import { GraphConfiguration, GrapherMessage } from "../common/swo/common";
 import { SWORTTGraphProcessor } from "../common/swo/decoders/graph";
 import { SWORTTAdvancedProcessor } from "../common/swo/decoders/advanced";
-import { getNonce } from "../adapter/servers/common";
 import { ISWORTTView } from "../common/host-adapter";
+import { generateNonce } from "@mcu-debug/shared";
 
 export class SWOWebview implements ISWORTTView {
     private viewPanel: vscode.WebviewPanel;
@@ -41,7 +41,7 @@ export class SWOWebview implements ISWORTTView {
         const onDiskPath = vscode.Uri.file(path.join(this.extensionPath, "dist", "grapher.bundle.js"));
         const scriptUri = this.viewPanel.webview.asWebviewUri(onDiskPath);
 
-        const nonce = getNonce();
+        const nonce = generateNonce();
 
         let html = fs.readFileSync(path.join(this.extensionPath, "resources", "grapher.html"), { encoding: "utf8", flag: "r" });
         html = html.replace(/\$\{nonce\}/g, nonce).replace(/\$\{scriptUri\}/g, scriptUri.toString());

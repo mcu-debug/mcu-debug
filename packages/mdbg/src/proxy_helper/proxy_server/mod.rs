@@ -16,7 +16,7 @@
 //! and shared utilities used by the child modules.
 
 use crate::common::sync::MutexExt;
-use crate::proxy_helper::run::{PortWaitMode, ProxyArgs};
+use crate::proxy_helper::run::ProxyArgs;
 use crate::proxy_helper::serial_available::SerialAvailabilityHub;
 use crate::serial::port::PortHandle;
 use anyhow::Result;
@@ -43,8 +43,7 @@ pub use protocol::*;
 mod gdb_server;
 mod serial;
 pub use serial::{
-    force_close_serial, serial_status, FunnelWriter, OpenPort, SerialPortRegistry, SerialStatus,
-    CLOSE_ALL_SERIAL,
+    force_close_serial, serial_status, FunnelWriter, OpenPort, SerialPortRegistry, SerialStatus, CLOSE_ALL_SERIAL,
 };
 
 /// Spawn a session-owned background thread that can never die silently.
@@ -57,11 +56,8 @@ pub use serial::{
 ///
 /// The panic hook ([`crate::proxy_helper::run`]) has already logged the
 /// file/line/backtrace by the time control returns here.
-pub(super) fn spawn_session_thread<F>(
-    event_tx: &Sender<ProxyEvent>,
-    role: SessionThreadRole,
-    body: F,
-) where
+pub(super) fn spawn_session_thread<F>(event_tx: &Sender<ProxyEvent>, role: SessionThreadRole, body: F)
+where
     F: FnOnce() + Send + 'static,
 {
     let exit_tx = event_tx.clone();
@@ -103,9 +99,7 @@ impl FrameWriter {
         // OS send buffer would otherwise block indefinitely and starve
         // `event_rx.recv()`.  Five seconds is generous for a loopback or
         // LAN connection; treat a timeout as a broken connection.
-        stream
-            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
         Self {
             stream: Arc::new(Mutex::new(stream)),
         }
@@ -185,7 +179,6 @@ pub struct ProxyServer {
     event_rx: Receiver<ProxyEvent>,
     event_tx: Sender<ProxyEvent>,
     server_cwd: String,
-    session_port_wait_mode: PortWaitMode,
     monitor_stop_tx: Option<Sender<()>>,
     serial_registry: SerialPortRegistry,
     /// Stream-ID → (port_handle, client_id, path) for inbound funnel frames.
@@ -244,7 +237,6 @@ impl ProxyServer {
         serial_available_hub: Arc<SerialAvailabilityHub>,
     ) -> Self {
         let (event_tx, event_rx) = channel();
-        let session_port_wait_mode = args.port_wait_mode;
         Self {
             args,
             writer: FrameWriter::new(stream),
@@ -257,7 +249,6 @@ impl ProxyServer {
             event_tx,
             next_stream_id: 3,
             server_cwd: String::new(),
-            session_port_wait_mode,
             monitor_stop_tx: None,
             serial_registry,
             serial_funnel_write: HashMap::new(),
@@ -317,38 +308,31 @@ impl ProxyServer {
         // on a stream read in the main thread.
         let control_stream = self.writer.try_clone_stream()?;
         let event_tx = self.event_tx.clone();
-        spawn_session_thread(
-            &self.event_tx,
-            SessionThreadRole::ControlReader,
-            move || {
-                let mut reader = control_stream;
-                let mut buf = [0u8; 4096];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => {
-                            event_tx.send(ProxyEvent::IncomingClosed).ok();
-                            break;
-                        }
-                        Ok(n) => {
-                            if event_tx
-                                .send(ProxyEvent::IncomingData(
-                                    buf[..n].to_vec(),
-                                    std::time::Instant::now(),
-                                ))
-                                .is_err()
-                            {
-                                break; // main thread exited
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Control stream read error: {}", e);
-                            event_tx.send(ProxyEvent::IncomingClosed).ok();
-                            break;
+        spawn_session_thread(&self.event_tx, SessionThreadRole::ControlReader, move || {
+            let mut reader = control_stream;
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        event_tx.send(ProxyEvent::IncomingClosed).ok();
+                        break;
+                    }
+                    Ok(n) => {
+                        if event_tx
+                            .send(ProxyEvent::IncomingData(buf[..n].to_vec(), std::time::Instant::now()))
+                            .is_err()
+                        {
+                            break; // main thread exited
                         }
                     }
+                    Err(e) => {
+                        eprintln!("Control stream read error: {}", e);
+                        event_tx.send(ProxyEvent::IncomingClosed).ok();
+                        break;
+                    }
                 }
-            },
-        );
+            }
+        });
 
         let mut content_length: Option<u32> = None;
         let mut stream_id = 0u8;
@@ -396,8 +380,7 @@ impl ProxyServer {
                         if content_length.is_none() {
                             if all_bytes.len() >= 5 {
                                 stream_id = all_bytes[0];
-                                content_length =
-                                    Some(u32::from_le_bytes(all_bytes[1..5].try_into().unwrap()));
+                                content_length = Some(u32::from_le_bytes(all_bytes[1..5].try_into().unwrap()));
                                 all_bytes.drain(..5);
                             } else {
                                 break; // wait for more bytes
@@ -419,13 +402,8 @@ impl ProxyServer {
                                         // forever and says nothing when healthy. At info they
                                         // would bury the requests worth reading; a slow or
                                         // failing one still surfaces through the checks below.
-                                        let routine =
-                                            control_msg.request.method_name() == "heartbeat";
-                                        let level = if routine {
-                                            log::Level::Debug
-                                        } else {
-                                            log::Level::Info
-                                        };
+                                        let routine = control_msg.request.method_name() == "heartbeat";
+                                        let level = if routine { log::Level::Debug } else { log::Level::Info };
                                         log::log!(
                                             level,
                                             "Received request: seq {} '{}' ({} bytes, queued {:?})",
@@ -448,9 +426,7 @@ impl ProxyServer {
                                         self.handle_control_message(control_msg);
                                         let took = started.elapsed();
                                         log::log!(
-                                            if routine
-                                                && took < std::time::Duration::from_millis(250)
-                                            {
+                                            if routine && took < std::time::Duration::from_millis(250) {
                                                 log::Level::Debug
                                             } else {
                                                 log::Level::Info
@@ -484,12 +460,11 @@ impl ProxyServer {
                                                     format!("failed to parse control request: {e}"),
                                                 )
                                                 .send(&self.writer)
-                                                .unwrap_or_else(|send_err| {
-                                                    eprintln!(
-                                                        "Failed to send parse-error response: {}",
-                                                        send_err
-                                                    );
-                                                });
+                                                .unwrap_or_else(
+                                                    |send_err| {
+                                                        eprintln!("Failed to send parse-error response: {}", send_err);
+                                                    },
+                                                );
                                             }
                                             Err(_) => {
                                                 // No usable seq to correlate a reply — the client
@@ -503,8 +478,7 @@ impl ProxyServer {
                                 }
                             } else {
                                 // Non-zero stream ID: check serial funnel channels first.
-                                if let Some((weak, _, _)) = self.serial_funnel_write.get(&stream_id)
-                                {
+                                if let Some((weak, _, _)) = self.serial_funnel_write.get(&stream_id) {
                                     // Route incoming bytes from client to the serial port.
                                     // Upgrading can fail: the port may have been closed
                                     // by an admin force-close (or a fatal port error)
@@ -532,23 +506,14 @@ impl ProxyServer {
                                         Some(pinfo) => {
                                             if let Some(stream) = &mut pinfo.stream {
                                                 if let Err(e) = stream.write_all(&msg) {
-                                                    eprintln!(
-                                                        "Stream {} write failed: {}",
-                                                        stream_id, e
-                                                    );
+                                                    eprintln!("Stream {} write failed: {}", stream_id, e);
                                                 }
                                             } else {
-                                                eprintln!(
-                                                    "Stream {} is not currently connected",
-                                                    stream_id
-                                                );
+                                                eprintln!("Stream {} is not currently connected", stream_id);
                                             }
                                         }
                                         None => {
-                                            eprintln!(
-                                                "Received message for unknown stream ID: {}",
-                                                stream_id
-                                            );
+                                            eprintln!("Received message for unknown stream ID: {}", stream_id);
                                         }
                                     }
                                 }
@@ -570,9 +535,7 @@ impl ProxyServer {
                     eprintln!("Port {} (stream {}) connected!", port, stream_id);
                     // Same write-timeout policy as the client socket: bound how
                     // long a stalled gdb-server can hold up the message loop.
-                    stream
-                        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
-                        .ok();
+                    stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
                     if let Some(pinfo) = self.streams.get_mut(&stream_id) {
                         pinfo.stream = Some(stream);
                     } else {
@@ -598,19 +561,14 @@ impl ProxyServer {
                             status: StreamStatus::Connected,
                             msg_seq,
                         };
-                        send_or_break!(
-                            ControlResponse::success(msg_seq, Some(data)).send(&self.writer)
-                        );
+                        send_or_break!(ControlResponse::success(msg_seq, Some(data)).send(&self.writer));
                     } else {
                         let event = ProxyServerEvents::StreamStarted { stream_id, port };
                         send_or_break!(event.send(&self.writer));
                     }
                 }
                 ProxyEvent::PortReady { stream_id, port } => {
-                    eprintln!(
-                        "Port {} (stream {}) is ready for connection!",
-                        port, stream_id
-                    );
+                    eprintln!("Port {} (stream {}) is ready for connection!", port, stream_id);
                     self.streams.insert(
                         stream_id,
                         PortInfo {
@@ -631,10 +589,7 @@ impl ProxyServer {
                     if msg_seq != 0 {
                         ControlResponse::error(
                             msg_seq,
-                            format!(
-                                "Failed to connect to port {}, stream-id {}: {}",
-                                port, stream_id, error
-                            ),
+                            format!("Failed to connect to port {}, stream-id {}: {}", port, stream_id, error),
                         )
                         .send(&self.writer)
                         .unwrap_or_else(|e| {
@@ -754,10 +709,7 @@ impl ProxyServer {
                 self.handle_start_stream(stream_id, msg.seq);
             }
             ControlRequest::DuplicateStream { stream_id } => {
-                eprintln!(
-                    "Received DuplicateStream request for stream_id {}",
-                    stream_id
-                );
+                eprintln!("Received DuplicateStream request for stream_id {}", stream_id);
                 self.handle_duplicate_stream(stream_id, msg.seq);
             }
             ControlRequest::EndSession => {
@@ -770,11 +722,9 @@ impl ProxyServer {
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send success response: {}", e);
                     });
-                self.writer
-                    .shutdown(std::net::Shutdown::Both)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Failed to shutdown stream: {}", e);
-                    });
+                self.writer.shutdown(std::net::Shutdown::Both).unwrap_or_else(|e| {
+                    eprintln!("Failed to shutdown stream: {}", e);
+                });
                 self.exit = true;
             }
             ControlRequest::Heartbeat => {

@@ -102,7 +102,6 @@ export class ProxyClient extends EventEmitter {
                     version: pkgJsonVersion,
                     workspace_uid: cdir,
                     session_uid: sdir,
-                    port_wait_mode: "monitor",
                 },
             };
             await this.sendControlCommand(cmd);

@@ -1,8 +1,6 @@
 use super::*;
 use crate::common::sync::MutexExt;
-use crate::serial::port::{
-    FlowControl, Parity, SerialErrorKind, SerialParams, SerialTransport, StopBits,
-};
+use crate::serial::port::{FlowControl, Parity, SerialErrorKind, SerialParams, SerialTransport, StopBits};
 use crate::serial::AvailablePort;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::Mutex;
@@ -17,7 +15,6 @@ fn ensure_ts_exports() {
     StreamStatus::export(&config).unwrap();
     ControlRequest::export(&config).unwrap();
     ControlMessage::export(&config).unwrap();
-    PortWaitMode::export(&config).unwrap();
     ProxyServerEvents::export(&config).unwrap();
     ControlResponse::export(&config).unwrap();
     ControlResponseData::export(&config).unwrap();
@@ -140,12 +137,10 @@ fn test_proxy_server() {
         let args = ProxyArgs {
             host: None,
             port: 4567,
-            token: "adis-ababa".to_string(),
+            token: Some("adis-ababa-0123456789".to_string()),
             debug: false,
-            port_wait_mode: PortWaitMode::ConnectHold,
             log_stderr: false,
             log_dir: None,
-            no_token: false,
             heartbeat: false,
             // Distinct instance so the test never touches (or is blocked by) a
             // real `default` proxy running on the dev machine.
@@ -161,17 +156,16 @@ fn test_proxy_server() {
     });
 
     // Wait for server to be ready by attempting connection with retry
-    let client = wait_for_server("127.0.0.1:4567", Duration::from_secs(5))
-        .expect("Server failed to start within 5 seconds");
+    let client =
+        wait_for_server("127.0.0.1:4567", Duration::from_secs(5)).expect("Server failed to start within 5 seconds");
     let mut seq: u64 = 1;
     let init_msg = ControlMessage {
         seq,
         request: ControlRequest::Initialize {
-            token: "adis-ababa".to_string(),
+            token: "adis-ababa-0123456789".to_string(),
             version: CURRENT_VERSION.to_string(),
             workspace_uid: "test-uid".to_string(),
             session_uid: "test-session-uid".to_string(),
-            port_wait_mode: None,
         },
     };
     seq += 1;
@@ -181,22 +175,13 @@ fn test_proxy_server() {
         read_from_stream(&mut reader, tx_clone);
     });
     let msg_bytes = serde_json::to_vec(&init_msg).unwrap();
-    send_to_stream(
-        StreamId::Control.to_u8(),
-        &mut client.try_clone().unwrap(),
-        &msg_bytes,
-    )
-    .unwrap();
+    send_to_stream(StreamId::Control.to_u8(), &mut client.try_clone().unwrap(), &msg_bytes).unwrap();
     let msg = wait_for_message(&rx, Duration::from_secs(5)).unwrap_or_else(|| {
         panic!("Did not receive any message from server within timeout");
     });
     let response: ControlResponse = serde_json::from_str(&msg).unwrap();
     assert!(response.success);
-    if let Some(ControlResponseData::Initialize {
-        version,
-        server_cwd,
-    }) = response.data
-    {
+    if let Some(ControlResponseData::Initialize { version, server_cwd }) = response.data {
         assert_eq!(version, CURRENT_VERSION);
         assert!(server_cwd.contains("test-uid"));
     } else {
@@ -215,12 +200,7 @@ fn test_proxy_server() {
         },
     };
     let msg_bytes = serde_json::to_vec(&allc_ports_msg).unwrap();
-    send_to_stream(
-        StreamId::Control.to_u8(),
-        &mut client.try_clone().unwrap(),
-        &msg_bytes,
-    )
-    .unwrap();
+    send_to_stream(StreamId::Control.to_u8(), &mut client.try_clone().unwrap(), &msg_bytes).unwrap();
     let msg = wait_for_message(&rx, Duration::from_secs(5)).unwrap_or_else(|| {
         panic!("Did not receive any message from server within timeout");
     });

@@ -29,7 +29,6 @@ use std::time::{Duration, Instant};
 
 use crate::common::tcpports::reserve_free_ports;
 use crate::proxy_helper::port_monitor::wait_for_ports;
-use crate::proxy_helper::run::PortWaitMode;
 
 use super::*;
 
@@ -79,12 +78,9 @@ fn is_safe_relative_sync_path(relative_path: &str) -> bool {
     if path.is_absolute() || path.file_name().is_none() {
         return false;
     }
-    !path.components().any(|c| {
-        matches!(
-            c,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    })
+    !path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
 }
 
 fn create_parent_dirs(file_path_str: &str) {
@@ -102,16 +98,18 @@ impl ProxyServer {
             version,
             workspace_uid,
             session_uid,
-            port_wait_mode,
         } = &msg.request
         {
             eprintln!(
-                "Received Initialize request with version {} and token {:?} and workspace_uid {:?} and session_uid {:?} and port_wait_mode {:?}",
-                version, token, workspace_uid, session_uid, port_wait_mode
+                "Received Initialize request with version {} and token {:?} and workspace_uid {:?} and session_uid {:?}",
+                version, token, workspace_uid, session_uid
             );
             let mut err = false;
             let mut err_msg = String::new();
-            if !self.args.no_token && token != &self.args.token {
+            // Unconditional. This used to be skipped when `--no-token` was set — a flag
+            // documented as merely hiding the token from the discovery line, which in
+            // fact disabled authentication outright. The flag is gone.
+            if Some(token) != self.args.token.as_ref() {
                 err_msg = "Error: Received token does not match expected token".to_string();
                 err = true;
             }
@@ -147,18 +145,13 @@ impl ProxyServer {
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to send error response: {}", e);
                     });
-                self.writer
-                    .shutdown(std::net::Shutdown::Both)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Failed to shutdown stream: {}", e);
-                    });
+                self.writer.shutdown(std::net::Shutdown::Both).unwrap_or_else(|e| {
+                    eprintln!("Failed to shutdown stream: {}", e);
+                });
                 self.exit = true;
             } else {
                 eprintln!("Initialization successful");
                 self.server_cwd = dir.clone();
-                if let Some(mode) = port_wait_mode {
-                    self.session_port_wait_mode = *mode;
-                }
                 let data = ControlResponseData::Initialize {
                     version: CURRENT_VERSION.to_string(),
                     server_cwd: dir,
@@ -270,11 +263,7 @@ impl ProxyServer {
         } = &msg.request
         {
             self.stop_port_monitor();
-            let ports: Vec<(u8, u16)> = self
-                .reserved_ports
-                .drain(..)
-                .map(|p| (p.stream_id, p.port))
-                .collect();
+            let ports: Vec<(u8, u16)> = self.reserved_ports.drain(..).map(|p| (p.stream_id, p.port)).collect();
             let dir = self.server_cwd.clone();
             let mut command = Command::new(server_path);
             command
@@ -288,12 +277,9 @@ impl ProxyServer {
                 Ok(child) => child,
                 Err(e) => {
                     eprintln!("Failed to launch gdb-server: {}: {}", server_path, e);
-                    ControlResponse::error(
-                        msg.seq,
-                        format!("Failed to launch gdb-server: {}: {}", server_path, e),
-                    )
-                    .send(&self.writer)
-                    .ok();
+                    ControlResponse::error(msg.seq, format!("Failed to launch gdb-server: {}: {}", server_path, e))
+                        .send(&self.writer)
+                        .ok();
                     self.exit = true;
                     return;
                 }
@@ -328,27 +314,24 @@ impl ProxyServer {
             // indirectly when gdb's RSP connection dropped — with no exit code.
             self.spawn_gdb_reaper(pid, Arc::clone(&child));
 
-            match self.session_port_wait_mode {
-                PortWaitMode::ConnectHold => {
-                    self.spawn_port_waiters(ports, true, 0);
-                }
-                PortWaitMode::ConnectProbe => {
-                    self.spawn_port_waiters(ports, false, 0);
-                }
-                PortWaitMode::Monitor => {
+            // Readiness is detected by *observing* listening sockets, never by
+            // connecting to them. Two connect-based strategies used to be selectable
+            // here and neither could work: a TCP connect to a gdb RSP port is a client
+            // connection as far as openocd is concerned, so probing it makes the server
+            // believe gdb has arrived and then hang or fail when no RSP traffic follows.
+            // That is inherent to the protocol, not a bug awaiting a fix, so the modes
+            // and the `--port-wait-mode` flag that chose between them are gone.
+            {
+                {
                     self.stop_port_monitor();
                     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
                     self.monitor_stop_tx = Some(stop_tx);
                     let event_tx = self.event_tx.clone();
-                    spawn_session_thread(
-                        &self.event_tx,
-                        SessionThreadRole::PortMonitor,
-                        move || {
-                            if let Err(e) = wait_for_ports(ports, event_tx, stop_rx) {
-                                eprintln!("Port monitor exited with error: {}", e);
-                            }
-                        },
-                    );
+                    spawn_session_thread(&self.event_tx, SessionThreadRole::PortMonitor, move || {
+                        if let Err(e) = wait_for_ports(ports, event_tx, stop_rx) {
+                            eprintln!("Port monitor exited with error: {}", e);
+                        }
+                    });
                 }
             }
 
@@ -370,12 +353,7 @@ impl ProxyServer {
         }
     }
 
-    pub(super) fn spawn_port_waiters(
-        &mut self,
-        ports: Vec<(u8, u16)>,
-        keep_open: bool,
-        msg_seq: u64,
-    ) {
+    pub(super) fn spawn_port_waiters(&mut self, ports: Vec<(u8, u16)>, keep_open: bool, msg_seq: u64) {
         for (stream_id, port) in ports {
             let event_tx = self.event_tx.clone();
             let cancel = self.cancel.clone();
@@ -391,9 +369,7 @@ impl ProxyServer {
                             "Port {} is ready for stream {}, but keep_open is false, not forwarding",
                             port, stream_id
                         );
-                        event_tx
-                            .send(ProxyEvent::PortReady { stream_id, port })
-                            .ok();
+                        event_tx.send(ProxyEvent::PortReady { stream_id, port }).ok();
                     }
                     Ok(WaitPortResult::Stream(tcp_stream)) => {
                         eprintln!(
@@ -458,10 +434,7 @@ impl ProxyServer {
                 eprintln!("Stream {} is already connected", stream_id);
             }
         } else {
-            eprintln!(
-                "Received StartStream for unknown stream_id {}, ignoring",
-                stream_id
-            );
+            eprintln!("Received StartStream for unknown stream_id {}, ignoring", stream_id);
         }
     }
 
@@ -492,10 +465,7 @@ impl ProxyServer {
                 );
             }
         } else {
-            eprintln!(
-                "Received DuplicateStream for unknown stream_id {}, ignoring",
-                stream_id
-            );
+            eprintln!("Received DuplicateStream for unknown stream_id {}, ignoring", stream_id);
         }
     }
 
@@ -505,10 +475,7 @@ impl ProxyServer {
         keep_open: bool,
         cancel: &AtomicBool,
     ) -> Result<WaitPortResult> {
-        eprintln!(
-            "Waiting for connection on port {} with timeout {:?}",
-            port, timeout
-        );
+        eprintln!("Waiting for connection on port {} with timeout {:?}", port, timeout);
         let deadline = Instant::now() + timeout;
         let mut interval = Duration::from_millis(100);
         let mut once = true;
@@ -544,11 +511,7 @@ impl ProxyServer {
     }
 
     pub(super) fn handle_sync_file(&mut self, msg: &ControlMessage) {
-        if let ControlRequest::SyncFile {
-            relative_path,
-            content,
-        } = &msg.request
-        {
+        if let ControlRequest::SyncFile { relative_path, content } = &msg.request {
             if !is_safe_relative_sync_path(relative_path) {
                 let err_msg = format!(
                     "Invalid sync path '{}': must be a safe relative file path under session root",
@@ -728,11 +691,7 @@ mod reaper_tests {
         cmd.spawn().expect("spawn test child")
     }
 
-    fn reap(
-        child: Child,
-        intentional: bool,
-        cancel: bool,
-    ) -> (std::sync::mpsc::Receiver<ProxyEvent>, u32) {
+    fn reap(child: Child, intentional: bool, cancel: bool) -> (std::sync::mpsc::Receiver<ProxyEvent>, u32) {
         let pid = child.id();
         let (tx, rx) = channel();
         reap_gdb_server(
@@ -836,11 +795,7 @@ mod reaper_tests {
             seen.push(poll);
         }
 
-        assert_eq!(
-            *seen.last().unwrap(),
-            REAP_POLL_MAX,
-            "must settle at the cap"
-        );
+        assert_eq!(*seen.last().unwrap(), REAP_POLL_MAX, "must settle at the cap");
         assert!(
             seen.windows(2).all(|w| w[0] <= w[1]),
             "the interval must never shrink: {seen:?}"

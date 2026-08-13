@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import find from 'find-process';
 import { apply_patch } from "jsonpatch";
-import { ConfigurationArguments, getNonce, RTTConsoleDecoderOpts } from "../adapter/servers/common";
+import { ConfigurationArguments, RTTConsoleDecoderOpts } from "../adapter/servers/common";
 import { CLISessionType, IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
 import { CustomTransport, logger } from "../common/cli-logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
@@ -18,6 +18,7 @@ import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
 import { LineSplitter } from "../../../shared/lib/src/line-splitter";
+import { generateNonce } from "@mcu-debug/shared";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -105,7 +106,7 @@ export class CliSessionDriver {
 
     private createCDebugSession() {
         const dbgSession: IDebugSession = {
-            id: getNonce(),
+            id: generateNonce(),
             type: "mcu-debug",
             name: this.config.name,
             configuration: this.config,

@@ -2,7 +2,9 @@ import { execSync, spawn, spawnSync } from "child_process";
 import { openRemoteUri, ProxyLaunchPolicy, ProxyLaunchResults } from "./proxy-network";
 import { commandExists } from "./command-exists";
 import * as fs from "fs";
+import { randomBytes } from "crypto";
 import * as os from "os";
+import { generateNonce } from "./nonce";
 
 export interface ProvisioningResults {
     resultsFile: string;
@@ -21,14 +23,6 @@ export interface ProxyProvisionRequest {
 let WINDOWS_HOST_HOME = ""; // Windows host home, Windows form (e.g. C:\Users\me)
 
 const NONCE = generateNonce();
-function generateNonce(length: number = 16): string {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let result = "";
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-}
 
 const LAUNCH_TIMEOUT_MS = 15_000;
 

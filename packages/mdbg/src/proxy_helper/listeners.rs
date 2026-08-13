@@ -137,11 +137,7 @@ impl AcceptSet {
     /// The IPv4 addresses being accepted on, as strings, ascending. For `--status`
     /// and for the `hosts` list published in discovery and `endpoint.json`.
     pub fn hosts(&self) -> Vec<String> {
-        let mut hosts: Vec<String> = self
-            .addrs()
-            .into_iter()
-            .map(|a| a.ip().to_string())
-            .collect();
+        let mut hosts: Vec<String> = self.addrs().into_iter().map(|a| a.ip().to_string()).collect();
         hosts.sort();
         hosts.dedup();
         hosts
@@ -166,8 +162,7 @@ impl AcceptSet {
             .as_ref()
             .and_then(|w| w.upgrade())
             .ok_or_else(|| "proxy is shutting down".to_string())?;
-        let listener =
-            TcpListener::bind(addr).map_err(|e| format!("could not bind {addr}: {e}"))?;
+        let listener = TcpListener::bind(addr).map_err(|e| format!("could not bind {addr}: {e}"))?;
         self.add(listener, ctx)
             .map_err(|e| format!("could not accept on {addr}: {e}"))
     }
@@ -191,9 +186,7 @@ impl AcceptSet {
         let stop_thread = Arc::clone(&stop);
         let mut guard = self.bound.lock_recover();
         if guard.contains_key(&addr) {
-            return Err(std::io::Error::other(format!(
-                "already accepting on {addr}"
-            )));
+            return Err(std::io::Error::other(format!("already accepting on {addr}")));
         }
         let thread = thread::Builder::new()
             .name(format!("accept-{addr}"))
@@ -300,10 +293,7 @@ pub fn planned_bind_addrs(requested: Ipv4Addr) -> Vec<Ipv4Addr> {
 /// security posture than the one the request implies.
 pub fn is_widenable(host: Ipv4Addr) -> Result<(), String> {
     if host.is_unspecified() {
-        return Err(
-            "refusing to widen to the wildcard 0.0.0.0; name a specific interface address"
-                .to_string(),
-        );
+        return Err("refusing to widen to the wildcard 0.0.0.0; name a specific interface address".to_string());
     }
     if host.is_loopback() {
         return Err("loopback is always bound; nothing to widen".to_string());
@@ -325,9 +315,7 @@ fn wake(addr: &SocketAddr) {
     // A short timeout matters for a widened address: if the interface went away
     // (a WSL shutdown), connect() can otherwise hang the shutdown path.
     if let Err(e) = TcpStream::connect_timeout(&target, Duration::from_secs(2)) {
-        log::warn!(
-            "Self-connect to {target} failed: {e} — accept loop may not unblock immediately"
-        );
+        log::warn!("Self-connect to {target} failed: {e} — accept loop may not unblock immediately");
     }
 }
 
@@ -343,9 +331,8 @@ fn accept_loop(listener: TcpListener, ctx: Arc<AcceptCtx>, stop: Arc<AtomicBool>
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "<unknown>".to_string());
 
-    let stopping = |ctx: &AcceptCtx, stop: &AtomicBool| {
-        ctx.stop_flag.load(Ordering::SeqCst) || stop.load(Ordering::SeqCst)
-    };
+    let stopping =
+        |ctx: &AcceptCtx, stop: &AtomicBool| ctx.stop_flag.load(Ordering::SeqCst) || stop.load(Ordering::SeqCst);
 
     for stream in listener.incoming() {
         // Shutdown check: whoever set a stop flag also sent a self-connection to
@@ -523,10 +510,7 @@ mod tests {
         let addr = set.add(listener, Arc::clone(&ctx)).expect("add");
         assert!(set.contains(&addr));
 
-        assert!(
-            set.remove(&addr),
-            "remove must report the address was present"
-        );
+        assert!(set.remove(&addr), "remove must report the address was present");
         assert!(!set.contains(&addr));
         assert!(!set.remove(&addr), "removing twice must be a no-op");
 
@@ -547,11 +531,7 @@ mod tests {
         let plan = planned_bind_addrs(gateway);
 
         assert_eq!(plan, vec![Ipv4Addr::LOCALHOST, gateway]);
-        assert_eq!(
-            plan[0],
-            Ipv4Addr::LOCALHOST,
-            "loopback binds first, fixing the port"
-        );
+        assert_eq!(plan[0], Ipv4Addr::LOCALHOST, "loopback binds first, fixing the port");
     }
 
     /// The wildcard is the exception: it already accepts loopback, and binding both on
@@ -559,20 +539,14 @@ mod tests {
     /// not about literally holding a second socket.
     #[test]
     fn the_wildcard_is_bound_alone() {
-        assert_eq!(
-            planned_bind_addrs(Ipv4Addr::UNSPECIFIED),
-            vec![Ipv4Addr::UNSPECIFIED]
-        );
+        assert_eq!(planned_bind_addrs(Ipv4Addr::UNSPECIFIED), vec![Ipv4Addr::UNSPECIFIED]);
     }
 
     /// Asking for loopback explicitly must not plan it twice — the second bind would
     /// fail and be reported as an error for an address that is in fact served.
     #[test]
     fn requesting_loopback_plans_a_single_bind() {
-        assert_eq!(
-            planned_bind_addrs(Ipv4Addr::LOCALHOST),
-            vec![Ipv4Addr::LOCALHOST]
-        );
+        assert_eq!(planned_bind_addrs(Ipv4Addr::LOCALHOST), vec![Ipv4Addr::LOCALHOST]);
     }
 
     /// A running proxy may only be widened to a concrete address. The wildcard cannot
@@ -603,10 +577,7 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
         let addr = set.add(listener, Arc::clone(&ctx)).expect("add");
 
-        assert!(
-            !set.remove(&addr),
-            "the only listener must not be removable"
-        );
+        assert!(!set.remove(&addr), "the only listener must not be removable");
         assert!(set.contains(&addr), "and it must still be accepting");
 
         ctx.stop_flag.store(true, Ordering::SeqCst);
@@ -700,12 +671,10 @@ mod tests {
         let conn_args = ProxyArgs {
             host: None,
             port: 0,
-            token: "test-token".to_string(),
+            token: Some("test-token-0123456789".to_string()),
             debug: false,
-            port_wait_mode: crate::proxy_helper::run::PortWaitMode::ConnectHold,
             log_stderr: false,
             log_dir: None,
-            no_token: false,
             heartbeat: false,
             instance: "default".to_string(),
             idle_timeout: 0,
@@ -716,7 +685,7 @@ mod tests {
             daemonized: true,
         };
         let admin_ctx = Arc::new(AdminContext {
-            token: "test-token".to_string(),
+            token: "test-token-0123456789".to_string(),
             lifetime: Arc::clone(&lifetime),
             draining: Arc::clone(&draining),
             superseded: Arc::new(AtomicBool::new(false)),
