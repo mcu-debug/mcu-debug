@@ -69,13 +69,14 @@ export class ProxyClient extends EventEmitter {
         const networkMode = this.args.hostConfig.pvtNetworkMode || this.args.hostConfig.type;
         const remoteHost = this.args.hostConfig.pvtProxyHost || "127.0.0.1";
         const remotePort = this.args.hostConfig.pvtProxyPort;
-        const token = this.args.hostConfig.token || this.args.hostConfig.pvtProxyToken;
+        // Resolved value first — see the note in serial-manager.ts's connect().
+        const token = this.args.hostConfig.pvtProxyToken;
         if (!remotePort) {
             this.logError(`Bug? Proxy port is not specified in hostConfig.pvtProxyPort`);
             return false;
         }
         if (!token) {
-            this.logError(`Bug? Proxy token is not specified in hostConfig.token or hostConfig.pvtProxyToken`);
+            this.logError(`Bug? Proxy token is not specified in hostConfig.pvtProxyToken`);
             return false;
         }
         this.logInfo(`Starting proxy client with network mode: ${networkMode}, remote host: ${remoteHost}, remote port: ${remotePort}, token: ${token}`);

@@ -84,7 +84,9 @@ For explicit SSH configuration:
 "hostConfig": {
   "enabled": true,
   "type": "ssh",
-  "host": "lab-server"
+  "ssh": {
+    "host": "lab-server"
+  }
 }
 ```
 
@@ -131,7 +133,7 @@ When `proxy` is set, `type` is ignored — you have told mcu-debug where the age
 there is nothing left to detect. This does **not** apply to the SSH topologies: `ssh`
 needs its `-L` tunnel established before any endpoint exists, and VS Code Remote-SSH
 needs its reverse tunnel. For a pre-running agent on a lab server over SSH, use
-`sshProxyPort` instead.
+`ssh.proxyPort` (with `ssh.token`) instead.
 
 ## Configuring the gdb-server for remote
 

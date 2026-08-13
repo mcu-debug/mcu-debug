@@ -433,26 +433,53 @@ module.exports = {
                 description:
                     '"auto": extension detects the VS Code remote environment and constructs the correct proxy address automatically. ' +
                     "Covers WSL (NAT and Mirrored), Dev Containers, VS Code Remote SSH, and plain local. " +
-                    '"ssh": explicit SSH to a separate probe host; requires sshHost.',
+                    '"ssh": explicit SSH to a separate probe host; requires the `ssh` object below.',
             },
-            sshHost: {
-                type: "string",
+            ssh: {
+                type: "object",
+                additionalProperties: false,
+                required: ["host"],
                 description:
-                    'SSH host for type "ssh". Resolved via ~/.ssh/config, so host aliases, port, jump hosts, and keys are all handled there. ' +
-                    'Example: "user@lab-server" or an alias defined in ~/.ssh/config.',
-                default: "mylogin@myserver",
-            },
-            sshProxyPort: {
-                type: "number",
-                multipleOf: 1,
-                minimum: 1024,
-                maximum: 65535,
-                description:
-                    "SSH type only — daemon mode. Port the Probe Agent is already listening on at the lab server. " +
-                    "When set, the extension connects to the pre-running agent at this port rather than launching a new one. " +
-                    "The SSH -L tunnel is established from a local OS-assigned port to this port. " +
-                    "When omitted, the extension launches a new Probe Agent per debug session via SSH and reads the port from its Discovery JSON. " +
-                    "Set this when the Probe Agent is started manually or managed by a system service on the probe host.",
+                    'Settings for `type: "ssh"` — the probe is on a separate machine reached over SSH. ' +
+                    "Ignored for every other type. Grouping them keeps the SSH-only knobs together and lets " +
+                    "the schema require a host whenever any of them is set.",
+                properties: {
+                    host: {
+                        type: "string",
+                        description:
+                            "SSH host, resolved via ~/.ssh/config — so aliases, port, jump hosts and keys are all handled there. " +
+                            'Example: "user@lab-server", or an alias defined in ~/.ssh/config.',
+                        default: "mylogin@myserver",
+                    },
+                    proxyPort: {
+                        type: "number",
+                        multipleOf: 1,
+                        minimum: 1024,
+                        maximum: 65535,
+                        description:
+                            "Daemon mode: the port a Probe Agent is *already* listening on at the SSH host. " +
+                            "When set, the extension connects to that agent instead of launching one, and the SSH -L tunnel " +
+                            "is established from an OS-assigned local port to this one. " +
+                            "When omitted, a new Probe Agent is launched per debug session and its port read from the Discovery JSON. " +
+                            "Set this when the agent is started manually or managed by a system service on the probe host.",
+                    },
+                    token: {
+                        type: "string",
+                        description:
+                            "Authentication token of the pre-running agent named by `proxyPort`. Required with `proxyPort`, " +
+                            "since an agent we did not launch has a token we cannot know. Ignored otherwise — an agent we launch " +
+                            "is given a freshly generated token. " +
+                            'Prefer "${env:MDBG_PROXY_TOKEN}" over a literal: a token committed to source control is a shared ' +
+                            "secret in your repository, and the agent reads the same variable.",
+                    },
+                    serverPath: {
+                        type: "string",
+                        description:
+                            'Path to a pre-installed mcu-debug binary on the SSH host (e.g. "/usr/local/bin/mcu-debug"). ' +
+                            "When set, the extension skips deploying the binary and launches this path directly. " +
+                            "Use it when the host has the tool installed already, or when writing to ~/.mcu-debug/bin is not permitted.",
+                    },
+                },
             },
             proxy: {
                 type: "object",
@@ -463,7 +490,7 @@ module.exports = {
                     "When present, no auto-detection, no launching, and no SSH tunnel: the extension connects directly to host:port with token. " +
                     "Use it for a CLI-only container, a CI runner, a shared lab machine, or any setup where the agent's lifetime is managed outside the editor. " +
                     "All three fields are required — an endpoint without a token is rejected at the agent, which surfaces much later and is hard to diagnose. " +
-                    "Not for SSH topologies: 'ssh' needs its -L tunnel established first, and Remote-SSH needs its reverse tunnel, so use sshProxyPort for a pre-running agent there.",
+                    "Not for SSH topologies: 'ssh' needs its -L tunnel established first, and Remote-SSH needs its reverse tunnel, so use `ssh.proxyPort` for a pre-running agent there.",
                 properties: {
                     host: {
                         type: "string",
@@ -488,14 +515,6 @@ module.exports = {
                     },
                 },
             },
-            sshProxyServerPath: {
-                type: "string",
-                description:
-                    'Path to a pre-installed mcu-debug binary on the remote host (e.g. "/usr/local/bin/mcu-debug" or "~/bin/mcu-debug"). ' +
-                    "When set, the extension skips the automatic binary deployment step entirely and uses this path to launch the Probe Agent. " +
-                    "Use this when macOS Gatekeeper, Windows SmartScreen, or lab policy prevents running a freshly-copied executable, " +
-                    "or when the binary has already been installed and granted the necessary permissions by other means.",
-            },
             syncFiles: {
                 type: "array",
                 description:
@@ -508,16 +527,6 @@ module.exports = {
                     remote: { type: "string", description: "Remote path to sync the files to. If not specified, the local path is used." },
                 },
                 default: [],
-            },
-            token: {
-                type: "string",
-                description:
-                    "Override the token used to authenticate with the Probe Agent. " +
-                    "Only needed for daemon mode when the token file (~/.mcu-debug/agent.token) is not accessible, " +
-                    "or when a fixed lab-policy token is preferred. " +
-                    "When omitted, the extension auto-manages the token: it generates one for extension-launched agents, " +
-                    "or reads it from the token file for pre-running daemons. " +
-                    "Do NOT commit this value to source control — use VS Code user settings or a secrets manager.",
             },
         },
         default: {

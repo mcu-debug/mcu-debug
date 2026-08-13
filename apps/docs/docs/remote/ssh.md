@@ -29,12 +29,14 @@ This document may not be accurate. It will be updated as we finish testing ssh f
   "hostConfig": {
     "enabled": true,
     "type": "ssh",
-    "host": "lab-server"  // Or use IP address
+    "ssh": {
+      "host": "lab-server"  // Or use IP address
+    }
   }
 }
 ```
 
-The `host` value is an SSH hostname alias from `~/.ssh/config` (or a literal hostname/IP).
+The `ssh.host` value is an SSH hostname alias from `~/.ssh/config` (or a literal hostname/IP).
 
 ## SSH Config
 

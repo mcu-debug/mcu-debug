@@ -228,7 +228,7 @@ function localCfg(port: number): HostConfig {
     return { enabled: true, type: "local", pvtNetworkMode: "local", pvtProxyHost: "127.0.0.1", pvtProxyPort: port } as any;
 }
 function sshCfg(port: number, sshHost = "pi@lab"): HostConfig {
-    return { enabled: true, type: "ssh", sshHost, pvtNetworkMode: "ssh", pvtProxyHost: "127.0.0.1", pvtProxyPort: port } as any;
+    return { enabled: true, type: "ssh", ssh: { host: sshHost }, pvtNetworkMode: "ssh", pvtProxyHost: "127.0.0.1", pvtProxyPort: port } as any;
 }
 
 function launchArgs(port: number, hostConfig: HostConfig): ConfigurationArguments {
@@ -249,7 +249,7 @@ test("two proxies coexist: no sibling teardown, composite keys, per-proxy transp
     await fakeB.listen();
 
     // A resolver that routes an ssh request to fakeB and everything else to fakeA.
-    const resolver: ProxyResolver = async (hc) => (hc?.sshHost ? sshCfg(fakeB.port, hc.sshHost) : localCfg(fakeA.port));
+    const resolver: ProxyResolver = async (hc) => (hc?.ssh?.host ? sshCfg(fakeB.port, hc.ssh.host) : localCfg(fakeA.port));
 
     const mgr = new SerialPortManager(resolver);
     t.after(() => { mgr.dispose(); fakeA.close(); fakeB.close(); });
@@ -282,7 +282,7 @@ test("available ports aggregate across connections, each tagged with its source"
     await fakeA.listen();
     await fakeB.listen();
 
-    const resolver: ProxyResolver = async (hc) => (hc?.sshHost ? sshCfg(fakeB.port, hc.sshHost) : localCfg(fakeA.port));
+    const resolver: ProxyResolver = async (hc) => (hc?.ssh?.host ? sshCfg(fakeB.port, hc.ssh.host) : localCfg(fakeA.port));
     const mgr = new SerialPortManager(resolver);
     t.after(() => { mgr.dispose(); fakeA.close(); fakeB.close(); });
 

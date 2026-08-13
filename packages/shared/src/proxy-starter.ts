@@ -2,7 +2,6 @@ import { execSync, spawn, spawnSync } from "child_process";
 import { openRemoteUri, ProxyLaunchPolicy, ProxyLaunchResults } from "./proxy-network";
 import { commandExists } from "./command-exists";
 import * as fs from "fs";
-import { randomBytes } from "crypto";
 import * as os from "os";
 import { generateNonce } from "./nonce";
 

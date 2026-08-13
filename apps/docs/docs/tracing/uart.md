@@ -93,6 +93,31 @@ DEBUG_PORT=/dev/ttyUSB0
 }
 ```
 
+## Which Ports the Picker Shows
+
+TBD: User interface for the Picker is not yet available. Coming soon
+
+**MCU Debug: List Available Serial Ports** lists ports from every probe host mcu-debug is
+currently connected to, each tagged with its source. Two things decide what appears:
+
+1. **Your workspace's own probe host.** The command connects to it if it is not already
+   connected, so the list works with no debug session running. For a local workspace that
+   is your machine; from inside WSL or a Dev Container it is the *host* the workspace runs
+   on, not the guest.
+2. **Any probe host a running debug session reached.** Sessions register their connections,
+   and the picker aggregates across all of them — so a lab server's ports appear once a
+   session using it has started, and keep appearing while that connection lives.
+
+The same device path on two hosts (two boards both at `/dev/ttyACM0`) stays distinct; the
+source tag is what tells them apart.
+
+:::note
+There is no way to connect to an arbitrary probe host *without* a debug session. Remote
+ports become visible once a session has opened the connection, and — because a serial view
+outlives the session that created it — they stay visible afterwards. If you want a remote
+host's ports available without debugging, start a session against it once.
+:::
+
 ## Common Issues
 
 ### Permission denied (Linux)

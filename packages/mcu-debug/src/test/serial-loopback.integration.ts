@@ -9,7 +9,7 @@
 //
 //   - local: `hostConfig { enabled: true, type: "local" }` — spawns the proxy
 //     directly (no VS Code extension) and enumerates/open real serial ports.
-//   - ssh:   `hostConfig { type: "ssh", sshHost: "localhost", ... }` — uses the
+//   - ssh:   `hostConfig { type: "ssh", ssh: { host: "localhost", ... } }` — uses the
 //     machine as its own remote. Auto-skips unless passwordless ssh-to-localhost
 //     works, since it needs Remote Login + key auth configured.
 //
@@ -204,7 +204,7 @@ test(
         // real `ssh -L` tunnel and opens the port through it.
         const dev = firstCuDevice();
         assert.ok(dev, "no cu.* device available to open");
-        const hostConfig = { enabled: true, type: "ssh", sshHost: "localhost", sshProxyServerPath: BIN } as any as HostConfig;
+        const hostConfig = { enabled: true, type: "ssh", ssh: { host: "localhost", serverPath: BIN } } as any as HostConfig;
 
         stub.createdViews = [];
         await mgr.createSerialPorts(launchArgs(hostConfig, [dev!]));

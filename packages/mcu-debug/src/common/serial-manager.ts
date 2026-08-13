@@ -202,6 +202,12 @@ export class ProxyConnection {
         // Transport is a property of THIS proxy's topology, not the workspace: a
         // local proxy is directly reachable; any remote proxy must funnel over
         // the single control socket.
+        // "override" (hostConfig.proxy) funnels, deliberately. Direct transport needs the
+        // proxy's TcpBridge port, which binds 127.0.0.1 on the *proxy's* machine — so it
+        // only works when the debug adapter runs there too. An override names an endpoint
+        // without saying where it is, and inferring that from the host string is the kind
+        // of guess that has bitten us before. Funnel is correct everywhere; the cost is a
+        // slightly longer path for an override that happens to point at this machine.
         this.isFunnelTransport = hostConfig.pvtNetworkMode !== "local";
         const newProxyInfo = JSON.stringify(hostConfig);
         if (this.lastProxyInfo === newProxyInfo && this.socket && !this.socket.destroyed) {
@@ -210,7 +216,11 @@ export class ProxyConnection {
         this.lastProxyInfo = newProxyInfo;
         const host = hostConfig.pvtProxyHost || "127.0.0.1";
         const port = hostConfig.pvtProxyPort || -3;
-        const token = hostConfig.token || hostConfig.pvtProxyToken || "";
+        // Resolved value first. `hostConfig.token` is the raw launch.json field, which
+        // resolution already folds in where it applies (SSH daemon mode); preferring it
+        // here let a stale token from an older config shadow the one resolution actually
+        // chose — surfacing as an `initialize` rejection that names neither field.
+        const token = hostConfig.pvtProxyToken || "";
         if (this.socket && !this.socket.destroyed) {
             if (this.socket.remoteAddress === host && this.socket.remotePort === port && this.proxyInfo?.token === token) {
                 return Promise.resolve(true);
@@ -744,8 +754,8 @@ export class SerialPortManager implements ProxyConnectionDelegate {
 
     /** Human-readable source label for a proxy, used to tag ports in the picker. */
     private proxyLabelFor(hostConfig: HostConfig): string {
-        if (hostConfig.sshHost) {
-            return `ssh:${hostConfig.sshHost}`;
+        if (hostConfig.ssh?.host) {
+            return `ssh:${hostConfig.ssh.host}`;
         }
         if (hostConfig.pvtNetworkMode === "local" || hostConfig.type === "local") {
             return "local";

@@ -42,10 +42,10 @@ interface SshTunnelConfig {
 // Any change to these fields → cache miss → full restart.
 function sshCacheFingerprint(hc: HostConfig): string {
     return JSON.stringify({
-        sshHost: hc.sshHost ?? null,
-        sshProxyPort: hc.sshProxyPort ?? null, // null vs undefined → stable comparison
-        token: hc.token ?? null,
-        sshProxyServerPath: hc.sshProxyServerPath ?? null,
+        sshHost: hc.ssh?.host ?? null,
+        sshProxyPort: hc.ssh?.proxyPort ?? null, // null vs undefined → stable comparison
+        token: hc.ssh?.token ?? null,
+        sshProxyServerPath: hc.ssh?.serverPath ?? null,
     });
 }
 
@@ -77,7 +77,7 @@ const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mdbg"; // The ~ will be expanded by
 // Runs a command on the remote host via SSH. Returns trimmed stdout on success,
 // rejects with a descriptive error on non-zero exit or timeout.
 async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs = SSH_RUN_TIMEOUT_MS): Promise<string> {
-    const sshHost = hostConfig.sshHost!;
+    const sshHost = hostConfig.ssh!.host;
     return new Promise<string>((resolve, reject) => {
         getHostAdapter().debugMessage(`Running SSH command on ${sshHost}: ${command}`);
         const proc = spawn("ssh", [sshHost, command], { windowsHide: true });
@@ -119,7 +119,7 @@ async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs =
 // Detects remote OS/arch via `uname -sm`, selects the matching local binary, and
 // streams it over SSH stdin — no scp required, so it works on all platforms.
 async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
-    const sshHost = hostConfig.sshHost!;
+    const sshHost = hostConfig.ssh!.host;
 
     // Detect remote OS + arch in one round trip. e.g. "Linux x86_64", "Linux aarch64"
     const unameOut = await sshRunHelper(hostConfig, "uname -sm");
@@ -196,14 +196,14 @@ interface RemoteProxyOutput {
 // The token is generated here and passed as --token; the binary echoes it back in the Discovery JSON so we can verify
 // the right process responded. The SSH process stays alive (running the proxy) after emitting the single JSON line.
 async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchResults> {
-    const sshHost = hostConfig.sshHost!;
+    const sshHost = hostConfig.ssh!.host;
 
     // Kill any stale agent from a previous session
     killSshAgent();
 
     // Generate token before spawn — we pass it in, we don't trust the channel to invent it
     const token = crypto.randomBytes(16).toString("hex");
-    const remoteHelperPath = hostConfig.sshProxyServerPath || REMOTE_HELPER_PATH;
+    const remoteHelperPath = hostConfig.ssh?.serverPath || REMOTE_HELPER_PATH;
     const remoteCmd = `${remoteHelperPath} proxy --port 0 --token ${token}`;
 
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
@@ -312,26 +312,26 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     if (!hostConfig?.enabled || hostConfig?.pvtNetworkMode !== "ssh") {
         return;
     }
-    const sshHost = hostConfig.sshHost || hostConfig.pvtProxyHost;
+    const sshHost = hostConfig.ssh?.host || hostConfig.pvtProxyHost;
     if (!sshHost) {
         throw new Error("SSH host not defined for SSH tunnel");
     }
-    let sshPort = hostConfig.sshProxyPort || hostConfig.pvtProxyPort;
+    let sshPort = hostConfig.ssh?.proxyPort || hostConfig.pvtProxyPort;
     // Daemon mode supplies the token in launch.json; otherwise the agent we start below
     // mints one and reports it in its discovery line.
-    let agentToken = (hostConfig.token as string) || "";
+    let agentToken = (hostConfig.ssh?.token as string) || "";
     if (!sshPort) {
         // Clear any existing token if port is not defined, to avoid confusion with stale tunnels. If we are going to be starting a
         // tunnel, any existing token would be invalid anyway, so better to require a clean slate.
-        hostConfig.token = undefined;
+        if (hostConfig.ssh) { hostConfig.ssh.token = undefined; }
     }
     const fingerprint = sshCacheFingerprint(hostConfig);
     if (sshTunnelProcess) {
-        const isDaemonMode = !!hostConfig.sshProxyPort;
+        const isDaemonMode = !!hostConfig.ssh?.proxyPort;
         const fingerprintMatch = sshTunnelConfig?.fingerprint === fingerprint;
         const agentAlive = isDaemonMode || !!sshAgentProcess; // daemon has no extension-managed agent process
         if (fingerprintMatch && agentAlive) {
-            hostConfig.pvtProxyToken = sshTunnelConfig!.token || (hostConfig.token as string);
+            hostConfig.pvtProxyToken = sshTunnelConfig!.token || (hostConfig.ssh?.token as string);
             hostConfig.pvtProxyPort = sshTunnelConfig!.localPort;
             hostConfig.pvtProxyHost = "127.0.0.1";
             return; // reuse existing tunnel
@@ -344,7 +344,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     }
 
     if (sshHost && !sshPort) {
-        if (!hostConfig.sshProxyServerPath) {
+        if (!hostConfig.ssh?.serverPath) {
             try {
                 await sshCopyHelper(hostConfig);
             } catch (error) {
@@ -472,10 +472,10 @@ const resolvedHostConfigs = new Map<string, HostConfig>();
 function proxyRequestFingerprint(hc: HostConfig): string {
     return JSON.stringify({
         type: hc.type ?? null,
-        sshHost: hc.sshHost ?? null,
-        sshProxyPort: hc.sshProxyPort ?? null,
-        token: hc.token ?? null,
-        sshProxyServerPath: hc.sshProxyServerPath ?? null,
+        sshHost: hc.ssh?.host ?? null,
+        sshProxyPort: hc.ssh?.proxyPort ?? null,
+        token: hc.ssh?.token ?? null,
+        sshProxyServerPath: hc.ssh?.serverPath ?? null,
         proxy: hc.proxy ?? null,
         remoteName: getHostAdapter().getRemoteName() ?? null,
     });
@@ -674,11 +674,11 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             // Ask the UI extension (mcu-debug-proxy) for the SSH host alias. It runs on
             // the Engineer Machine and reads the workspace folder URI authority
             // ("ssh-remote+HOSTNAME") — stable public API, no proposed API required.
-            // Fall back to hostConfig.sshHost if the user provides it explicitly.
+            // Fall back to hostConfig.ssh?.host if the user provides it explicitly.
             const hostFromProxy = await getHostAdapter().executeProxyCommand<string | null>("mcu-debug-proxy.getRemoteSshHost");
-            const sshHostForReverse = hostConfig.sshHost || hostFromProxy || undefined;
+            const sshHostForReverse = hostConfig.ssh?.host || hostFromProxy || undefined;
             if (!sshHostForReverse) {
-                const msg = "auto-ssh-remote: could not determine SSH host from mcu-debug-proxy. Please specify hostConfig.sshHost explicitly.";
+                const msg = "auto-ssh-remote: could not determine SSH host from mcu-debug-proxy. Please specify hostConfig.ssh?.host explicitly.";
                 getHostAdapter().showError(msg);
                 throw new Error(msg);
             }
