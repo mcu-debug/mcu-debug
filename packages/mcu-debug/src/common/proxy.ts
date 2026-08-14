@@ -19,7 +19,7 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { spawn } from "child_process";
-import { DefaultPortBase, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy, fmtBindErrors } from "@mcu-debug/shared";
+import { DefaultPortBase, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy, fmtBindErrors, formatThrown } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
 import { tcpReachable } from "./utils";
@@ -589,9 +589,9 @@ export function resolveProxyOverride(
     if (missing.length > 0) {
         throw new Error(
             `hostConfig.proxy is incomplete: missing ${missing.join(", ")}. ` +
-                "All of host, port and token are required — they describe a Probe Agent you started yourself, " +
-                "so there is nothing to fall back on. Run `mcu-debug proxy --status` on the machine with the probe " +
-                "to read its port and its bound addresses.",
+            "All of host, port and token are required — they describe a Probe Agent you started yourself, " +
+            "so there is nothing to fall back on. Run `mcu-debug proxy --status` on the machine with the probe " +
+            "to read its port and its bound addresses.",
         );
     }
     return { host: host as string, port: port as number, token: token as string };
@@ -600,6 +600,8 @@ export function resolveProxyOverride(
 /**
  * Apply `hostConfig.proxy` to the `pvtProxy*` fields, short-circuiting all detection.
  * Returns false when no override is configured.
+ * 
+ * Prints error message besides throwing if the override is present but invalid, so the caller doesn't have to worry about it.
  */
 function applyProxyOverride(hostConfig: HostConfig): boolean {
     let endpoint;
@@ -621,6 +623,9 @@ function applyProxyOverride(hostConfig: HostConfig): boolean {
     return true;
 }
 
+/**
+ * This function MUST print an error message before throwing, so the caller doesn't have to worry about it.
+ */
 export async function handleHostConfig(hostConfig: HostConfig | undefined, delConfig: () => void): Promise<void> {
     if (hostConfig && hostConfig.enabled) {
         // Checked before `type`: the override says "I manage the agent", which makes the
@@ -656,6 +661,8 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 hostConfig.pvtProxyBindHost = "127.0.0.1";
                 hostConfig.pvtProxyPort = sshTunnelConfig?.localPort as number;
             } catch (error) {
+                const msg = `Failed to start SSH tunnel: ${formatThrown(error)}. Please check hostConfig.ssh.host, hostConfig.ssh.proxyPort, and hostConfig.ssh.token.`;
+                getHostAdapter().showError(msg);
                 throw error;
             }
         } else if (resolvedMode === "auto-ssh-remote") {
@@ -750,9 +757,9 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             }
             const current = await awaitWithTimeout(launchProxyServerFromExtension(policy), 10000);
             if (!current) {
-                throw new Error(
-                    "Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated?. Please try again. Report this problem if it continues to happen",
-                );
+                const msg = "Proxy server did not launch in a timely manner or had an error. mcu-debug-proxy extension not activated?. Please try again. Report this problem if it continues to happen";
+                getHostAdapter().showError(msg);
+                throw new Error(msg);
             }
             if (current.serverPort == null || current.serverPort <= 0) {
                 const msg = `mcu-debug-proxy did not return a valid port ${JSON.stringify(current)}`;

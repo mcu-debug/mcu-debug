@@ -23,7 +23,8 @@ export function generateNonce(bytes: number = 16): string {
  */
 export function formatThrown(value: unknown): string {
     if (value instanceof Error) {
-        return value.stack ?? `${value.name}: ${value.message}`;
+        // return value.stack ?? `${value.name}: ${value.message}`;
+        return `${value.name}: ${value.message}`;
     }
 
     if (typeof value === "string") {
