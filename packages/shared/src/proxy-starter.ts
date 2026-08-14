@@ -3,7 +3,7 @@ import { openRemoteUri, ProxyLaunchPolicy, ProxyLaunchResults } from "./proxy-ne
 import { commandExists } from "./command-exists";
 import * as fs from "fs";
 import * as os from "os";
-import { generateNonce } from "./nonce";
+import { generateNonce } from "./utils";
 
 export interface ProvisioningResults {
     resultsFile: string;

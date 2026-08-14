@@ -22,7 +22,7 @@ import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } fro
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
-import { TcpPortScanner } from "@mcu-debug/shared";
+import { TcpPortScanner, formatThrown } from "@mcu-debug/shared";
 import { DisassemblyAdapter } from "./disassebly-gdb";
 import { DebugHelper, withTimeout } from "./helper";
 import { DisassemblyAdapterNew } from "./disassembly-new";
@@ -1267,7 +1267,7 @@ export class GDBDebugSession extends SeqDebugSession {
                         try {
                             await this.rttManager.start(this.rttTcpServer);
                         } catch (e) {
-                            this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${e instanceof Error ? e.message : String(e)}\n`);
+                            this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${formatThrown(e)}\n`);
                         }
                     }
                 });
@@ -1283,7 +1283,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.disassemblyAdapter?.initialize();
                 this.disassemblyAdapterNew?.initialize();
             } catch (e) {
-                this.handleMsg(Stderr, `ERROR: Failed to initialize target info and disassembly adapter: ${e instanceof Error ? e.message : String(e)}\n`);
+                this.handleMsg(Stderr, `ERROR: Failed to initialize target info and disassembly adapter: ${formatThrown(e)}\n`);
             }
             resolve();
         });
@@ -1330,15 +1330,15 @@ export class GDBDebugSession extends SeqDebugSession {
                 await this.startGdb();
             } catch (e) {
                 const msg = "\nMake sure that the GDB executable is installed correctly and can be run from command line.\n";
-                return finishWithError(`Failed to start GDB: ${e instanceof Error ? e.message : String(e)}${msg}`);
+                return finishWithError(`Failed to start GDB: ${formatThrown(e)}${msg}`);
             }
             reportTime("GDB Ready");
             const gdbPreConnectPromise = this.sendCommandsWithWait(this.gdbPreConnectInitCommands);
             try {
                 await startServerPromise;
             } catch (e) {
-                const msg = "\nMake sure that the GDB server is configured correctly. See 'MCU DEBUG -> gdb-server' tab for details.\n";
-                return finishWithError(`Failed to start debug server: ${e instanceof Error ? e.message : String(e)}${msg}`);
+                const msg = "\nMake sure that the GDB server is configured correctly. See 'MCU Debug -> gdb-server' tab for details.\n";
+                return finishWithError(`Failed to start debug server: ${formatThrown(e)}${msg}`);
             }
             reportTime("GDB Server Ready");
             await gdbPreConnectPromise;
@@ -1408,7 +1408,7 @@ export class GDBDebugSession extends SeqDebugSession {
             reportTime("Ready for full debugging");
             await postInitPromise;
         } catch (e) {
-            return finishWithError(`Launch/Attach request failed: ${e instanceof Error ? e.message : String(e)}`);
+            return finishWithError(`Launch/Attach request failed: ${formatThrown(e)}`);
         }
     }
 
@@ -1570,7 +1570,7 @@ export class GDBDebugSession extends SeqDebugSession {
                     this.continuing = true;
                     await this.gdbMiCommands.sendContinue(undefined);
                 } catch (e) {
-                    this.handleMsg(Stderr, `mcu-debug: Failed to send continue command: ${e instanceof Error ? e.message : String(e)}\n`);
+                    this.handleMsg(Stderr, `mcu-debug: Failed to send continue command: ${formatThrown(e)}\n`);
                 }
             };
             if (this.configurationDone === false) {
@@ -1601,7 +1601,7 @@ export class GDBDebugSession extends SeqDebugSession {
             await this.sendCommandsWithWait(swoRttCommands);
             this.serverSession.serverController.debuggerLaunchCompleted();
         } catch (e) {
-            const msg = `SWO/RTT Initialization failed: ${e}`;
+            const msg = `SWO/RTT Initialization failed: ${formatThrown(e)}`;
             this.handleMsg(Stderr, msg);
             this.sendEvent(new GenericCustomEvent("popup", { type: "error", message: msg }));
         }
@@ -1643,7 +1643,7 @@ export class GDBDebugSession extends SeqDebugSession {
         try {
             await this.sendCommandsWithWait(commands);
         } catch (e) {
-            this.handleMsg(Stderr, `mcu-debug: Warning: Failed to run post start session commands (e.g. runToEntryPoint): ${e instanceof Error ? e.message : String(e)}\n`);
+            this.handleMsg(Stderr, `mcu-debug: Warning: Failed to run post start session commands (e.g. runToEntryPoint): ${formatThrown(e)}\n`);
         }
         this.suppressStoppedEvents = false;
 
@@ -1652,14 +1652,14 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         if (needsContinue) {
             this.sendContinueWhenPossible().catch((e) => {
-                this.handleMsg(Stderr, `mcu-debug: Failed to continue after session mode commands: ${e instanceof Error ? e.message : String(e)}\n`);
+                this.handleMsg(Stderr, `mcu-debug: Failed to continue after session mode commands: ${formatThrown(e)}\n`);
             });
             return;
         }
         try {
             await this.gdbMiCommands.sendFlushRegs();
         } catch (e) {
-            this.handleMsg(Stderr, `mcu-debug: Warning: Failed to flush registers before sending stopped event: ${e instanceof Error ? e.message : String(e)}\n`);
+            this.handleMsg(Stderr, `mcu-debug: Warning: Failed to flush registers before sending stopped event: ${formatThrown(e)}\n`);
         }
         if (!this.isRunning()) {
             // VSCode still thinks we are running although, we should be stopped at entry point
@@ -1680,7 +1680,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 try {
                     await this.gdbInstance!.sendCommand(cmd);
                 } catch (e) {
-                    reject(new Error(`Failed to send start command to GDB: ${cmd}\nError: ${e instanceof Error ? e.message : String(e)}`));
+                    reject(new Error(`Failed to send start command to GDB: ${cmd}\nError: ${formatThrown(e)}`));
                     return;
                 }
             }
