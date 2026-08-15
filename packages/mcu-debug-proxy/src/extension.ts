@@ -31,7 +31,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import { ChildProcess, spawn } from "node:child_process";
-import { computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults, ProvisioningResults, ProxyProvisionRequest, startProxyServerWithPolicy, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
+import { SSH_BATCH_OPTS, computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults, ProvisioningResults, ProxyProvisionRequest, startProxyServerWithPolicy, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
 
 /**
  * Returns true if the binary at filePath is a native executable for the
@@ -127,12 +127,17 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
         killSshReverseTunnel();
     }
 
-    const args = ["-N", "-R", `localhost:0:127.0.0.1:${localProxyPort}`, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshHost];
+    const args = ["-N", "-R", `localhost:0:127.0.0.1:${localProxyPort}`, ...SSH_BATCH_OPTS, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshHost];
     const cmdString = `ssh ${args.join(" ")}`;
 
     return new Promise<number>((resolve, reject) => {
         let settled = false;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        // Filled by the stderr handler below. With BatchMode=yes a bad login exits at once
+        // and the reason ("Permission denied (publickey)", "Host key verification failed")
+        // is only here, so every failure path appends it.
+        let stderrBuf = "";
+        const sshSays = () => (stderrBuf.trim() ? `\nssh: ${stderrBuf.trim()}` : "");
 
         const fail = (msg: string) => {
             if (settled) {
@@ -164,7 +169,7 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
 
         proc.on("exit", (code) => {
             if (!settled) {
-                fail(`SSH reverse tunnel exited prematurely (code ${code}). Check host, credentials, and that AllowTcpForwarding is enabled on ${sshHost}`);
+                fail(`SSH reverse tunnel exited prematurely (code ${code}). Check host, credentials, and that AllowTcpForwarding is enabled on ${sshHost}.${sshSays()}`);
             } else {
                 sshRevTunnelProcess = null;
                 sshRevTunnelConfig = null;
@@ -173,7 +178,6 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
 
         // OpenSSH prints "Allocated port XXXXX for remote forward to ..." to stderr
         // at INFO level (the default) — no -v required.
-        let stderrBuf = "";
         proc.stderr?.on("data", (d: Buffer) => {
             stderrBuf += d.toString();
             const match = stderrBuf.match(/Allocated port (\d+) for remote forward/);
@@ -183,7 +187,7 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
         });
 
         timeoutHandle = setTimeout(() => {
-            fail(`SSH reverse tunnel timed out after ${SSH_REV_TUNNEL_TIMEOUT_MS / 1000}s waiting for port allocation from ${sshHost}`);
+            fail(`SSH reverse tunnel timed out after ${SSH_REV_TUNNEL_TIMEOUT_MS / 1000}s waiting for port allocation from ${sshHost}.${sshSays()}`);
         }, SSH_REV_TUNNEL_TIMEOUT_MS);
     });
 }

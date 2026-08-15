@@ -19,6 +19,24 @@ import { exec } from "child_process";
 
 export type ProxyHostType = "auto" | "ssh" | "local";
 
+/**
+ * Options shared by every `ssh` process we spawn, in either SSH topology.
+ *
+ * We always spawn ssh with piped stdio and no controlling terminal, so a password or
+ * key-passphrase prompt can never be answered — ssh would sit there until whichever
+ * caller-side timeout fires, and the user gets a misleading "timed out waiting for ..."
+ * instead of the truth, which is that authentication never had a chance. BatchMode=yes
+ * makes that case exit immediately with a real error on stderr.
+ *
+ * It also turns an unknown/changed host key into an immediate failure instead of a
+ * silent wait on an unanswerable confirmation prompt.
+ *
+ * Nothing here weakens auth: key-based auth via ssh-agent, an already-open ControlMaster,
+ * or a passphrase-less key all work exactly as before. The requirement this makes explicit
+ * is one we already had — these connections must be non-interactive.
+ */
+export const SSH_BATCH_OPTS = ["-o", "BatchMode=yes"];
+
 // Known remoteName values from VS Code's remote extension:
 //   "wsl"            — WSL 1/2 classic (shared-kernel or mirrored)
 //   "wsl-container"  — WSL Container (VM-isolated OCI container under WSL) — TENTATIVE, watch

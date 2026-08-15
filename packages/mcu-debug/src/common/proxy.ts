@@ -19,7 +19,7 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { spawn } from "child_process";
-import { DefaultPortBase, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy, fmtBindErrors, formatThrown } from "@mcu-debug/shared";
+import { DefaultPortBase, SSH_BATCH_OPTS, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy, fmtBindErrors, formatThrown, generateNonce } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
 import { tcpReachable } from "./utils";
@@ -74,13 +74,22 @@ const SSH_DEPLOY_TIMEOUT_MS = 60000;
 const SSH_AGENT_LAUNCH_TIMEOUT_MS = 30000;
 const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mdbg"; // The ~ will be expanded by the remote shell.
 
+// Appends ssh's own stderr to an error message. Because we run with BatchMode=yes
+// (SSH_BATCH_OPTS), an unusable login fails instantly and says exactly why here —
+// "Permission denied (publickey)", "Host key verification failed", "Could not resolve
+// hostname". Without this the user only sees our generic wrapper text.
+function fmtSshStderr(stderr: string): string {
+    const trimmed = stderr.trim();
+    return trimmed ? `\nssh: ${trimmed}` : "";
+}
+
 // Runs a command on the remote host via SSH. Returns trimmed stdout on success,
 // rejects with a descriptive error on non-zero exit or timeout.
 async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs = SSH_RUN_TIMEOUT_MS): Promise<string> {
     const sshHost = hostConfig.ssh!.host;
     return new Promise<string>((resolve, reject) => {
         getHostAdapter().debugMessage(`Running SSH command on ${sshHost}: ${command}`);
-        const proc = spawn("ssh", [sshHost, command], { windowsHide: true });
+        const proc = spawn("ssh", [...SSH_BATCH_OPTS, sshHost, command], { windowsHide: true });
         let stdout = "";
         let stderr = "";
 
@@ -142,7 +151,7 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
     }
 
     await new Promise<void>((resolve, reject) => {
-        const args = [sshHost, `mkdir -p ~/.mcu-debug/bin && rm -f ${REMOTE_HELPER_PATH} && cat > ${REMOTE_HELPER_PATH} && chmod +x ${REMOTE_HELPER_PATH}`];
+        const args = [...SSH_BATCH_OPTS, sshHost, `mkdir -p ~/.mcu-debug/bin && rm -f ${REMOTE_HELPER_PATH} && cat > ${REMOTE_HELPER_PATH} && chmod +x ${REMOTE_HELPER_PATH}`];
         getHostAdapter().debugMessage(`Deploying helper binary ${localBinary} to ${sshHost}: ssh ${args.join(" ")}`);
         const proc = spawn("ssh", args, { windowsHide: true });
 
@@ -202,13 +211,13 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
     killSshAgent();
 
     // Generate token before spawn — we pass it in, we don't trust the channel to invent it
-    const token = crypto.randomBytes(16).toString("hex");
+    let token = generateNonce(16);
     const remoteHelperPath = hostConfig.ssh?.serverPath || REMOTE_HELPER_PATH;
     const remoteCmd = `${remoteHelperPath} proxy --port 0 --token ${token}`;
 
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
         getHostAdapter().debugMessage(`Starting SSH proxy server on ${sshHost} with command: ssh ${sshHost} ${remoteCmd}`);
-        const proc = spawn("ssh", [sshHost, remoteCmd], { windowsHide: true });
+        const proc = spawn("ssh", [...SSH_BATCH_OPTS, sshHost, remoteCmd], { windowsHide: true });
         let settled = false;
         let stdoutBuf = "";
 
@@ -227,8 +236,13 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
             fail(`SSH proxy agent on ${sshHost} did not emit Discovery JSON within ${SSH_AGENT_LAUNCH_TIMEOUT_MS / 1000}s`);
         }, SSH_AGENT_LAUNCH_TIMEOUT_MS);
 
+        // Kept, not just logged: with BatchMode=yes an auth or host-key failure exits
+        // immediately and the only explanation is here ("Permission denied (publickey)",
+        // "Host key verification failed"). The exit handler puts it in the error.
+        let stderrBuf = "";
         proc.stderr?.on("data", (d: Buffer) => {
             const line = d.toString().trim();
+            stderrBuf += d.toString();
             getHostAdapter().debugMessage(`SSH proxy agent stderr on ${sshHost}: ${line}`);
         });
 
@@ -263,11 +277,14 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
                 return;
             }
 
-            // Verify the token echoed back matches what we sent — catches wires-crossed / stale-process scenarios
-            if (parsed.token && parsed.token !== token) {
-                fail(`SSH proxy agent on ${sshHost} echoed unexpected token — possible process mismatch`);
+            // The token can be different from what we passed in if the agent was already running and reused its existing token.
+            // The fingerpring could have mismatched but there may already be a running agent with a valid token, so we accept
+            // whatever the agent actually uses.
+            if (!(parsed.token as string) || parsed.token.length < 16) {
+                fail(`SSH proxy agent on ${sshHost} echoed no token — cannot trust it`);
                 return;
             }
+            token = parsed.token as string; // update to whatever the agent actually uses
 
             if (settled) {
                 return;
@@ -290,7 +307,7 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
 
         proc.on("exit", (code) => {
             if (!settled) {
-                fail(`SSH proxy agent on ${sshHost} exited prematurely (code ${code}). Check host, credentials, and that the binary is deployed`);
+                fail(`SSH proxy agent on ${sshHost} exited prematurely (code ${code}). Check host, credentials, and that the binary is deployed.${fmtSshStderr(stderrBuf)}`);
             } else {
                 sshAgentProcess = null;
                 if (code !== 0 && code !== null) {
@@ -327,14 +344,14 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     }
     const fingerprint = sshCacheFingerprint(hostConfig);
     if (sshTunnelProcess) {
-        const isDaemonMode = !!hostConfig.ssh?.proxyPort;
         const fingerprintMatch = sshTunnelConfig?.fingerprint === fingerprint;
-        const agentAlive = isDaemonMode || !!sshAgentProcess; // daemon has no extension-managed agent process
-        if (fingerprintMatch && agentAlive) {
+        if (fingerprintMatch) {
             hostConfig.pvtProxyToken = sshTunnelConfig!.token || (hostConfig.ssh?.token as string);
             hostConfig.pvtProxyPort = sshTunnelConfig!.localPort;
             hostConfig.pvtProxyHost = "127.0.0.1";
             return; // reuse existing tunnel
+        } else if (!fingerprintMatch) {
+            getHostAdapter().debugMessage(`SSH tunnel fingerprint mismatch: ${sshTunnelConfig?.fingerprint} vs ${fingerprint}`);
         }
         const reason = !fingerprintMatch ? `launch config changed (${sshTunnelConfig?.sshHost} → ${sshHost})` : `per-session agent process exited unexpectedly`;
         getHostAdapter().debugMessage(`Existing SSH tunnel invalidated: ${reason}. Restarting from scratch.`);
@@ -370,7 +387,7 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     }
 
     const localPort = await getAnyFreePort(DefaultPortBase.sshTunnel);
-    const args = ["-N", "-L", `127.0.0.1:${localPort}:127.0.0.1:${sshPort}`, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshHost];
+    const args = ["-N", "-L", `127.0.0.1:${localPort}:127.0.0.1:${sshPort}`, ...SSH_BATCH_OPTS, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshHost];
     const cmdString = `ssh ${args.join(" ")}`;
 
     return new Promise<void>((resolve, reject) => {
@@ -379,6 +396,12 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
         let settled = false;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         let pollHandle: ReturnType<typeof setTimeout> | undefined;
+        // See startSshProxyServer: with BatchMode=yes this is where the reason for a
+        // fast failure appears, so it has to reach the error message.
+        let stderrBuf = "";
+        proc.stderr?.on("data", (d: Buffer) => {
+            stderrBuf += d.toString();
+        });
 
         const cleanup = () => {
             clearTimeout(timeoutHandle);
@@ -413,9 +436,10 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
         };
 
         // If SSH exits before we've confirmed the tunnel is up, it failed
-        proc.on("exit", (code) => {
+        proc.on("exit", async (code) => {
+            await new Promise((resolve) => setTimeout(resolve, 10));
             if (!settled) {
-                fail(`SSH process exited prematurely (code ${code}). Check host and credentials: ${sshHost}`);
+                fail(`SSH process exited prematurely (code ${code}). Check host and credentials: ${sshHost}.${fmtSshStderr(stderrBuf)}`);
             } else {
                 if (code !== 0 && code !== null) {
                     getHostAdapter().debugMessage(`SSH tunnel process for ${sshHost} exited with code ${code}`);
