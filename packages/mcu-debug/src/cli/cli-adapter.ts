@@ -172,30 +172,55 @@ export class CliAdapter implements IHostAdapter {
         return new CliOutputChannel(name);
     }
 
+    private platforms = { "win32": ".win32", "darwin": ".osx", "linux": ".linux" };
+    private replacePlatformSpecificSettings(settings: { [key: string]: any }): boolean {
+        let ret = false;
+        const curPlatform = this.platforms[os.platform() as keyof typeof this.platforms] || "unknown";
+        for (const key in settings) {
+            if (key.startsWith("mcu-debug.") || key.startsWith("cortex-debug.")) {
+                if (key.endsWith(curPlatform)) {
+                    const newKey = key.slice(0, -curPlatform.length);
+                    if (!settings.hasOwnProperty(newKey)) {
+                        settings[newKey] = settings[key];
+                        ret = true;
+                    }
+                }
+            }
+        }
+        return ret;
+    }
+
     private initSettings() {
         const settingsFile = this.cliArgs.settings;
         const settingsFiles = [os.homedir() + '/.mcu-debug/settings.json', settingsFile].filter(f => f !== undefined) as string[];
         for (const file of settingsFiles) {
             if (fs.existsSync(file)) {
                 let content: string;
+                let newSettings = {};
                 try {
                     content = fs.readFileSync(file, "utf8");
-                    this.settings = JSONC.parse(content) as { [key: string]: any };
+                    newSettings = JSONC.parse(content) as { [key: string]: any };
+                    if (this.replacePlatformSpecificSettings(newSettings)) {
+                        content = JSONC.stringify(newSettings);
+                    }
                 } catch (error) {
                     logger.error("Failed to load configuration from settings file: " + (error instanceof Error ? error.message : String(error)));
                     process.exit(1);
                 }
-                const substitutedContent = processVarSubstitution(content, this.settings as any, 'config:', (msg) => {
+                // Replace any variable that is referenced in the configuration with a value from the previous settings
+                const substitutedContent = processVarSubstitution(content, this.settings, 'config:', (msg) => {
                     logger.warn(`In config: variable substitution for ${file}: ${msg}`);
                 });
                 if (substitutedContent !== content) {
                     try {
-                        this.settings = JSONC.parse(substitutedContent) as { [key: string]: any };
+                        newSettings = JSONC.parse(substitutedContent) as { [key: string]: any };
                     } catch (error) {
                         logger.error("Failed to parse configuration after variable substitution: " + (error instanceof Error ? error.message : String(error)));
                         // process.exit(1);
                     }
                 }
+                // Merge the old and new settings
+                this.settings = { ...this.settings, ...newSettings };
             } else if (file !== settingsFiles[0]) { // Don't warn about the default settings file if it doesn't exist
                 logger.warn(`Settings file ${file} does not exist.`);
             }

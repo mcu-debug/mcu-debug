@@ -8,7 +8,6 @@ import { ConfigurationArguments, substituteEnvVarsInConfig } from "../adapter/se
 import { McuDebugConfigurationProviderBase } from "../common/config-provider";
 import { processVarSubstitution } from "../adapter/servers/common";
 import { getHostAdapter } from "../common/host-adapter";
-import { CliArgs } from "./cli-options";
 import { CustomTransport } from "../common/cli-logger";
 
 export interface ConfigLoaderArgs {
