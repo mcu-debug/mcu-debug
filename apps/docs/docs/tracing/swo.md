@@ -87,7 +87,7 @@ SWO is only useful if you have one or more decoders. A decoder tells this extens
 | :----------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `console`    | Data is interpreted as human-readable text with a given encoding ('utf8' is the default). You can find the output in the `TERMINAL` tab.                                                                                                                                                                                    |
 | `binary`     | This is similar to `console` but data is interpreted as a binary stream like signed, unsigned, float, etc., and the result is displayed as hex values. Each line in the output window will contain a _timestamp hex-value - decoded-value - scaled-value_                                                                   |
-| `graph`      | This is also interpreted as binary data but is useful for plotting graphs. Each such decoder has a `graphId` (arbitrary user-defined name) that can be later used in a graph. See **[Output Graphing](#graphing)**                                                                                                          |
+| `graph`      | This is also interpreted as binary data but is useful for plotting graphs. Each such decoder has a `graphId` (arbitrary user-defined name) that can be later used in a graph. See **[Output Graphing](#output-graphing)**                                                                                                   |
 | `advanced`   | This is where you provide a custom JavaScript module to interpret the data. For each chunk of data received, an event is generated that your module can subscribe to. See [source code here](https://github.com/Marus/cortex-debug/blob/eda3058e580f70af9b512d0c2307a97d8d70ecd6/src/frontend/swo/decoders/advanced.ts#L67) |
 
 ## SWO configuration
@@ -128,7 +128,7 @@ We don't have any real documentation. But here are some contributions from users
 
 https://github.com/Marus/cortex-debug/issues/104#issuecomment-1450108082
 
-## Output Graphing #graphing
+## Output Graphing
 
 ## Example of a time series graph with two lines
 `"graphConfig"` can be used alongside with `"swoConfig"` or with `"rttConfig"`. It may also work with a combination of the two as long as the `graphId`s are unique. See also https://mcu-debug.github.io/mcu-debug/docs/tracing/builtin-rtt

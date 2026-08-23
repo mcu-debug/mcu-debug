@@ -14,7 +14,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ChildProcess } from "child_process";
-import * as crypto from "crypto";
 import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
@@ -22,6 +21,7 @@ import { spawn } from "child_process";
 import { DefaultPortBase, SSH_BATCH_OPTS, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy, fmtBindErrors, formatThrown, generateNonce } from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
+import { pkgJsonVersion } from "../commit-hash";
 import { tcpReachable } from "./utils";
 
 interface SshTunnelConfig {
@@ -69,6 +69,11 @@ function killSshAgent() {
 
 const SSH_TUNNEL_TIMEOUT_MS = 15000;
 const SSH_TUNNEL_POLL_MS = 250;
+// Deliberately short. This runs on the reuse path of every launch and every cached serial
+// request, and the round trip is at most one ssh hop to an agent that is either answering
+// promptly or not answering at all — there is no slow-but-healthy case to accommodate.
+// Waiting longer only delays the rebuild that is going to happen anyway.
+const PROXY_PROBE_TIMEOUT_MS = 2000;
 const SSH_RUN_TIMEOUT_MS = 15000;
 const SSH_DEPLOY_TIMEOUT_MS = 60000;
 const SSH_AGENT_LAUNCH_TIMEOUT_MS = 30000;
@@ -122,6 +127,23 @@ async function sshRunHelper(hostConfig: HostConfig, command: string, timeoutMs =
             reject(new Error(`SSH process error on ${sshHost}: ${err.message}`));
         });
     });
+}
+
+/**
+ * Quote a remote executable path for the shell on the far side of `ssh`.
+ *
+ * Double quotes rather than single, because this string may be interpreted by a POSIX shell
+ * *or* by cmd.exe, and double quotes are the only form both honour — cmd.exe does not treat
+ * `'` as quoting at all and would pass it through as part of the filename. That matters as
+ * soon as `ssh.serverPath` is used, which is the configuration that lets a Windows host work:
+ * `C:\Program Files\...` is an ordinary path there, and unquoted it splits at the space.
+ *
+ * A leading `~/` is left outside the quotes. Tilde expansion happens only on an unquoted
+ * tilde, so quoting the whole path would turn our own default into a literal filename
+ * starting with a tilde character.
+ */
+export function quoteRemotePath(p: string): string {
+    return p.startsWith("~/") ? `~/"${p.slice(2)}"` : `"${p}"`;
 }
 
 // Deploys the mcu-debug binary to REMOTE_HELPER_PATH on the remote host.
@@ -199,7 +221,41 @@ interface RemoteProxyOutput {
     port: number;
     pid: number;
     token: string;
+    /** Version of the agent now listening on `port`. Optional: agents older than this field
+     *  omit it, and an SSH host is exactly where such an agent turns up, since the user may
+     *  have installed it themselves. */
+    version?: string;
     bind_errors?: string[];
+}
+
+/**
+ * Reject a version mismatch here, where the numbers are still in hand.
+ *
+ * The agent enforces this itself at `initialize`, but that is several steps later — after we
+ * have deployed or launched a binary and built an SSH tunnel to it — and the failure arrives as
+ * a protocol error a long way from the cause. The discovery line carries the agent's version, so
+ * the cheap check is the early one.
+ *
+ * A blank or absent version means an agent predating the field. That is not a mismatch we can
+ * assert, so it is passed through and left to `initialize`, which has always checked.
+ */
+function checkAgentVersion(agentVersion: string | undefined, where: string): void {
+    if (!agentVersion) {
+        getHostAdapter().debugMessage(
+            `Proxy Agent on ${where} did not report a version — it predates that field. ` +
+            "Compatibility will be decided at initialize.",
+        );
+        return;
+    }
+    if (agentVersion === pkgJsonVersion) {
+        return;
+    }
+    throw new Error(
+        `Proxy Agent version mismatch on ${where}: the agent is ${agentVersion}, this extension is ${pkgJsonVersion}. ` +
+        "They must match exactly — neither side accepts an older or newer peer. " +
+        `Replace the agent with the mdbg shipped inside the matching extension (see the "Getting the mdbg binary" ` +
+        "section of the SSH documentation).",
+    );
 }
 // Starts the proxy server on the remote host via SSH by running the deployed helper binary with appropriate arguments.
 // The token is generated here and passed as --token; the binary echoes it back in the Discovery JSON so we can verify
@@ -213,7 +269,7 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
     // Generate token before spawn — we pass it in, we don't trust the channel to invent it
     let token = generateNonce(16);
     const remoteHelperPath = hostConfig.ssh?.serverPath || REMOTE_HELPER_PATH;
-    const remoteCmd = `${remoteHelperPath} proxy --port 0 --token ${token}`;
+    const remoteCmd = `${quoteRemotePath(remoteHelperPath)} proxy --port 0 --token ${token}`;
 
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
         getHostAdapter().debugMessage(`Starting SSH proxy server on ${sshHost} with command: ssh ${sshHost} ${remoteCmd}`);
@@ -277,6 +333,16 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
                 return;
             }
 
+            // Before the tunnel, not after. This is the SSH path, where the agent may be one the
+            // user installed and updated on their own schedule, so it is the likeliest place for
+            // the versions to drift apart.
+            try {
+                checkAgentVersion(parsed.version, sshHost);
+            } catch (e: any) {
+                fail(e.message);
+                return;
+            }
+
             // The token can be different from what we passed in if the agent was already running and reused its existing token.
             // The fingerpring could have mismatched but there may already be a running agent with a valid token, so we accept
             // whatever the agent actually uses.
@@ -322,6 +388,92 @@ async function startSshProxyServer(hostConfig: HostConfig): Promise<ProxyLaunchR
     });
 }
 
+/**
+ * Is a Proxy Agent still answering at `host:port`?
+ *
+ * Used before reusing anything we resolved earlier — an SSH tunnel, or a cached endpoint from
+ * a previous request. The need is sharpest for SSH but the question is the same everywhere:
+ * we are about to hand a caller an address we have not checked since we learned it.
+ *
+ * A TCP connect is not evidence. For `ssh -L` in particular it proves nothing at all: ssh
+ * binds the local port at startup and keeps it bound for its whole life, so `connect()`
+ * succeeds even when the agent on the far side is long gone — the same reason `pollPort()`
+ * below can only tell us ssh is up, not that anything is listening on the other end. Reusing
+ * on that evidence is how a dead agent turns into a session that hangs with no explanation.
+ *
+ * So we speak one word of the protocol. `heartbeat` is the right word: the agent answers it
+ * unconditionally — no `initialize`, no token, no session state touched — so a probe cannot
+ * disturb an agent that *is* healthy. (`initialize` would be actively wrong here: it does a
+ * `remove_dir_all` on the session directory.)
+ *
+ * The reply is parsed rather than merely counted, because "something accepted the connection"
+ * is not the claim we need. If the agent died and its port was recycled by an unrelated
+ * process, that process may well send a banner; matching `seq` and `success` says the thing on
+ * the other end is our agent and is processing messages.
+ *
+ * Never rejects — an unreachable agent is the expected answer, not an error.
+ */
+export function probeProxyAlive(host: string, port: number, timeoutMs = PROXY_PROBE_TIMEOUT_MS): Promise<boolean> {
+    const PROBE_SEQ = 1; // seq 0 is reserved for unsolicited server events
+    return new Promise<boolean>((resolve) => {
+        const socket = new net.Socket();
+        let settled = false;
+        let rx = Buffer.alloc(0);
+
+        const done = (alive: boolean) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(alive);
+        };
+
+        // A wedged agent that accepts but never answers looks the same as a dead one from
+        // here, and for our purposes it is one: we cannot run a session through it either.
+        const timer = setTimeout(() => done(false), timeoutMs);
+        timer.unref();
+
+        socket.once("connect", () => {
+            const payload = Buffer.from(JSON.stringify({ seq: PROBE_SEQ, method: "heartbeat" }), "utf-8");
+            const header = Buffer.alloc(5);
+            header.writeUInt8(0, 0); // stream_id 0 — the control channel
+            header.writeUInt32LE(payload.length, 1);
+            socket.write(Buffer.concat([header, payload]));
+        });
+
+        socket.on("data", (chunk: Buffer) => {
+            rx = Buffer.concat([rx, chunk]);
+            if (rx.length < 5) {
+                return; // header not complete yet
+            }
+            const streamId = rx.readUInt8(0);
+            const length = rx.readUInt32LE(1);
+            if (rx.length < 5 + length) {
+                return; // payload not complete yet
+            }
+            if (streamId !== 0) {
+                done(false); // not the control channel — not our agent's answer
+                return;
+            }
+            try {
+                const msg = JSON.parse(rx.subarray(5, 5 + length).toString("utf-8"));
+                done(msg?.seq === PROBE_SEQ && msg?.success === true);
+            } catch {
+                done(false);
+            }
+        });
+
+        // Both are ordinary outcomes when the agent is gone: ssh answers the channel-open
+        // failure by closing the connection it just accepted from us.
+        socket.once("error", () => done(false));
+        socket.once("close", () => done(false));
+
+        socket.connect(port, host);
+    });
+}
+
 // Sets `hostConfig.pvtProxy{Host,Port,Token}` on success — all three, on both the
 // reuse and fresh-launch paths, so no caller has to reach for the agent's token from
 // somewhere else.
@@ -345,7 +497,13 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     const fingerprint = sshCacheFingerprint(hostConfig);
     if (sshTunnelProcess) {
         const fingerprintMatch = sshTunnelConfig?.fingerprint === fingerprint;
-        if (fingerprintMatch) {
+        // Matching config is necessary but not sufficient: the tunnel also has to still
+        // reach a live agent. Probed on every reuse because nothing here observes the far
+        // side otherwise — the agent runs on another machine, and since the proxy became a
+        // singleton it may be shared with, and outlive or be outlived by, sessions we know
+        // nothing about.
+        const tunnelAlive = fingerprintMatch && (await probeProxyAlive("127.0.0.1", sshTunnelConfig!.localPort));
+        if (fingerprintMatch && tunnelAlive) {
             hostConfig.pvtProxyToken = sshTunnelConfig!.token || (hostConfig.ssh?.token as string);
             hostConfig.pvtProxyPort = sshTunnelConfig!.localPort;
             hostConfig.pvtProxyHost = "127.0.0.1";
@@ -353,7 +511,9 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
         } else if (!fingerprintMatch) {
             getHostAdapter().debugMessage(`SSH tunnel fingerprint mismatch: ${sshTunnelConfig?.fingerprint} vs ${fingerprint}`);
         }
-        const reason = !fingerprintMatch ? `launch config changed (${sshTunnelConfig?.sshHost} → ${sshHost})` : `per-session agent process exited unexpectedly`;
+        const reason = !fingerprintMatch
+            ? `launch config changed (${sshTunnelConfig?.sshHost} → ${sshHost})`
+            : `no Proxy Agent answered through the existing tunnel to ${sshTunnelConfig?.sshHost} within ${PROXY_PROBE_TIMEOUT_MS / 1000}s`;
         getHostAdapter().debugMessage(`Existing SSH tunnel invalidated: ${reason}. Restarting from scratch.`);
         getHostAdapter().showWarning(`SSH tunnel restarting: ${reason}.`);
         killSshAgent();
@@ -492,6 +652,25 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
 // impossible at the same time. A changed request produces a different key →
 // cache miss → re-resolve, so launch.json edits invalidate automatically.
 const resolvedHostConfigs = new Map<string, HostConfig>();
+
+/**
+ * Drop everything a previous resolution wrote, leaving only what the user asked for.
+ *
+ * The `pvt*` fields are outputs, but several are read back as inputs on the next pass to
+ * mean "an agent is already running here". That is only true when they came from a
+ * resolution that is still current, so a config being re-resolved has to shed them first.
+ * Deliberately exhaustive over the `pvt*` fields of HostConfig: a field missed here is a
+ * stale value silently trusted later.
+ */
+function clearResolvedProxyFields(hc: HostConfig): void {
+    hc.pvtProxyHost = undefined;
+    hc.pvtProxyBindHost = undefined;
+    hc.pvtProxyPort = undefined;
+    hc.pvtProxyToken = undefined;
+    hc.pvtSshTunnelLocalPort = undefined;
+    hc.pvtNetworkMode = undefined;
+    hc.pvtResolved = undefined;
+}
 
 function proxyRequestFingerprint(hc: HostConfig): string {
     return JSON.stringify({
@@ -850,7 +1029,9 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
  * Do not cache the return value at a higher level: the SSH tunnel can drop or
  * the proxy can restart under the same identity. The cache here is keyed by the
  * request fingerprint, so a launch.json edit changes the key and forces a fresh
- * resolution; connection-level failures surface via ProxyConnection.connect().
+ * resolution, and a hit is only returned after the endpoint answers a heartbeat —
+ * neither of which protects a copy someone else is holding on to. Failures past
+ * that point still surface via ProxyConnection.connect().
  */
 export async function getProxyForSerialPorts(hostConfig: HostConfig | undefined): Promise<HostConfig | null> {
     if (!hostConfig) {
@@ -862,8 +1043,25 @@ export async function getProxyForSerialPorts(hostConfig: HostConfig | undefined)
     const key = proxyRequestFingerprint(hostConfig);
     const cached = resolvedHostConfigs.get(key);
     if (cached) {
-        return cached;
+        // A cache hit is a claim about a remote process, and processes exit. The entry
+        // records where a Proxy Agent answered *once*; the agent may since have died, or
+        // the SSH tunnel behind it may have been torn down and rebuilt on a different
+        // local port by a debug launch. Handing that address back produces a connect that
+        // hangs or refuses, far from here and with nothing pointing at the stale entry —
+        // so the endpoint is re-checked rather than assumed.
+        if (await probeProxyAlive(cached.pvtProxyHost || "127.0.0.1", cached.pvtProxyPort as number)) {
+            return cached;
+        }
+        getHostAdapter().debugMessage(
+            `Cached proxy ${cached.pvtProxyHost}:${cached.pvtProxyPort} no longer answers — discarding and re-resolving.`,
+        );
+        resolvedHostConfigs.delete(key);
     }
+    // Start from a clean slate. handleHostConfig and startSshTunnel both read pvtProxyPort
+    // as an *input* when deciding whether an agent already exists, so a config carrying
+    // values from a dead session would have them mistaken for a live endpoint — for the
+    // host-only SSH variant, an old tunnel's local port read as the remote agent's port.
+    clearResolvedProxyFields(hostConfig);
     try {
         // handleHostConfig resolves the proxy (reusing an already-running tunnel
         // / proxy where it can) and mutates hostConfig in place with pvtProxy*.

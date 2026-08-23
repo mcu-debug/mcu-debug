@@ -60,7 +60,7 @@ flowchart
 
 ## The `hostConfig` Property
 
-All remote topologies are configured via the `hostConfig` block in `launch.json`: For everything except for 'ssh', the `hostConfig` can be a simple boolean
+All remote topologies are configured via the `hostConfig` block in `launch.json`: For everything except for 'ssh', the `hostConfig` can be a simple boolean, for non-CLI use
 
 ```json
 "serverpath": "<path-to-gdb-server-on-remote>",
@@ -77,7 +77,7 @@ the above is equivalent to the following
 }
 ```
 
-For explicit SSH configuration:
+For explicit SSH configuration. The `port`/`token` are determined by contacting the `host` and starting the proxy server if needed:
 
 ```json
 "serverpath": "<path-to-gdb-server-on-remote>",
@@ -86,6 +86,22 @@ For explicit SSH configuration:
   "type": "ssh",
   "ssh": {
     "host": "lab-server"
+  }
+}
+```
+The above involves more steps like copying the server executable, so not recommended for performance. It is however convenient since versions are guaranteed to match
+
+For totally explicit SSH configuration where you started the proxy server yourself:
+
+```json
+"serverpath": "<path-to-gdb-server-on-remote>",
+"hostConfig": {
+  "enabled": true,
+  "type": "ssh",
+  "ssh": {
+    "host": "lab-server",
+    "proxyPort": 5689,
+    "token": "${env:MDBG_PROXY_TOKEN}"  // Avoid putting actual token 
   }
 }
 ```
@@ -108,12 +124,32 @@ and mcu-debug will skip detection entirely:
 }
 ```
 
+The above also applies to "ssh" but the launch.json should be for "ssh" as shown in the previous section
+
 Start the agent yourself on the machine with the probe:
 
-```sh
+```bash
+# Shutdown any old daemon running, existing sessions will continue to run.
+# You can also do 'killall mdbg' to kill forcefully or use the Task manager
+
+mcu-debug proxy --shutdown --all
+
 export MDBG_PROXY_TOKEN=$(openssl rand -hex 16)   # any value, as long as both ends agree
-mcu-debug proxy --host 172.28.240.1 --port 55555
+mcu-debug proxy --host 172.22.112.1 --port 55555
 ```
+
+The above will print the actual port and token being used. If the previous proxy was not shutdown,
+then it will ignore your port/token specifications and continue to use the old ones. For WSL in nat
+mode you must use the actual IP address of the host assigned to the. For WSL mirrored mode, containers
+and ssh, you can use 127.0.0.1 as the host. This is good practice to avoid firewall issues as well as
+for security.
+
+If you are using WSL-nat mode, consider switching to WSL-mirrored mode. For WSL-nat, you can dynamically
+determine the WSL host IP address using
+
+```sh
+wsl.exe ip route show | grep -i default | awk '{ print $3 }'
+ ```
 
 `mcu-debug proxy --status` reports the `port` and the `hosts` it is bound to — use those
 values. The `host` must be an address the agent is actually bound to *and* that the debug
@@ -134,6 +170,13 @@ there is nothing left to detect. This does **not** apply to the SSH topologies: 
 needs its `-L` tunnel established before any endpoint exists, and VS Code Remote-SSH
 needs its reverse tunnel. For a pre-running agent on a lab server over SSH, use
 `ssh.proxyPort` (with `ssh.token`) instead.
+
+## WSL-nat Security warning
+
+You may see the following dialog box the first time (for every new release) you use the proxy.
+You have to accept if you want to continue debugging
+
+![](../../static/img/wsl-security-dialog.jpg)
 
 ## Configuring the gdb-server for remote
 
@@ -221,99 +264,25 @@ The debug adapter (running in VS Code or the CLI) connects to the proxy rather t
 
 ## VS Code Port Forwarding
 
-:::caution
-This affects **every** remote topology — WSL, Docker dev containers, and Remote-SSH. Configure it
-once and it applies to all of them.
-:::
-
 During a remote session the debug adapter opens listeners on the **workspace** side — one per
-gdb-server stream (gdb, tcl, telnet, SWO) plus one per serial view. GDB and the views connect to
-them from that same machine. Nothing outside needs them.
+gdb-server stream (gdb, tcl, telnet, SWO) plus one per serial view. All of them bind `127.0.0.1`,
+and GDB and the views connect to them from that same machine.
 
-VS Code's Remote extensions scan the remote for listening ports and automatically forward them
-back to your local machine, then offer to open them in a browser. That is exactly right for a web
-server, and wrong here:
+VS Code's Remote extensions notice these and forward them back to your local machine. That is
+normal and harmless — nothing outside the workspace needs to use them, and a forwarded loopback
+port stays as private as the original.
 
-- **It can break a running session.** Opening a gdb port in a browser sends `GET / HTTP/1.1` into
-  the gdb-server's remote-serial-protocol parser. openocd may abort. The tcl and telnet ports are
-  command interfaces and will act on whatever they manage to parse.
-- **It exposes debug control.** A forwarded tcl or telnet port is full command access to the
-  gdb-server, reachable from the machine it is forwarded to.
+One thing worth knowing: **don't open these ports in a browser.** A browser sends
+`GET / HTTP/1.1`, which the gdb, tcl and telnet endpoints will try to interpret as their own
+protocol. At best it does nothing; at worst it disrupts the running session.
 
-VS Code is not misbehaving. Forwarding loopback listeners *is* the feature — a dev server binds
-`127.0.0.1:3000` for safety and you still want it in your browser — and nothing in a TCP listener
-distinguishes "web server a human wants" from "debug endpoint that must stay put".
-
-### Recommended settings
-
-mcu-debug binds these listeners to `127.0.0.1` rather than to all interfaces, which is enough for
-VS Code to leave them alone in a Docker dev container. If you see the prompts anyway — WSL and
-Remote-SSH detect loopback listeners differently — add this to your **workspace or user
-`settings.json`** (the one on the workspace side — inside
-WSL, the container, or on the SSH host):
-
-```json
-{
-  "remote.portsAttributes": {
-    "2000-2099": {
-      "label": "mcu-debug: gdb-server ports",
-      "onAutoForward": "ignore"
-    },
-    "2200-2299": {
-      "label": "mcu-debug: RTT channels",
-      "onAutoForward": "ignore"
-    },
-    "2400-2499": {
-      "label": "mcu-debug: consoles",
-      "onAutoForward": "ignore"
-    }
-  }
-}
-```
-
-`onAutoForward: "ignore"` means *do not forward at all*. Use it rather than `"silent"`, which still
-forwards the port and only hides the notification.
-
-The first block is the one that matters for safety — those are the gdb, tcl and telnet ports. The
-other two only suppress noise.
-
-`2000-2099` is room for about 25 cores' worth of gdb-server ports, which is far more than the two
-or three probes a developer machine typically drives. Widen it if the prompts reappear: port
-allocation skips ports that are already in use, so unrelated programs occupying part of the range
-push our ports upward and eventually past the end of it.
-
-If you use a dev container, the same keys work in `.devcontainer/devcontainer.json`, without the
-`remote.` prefix:
-
-```json
-{
-  "portsAttributes": {
-    "2000-2099": { "onAutoForward": "ignore" }
-  }
-}
-```
-
-### Serial views use unpredictable ports
-
-Serial views bind an OS-assigned port rather than one from the ranges above, so no range can cover
-them. If the prompts bother you, or the remote is used only for embedded debugging, suppress
-everything not explicitly listed:
-
-```json
-{
-  "remote.otherPortsAttributes": { "onAutoForward": "ignore" }
-}
-```
-
-That also stops VS Code forwarding a web server you *do* want. If you need both, change how ports
-are discovered instead — this stops the scan for listening processes while still forwarding
-anything that prints a URL in the terminal:
-
-```json
-{
-  "remote.autoForwardPortsSource": "output"
-}
-```
+:::note
+If VS Code ever *prompts* you to open one of these ports — rather than forwarding it quietly —
+please [file an issue](https://github.com/mcu-debug/mcu-debug/issues) with your topology (WSL,
+dev container, or Remote-SSH) and the port number. That is not expected behaviour and we would
+rather fix the cause than ask you to change your VS Code settings, which would affect your other
+projects too. See [How do I file a bug?](../troubleshooting/index.md) for what to include.
+:::
 
 ## Prerequisites
 

@@ -194,13 +194,30 @@ for a Rust-only build instead.
 
 ## Rust formatting
 
-`npm run fmt:rust` (`cargo fmt` over the whole crate) is safe and idempotent — the crate is
-fully formatted, so it will only ever touch what you changed. `npm run fmt:rust:check` reports
-without writing, and is what CI should use.
+> **Temporary (as of 2026-08-14): the crate is not currently fully formatted.** `max_width` was
+> raised to 120 in `packages/mdbg/rustfmt.toml` recently and the tree has not been reformatted
+> since, so `npm run fmt:rust:check` reports ~108 diff sites in already-committed code across
+> ~24 files nobody is working on. Until a one-off "format the world" commit lands, **running
+> `npm run fmt:rust` rewrites all of them** and buries your change in hundreds of lines of
+> unrelated churn. Once that commit lands, delete this note — `fmt:rust` becomes safe and
+> idempotent again, which is what it was designed to be.
 
-Do **not** run `rustfmt <file>` on individual files. `rustfmt` follows `mod` declarations, so
-formatting `mod.rs` reformats every child module with it, quietly dragging unrelated files into
-your diff. Use `cargo fmt` instead.
+`npm run fmt:rust:check` reports without writing, and is what CI should use.
+
+**How to apply:** don't run `npm run fmt:rust` for an ordinary change. Match the surrounding
+style by hand (`max_width = 120`, set in `packages/mdbg/rustfmt.toml`), then confirm you added no
+new violations:
+
+```sh
+npm run fmt:rust:check 2>&1 | grep "^Diff in" | grep <file-you-touched>
+```
+
+Pre-existing hits in a file you edited are fine and are not yours to fix — check that the flagged
+lines are not ones you wrote. If you do run `cargo fmt` by accident, `git checkout --` the files
+you never touched rather than committing the churn.
+
+Do **not** run `rustfmt <file>` on individual files either. `rustfmt` follows `mod` declarations,
+so formatting `mod.rs` reformats every child module with it — the same problem by another route.
 
 ## Rust linting (clippy)
 
@@ -218,3 +235,29 @@ part of the compiler. This repo surfaces clippy in three places, all running the
 
 **How to apply:** if you add or change Rust code, run `npm run lint:rust` (or trust the live
 rust-analyzer diagnostics) before considering the change done — don't rely on CI to catch it first.
+
+## Documentation site (`apps/docs/`)
+
+The `.md`/`.mdx` files under `apps/docs/` are **Docusaurus**, not GitHub-flavored Markdown. The
+two look similar enough that GFM syntax gets written by habit and then renders as something else
+entirely — so it is worth checking rather than assuming.
+
+**Admonitions use the `:::` form, not GitHub's `> [!NOTE]`.** A GFM alert in a Docusaurus page
+renders as a plain blockquote with a literal `[!NOTE]` in the text, which looks broken but does
+not fail the build, so nothing catches it for you:
+
+```md
+:::note
+Docusaurus. Also :::tip, :::info, :::caution, :::warning, :::important — closed with :::
+:::
+```
+
+Other differences that bite: `.md` is parsed as MDX, so `{` and `<` are interpreted — `{/* … */}`
+is the comment form, and a bare `<something>` is read as a JSX tag. Internal links are relative
+file paths including the extension (`./index.md#anchor`), which is what lets the build verify
+them.
+
+**How to apply:** after editing anything under `apps/docs/`, run `npm run build` in that directory.
+It reports broken links and anchors, which is the only automated check on these files. Note that
+`apps/docs/docs/tracing/swo.md` has a pre-existing broken `#graphing` anchor — that one is not
+yours.
