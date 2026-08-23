@@ -56,10 +56,7 @@ pub fn wait_for_sock_file(timeout: Duration) -> Result<SockInfo> {
             }
         }
         if Instant::now() >= deadline {
-            anyhow::bail!(
-                "timed out after {:.1}s waiting for {SOCK_FILE}",
-                timeout.as_secs_f32()
-            );
+            anyhow::bail!("timed out after {:.1}s waiting for {SOCK_FILE}", timeout.as_secs_f32());
         }
         std::thread::sleep(POLL_INTERVAL);
     }

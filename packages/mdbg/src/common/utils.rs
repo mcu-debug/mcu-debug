@@ -70,13 +70,7 @@ pub fn canonicalize_path(source_path: &str) -> String {
         let parts: Vec<String> = final_path[2..]
             .split('/')
             .enumerate()
-            .map(|(i, s)| {
-                if i < 2 {
-                    s.to_uppercase()
-                } else {
-                    s.to_string()
-                }
-            })
+            .map(|(i, s)| if i < 2 { s.to_uppercase() } else { s.to_string() })
             .collect();
         final_path = format!("//{}", parts.join("/"));
     }

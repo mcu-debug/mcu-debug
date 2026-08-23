@@ -131,11 +131,7 @@ impl AssemblyLine {
 
     pub fn format_bytes(&self) -> String {
         let offset_str = if self.function_id.get() > 0 {
-            format!(
-                " <{}+0x{:x}>",
-                self.function_id.get(),
-                self.offset_in_function
-            )
+            format!(" <{}+0x{:x}>", self.function_id.get(), self.offset_in_function)
         } else {
             String::new()
         };
@@ -191,14 +187,7 @@ impl AssemblyListing {
     /// The target instruction is always included as the first instruction of the "after" section.
     pub fn get_window(&self, target_addr: u64, before: usize, after: usize) -> Vec<AssemblyLine> {
         let mut result: Vec<AssemblyLine> = Vec::with_capacity(before + after);
-        let dummy_instr = AssemblyLine::new(
-            0,
-            String::new(),
-            String::from("<invalid instr>"),
-            String::new(),
-            -1,
-            0,
-        );
+        let dummy_instr = AssemblyLine::new(0, String::new(), String::from("<invalid instr>"), String::new(), -1, 0);
 
         // 1. Find the instruction at or immediately before the target_addr
         // range(..=target_addr) gives us everything up to the target, .next_back() is the closest
@@ -251,10 +240,7 @@ impl AssemblyListing {
                 // 3. Grab the 'after' instructions (always starting at the target)
                 // The target instruction is always the first of the 'after' section
                 let after_start_addr = start_addr;
-                debug_println!(
-                    "get_window: after section, after_start_addr=0x{:x}",
-                    after_start_addr
-                );
+                debug_println!("get_window: after section, after_start_addr=0x{:x}", after_start_addr);
 
                 let after_instrs = self
                     .addr_map
@@ -304,18 +290,12 @@ impl AssemblyListing {
             if let Some(first_addr) = first_real_addr {
                 if first_addr > target_addr {
                     // Get real instructions starting from the first address
-                    let after_instrs = self
-                        .addr_map
-                        .range(first_addr..)
-                        .take(after)
-                        .map(|(_, inst)| *inst);
+                    let after_instrs = self.addr_map.range(first_addr..).take(after).map(|(_, inst)| *inst);
                     let after_instrs: Vec<AssemblyLine> = after_instrs
                         .map(|ix| {
                             self.lines
                                 .get(ix)
-                                .expect(
-                                    "index from addr_map should always be valid in lines vector",
-                                )
+                                .expect("index from addr_map should always be valid in lines vector")
                                 .as_ref()
                                 .duplicate()
                         })
@@ -352,20 +332,14 @@ impl AssemblyListing {
     }
 }
 
-pub fn get_disasm_from_objdump(
-    objdump_path: &str,
-    elf_path: &str,
-) -> Result<AssemblyListing, Box<dyn Error>> {
+pub fn get_disasm_from_objdump(objdump_path: &str, elf_path: &str) -> Result<AssemblyListing, Box<dyn Error>> {
     // Spawn objdump and stream its stdout to avoid allocating the whole output
     let mut command = Command::new(objdump_path);
     command.args(["-Cd", elf_path]).stdout(Stdio::piped());
     crate::common::process::suppress_console_window(&mut command);
     let mut child = command.spawn()?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Failed to capture objdump stdout")?;
+    let stdout = child.stdout.take().ok_or("Failed to capture objdump stdout")?;
 
     let mut reader = BufReader::with_capacity(64 * 1024, stdout);
     let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
@@ -382,11 +356,7 @@ pub fn get_disasm_from_objdump(
         }
 
         // strip trailing CR/LF
-        while buf
-            .last()
-            .map(|b| *b == b'\n' || *b == b'\r')
-            .unwrap_or(false)
-        {
+        while buf.last().map(|b| *b == b'\n' || *b == b'\r').unwrap_or(false) {
             buf.pop();
         }
 
@@ -421,8 +391,7 @@ pub fn get_disasm_from_objdump(
                 // a block, but objdump can emit empty blocks for labels and such.
                 listing.blocks.push(current_block);
             }
-            current_block =
-                AssemblyBlock::new(name.to_string(), address, listing.blocks.len() as i32);
+            current_block = AssemblyBlock::new(name.to_string(), address, listing.blocks.len() as i32);
             continue;
         }
 

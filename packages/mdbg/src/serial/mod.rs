@@ -147,11 +147,7 @@ pub fn resolve_port(
         1 => Ok(matched[0].path.clone()),
         n => anyhow::bail!(
             "{n} serial ports matched selector — be more specific: {}",
-            matched
-                .iter()
-                .map(|p| p.path.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            matched.iter().map(|p| p.path.as_str()).collect::<Vec<_>>().join(", ")
         ),
     }
 }
@@ -166,10 +162,7 @@ pub fn resolve_port(
 pub fn list_available(filter_callout: bool) -> Vec<AvailablePort> {
     let ports = list_all();
     if filter_callout && cfg!(target_os = "macos") {
-        ports
-            .into_iter()
-            .filter(|p| !p.path.starts_with("/dev/tty."))
-            .collect()
+        ports.into_iter().filter(|p| !p.path.starts_with("/dev/tty.")).collect()
     } else {
         ports
     }

@@ -65,8 +65,7 @@ impl SymbolTable {
         let arc_symbol = Arc::new(symbol);
         let name = arc_symbol.name.clone();
 
-        self.symbols_by_addr
-            .insert(arc_symbol.address, arc_symbol.clone());
+        self.symbols_by_addr.insert(arc_symbol.address, arc_symbol.clone());
         self.symbols_by_name.insert(name, arc_symbol.clone());
         arc_symbol
     }

@@ -28,11 +28,7 @@ use std::sync::Arc;
 ///
 /// All requests have a 'req' field that identifies the request type. We peek at this
 /// field, then deserialize into the appropriate typed struct.
-pub fn dispatch_request(
-    msg: &Value,
-    req_tx: &Sender<DisasmRequest>,
-    obj_info: Arc<ObjectInfo>,
-) -> bool {
+pub fn dispatch_request(msg: &Value, req_tx: &Sender<DisasmRequest>, obj_info: Arc<ObjectInfo>) -> bool {
     // Peek at the 'req' discriminant to determine request type
     let req_type = msg
         .get("req")
@@ -52,11 +48,7 @@ pub fn dispatch_request(
 }
 
 /// Handle disassemble request - deserialize and forward to worker
-fn handle_disassemble_request(
-    msg: &Value,
-    req_tx: &Sender<DisasmRequest>,
-    _obj_info: Arc<ObjectInfo>,
-) -> bool {
+fn handle_disassemble_request(msg: &Value, req_tx: &Sender<DisasmRequest>, _obj_info: Arc<ObjectInfo>) -> bool {
     // Try to deserialize as our typed DisassembleRequest struct
     match serde_json::from_value::<DisassembleRequest>(msg.clone()) {
         Ok(typed_req) => {
@@ -91,9 +83,7 @@ fn handle_globals_request(msg: &Value, obj_info: Arc<ObjectInfo>) -> bool {
                 globals,
             };
             let response_json = serde_json::to_string(&response).unwrap();
-            if let Err(e) =
-                transport::write_json_locked(&serde_json::from_str(&response_json).unwrap())
-            {
+            if let Err(e) = transport::write_json_locked(&serde_json::from_str(&response_json).unwrap()) {
                 eprintln!("Failed to write globals response: {}", e);
                 return false;
             }
@@ -111,9 +101,7 @@ fn handle_statics_request(msg: &Value, obj_info: Arc<ObjectInfo>) -> bool {
     match serde_json::from_value::<StaticsRequest>(msg.clone()) {
         Ok(typed_req) => {
             let canonical_file_name = CanonicalPath::new(&typed_req.file_name);
-            let statics = obj_info
-                .static_file_mapping
-                .get_statics_for_file(&canonical_file_name);
+            let statics = obj_info.static_file_mapping.get_statics_for_file(&canonical_file_name);
             let statics_ary: Vec<(String, String)> = statics
                 .iter()
                 .map(|sym| (sym.name.clone(), format!("0x{:x}", sym.address)))
@@ -124,9 +112,7 @@ fn handle_statics_request(msg: &Value, obj_info: Arc<ObjectInfo>) -> bool {
                 statics: statics_ary,
             };
             let response_json = serde_json::to_string(&response).unwrap();
-            if let Err(e) =
-                transport::write_json_locked(&serde_json::from_str(&response_json).unwrap())
-            {
+            if let Err(e) = transport::write_json_locked(&serde_json::from_str(&response_json).unwrap()) {
                 eprintln!("Failed to write statics response: {}", e);
                 return false;
             }
@@ -145,17 +131,14 @@ fn handle_symbol_lookup_request(msg: &Value, obj_info: Arc<ObjectInfo>) -> bool 
     if let Ok(_typed_req) = serde_json::from_value::<SymbolLookupNameRequest>(msg.clone()) {
         let sym = obj_info.elf_symbols.get_by_name(&_typed_req.name);
         if let Some(symbol) = sym {
-            let ary: Vec<(string::String, String)> =
-                vec![(symbol.name.clone(), format!("0x{:x}", symbol.address))];
+            let ary: Vec<(string::String, String)> = vec![(symbol.name.clone(), format!("0x{:x}", symbol.address))];
             let response = SymbolLookupResponse {
                 req: "symbolLookup".to_string(),
                 seq: _typed_req.seq,
                 symbols: ary,
             };
             let response_json = serde_json::to_string(&response).unwrap();
-            if let Err(e) =
-                transport::write_json_locked(&serde_json::from_str(&response_json).unwrap())
-            {
+            if let Err(e) = transport::write_json_locked(&serde_json::from_str(&response_json).unwrap()) {
                 eprintln!("Failed to write symbol lookup response: {}", e);
                 return false;
             }

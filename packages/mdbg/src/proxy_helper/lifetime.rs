@@ -79,10 +79,7 @@ impl Lifetime {
         loop {
             // Wait for the count to reach zero.
             while *n > 0 {
-                n = self
-                    .changed
-                    .wait(n)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                n = self.changed.wait(n).unwrap_or_else(|poisoned| poisoned.into_inner());
             }
             // Zero: wait out the idle window. A notify (new ref, or a 0→…→0
             // churn) wakes us early; only a full timeout with refs still zero

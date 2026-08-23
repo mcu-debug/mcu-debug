@@ -18,9 +18,7 @@ use anyhow::Result;
 use clap::{ArgGroup, Args, Subcommand};
 
 use crate::serial::bridge::TcpBridge;
-use crate::serial::port::{
-    FlowControl, Parity, PortHandle, SerialParams, SerialTransport, StopBits,
-};
+use crate::serial::port::{FlowControl, Parity, PortHandle, SerialParams, SerialTransport, StopBits};
 use crate::serial::{list_available, resolve_port};
 
 #[derive(Args, Debug)]
@@ -146,12 +144,7 @@ fn run_list(filter: bool, is_json: bool) -> Result<()> {
     }
 
     let path_w = ports.iter().map(|p| p.path.len()).max().unwrap_or(4).max(4);
-    let desc_w = ports
-        .iter()
-        .map(|p| p.description.len())
-        .max()
-        .unwrap_or(11)
-        .max(11);
+    let desc_w = ports.iter().map(|p| p.description.len()).max().unwrap_or(11).max(11);
 
     if !is_json {
         println!(

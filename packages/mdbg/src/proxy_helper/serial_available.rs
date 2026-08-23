@@ -63,10 +63,7 @@ fn identity(p: &AvailablePort) -> PortIdentity<'_> {
 /// Do these two snapshots describe the same set of devices? Both sides are sorted
 /// by path before this is called.
 fn same_devices(a: &[AvailablePort], b: &[AvailablePort]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b.iter())
-            .all(|(x, y)| identity(x) == identity(y))
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| identity(x) == identity(y))
 }
 
 /// Merge a fresh reading over the stored one for a device we already knew about.
@@ -111,10 +108,7 @@ impl SerialAvailabilityHub {
     pub fn new() -> Self {
         let mut ports = crate::serial::list_available(true);
         ports.sort_by(|a, b| a.path.cmp(&b.path));
-        log::info!(
-            "Serial availability hub initialized with {} port(s)",
-            ports.len()
-        );
+        log::info!("Serial availability hub initialized with {} port(s)", ports.len());
         Self {
             state: Mutex::new(HubState {
                 next_subscriber_id: 1,
@@ -273,20 +267,16 @@ pub fn start_serial_available_watcher(hub: Arc<SerialAvailabilityHub>) -> Sender
             let _ = stop_bridge_tx.send(WatchSignal::Stop);
         });
 
-        let watcher: Option<Box<dyn PlatformWatcher>> =
-            match create_platform_watcher(signal_tx.clone()) {
-                Ok(w) => {
-                    log::info!("Serial availability watcher initialized successfully");
-                    Some(Box::new(w))
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Serial availability watcher disabled on this platform/session: {}",
-                        e
-                    );
-                    None
-                }
-            };
+        let watcher: Option<Box<dyn PlatformWatcher>> = match create_platform_watcher(signal_tx.clone()) {
+            Ok(w) => {
+                log::info!("Serial availability watcher initialized successfully");
+                Some(Box::new(w))
+            }
+            Err(e) => {
+                log::warn!("Serial availability watcher disabled on this platform/session: {}", e);
+                None
+            }
+        };
 
         // Keep watcher alive for this thread's lifetime.
         let _watcher_guard = watcher;
@@ -393,10 +383,7 @@ impl PollingWatcher {
     fn new(signal_tx: Sender<WatchSignal>, interval: Duration) -> Self {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let thread = std::thread::spawn(move || {
-            log::info!(
-                "Serial availability polling watcher started (interval={:?})",
-                interval
-            );
+            log::info!("Serial availability polling watcher started (interval={:?})", interval);
             loop {
                 match stop_rx.recv_timeout(interval) {
                     Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -535,11 +522,7 @@ mod tests {
             st.ports = merged;
         }
 
-        assert_eq!(
-            hub.state.lock_recover().revision,
-            7,
-            "revision must not move"
-        );
+        assert_eq!(hub.state.lock_recover().revision, 7, "revision must not move");
         assert!(rx.try_recv().is_err(), "no subscriber may be woken");
         assert_eq!(
             hub.state.lock_recover().ports[0].description,

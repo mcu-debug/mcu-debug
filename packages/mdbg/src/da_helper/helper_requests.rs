@@ -185,10 +185,7 @@ pub enum HelperEvent {
     SymbolTableReady { session_id: String, version: String },
 
     /// Disassembly has been loaded and cached, ready to serve requests
-    DisassemblyReady {
-        session_id: String,
-        instruction_count: u64,
-    },
+    DisassemblyReady { session_id: String, instruction_count: u64 },
 
     /// RTT control block found at address
     RTTFound {

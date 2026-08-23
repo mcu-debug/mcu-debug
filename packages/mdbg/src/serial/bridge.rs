@@ -79,19 +79,9 @@ impl TcpBridge {
     /// and start the accept loop thread.
     ///
     /// Returns `Err` only if binding fails (port in use, permission denied).
-    pub fn start(
-        bind_addr: &str,
-        tcp_port: u16,
-        port_handle: Arc<PortHandle>,
-    ) -> anyhow::Result<Self> {
-        let listener = TcpListener::bind((bind_addr, tcp_port)).map_err(|e| {
-            anyhow::anyhow!(
-                "failed to bind TCP listener on {}:{}: {}",
-                bind_addr,
-                tcp_port,
-                e
-            )
-        })?;
+    pub fn start(bind_addr: &str, tcp_port: u16, port_handle: Arc<PortHandle>) -> anyhow::Result<Self> {
+        let listener = TcpListener::bind((bind_addr, tcp_port))
+            .map_err(|e| anyhow::anyhow!("failed to bind TCP listener on {}:{}: {}", bind_addr, tcp_port, e))?;
         let actual_port = listener.local_addr()?.port();
         let shutdown = Arc::new(AtomicBool::new(false));
         let active_conn: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
@@ -190,10 +180,8 @@ fn handle_connection(tcp: TcpStream, port_handle: Arc<PortHandle>) {
     // all live bytes arrive in order, none lost between snapshot and attach, none
     // duplicated.
     let client_id = port_handle.next_client_id();
-    let tcp_writer: Box<dyn std::io::Write + Send> = Box::new(
-        tcp.try_clone()
-            .expect("try_clone of TcpStream should not fail"),
-    );
+    let tcp_writer: Box<dyn std::io::Write + Send> =
+        Box::new(tcp.try_clone().expect("try_clone of TcpStream should not fail"));
     port_handle.attach_client(client_id, tcp_writer);
 
     // ── 3. TCP → serial thread ────────────────────────────────────────────────

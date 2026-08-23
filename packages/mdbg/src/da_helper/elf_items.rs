@@ -142,10 +142,7 @@ impl StaticFileMapping {
     }
 
     pub fn get_statics_for_file(&self, file_path: &CanonicalPath) -> Vec<Arc<Symbol>> {
-        self.file_map
-            .get(file_path)
-            .cloned()
-            .unwrap_or_else(Vec::new)
+        self.file_map.get(file_path).cloned().unwrap_or_else(Vec::new)
     }
 }
 

@@ -92,9 +92,7 @@ pub fn list_instances() -> Result<Vec<Instance>> {
     let entries = match std::fs::read_dir(&base) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            return Err(e).with_context(|| format!("could not read proxy base {}", base.display()))
-        }
+        Err(e) => return Err(e).with_context(|| format!("could not read proxy base {}", base.display())),
     };
     let mut out = Vec::new();
     for entry in entries.flatten() {
@@ -186,9 +184,7 @@ fn default_bind_host() -> String {
 }
 
 fn version_tuple(v: &str) -> (u64, u64, u64) {
-    let mut parts = v
-        .split(['.', '-', '+'])
-        .filter_map(|s| s.parse::<u64>().ok());
+    let mut parts = v.split(['.', '-', '+']).filter_map(|s| s.parse::<u64>().ok());
     (
         parts.next().unwrap_or(0),
         parts.next().unwrap_or(0),
@@ -209,8 +205,7 @@ pub fn self_version() -> String {
 
 /// Read and parse `endpoint.json`.
 pub fn read_endpoint(path: &std::path::Path) -> Result<Endpoint> {
-    let bytes =
-        std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("could not parse {}", path.display()))
 }
 
@@ -235,8 +230,7 @@ pub fn write_endpoint_atomic(path: &std::path::Path, ep: &Endpoint) -> Result<()
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_vec_pretty(ep)?;
     std::fs::write(&tmp, &json).with_context(|| format!("could not write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .with_context(|| format!("could not rename {} -> {}", tmp.display(), path.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("could not rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
@@ -311,9 +305,7 @@ pub fn print_discovery(
         // a caller with no discovery line at all cannot proceed.
         Err(e) => {
             log::error!("failed to serialize discovery: {e}");
-            let out_token = token
-                .map(|t| format!(", \"token\": \"{t}\""))
-                .unwrap_or_default();
+            let out_token = token.map(|t| format!(", \"token\": \"{t}\"")).unwrap_or_default();
             println!(
                 "{{\"status\": \"ready\", \"port\": {port}, \"pid\": {pid}, \"version\": \"{version}\"{out_token}}}"
             );

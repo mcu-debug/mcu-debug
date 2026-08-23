@@ -398,13 +398,7 @@ fn ansi_line(s: &str) -> Line<'static> {
             let raw = &expanded[param_start..seq_end];
             let codes: Vec<u32> = raw
                 .split(';')
-                .map(|p| {
-                    if p.is_empty() {
-                        0
-                    } else {
-                        p.parse().unwrap_or(0)
-                    }
-                })
+                .map(|p| if p.is_empty() { 0 } else { p.parse().unwrap_or(0) })
                 .collect();
             style = apply_sgr(style, &codes);
         }
@@ -486,11 +480,7 @@ fn apply_sgr(mut style: Style, codes: &[u32]) -> Style {
                     i += 2;
                 }
                 (Some(2), _) if codes.len() > i + 4 => {
-                    style = style.fg(Color::Rgb(
-                        codes[i + 2] as u8,
-                        codes[i + 3] as u8,
-                        codes[i + 4] as u8,
-                    ));
+                    style = style.fg(Color::Rgb(codes[i + 2] as u8, codes[i + 3] as u8, codes[i + 4] as u8));
                     i += 4;
                 }
                 _ => {}
@@ -502,11 +492,7 @@ fn apply_sgr(mut style: Style, codes: &[u32]) -> Style {
                     i += 2;
                 }
                 (Some(2), _) if codes.len() > i + 4 => {
-                    style = style.bg(Color::Rgb(
-                        codes[i + 2] as u8,
-                        codes[i + 3] as u8,
-                        codes[i + 4] as u8,
-                    ));
+                    style = style.bg(Color::Rgb(codes[i + 2] as u8, codes[i + 3] as u8, codes[i + 4] as u8));
                     i += 4;
                 }
                 _ => {}
@@ -588,12 +574,7 @@ fn render(frame: &mut ratatui::Frame, app: &mut App, output_height: &Cell<u16>) 
     }
 }
 
-fn render_output(
-    frame: &mut ratatui::Frame,
-    app: &App,
-    area: ratatui::layout::Rect,
-    output_height: &Cell<u16>,
-) {
+fn render_output(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect, output_height: &Cell<u16>) {
     // How many content lines fit (subtract 2 for the block border).
     // Write back so handle_key can compute proportional page-scroll amounts.
     let visible_height = area.height.saturating_sub(2) as usize;
@@ -631,9 +612,7 @@ fn render_ai_request(frame: &mut ratatui::Frame, app: &App, area: ratatui::layou
     let line = Line::from(vec![
         Span::styled(
             "⚑ AI REQUEST  ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ),
         Span::raw(text),
     ]);
@@ -667,9 +646,7 @@ fn render_help(frame: &mut ratatui::Frame) {
     let area = centered_rect(COLS, ROWS, frame.area());
     frame.render_widget(Clear, area);
 
-    let key = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
+    let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(Color::DarkGray);
 
     let rows: &[(&str, &str)] = &[
@@ -714,9 +691,7 @@ fn render_help(frame: &mut ratatui::Frame) {
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             " Key Bindings ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ));
 
     let para = Paragraph::new(Text::from(lines)).block(block);
@@ -780,11 +755,7 @@ pub fn run_tui(
                 Ok(Some(line)) => {
                     // Look for /^status: .*$/ lines emitted by session-driver.ts to transmit session status
                     if line.starts_with("status: ") {
-                        let status = line
-                            .trim_end()
-                            .strip_prefix("status: ")
-                            .unwrap_or("")
-                            .to_owned();
+                        let status = line.trim_end().strip_prefix("status: ").unwrap_or("").to_owned();
                         if tx2.send(SocketMsg::Status(status)).is_err() {
                             break;
                         }
@@ -815,9 +786,7 @@ pub fn run_tui(
 
     // After leaving the alternate screen, print the last screenful so the
     // output is visible in the terminal scrollback rather than just vanishing.
-    let term_height = crossterm::terminal::size()
-        .map(|(_, h)| h as usize)
-        .unwrap_or(24);
+    let term_height = crossterm::terminal::size().map(|(_, h)| h as usize).unwrap_or(24);
     if let Ok(output) = &result {
         let skip = output.len().saturating_sub(term_height.saturating_sub(2));
         for line in output.iter().skip(skip) {

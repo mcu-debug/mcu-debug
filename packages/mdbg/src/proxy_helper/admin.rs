@@ -207,13 +207,10 @@ pub fn handle(mut stream: TcpStream, ctx: &Arc<AdminContext>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     // Some commands are restricted to local callers, so the peer address has to be
     // read from the socket -- never from the request, which the peer controls.
-    let peer_is_loopback = stream
-        .peer_addr()
-        .map(|a| a.ip().is_loopback())
-        .unwrap_or(false);
-    let resp = match read_line(&mut stream).and_then(|l| {
-        serde_json::from_str::<AdminRequest>(l.trim()).context("invalid admin request JSON")
-    }) {
+    let peer_is_loopback = stream.peer_addr().map(|a| a.ip().is_loopback()).unwrap_or(false);
+    let resp = match read_line(&mut stream)
+        .and_then(|l| serde_json::from_str::<AdminRequest>(l.trim()).context("invalid admin request JSON"))
+    {
         Ok(req) if req.token != ctx.token => AdminResponse::err("bad token"),
         Ok(req) => dispatch(&req, ctx, peer_is_loopback),
         Err(e) => AdminResponse::err(format!("{e:#}")),
@@ -241,9 +238,7 @@ fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool)
                 active_refs: ctx.lifetime.count(),
                 uptime_secs: Endpoint::now_unix().saturating_sub(ctx.started_at_unix),
                 hosts: ctx.accept_set.hosts(),
-                serial_ports: crate::proxy_helper::proxy_server::serial_status(
-                    &ctx.serial_registry,
-                ),
+                serial_ports: crate::proxy_helper::proxy_server::serial_status(&ctx.serial_registry),
             }),
             closed: Vec::new(),
             hosts: Vec::new(),
@@ -339,12 +334,9 @@ fn close_serial(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
     if req.path.is_empty() {
         return AdminResponse::err("serialClose requires a path (or \"all\")");
     }
-    let closed =
-        crate::proxy_helper::proxy_server::force_close_serial(&ctx.serial_registry, &req.path);
+    let closed = crate::proxy_helper::proxy_server::force_close_serial(&ctx.serial_registry, &req.path);
     let message = match (closed.is_empty(), req.path.as_str()) {
-        (true, crate::proxy_helper::proxy_server::CLOSE_ALL_SERIAL) => {
-            "no serial ports are open".to_string()
-        }
+        (true, crate::proxy_helper::proxy_server::CLOSE_ALL_SERIAL) => "no serial ports are open".to_string(),
         (true, path) => format!("no open serial port matched '{path}'"),
         (false, _) => format!("closed {} serial port(s)", closed.len()),
     };
@@ -451,10 +443,7 @@ pub fn request_upgrade(endpoint: &Endpoint, my_version: &str) -> Result<AdminRes
     };
     let resp = query(endpoint, &req)?;
     if !resp.ok {
-        bail!(
-            "running proxy refused handover: {}",
-            resp.error.unwrap_or_default()
-        );
+        bail!("running proxy refused handover: {}", resp.error.unwrap_or_default());
     }
     Ok(resp)
 }

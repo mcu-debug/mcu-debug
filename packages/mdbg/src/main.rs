@@ -22,11 +22,7 @@ use mdbg::proxy_helper::run::ProxyArgs;
 use mdbg::serial::cmd::SerialArgs;
 
 #[derive(Parser, Debug)]
-#[command(
-    author,
-    version,
-    about = "MCU Debug Helper — ELF analysis, probe agent, and TUI"
-)]
+#[command(author, version, about = "MCU Debug Helper — ELF analysis, probe agent, and TUI")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -80,12 +76,9 @@ fn main() -> Result<()> {
 
     if let Some(sub) = implicit_subcommand(exe_stem) {
         // Inject the subcommand only when not already supplied explicitly.
-        let has_sub = args.get(1).is_some_and(|a| {
-            matches!(
-                a.as_str(),
-                "debug" | "attach" | "da-helper" | "proxy" | "serial"
-            )
-        });
+        let has_sub = args
+            .get(1)
+            .is_some_and(|a| matches!(a.as_str(), "debug" | "attach" | "da-helper" | "proxy" | "serial"));
         if !has_sub {
             args.insert(1, sub.to_string());
         }

@@ -255,11 +255,7 @@ fn data_bits_to_serial(n: u8) -> serialport::DataBits {
 }
 
 /// Open a serial port with the given parameters and read timeout.
-fn open_port(
-    path: &str,
-    params: &SerialParams,
-    read_timeout: Duration,
-) -> Result<Box<dyn serialport::SerialPort>> {
+fn open_port(path: &str, params: &SerialParams, read_timeout: Duration) -> Result<Box<dyn serialport::SerialPort>> {
     serialport::new(path, params.baud_rate)
         .data_bits(data_bits_to_serial(params.data_bits))
         .stop_bits(params.stop_bits.into())
@@ -297,20 +293,17 @@ fn apply_params(
     current: &SerialParams,
 ) -> Result<()> {
     if current.baud_rate != params.baud_rate {
-        port.set_baud_rate(params.baud_rate)
-            .context("set_baud_rate")?;
+        port.set_baud_rate(params.baud_rate).context("set_baud_rate")?;
     }
     if current.data_bits != params.data_bits {
         port.set_data_bits(data_bits_to_serial(params.data_bits))
             .context("set_data_bits")?;
     }
     if current.stop_bits != params.stop_bits {
-        port.set_stop_bits(params.stop_bits.into())
-            .context("set_stop_bits")?;
+        port.set_stop_bits(params.stop_bits.into()).context("set_stop_bits")?;
     }
     if current.parity != params.parity {
-        port.set_parity(params.parity.into())
-            .context("set_parity")?;
+        port.set_parity(params.parity.into()).context("set_parity")?;
     }
     if current.flow_control != params.flow_control {
         port.set_flow_control(params.flow_control.into())
@@ -445,8 +438,7 @@ impl PortHandle {
 
         let mut port = self.config_port.lock_recover();
         let current = self.params.lock_recover().clone();
-        apply_params(&mut port, params, &current)
-            .with_context(|| format!("reconfigure failed for '{}'", self.path))?;
+        apply_params(&mut port, params, &current).with_context(|| format!("reconfigure failed for '{}'", self.path))?;
         drop(port);
         *self.params.lock_recover() = params.clone();
         Ok(())
@@ -509,13 +501,7 @@ impl PortHandle {
         if !history.is_empty() {
             let _ = tx.try_send(history);
         }
-        clients.insert(
-            id,
-            ClientSink {
-                tx,
-                drain: Some(drain),
-            },
-        );
+        clients.insert(id, ClientSink { tx, drain: Some(drain) });
     }
 
     /// Remove a previously registered client.
@@ -621,8 +607,7 @@ impl PortHandle {
                         });
                     }
                     Err(e)
-                        if e.kind() == std::io::ErrorKind::TimedOut
-                            || e.kind() == std::io::ErrorKind::WouldBlock =>
+                        if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock =>
                     {
                         // Normal poll tick — no data yet. Loop and check shutdown.
                         continue;

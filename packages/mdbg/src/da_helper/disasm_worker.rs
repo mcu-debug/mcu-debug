@@ -44,8 +44,7 @@ pub fn run_disassembly_worker(
             );
 
             // Send DisassemblyReady notification
-            let notify =
-                disassembly_ready_notification("local-session", listing.lines.len() as u64);
+            let notify = disassembly_ready_notification("local-session", listing.lines.len() as u64);
             if let Err(e) = transport::write_json_locked(&notify) {
                 eprintln!("Failed to write DisassemblyReady: {}", e);
             } else {
@@ -176,14 +175,10 @@ fn serve_disassembly_requests(
                 file_table.insert(file_id as u32, file_name);
             }
         }
-        let ser_instructions: Vec<SerInstruction> = window
-            .iter()
-            .map(SerInstruction::from_assembly_line)
-            .collect();
+        let ser_instructions: Vec<SerInstruction> = window.iter().map(SerInstruction::from_assembly_line).collect();
         let response = DisasmResponse::new(req.seq_id, file_table, func_table, ser_instructions);
         let response_json = serde_json::to_string(&response).unwrap();
-        if let Err(e) = transport::write_json_locked(&serde_json::from_str(&response_json).unwrap())
-        {
+        if let Err(e) = transport::write_json_locked(&serde_json::from_str(&response_json).unwrap()) {
             eprintln!("Worker failed to write disasm response: {}", e);
         } else {
             debug_println!("Worker sent disasm response for seq_id {}", req.seq_id);
@@ -285,8 +280,7 @@ mod tests {
                 for line in &listing.lines {
                     if line.function_id.get() >= 0 && line.offset_in_function == 0 {
                         // This is the first instruction of a function, add a separator line for readability
-                        let func_name =
-                            listing.blocks[line.function_id.get() as usize].name.clone();
+                        let func_name = listing.blocks[line.function_id.get() as usize].name.clone();
                         fd.write_all(format!("\n// Function: {}\n", func_name).as_bytes())
                             .expect("Failed to write function header");
                     }
@@ -339,11 +333,7 @@ mod tests {
             let after = 200;
             let window = listing.get_window(reference_addr, before, after);
 
-            assert_eq!(
-                window.len(),
-                400,
-                "Test 1: Should return exactly 400 instructions"
-            );
+            assert_eq!(window.len(), 400, "Test 1: Should return exactly 400 instructions");
             assert_eq!(
                 window[200].address, reference_addr,
                 "Test 1: Reference instruction should be at index 200"
@@ -368,11 +358,7 @@ mod tests {
             let after = 50;
             let window = listing.get_window(reference_addr, before, after);
 
-            assert_eq!(
-                window.len(),
-                50,
-                "Test 2: Should return exactly 50 instructions"
-            );
+            assert_eq!(window.len(), 50, "Test 2: Should return exactly 50 instructions");
             assert_eq!(
                 window[0].address, reference_addr,
                 "Test 2: Reference instruction should be at index 0"
@@ -397,11 +383,7 @@ mod tests {
             let after = 10;
             let window = listing.get_window(reference_addr, before, after);
 
-            assert_eq!(
-                window.len(),
-                20,
-                "Test 3: Should return exactly 20 instructions"
-            );
+            assert_eq!(window.len(), 20, "Test 3: Should return exactly 20 instructions");
             assert_eq!(
                 window[10].address, reference_addr,
                 "Test 3: Reference instruction should be at index 10"
@@ -426,11 +408,7 @@ mod tests {
             let after = 1;
             let window = listing.get_window(reference_addr, before, after);
 
-            assert_eq!(
-                window.len(),
-                1,
-                "Test 4: Should return exactly 1 instruction"
-            );
+            assert_eq!(window.len(), 1, "Test 4: Should return exactly 1 instruction");
             assert_eq!(
                 window[0].address, reference_addr,
                 "Test 4: Reference instruction should be the only one"
@@ -446,18 +424,11 @@ mod tests {
             let after = 0;
             let window = listing.get_window(reference_addr, before, after);
 
-            assert_eq!(
-                window.len(),
-                25,
-                "Test 5: Should return exactly 25 instructions"
-            );
+            assert_eq!(window.len(), 25, "Test 5: Should return exactly 25 instructions");
             // When after=0, we still need the target, so it should be at index 24 (last of before section)
             // Actually, this is a special case - let's see what the behavior is
 
-            println!(
-                "Test 5: before=25, after=0, got {} instructions",
-                window.len()
-            );
+            println!("Test 5: before=25, after=0, got {} instructions", window.len());
             if !window.is_empty() {
                 println!(
                     "  First: 0x{:x}, Last: 0x{:x}",
@@ -495,9 +466,7 @@ mod tests {
                 );
             }
 
-            println!(
-                "✓ Test 6 passed: Invalid request handled (offset=-250, count=50 → returned 300)"
-            );
+            println!("✓ Test 6 passed: Invalid request handled (offset=-250, count=50 → returned 300)");
         }
 
         // Test Case 7: Positive offset (forward context)
@@ -532,9 +501,7 @@ mod tests {
                 "Test 8: Reference at index 0 regardless of offset magnitude"
             );
 
-            println!(
-                "✓ Test 8 passed: Large positive offset (offset=+250, count=50 → no overflow)"
-            );
+            println!("✓ Test 8 passed: Large positive offset (offset=+250, count=50 → no overflow)");
         }
 
         // Test Case 9: At start of code (first instruction)
@@ -542,20 +509,13 @@ mod tests {
         // Expected: Return as many as available, target might be at lower index than requested
         {
             // Use the very first instruction in the listing
-            let first_addr = listing
-                .lines
-                .first()
-                .expect("Should have instructions")
-                .address;
+            let first_addr = listing.lines.first().expect("Should have instructions").address;
             let before = 100; // Request 100 before, but there are 0 available
             let after = 50;
             let window = listing.get_window(first_addr, before, after);
 
             // We'll get fewer than requested before instructions (maybe 0)
-            assert!(
-                window.len() <= 150,
-                "Test 9: Should return at most 150 instructions"
-            );
+            assert!(window.len() <= 150, "Test 9: Should return at most 150 instructions");
 
             // Find where the target actually is
             if let Some(target_idx) = window.iter().position(|instr| instr.address == first_addr) {
@@ -572,20 +532,13 @@ mod tests {
         // Request forward context when we're near the end
         // Expected: Return as many as available, might get fewer 'after' instructions
         {
-            let last_addr = listing
-                .lines
-                .last()
-                .expect("Should have instructions")
-                .address;
+            let last_addr = listing.lines.last().expect("Should have instructions").address;
             let before = 50;
             let after = 100; // Request 100 after, but there are 0 available
             let window = listing.get_window(last_addr, before, after);
 
             // We'll get fewer than requested after instructions
-            assert!(
-                window.len() <= 150,
-                "Test 10: Should return at most 150 instructions"
-            );
+            assert!(window.len() <= 150, "Test 10: Should return at most 150 instructions");
 
             println!(
                 "✓ Test 10 passed: At end of code, got {} instructions (requested 50 before + 100 after)",

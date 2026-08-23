@@ -136,11 +136,7 @@ impl OpenPort {
 ///
 /// Generic over the handle type purely so it can be tested without a real serial
 /// device; the logic needs nothing from `PortHandle`.
-fn find_reusable_channel<T>(
-    entries: &HashMap<u8, (Weak<T>, u64, String)>,
-    path: &str,
-    handle: &Arc<T>,
-) -> Option<u8> {
+fn find_reusable_channel<T>(entries: &HashMap<u8, (Weak<T>, u64, String)>, path: &str, handle: &Arc<T>) -> Option<u8> {
     let mut found: Option<u8> = None;
     for (stream_id, (weak, _, entry_path)) in entries {
         if entry_path != path {
@@ -313,11 +309,7 @@ impl ProxyServer {
                 // otherwise be invisible, and it is a prime suspect for a stalled loop.
                 let elapsed = t_start.elapsed();
                 if elapsed >= Duration::from_millis(250) {
-                    log::warn!(
-                        "serial.open SLOW: seq {} failed to resolve after {:?}",
-                        seq,
-                        elapsed
-                    );
+                    log::warn!("serial.open SLOW: seq {} failed to resolve after {:?}", seq, elapsed);
                 }
                 ControlResponse::error(seq, format!("serial.open failed: {e}"))
                     .send(&self.writer)
@@ -382,11 +374,7 @@ impl ProxyServer {
                             // A bridge is already listening — direct clients share it.
                             Some(tcp_port) => tcp_port,
                             None => {
-                                let bridge = match TcpBridge::start(
-                                    "127.0.0.1",
-                                    0,
-                                    Arc::clone(&open.handle),
-                                ) {
+                                let bridge = match TcpBridge::start("127.0.0.1", 0, Arc::clone(&open.handle)) {
                                     Ok(b) => b,
                                     Err(e) => return Phase1Result::Error(e),
                                 };
@@ -411,8 +399,7 @@ impl ProxyServer {
                 };
                 match params.transport {
                     SerialTransport::Direct => {
-                        let bridge = match TcpBridge::start("127.0.0.1", 0, Arc::clone(&new_handle))
-                        {
+                        let bridge = match TcpBridge::start("127.0.0.1", 0, Arc::clone(&new_handle)) {
                             Ok(b) => b,
                             Err(e) => return Phase1Result::Error(e),
                         };
@@ -441,9 +428,9 @@ impl ProxyServer {
                 self.serial_direct_paths.insert(path.clone());
                 Ok((Some(tcp_port), None))
             }
-            Phase1Result::FunnelHandle(handle) => self
-                .alloc_funnel_channel(&path, &handle)
-                .map(|cid| (None, Some(cid))),
+            Phase1Result::FunnelHandle(handle) => {
+                self.alloc_funnel_channel(&path, &handle).map(|cid| (None, Some(cid)))
+            }
             Phase1Result::Error(e) => Err(e),
         };
 
@@ -500,31 +487,27 @@ impl ProxyServer {
             }
             let proxy_tx = self.event_tx.clone();
             let cancel = self.cancel.clone();
-            spawn_session_thread(
-                &self.event_tx,
-                SessionThreadRole::SerialErrorForwarder,
-                move || {
-                    // `recv_timeout` (not `recv`) so the thread also polls the
-                    // cancel flag and exits promptly on teardown, instead of
-                    // blocking forever on an `err_tx` that lives in the shared,
-                    // longer-lived `PortHandle`.
-                    loop {
-                        match err_rx.recv_timeout(Duration::from_millis(250)) {
-                            Ok(e) => {
-                                if proxy_tx.send(ProxyEvent::SerialPortError(e)).is_err() {
-                                    break;
-                                }
+            spawn_session_thread(&self.event_tx, SessionThreadRole::SerialErrorForwarder, move || {
+                // `recv_timeout` (not `recv`) so the thread also polls the
+                // cancel flag and exits promptly on teardown, instead of
+                // blocking forever on an `err_tx` that lives in the shared,
+                // longer-lived `PortHandle`.
+                loop {
+                    match err_rx.recv_timeout(Duration::from_millis(250)) {
+                        Ok(e) => {
+                            if proxy_tx.send(ProxyEvent::SerialPortError(e)).is_err() {
+                                break;
                             }
-                            Err(mpsc::RecvTimeoutError::Timeout) => {
-                                if cancel.load(Ordering::Relaxed) {
-                                    break;
-                                }
-                            }
-                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if cancel.load(Ordering::Relaxed) {
+                                break;
+                            }
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
-                },
-            );
+                }
+            });
         }
 
         match result {
@@ -597,10 +580,8 @@ impl ProxyServer {
 
         // Register the client→serial routing entry for inbound funnel frames. Weak, so
         // this entry never keeps the device alive past the registry's ownership.
-        self.serial_funnel_write.insert(
-            channel_id,
-            (Arc::downgrade(handle), client_id, path.to_string()),
-        );
+        self.serial_funnel_write
+            .insert(channel_id, (Arc::downgrade(handle), client_id, path.to_string()));
 
         // Record the channel. This *adds* to the port's channel set rather than
         // replacing it: the previous version overwrote a single stored `stream_id`, so
@@ -628,15 +609,12 @@ impl ProxyServer {
     pub(super) fn handle_serial_close(&mut self, seq: u64, path: &str) {
         match self.release_serial_port(path) {
             Released::NothingHeld => {
-                ControlResponse::error(
-                    seq,
-                    format!("serial.close: '{path}' is not open by this session"),
-                )
-                .send(&self.writer)
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to send serial.close error: {e}");
-                    self.exit = true;
-                });
+                ControlResponse::error(seq, format!("serial.close: '{path}' is not open by this session"))
+                    .send(&self.writer)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to send serial.close error: {e}");
+                        self.exit = true;
+                    });
             }
             _ => {
                 ControlResponse::success(seq, Some(ControlResponseData::SerialClose))
@@ -809,15 +787,12 @@ impl ProxyServer {
             std::thread::current().id()
         );
 
-        ControlResponse::success(
-            seq,
-            Some(ControlResponseData::SerialSubscribeAvailable { revision }),
-        )
-        .send(&self.writer)
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to send serial.subscribeAvailable response: {}", e);
-            self.exit = true;
-        });
+        ControlResponse::success(seq, Some(ControlResponseData::SerialSubscribeAvailable { revision }))
+            .send(&self.writer)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to send serial.subscribeAvailable response: {}", e);
+                self.exit = true;
+            });
 
         let port_count = ports.len();
         let event = ProxyServerEvents::SerialAvailableChanged { revision, ports };
@@ -923,10 +898,7 @@ mod tests {
         let mut entries: HashMap<u8, (Weak<String>, u64, String)> = HashMap::new();
         entries.insert(7, (Arc::downgrade(&handle), 100, "/dev/ttyUSB0".into()));
 
-        assert_eq!(
-            find_reusable_channel(&entries, "/dev/ttyUSB0", &handle),
-            Some(7)
-        );
+        assert_eq!(find_reusable_channel(&entries, "/dev/ttyUSB0", &handle), Some(7));
     }
 
     /// A different port on the same session gets its own channel.
@@ -936,10 +908,7 @@ mod tests {
         let mut entries: HashMap<u8, (Weak<String>, u64, String)> = HashMap::new();
         entries.insert(7, (Arc::downgrade(&handle), 100, "/dev/ttyUSB0".into()));
 
-        assert_eq!(
-            find_reusable_channel(&entries, "/dev/ttyUSB1", &handle),
-            None
-        );
+        assert_eq!(find_reusable_channel(&entries, "/dev/ttyUSB1", &handle), None);
     }
 
     /// After a port dies and is re-opened the handle is a new instance. Matching on the
@@ -971,10 +940,7 @@ mod tests {
             entries.insert(7, (Arc::downgrade(&doomed), 100, "/dev/ttyUSB0".into()));
         } // `doomed` drops here, so the weak reference no longer upgrades.
 
-        assert_eq!(
-            find_reusable_channel(&entries, "/dev/ttyUSB0", &handle),
-            None
-        );
+        assert_eq!(find_reusable_channel(&entries, "/dev/ttyUSB0", &handle), None);
     }
 
     /// `HashMap` iteration order is randomized per process, so a port that somehow holds
@@ -984,10 +950,7 @@ mod tests {
         let handle = Arc::new("port-a".to_string());
         let mut entries: HashMap<u8, (Weak<String>, u64, String)> = HashMap::new();
         for id in [9u8, 3, 6] {
-            entries.insert(
-                id,
-                (Arc::downgrade(&handle), id as u64, "/dev/ttyUSB0".into()),
-            );
+            entries.insert(id, (Arc::downgrade(&handle), id as u64, "/dev/ttyUSB0".into()));
         }
 
         assert_eq!(

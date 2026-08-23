@@ -28,9 +28,7 @@ pub fn get_node_program() -> String {
         Ok(val) => {
             let path = PathBuf::from(val);
             match path.canonicalize() {
-                Ok(canonical_path) if canonical_path.exists() => {
-                    canonical_path.to_string_lossy().to_string()
-                }
+                Ok(canonical_path) if canonical_path.exists() => canonical_path.to_string_lossy().to_string(),
                 _ => "node".to_string(), // Fallback to "node" if the provided path is invalid
             }
         }
@@ -44,9 +42,9 @@ fn check_node_version() -> Result<()> {
     let mut command = std::process::Command::new(node_program);
     command.arg("--version");
     crate::common::process::suppress_console_window(&mut command);
-    let output = command
-        .output()
-        .with_context(|| format!("node is not installed or not on PATH — install Node.js v{MIN_NODE_MAJOR}+ from https://nodejs.org"))?;
+    let output = command.output().with_context(|| {
+        format!("node is not installed or not on PATH — install Node.js v{MIN_NODE_MAJOR}+ from https://nodejs.org")
+    })?;
 
     // `node --version` prints "v20.11.0\n"
     let raw = String::from_utf8_lossy(&output.stdout);
@@ -56,10 +54,7 @@ fn check_node_version() -> Result<()> {
         .split('.')
         .next()
         .and_then(|s| s.parse().ok())
-        .context(format!(
-            "could not parse Node version from {:?}",
-            raw.trim()
-        ))?;
+        .context(format!("could not parse Node version from {:?}", raw.trim()))?;
 
     if major < MIN_NODE_MAJOR {
         anyhow::bail!(
@@ -85,11 +80,7 @@ pub struct DebugArgs {
     pub json: String,
 
     /// Path to a custom settings JSON file.
-    #[arg(
-        short = 's',
-        long = "settings",
-        default_value = ".vscode/settings.json"
-    )]
+    #[arg(short = 's', long = "settings", default_value = ".vscode/settings.json")]
     pub settings: String,
 
     /// Log file path.  When omitted, logs are written to $CWD/.mcu-debug/cli.log.
@@ -129,8 +120,9 @@ pub struct AttachArgs {
 pub fn run(args: DebugArgs) -> Result<()> {
     check_node_version()?;
 
-    let cli_js = spawn::find_node_cli()
-        .context("cannot locate mcu-debug-cli.js — build the Node package first (`npm run build` in packages/mcu-debug)")?;
+    let cli_js = spawn::find_node_cli().context(
+        "cannot locate mcu-debug-cli.js — build the Node package first (`npm run build` in packages/mcu-debug)",
+    )?;
 
     // Auto-detect headless mode: if stdout is not a TTY (piped, redirected,
     // or spawned by an AI agent) we behave as --no-tui automatically.
@@ -238,9 +230,7 @@ fn pump_stdio<S: ClonableDuplex + Send + 'static>(connection: S) -> Result<()> {
     let mut stdout = std::io::stdout();
     let mut buf = [0u8; 4096];
     loop {
-        let n = reader
-            .read(&mut buf)
-            .context("error reading from the connection")?;
+        let n = reader.read(&mut buf).context("error reading from the connection")?;
         if n == 0 {
             break;
         }
