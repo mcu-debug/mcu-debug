@@ -104,19 +104,30 @@ impl ProxyServer {
                 "Received Initialize request with version {} and token {:?} and workspace_uid {:?} and session_uid {:?}",
                 version, token, workspace_uid, session_uid
             );
-            let mut err = false;
-            let mut err_msg = String::new();
+            // Collected rather than assigned one at a time: these used to overwrite a single
+            // `err_msg`, so a client that was both unauthenticated *and* mismatched was told
+            // only about the version — and then "fixed" that without ever learning the token
+            // was wrong. Every reason the connection is being refused is reported together.
+            let mut problems: Vec<String> = Vec::new();
             // Unconditional. This used to be skipped when `--no-token` was set — a flag
             // documented as merely hiding the token from the discovery line, which in
             // fact disabled authentication outright. The flag is gone.
             if Some(token) != self.args.token.as_ref() {
-                err_msg = "Error: Received token does not match expected token".to_string();
-                err = true;
+                problems.push("authentication token does not match this agent's token".to_string());
             }
             if version != CURRENT_VERSION {
-                err_msg = format!("Error: Unsupported version {}", version);
-                err = true;
+                // Both versions, always. Reporting only the client's ("Unsupported version
+                // 0.1.11") tells the user a number they already knew and leaves them without
+                // the one they need — they cannot tell which side to change, or to what.
+                problems.push(format!(
+                    "version mismatch: client is {version}, this agent is {CURRENT_VERSION}. \
+                     They must match exactly — neither side accepts an older or newer peer. \
+                     If you installed this agent yourself, replace it with the mdbg shipped \
+                     inside the matching extension"
+                ));
             }
+            let mut err = !problems.is_empty();
+            let mut err_msg = problems.join("; ");
             let dir = env::temp_dir()
                 .join("mcu-proxy-server")
                 .join(workspace_uid)

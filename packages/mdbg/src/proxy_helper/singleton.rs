@@ -263,6 +263,17 @@ pub struct Discovery {
     pub status: String,
     pub port: u16,
     pub pid: u32,
+    /// semver of the proxy the caller will actually be talking to.
+    ///
+    /// Not necessarily *this* binary's version: on the reuse path we print the endpoint of an
+    /// already-running proxy, which may be older or newer than us. The caller has to match
+    /// whatever is answering, so this reports that, not `CARGO_PKG_VERSION`.
+    ///
+    /// `default` so a discovery line from a proxy predating this field still parses as empty
+    /// rather than failing outright — an unknown version is something a caller can reason
+    /// about, a parse error is not.
+    #[serde(default)]
+    pub version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     /// Every address the proxy accepts on. The caller compares what it asked for
@@ -275,9 +286,12 @@ pub struct Discovery {
     pub bind_errors: Vec<BindError>,
 }
 
+/// `version` is the version of the proxy at `port` — see [`Discovery::version`]. Callers on the
+/// reuse path must pass the running proxy's version, not their own.
 pub fn print_discovery(
     port: u16,
     pid: u32,
+    version: &str,
     token: Option<&str>,
     hosts: &[String],
     bind_errors: Vec<BindError>,
@@ -286,6 +300,7 @@ pub fn print_discovery(
         status: "ready".to_string(),
         port,
         pid,
+        version: version.to_string(),
         token: token.map(|t| t.to_string()),
         hosts: hosts.to_vec(),
         bind_errors,
@@ -299,7 +314,9 @@ pub fn print_discovery(
             let out_token = token
                 .map(|t| format!(", \"token\": \"{t}\""))
                 .unwrap_or_default();
-            println!("{{\"status\": \"ready\", \"port\": {port}, \"pid\": {pid}{out_token}}}");
+            println!(
+                "{{\"status\": \"ready\", \"port\": {port}, \"pid\": {pid}, \"version\": \"{version}\"{out_token}}}"
+            );
         }
     }
     let _ = std::io::stdout().flush();
@@ -323,6 +340,51 @@ mod tests {
         // Pre-release / build metadata is stripped: same numeric tuple → not newer.
         assert!(!is_newer("0.1.9-rc1", "0.1.9"));
         assert!(!is_newer("0.1.9+build5", "0.1.9"));
+    }
+}
+
+#[cfg(test)]
+mod discovery_version_tests {
+    use super::*;
+
+    fn sample(version: &str) -> Discovery {
+        Discovery {
+            status: "ready".to_string(),
+            port: 5689,
+            pid: 42,
+            version: version.to_string(),
+            token: Some("deadbeef".to_string()),
+            hosts: vec!["127.0.0.1".to_string()],
+            bind_errors: Vec::new(),
+        }
+    }
+
+    /// The whole point of the field: a client reading the line can tell what it is talking to
+    /// without connecting first.
+    #[test]
+    fn version_is_serialized() {
+        let line = serde_json::to_string(&sample("0.1.11")).unwrap();
+        assert!(line.contains(r#""version":"0.1.11""#), "missing version in {line}");
+    }
+
+    /// A discovery line from a proxy that predates the field must still parse. Those exist in
+    /// the wild the moment anyone runs an older self-installed agent, which is exactly the
+    /// configuration this field was added to diagnose — failing to parse would replace a clear
+    /// version error with an opaque one.
+    #[test]
+    fn line_without_version_still_parses() {
+        let old = r#"{"status":"ready","port":5689,"pid":42,"token":"deadbeef","hosts":["127.0.0.1"]}"#;
+        let d: Discovery = serde_json::from_str(old).expect("must tolerate a missing version");
+        assert_eq!(d.version, "");
+        assert_eq!(d.port, 5689);
+    }
+
+    #[test]
+    fn round_trips() {
+        let line = serde_json::to_string(&sample("1.2.3")).unwrap();
+        let back: Discovery = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.version, "1.2.3");
+        assert_eq!(back.token.as_deref(), Some("deadbeef"));
     }
 }
 

@@ -629,7 +629,9 @@ fn acquire_or_reuse<'a>(
             // running daemon does not yet serve must work the same way, rather than
             // needing a separate command the caller has to know to issue.
             let (hosts, bind_errors) = widen_running_proxy(&ep, args);
-            singleton::print_discovery(ep.port, ep.pid, token, &hosts, bind_errors);
+            // `ep.version`, not ours: the caller is being handed the *running* proxy's
+            // endpoint, and that is the version its `initialize` will insist on.
+            singleton::print_discovery(ep.port, ep.pid, &ep.version, token, &hosts, bind_errors);
             return Ok(None);
         }
 
@@ -643,7 +645,9 @@ fn acquire_or_reuse<'a>(
         if let Err(e) = admin::request_upgrade(&ep, mine) {
             log::warn!("Handover request failed: {e:#}; reusing the existing proxy");
             let (hosts, bind_errors) = widen_running_proxy(&ep, args);
-            singleton::print_discovery(ep.port, ep.pid, token, &hosts, bind_errors);
+            // `ep.version`, not ours: the caller is being handed the *running* proxy's
+            // endpoint, and that is the version its `initialize` will insist on.
+            singleton::print_discovery(ep.port, ep.pid, &ep.version, token, &hosts, bind_errors);
             return Ok(None);
         }
     }
@@ -1004,11 +1008,16 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         args.heartbeat
     );
 
-    // Print Discovery JSON to stdout: {"status": "ready", "port": <actual_port>, "pid": <pid>} with an optional "token" field
-    // If --no-token is not set, the client will parse this to discover the port and token to use for connecting to the Probe Agent.
+    // Print Discovery JSON to stdout: {"status": "ready", "port": <actual_port>, "pid": <pid>,
+    // "version": <semver>} with an optional "token" field.
+    // If --no-token is not set, the client will parse this to discover the port and token to use
+    // for connecting to the Probe Agent. `version` lets it check compatibility before it commits
+    // to a connection, rather than finding out when `initialize` is rejected.
+    // We are the proxy being announced here, so this is our own version.
     singleton::print_discovery(
         local_port,
         std::process::id(),
+        &singleton::self_version(),
         Some(token.as_str()),
         &bound_hosts,
         std::mem::take(&mut bind_errors),
