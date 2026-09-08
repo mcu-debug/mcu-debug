@@ -13,6 +13,8 @@ import {
     RegisterClientResponse,
     UnregisterClientRequest,
     UnregisterClientResponse,
+    LiveWatchClientReadyRequest,
+    LiveWatchClientReadyResponse,
     DeleteLiveGdbVariables,
     SetVariableArgumentsLive,
     SetExpressionArgumentsLive,
@@ -37,10 +39,14 @@ function shortUuid(length = 16) {
 
 export class LiveClientSession {
     public updates = new Map<string, VarUpdateRecord>();
+    // Only meaningful for notifyMode "onReady": false right after a push, until the client acks
+    // via liveWatchClientReady. "always" clients never have this flipped false.
+    public ready: boolean = true;
     constructor(
         public clientId: string,
         public sessionId: string,
         public container: VariableContainer,
+        public notifyMode: "always" | "onReady" = "always",
     ) { }
 }
 
@@ -252,7 +258,7 @@ export class LiveWatchMonitor extends EventEmitter {
             const sessionId = `mcu-debug-live-${size}-` + shortUuid(8);
             const prefix = `W${size}-`;
             const container = new VariableContainer(this.gdbInstance, this.mainSession, VariableScope.Watch, prefix);
-            const session = new LiveClientSession(args.clientId, sessionId, container);
+            const session = new LiveClientSession(args.clientId, sessionId, container, args.notifyMode === "onReady" ? "onReady" : "always");
             this.sessionsByClientId.set(sessionId, session);
             this.sessionsByPrefix.set(prefix, session);
             response.body = {
@@ -326,15 +332,9 @@ export class LiveWatchMonitor extends EventEmitter {
                     }
                 }
                 this.pvrWriteUpdates = [];
-                for (const [clientId, session] of this.sessionsByClientId) {
-                    const sz = session.updates.size;
-                    if (sz > 0) {
-                        const ev: LiveUpdateEvent = this.newLiveUpdateEvent(session);
-                        this.mainSession.sendEvent(ev);
-                        session.updates.clear();
-                        if (this.debugFlags.gdbTraces) {
-                            this.handleMsg(Stdout, `Updated ${sz} variables for client '${clientId}, session '${session.sessionId}'\n`);
-                        }
+                for (const [_clientId, session] of this.sessionsByClientId) {
+                    if (session.updates.size > 0 && session.ready) {
+                        this.dispatchLiveUpdate(session);
                     }
                 }
             } catch (e: any) {
@@ -360,6 +360,43 @@ export class LiveWatchMonitor extends EventEmitter {
                 this.handleMsg(Stderr, `mcu-debug: Error updating all variables: ${e}\n`);
             }
             return [];
+        }
+    }
+
+    // Sends the pending batch to a client and clears it. For notifyMode "onReady" clients, this
+    // also marks them not-ready until they explicitly ack via liveWatchClientReady.
+    private dispatchLiveUpdate(session: LiveClientSession): void {
+        const sz = session.updates.size;
+        const ev: LiveUpdateEvent = this.newLiveUpdateEvent(session);
+        this.mainSession.sendEvent(ev);
+        session.updates.clear();
+        if (session.notifyMode === "onReady") {
+            session.ready = false;
+        }
+        if (this.debugFlags.gdbTraces) {
+            this.handleMsg(Stdout, `Updated ${sz} variables for client '${session.clientId}', session '${session.sessionId}'\n`);
+        }
+    }
+
+    public async liveWatchClientReadyRequest(response: LiveWatchClientReadyResponse, args: LiveWatchClientReadyRequest): Promise<void> {
+        try {
+            this.handlingRequest = true;
+            await this.updatePromise;
+            const sessionId = (args as any).sessionId || "";
+            const clientSession = this.sessionsByClientId.get(sessionId);
+            if (!clientSession) {
+                throw new Error(`Invalid session ID '${sessionId}'`);
+            }
+            clientSession.ready = true;
+            if (clientSession.updates.size > 0) {
+                this.dispatchLiveUpdate(clientSession);
+            }
+            response.body = {};
+            this.sendResponse(response);
+        } catch (e: any) {
+            this.handleErrResponse(response, `Error processing live watch client ready: ${e.toString()}\n`);
+        } finally {
+            this.handlingRequest = false;
         }
     }
 

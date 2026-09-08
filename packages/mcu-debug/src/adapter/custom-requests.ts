@@ -82,6 +82,10 @@ export interface RegisterClientRequest extends CustomLiveCommand {
     command: "registerClient";
     clientId: string;
     version: LiveSessionVersion;
+    // "always" (default): every batch of changes is pushed as soon as it's available.
+    // "onReady": pushes are held until the client calls 'liveWatchClientReady'; at most one
+    // un-acked batch is ever outstanding for this client.
+    notifyMode?: "always" | "onReady";
 }
 
 export interface RegisterClientResponse extends DebugProtocol.Response {
@@ -89,6 +93,17 @@ export interface RegisterClientResponse extends DebugProtocol.Response {
         clientId: string;
         sessionId: string;
     };
+}
+
+// Acks the last pushed batch and asks for the next one. Only meaningful for clients registered
+// with notifyMode "onReady"; if changes accumulated while the client was busy, they are flushed
+// immediately in response to this call rather than waiting for the next timer tick.
+export interface LiveWatchClientReadyRequest extends CustomLiveCommand {
+    command: "liveWatchClientReady";
+}
+
+export interface LiveWatchClientReadyResponse extends DebugProtocol.Response {
+    body: {};
 }
 
 // Releases a client's session and all its tracked GDB variables. Not required (everything is

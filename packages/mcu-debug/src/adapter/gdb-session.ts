@@ -19,7 +19,7 @@ import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
-import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse } from "./custom-requests";
+import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse, LiveWatchClientReadyResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
 import { TcpPortScanner, formatThrown } from "@mcu-debug/shared";
@@ -173,6 +173,12 @@ export class GDBDebugSession extends SeqDebugSession {
         response.body.supportsInstructionBreakpoints = true;
         response.body.supportsReadMemoryRequest = true;
         response.body.supportsWriteMemoryRequest = true;
+
+        // Not a standard DAP capability. Signals to other extensions (memory/SVD/RTOS viewers, etc.)
+        // that this adapter has the registerClient/*Live custom-request family for live polling
+        // while running. Consumers need a DebugAdapterTracker to see this; checking
+        // `session.type === "mcu-debug"` is simpler and just as reliable for now.
+        (response.body as any).supportsLiveUpdates = true;
 
         this.sendResponse(response);
     }
@@ -855,6 +861,13 @@ export class GDBDebugSession extends SeqDebugSession {
                     body: {},
                 };
                 return await this.liveWatchMonitor.unregisterClientRequest(rsp, args);
+            }
+            case "liveWatchClientReady": {
+                const rsp: LiveWatchClientReadyResponse = {
+                    ...response,
+                    body: {},
+                };
+                return await this.liveWatchMonitor.liveWatchClientReadyRequest(rsp, args);
             }
             case "evaluateLive":
                 if (this.liveWatchMonitor.enabled()) {
