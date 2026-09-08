@@ -269,8 +269,11 @@ export class GdbInstance extends EventEmitter {
                 if (pendingCmd) {
                     if (miOutput.resultRecord?.class === "error") {
                         const result = miOutput.resultRecord.result as { [key: string]: any };
-                        const errorMsg = result["msg"] || "Unknown error";
-                        pendingCmd.reject(new Error(`GDB: ${errorMsg}`));
+                        const obj = {
+                            command: pendingCmd.cmd,
+                            message: result["msg"] || "Unknown error"
+                        };
+                        pendingCmd.reject(new Error(`GDB: ${JSON.stringify(obj)}`));
                     } else {
                         if (miOutput.resultRecord?.class === "connected") {
                             this.emit("connected");

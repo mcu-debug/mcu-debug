@@ -1,6 +1,6 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
-import { InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEvent } from "@vscode/debugadapter";
+import { ErrorDestination, InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEvent } from "@vscode/debugadapter";
 import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent, UARTConfigureEvent } from "./servers/common";
 import os from "os";
 import fs from "fs";
@@ -119,25 +119,31 @@ export class GDBDebugSession extends SeqDebugSession {
         return this.continuing || this.isRunning();
     }
 
-    public handleErrResponse(response: DebugProtocol.Response, msg: string, message?: DebugProtocol.Message): void {
+    public handleErrResponse(response: DebugProtocol.Response, msg: string, message?: DebugProtocol.Message, noLog?: boolean, showUser: boolean = true): void {
         if (!msg.startsWith("mcu-debug")) {
             msg = "mcu-debug: " + msg;
         }
-        this.handleMsg(GdbEventNames.Stderr, msg + "\n");
-        this.sendErrorResponse(response, message ?? 1, msg);
+        if (!noLog) {
+            this.handleMsg(GdbEventNames.Stderr, msg + "\n");
+        }
+        // showUser=false avoids a popup notification for every failure (e.g. high-frequency memory reads from other extensions)
+        this.sendErrorResponse(response, message ?? 1, msg, undefined, showUser ? ErrorDestination.User : ErrorDestination.Telemetry);
     }
-    public handleResponseMsg(response: DebugProtocol.Response, msg: string, message?: DebugProtocol.Message): void {
-        if (this.args.debugFlags.anyFlags) {
+    public handleResponseMsg(response: DebugProtocol.Response, msg: string): void {
+        if (msg && this.args.debugFlags.anyFlags) {
             if (!msg.startsWith("mcu-debug")) {
                 msg = "mcu-debug: " + msg;
             }
-            this.handleMsg(GdbEventNames.Stderr, msg + "\n");
+            this.handleMsg(GdbEventNames.Stderr, msg);
         }
         this.sendResponse(response);
     }
-    public busyError(response: DebugProtocol.Response, args: any) {
+    public busyError(response: DebugProtocol.Response, reqOrArgs: any, noLog: boolean) {
         response.message = "notStopped";
-        this.handleErrResponse(response, "Target is running. Cannot process request now.", { id: 2, format: "Busy" });
+        this.handleErrResponse(
+            response, "Target is running. Request rejected: " + JSON.stringify(reqOrArgs),
+            { id: 2, format: response.message },
+            noLog);
     }
     protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
         response.body = response.body || {};
@@ -375,7 +381,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     protected async continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments, request?: DebugProtocol.Request): Promise<void> {
         if (this.isBusy()) {
-            this.handleErrResponse(response, "Continue request received while target is running.");
+            this.busyError(response, request || args, false);
             return;
         }
         await this.clearForContinue();
@@ -597,7 +603,7 @@ export class GDBDebugSession extends SeqDebugSession {
             return;
         }
         if (this.isBusy()) {
-            this.handleErrResponse(response, "Variables request received while target is running.");
+            this.busyError(response, request || args, false);
             return;
         }
         try {
@@ -610,7 +616,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     protected async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments, request?: DebugProtocol.Request): Promise<void> {
         if (this.isBusy()) {
-            this.handleErrResponse(response, "SetVariable request received while target is running.");
+            this.busyError(response, request || args, false);
             return;
         }
         try {
@@ -622,7 +628,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     protected async setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments, request?: DebugProtocol.Request): Promise<void> {
         if (this.isBusy()) {
-            this.handleErrResponse(response, "SetExpression request received while target is running.");
+            this.busyError(response, request || args, false);
             return;
         }
         try {
@@ -634,7 +640,8 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     protected async evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments, request?: DebugProtocol.Request): Promise<void> {
         if (this.isBusy() && args.context !== "repl") {
-            this.handleErrResponse(response, "Evaluate request received while target is running.");
+            // Supress logging to console for busy error in this context, hover causes too much noise (used by client extensions)
+            this.busyError(response, request || args, true); // noLog set to true
             return;
         }
         response.body = {
@@ -649,7 +656,8 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
             }
         } catch (e) {
-            this.handleErrResponse(response, `Evaluate request failed for '${args.expression}': ${e}`);
+            // Non-repl evaluates (hover, watch, RTOS/other extensions probing symbols) fail routinely and shouldn't toast
+            this.handleErrResponse(response, `Evaluate request failed for '${args.expression}': ${e}`, undefined, undefined, args.context === "repl");
         }
     }
     private async evalRepl(expr: string, response: DebugProtocol.EvaluateResponse): Promise<void> {
@@ -785,7 +793,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
     protected async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments, request?: DebugProtocol.Request): Promise<void> {
         if (this.isBusy()) {
-            this.busyError(response, args);
+            this.busyError(response, request || args, false);
             return;
         }
         await this.memoryRequests.readMemoryRequest(response, args);
@@ -793,7 +801,7 @@ export class GDBDebugSession extends SeqDebugSession {
 
     protected async writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments, request?: DebugProtocol.Request): Promise<void> {
         if (this.isBusy()) {
-            this.busyError(response, args);
+            this.busyError(response, request || args, false);
             return;
         }
         await this.memoryRequests.writeMemoryRequest(response, args);

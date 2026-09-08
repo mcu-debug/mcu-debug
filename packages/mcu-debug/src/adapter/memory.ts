@@ -13,8 +13,8 @@ export class MemoryRequests {
     private sendResponse(response: DebugProtocol.Response) {
         this.mainSession.sendResponse(response);
     }
-    private handleErrResponse(response: DebugProtocol.Response, message: string) {
-        this.mainSession.handleErrResponse(response, message);
+    private handleErrResponse(response: DebugProtocol.Response, message: string, showUser = true) {
+        this.mainSession.handleErrResponse(response, message, undefined, false, showUser);
     }
 
     public async readMemoryBytes(address: bigint, length: number, callback?: MemoryReadCallback): Promise<Buffer> {
@@ -67,7 +67,8 @@ export class MemoryRequests {
             await Promise.all(promises);
             return ret;
         } catch (error: any) {
-            throw new Error(`Read memory error: ${error.toString()}`);
+            const str = (error.toString() || "<unknown error>").replace(/Error:\s*/, "");
+            throw new Error(`Read memory error: ${str}`);
         }
     }
 
@@ -85,7 +86,8 @@ export class MemoryRequests {
             const command = `-data-write-memory-bytes "${addressHex}" "${hexData}"`;
             await this.gdbInstance.sendCommand(command);
         } catch (error: any) {
-            throw new Error(`Write memory error: ${error.toString()}`);
+            const str = (error.toString() || "<unknown error>").replace(/Error:\s*/, "");
+            throw new Error(`Write memory error: ${str}`);
         }
     }
 
@@ -127,7 +129,8 @@ export class MemoryRequests {
             };
             this.sendResponse(response);
         } catch (error: any) {
-            this.handleErrResponse(response, `Read memory error: ${error.toString()}`);
+            // readMemory can be polled frequently (e.g. by other extensions/views), so don't pop up a toast per failure
+            this.handleErrResponse(response, error.toString(), false);
         }
     }
 
@@ -160,7 +163,9 @@ export class MemoryRequests {
             };
             this.sendResponse(response);
         } catch (error: any) {
-            this.handleErrResponse(response, `Write memory error: ${error.toString()}`);
+            const str = (error.toString() || "<unknown error>").replace(/Error:\s*/, "");
+            // writeMemory can also be triggered by other extensions/views repeatedly, avoid popup spam
+            this.handleErrResponse(response, `Write memory error: ${str}`, false);
         }
     }
 }
