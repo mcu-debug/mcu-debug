@@ -19,7 +19,7 @@ import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
-import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse } from "./custom-requests";
+import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
 import { TcpPortScanner, formatThrown } from "@mcu-debug/shared";
@@ -848,6 +848,13 @@ export class GDBDebugSession extends SeqDebugSession {
                 };
                 this.liveWatchMonitor.registerClientRequest(rsp, args);
                 break;
+            }
+            case "unregisterClient": {
+                const rsp: UnregisterClientResponse = {
+                    ...response,
+                    body: {},
+                };
+                return await this.liveWatchMonitor.unregisterClientRequest(rsp, args);
             }
             case "evaluateLive":
                 if (this.liveWatchMonitor.enabled()) {

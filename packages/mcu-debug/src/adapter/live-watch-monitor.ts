@@ -11,6 +11,8 @@ import {
     LiveUpdateEvent,
     RegisterClientRequest,
     RegisterClientResponse,
+    UnregisterClientRequest,
+    UnregisterClientResponse,
     DeleteLiveGdbVariables,
     SetVariableArgumentsLive,
     SetExpressionArgumentsLive,
@@ -263,6 +265,42 @@ export class LiveWatchMonitor extends EventEmitter {
             }
         } catch (e: any) {
             this.handleErrResponse(response, `Error registering client: ${e.toString()}, Not connected to target\n`);
+        } finally {
+            this.handlingRequest = false;
+        }
+    }
+
+    // Releases a client's tracked GDB variables and its session. Nothing calls this today (clients
+    // simply live until the debug session ends), but a client that no longer wants updates can use it
+    // to free its live watch resources early rather than leaving them tracked for the rest of the session.
+    public async unregisterClientRequest(response: UnregisterClientResponse, args: UnregisterClientRequest): Promise<void> {
+        try {
+            this.handlingRequest = true;
+            await this.updatePromise;
+            const sessionId = (args as any).sessionId || "";
+            const clientSession = this.sessionsByClientId.get(sessionId);
+            if (!clientSession) {
+                throw new Error(`Invalid session ID '${sessionId}'`);
+            }
+            await clientSession.container.clear((name) => {
+                if (this.debugFlags.anyFlags) {
+                    this.handleMsg(Stderr, `Warning: Could not delete GDB variable '${name}' while unregistering client\n`);
+                }
+            });
+            this.sessionsByClientId.delete(sessionId);
+            for (const [prefix, session] of this.sessionsByPrefix) {
+                if (session === clientSession) {
+                    this.sessionsByPrefix.delete(prefix);
+                    break;
+                }
+            }
+            response.body = {};
+            this.sendResponse(response);
+            if (this.debugFlags.anyFlags) {
+                this.handleMsg(Stdout, `Unregistered client with session ID '${sessionId}'\n`);
+            }
+        } catch (e: any) {
+            this.handleErrResponse(response, `Error unregistering client: ${e.toString()}\n`);
         } finally {
             this.handlingRequest = false;
         }

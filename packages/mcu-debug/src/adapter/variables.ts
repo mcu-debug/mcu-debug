@@ -308,6 +308,22 @@ export class VariableContainer {
         }
         return false;
     }
+    // Unlike deleteObjectByGdbName, this always issues '-var-delete': the child's parent is NOT
+    // being deleted here (it just changed shape), so GDB will not cascade-remove it on its own.
+    public async deleteStaleChild(gdbVarName: string, delErr?: (str: string) => void): Promise<boolean> {
+        const obj = this.gdbVarNameToObjMap.get(gdbVarName);
+        if (!obj) {
+            return false;
+        }
+        this.variableHandles.release(obj.handle >>> ScopeBits);
+        try {
+            await this.gdbInstance.sendCommand(`-var-delete ${gdbVarName}`);
+        } catch {
+            delErr?.(gdbVarName);
+        }
+        this.gdbVarNameToObjMap.delete(gdbVarName);
+        return true;
+    }
     public hasGdbName(gdbVarName: string): boolean {
         return this.gdbVarNameToObjMap.has(gdbVarName);
     }
@@ -874,8 +890,10 @@ export class VariableManager {
                 return this.getRegistersForGroup(parent);
             }
             const [threadId, frameId, _] = parent.getThreadFrameInfo();
+            const oldChildren = parent.children;
             const children = await this.varListChildren(container, parent, parent.gdbVarName ?? "", threadId, frameId);
             parent.children = children;
+            await this.deleteStaleChildren(container, oldChildren, children);
             const protoVars: GdbProtocolVariable[] = [];
             for (const child of children) {
                 await this.setVarProps(container.gdbInstance, child, isClientVSCode);
@@ -887,6 +905,26 @@ export class VariableManager {
                 this.debugSession.handleMsg(GdbEventNames.Stderr, `mcu-debug: Error getting children for variable ${parent.evaluateName}: ${e}\n`);
             }
             return Promise.reject(e);
+        }
+    }
+
+    // If a parent's shape changed (array/union/pointee grew, shrank, or switched arms), some
+    // previously-listed children no longer exist. The parent itself isn't being deleted, so GDB
+    // won't cascade-remove them - left alone they leak in GDB's varobj table for as long as the
+    // parent lives, which for live-watch clients can be the whole debug session.
+    private async deleteStaleChildren(container: VariableContainer, oldChildren: VariableObject[] | undefined, newChildren: VariableObject[]): Promise<void> {
+        if (!oldChildren || oldChildren.length === 0) {
+            return;
+        }
+        const newNames = new Set(newChildren.map((c) => c.gdbVarName).filter((n) => !!n));
+        for (const old of oldChildren) {
+            if (old.gdbVarName && !newNames.has(old.gdbVarName)) {
+                await container.deleteStaleChild(old.gdbVarName, (name) => {
+                    if (this.debugSession.args.debugFlags.anyFlags) {
+                        this.debugSession.handleMsg(GdbEventNames.Stderr, `mcu-debug: Warning: Could not delete stale child GDB variable '${name}'\n`);
+                    }
+                });
+            }
         }
     }
 

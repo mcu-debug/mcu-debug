@@ -91,6 +91,16 @@ export interface RegisterClientResponse extends DebugProtocol.Response {
     };
 }
 
+// Releases a client's session and all its tracked GDB variables. Not required (everything is
+// torn down when the debug session ends), but lets a client opt out earlier if it no longer needs updates.
+export interface UnregisterClientRequest extends CustomLiveCommand {
+    command: "unregisterClient";
+}
+
+export interface UnregisterClientResponse extends DebugProtocol.Response {
+    body: {};
+}
+
 export interface LiveUpdateEvent extends DebugProtocol.Event {
     event: "custom-live-watch-updates";
     body: {
