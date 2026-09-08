@@ -1196,6 +1196,12 @@ export class GDBDebugSession extends SeqDebugSession {
         ];
     }
 
+    // Commands the second (live watch) GDB connection needs at startup: the same init commands as
+    // the main connection, plus whatever pre-connect commands were computed for this launch/attach.
+    public getLiveWatchStartCommands(): string[] {
+        return [...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands];
+    }
+
     private normalizeArguments(args: ConfigurationArguments): ConfigurationArguments {
         args.graphConfig = args.graphConfig || [];
 
@@ -1290,16 +1296,20 @@ export class GDBDebugSession extends SeqDebugSession {
             const doBuiltinRtt = !!this.args.pvtRttConfig;
             const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
             if (doStart) {
-                this.liveWatchMonitor.once("connected", async () => {
-                    if (doBuiltinRtt) {
-                        try {
-                            await this.rttManager.start(this.rttTcpServer);
-                        } catch (e) {
-                            this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${formatThrown(e)}\n`);
+                this.liveWatchMonitor
+                    .requestLiveCapability()
+                    .then(async () => {
+                        if (doBuiltinRtt) {
+                            try {
+                                await this.rttManager.start(this.rttTcpServer);
+                            } catch (e) {
+                                this.handleMsg(Stderr, `ERROR: Failed to start built-in RTT support: ${formatThrown(e)}\n`);
+                            }
                         }
-                    }
-                });
-                this.liveWatchMonitor.start([...this.getGdbStartCommands(), ...this.gdbPreConnectInitCommands]);
+                    })
+                    .catch((e) => {
+                        this.handleMsg(Stderr, `ERROR: Live GDB connection failed to start: ${formatThrown(e)}\n`);
+                    });
             }
             // The disassmbly adapter relies on target info for various things like source mappings,
             // so we need to wait for it to be initialized before we can use the disassembly adapter.

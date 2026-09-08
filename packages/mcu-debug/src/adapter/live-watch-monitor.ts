@@ -97,6 +97,10 @@ export class LiveWatchMonitor extends EventEmitter {
             .catch((err) => {
                 this.handleMsg(Stderr, `Could not start/initialize Live GDB process: ${err.toString()}\n`);
                 this.handleMsg(Stderr, `Live watch expressions will not work.\n`);
+                this.connectionState = "failed";
+                this.connectionError = err;
+                this.mainSession.sendEvent(this.newLiveConnectedEvent(false, err?.toString?.() ?? String(err)));
+                this.resolveConnectionWaiters(err);
             });
     }
 
@@ -118,8 +122,8 @@ export class LiveWatchMonitor extends EventEmitter {
             this.mainSession.handleMsg(type, "LiveGDB: " + msg);
         }
     }
-    protected handleErrResponse(response: DebugProtocol.Response, msg: string) {
-        this.mainSession.handleErrResponse(response, "LiveGDB: " + msg);
+    protected handleErrResponse(response: DebugProtocol.Response, msg: string, showUser = true) {
+        this.mainSession.handleErrResponse(response, "LiveGDB: " + msg, undefined, false, showUser);
     }
     protected sendResponse(response: DebugProtocol.Response) {
         this.mainSession.sendResponse(response);
@@ -138,9 +142,11 @@ export class LiveWatchMonitor extends EventEmitter {
         this.gdbInstance.on("connected", () => {
             this.disableConsoleMessages = false;
             this.liveMonitorEnabled = true;
+            this.connectionState = "connected";
             this.handleMsg(Stdout, `Live GDB connected to target.\n`);
-            this.mainSession.sendEvent(this.newLiveConnectedEvent());
+            this.mainSession.sendEvent(this.newLiveConnectedEvent(true));
             this.emit("connected");
+            this.resolveConnectionWaiters();
         });
     }
 
@@ -247,12 +253,46 @@ export class LiveWatchMonitor extends EventEmitter {
         return Promise.resolve();
     }
 
+    // Single entry point for starting the live GDB connection, whether triggered eagerly by
+    // launch.json settings (liveWatch.enabled / built-in RTT) or lazily by the first client that
+    // registers even though the user never enabled those. Safe to call repeatedly/concurrently -
+    // only the first caller actually starts anything; everyone else just waits on (or immediately
+    // gets) the same outcome. Rejects definitively (no retry) once a start attempt has failed.
+    private connectionState: "pending" | "connected" | "failed" = "pending";
+    private connectionError: any;
+    private connectionWaiters: Array<{ resolve: () => void; reject: (e: any) => void }> = [];
+    private startInvoked = false;
+    private resolveConnectionWaiters(err?: any) {
+        const waiters = this.connectionWaiters;
+        this.connectionWaiters = [];
+        for (const w of waiters) {
+            if (err) {
+                w.reject(err);
+            } else {
+                w.resolve();
+            }
+        }
+    }
+    public requestLiveCapability(): Promise<void> {
+        if (this.connectionState === "connected") {
+            return Promise.resolve();
+        }
+        if (this.connectionState === "failed") {
+            return Promise.reject(this.connectionError ?? new Error("Live GDB connection is not available"));
+        }
+        if (!this.startInvoked) {
+            this.startInvoked = true;
+            this.start(this.mainSession.getLiveWatchStartCommands());
+        }
+        return new Promise<void>((resolve, reject) => {
+            this.connectionWaiters.push({ resolve, reject });
+        });
+    }
+
     public async registerClientRequest(response: RegisterClientResponse, args: RegisterClientRequest): Promise<void> {
         try {
-            if (this.liveMonitorEnabled === false) {
-                throw new Error("Live watch is not enabled (GDB not connected to target)");
-            }
             this.handlingRequest = true;
+            await this.requestLiveCapability();
             await this.updatePromise;
             const size = this.sessionsByClientId.size.toString();
             const sessionId = `mcu-debug-live-${size}-` + shortUuid(8);
@@ -261,6 +301,11 @@ export class LiveWatchMonitor extends EventEmitter {
             const session = new LiveClientSession(args.clientId, sessionId, container, args.notifyMode === "onReady" ? "onReady" : "always");
             this.sessionsByClientId.set(sessionId, session);
             this.sessionsByPrefix.set(prefix, session);
+            if (this.mainSession.gdbInstance.IsRunning()) {
+                // Idempotent; ensures a client that registers lazily (i.e. liveWatch.enabled was never
+                // set) starts getting periodic updates without waiting for the next run/stop transition.
+                this.startTimer();
+            }
             response.body = {
                 clientId: args.clientId,
                 sessionId: sessionId,
@@ -270,7 +315,9 @@ export class LiveWatchMonitor extends EventEmitter {
                 this.handleMsg(Stderr, `Registered client '${args.clientId}' with session ID '${response.body.sessionId}'\n`);
             }
         } catch (e: any) {
-            this.handleErrResponse(response, `Error registering client: ${e.toString()}, Not connected to target\n`);
+            // Registration can routinely fail (gdb-server doesn't support live probes, or the connection
+            // hasn't come up/failed yet) - not something the user needs a popup for.
+            this.handleErrResponse(response, `Error registering client: ${e.toString()}, Not connected to target\n`, false);
         } finally {
             this.handlingRequest = false;
         }
@@ -315,8 +362,7 @@ export class LiveWatchMonitor extends EventEmitter {
     // Calling this will also enable caching for the future of the session
     private isUpdatingVariables: boolean = false;
     public updatePromise = Promise.resolve();
-    private pvrWriteUpdates: VarUpdateRecord[] = [];
-    public async updateVariables(): Promise<void> {
+    private pvrWriteUpdates: VarUpdateRecord[] = []; public async updateVariables(): Promise<void> {
         this.updatePromise = new Promise<void>(async (resolve) => {
             try {
                 this.isUpdatingVariables = true;
@@ -412,19 +458,20 @@ export class LiveWatchMonitor extends EventEmitter {
             },
         };
     }
-    private newLiveConnectedEvent(): LiveConnectedEvent {
+    private newLiveConnectedEvent(connected: boolean, reason?: string): LiveConnectedEvent {
         return {
             seq: 0,
             type: "event",
             event: "custom-live-watch-connected",
-            body: {},
+            body: { connected, reason },
         };
     }
 
     public updateTimer: NodeJS.Timeout | undefined;
     public startTimer(): void {
-        if (this.liveMonitorEnabled && this.mainSession.args.liveWatch?.enabled && !this.updateTimer) {
-            const setting = Math.max(0.1, this.mainSession.args.liveWatch.samplesPerSecond ?? 4);
+        const hasLiveClients = this.sessionsByClientId.size > 0;
+        if (this.liveMonitorEnabled && !this.updateTimer && (this.mainSession.args.liveWatch?.enabled || hasLiveClients)) {
+            const setting = Math.max(0.1, this.mainSession.args.liveWatch?.samplesPerSecond ?? 1);
             const intervalMs = Math.max(100, 1000 / setting);
             this.updateTimer = setInterval(() => {
                 for (const [_clientId, session] of this.sessionsByClientId) {

@@ -127,7 +127,11 @@ export interface LiveUpdateEvent extends DebugProtocol.Event {
 
 export interface LiveConnectedEvent extends DebugProtocol.Event {
     event: "custom-live-watch-connected";
-    body: {};
+    body: {
+        connected: boolean;
+        // Only present when connected is false: why the live GDB connection isn't (or is no longer) available.
+        reason?: string;
+    };
 }
 
 export interface MemoryReadRequestLiveArguments extends DebugProtocol.ReadMemoryArguments {

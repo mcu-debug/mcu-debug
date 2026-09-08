@@ -975,14 +975,20 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         if (!this.isSameSession(session)) {
             return;
         }
+        const e = e_ as any as LiveConnectedEvent;
+        if (!e.body?.connected) {
+            // Live GDB connection failed/unavailable for this session (e.g. gdb-server doesn't
+            // support it) - nothing to register, and this session won't get another 'connected' event.
+            return;
+        }
         if (this.sessionStatus !== "stopped") {
             this.sessionStatus = "running";
         }
-        const e = e_ as any as LiveConnectedEvent;
         const req: RegisterClientRequest = {
             command: "registerClient",
             clientId: this.clientId,
             version: this.liveSessionVersion,
+            notifyMode: "always",
             sessionId: "",
         };
         session.customRequest(req.command, req).then(

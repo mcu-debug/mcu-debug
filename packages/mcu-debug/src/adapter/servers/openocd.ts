@@ -266,10 +266,10 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
             serverargs.push("-c", cmd);
         }
 
-        const usingRtt = !!this.args.pvtRttConfig || this.args.rttConfig?.enabled
-        if (this.args.liveWatch?.enabled || usingRtt) {
-            serverargs.push("-c", "CDLiveWatchSetup");
-        }
+        // Always set this up: a client (Live Watch, or any other extension) can request live probing
+        // lazily at any point during the session, regardless of whether liveWatch/RTT were enabled
+        // in launch.json. Costs nothing if never used.
+        serverargs.push("-c", "CDLiveWatchSetup");
 
         OpenOCDLog("Launching: " + serverargs.join(" "));
         return serverargs;
