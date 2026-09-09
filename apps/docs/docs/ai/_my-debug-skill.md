@@ -47,20 +47,27 @@ To maintain historical context across system resets or multi-stage bug investiga
 !!NOTE "Identified HardFault trace pointing to unaligned memory access at 0x200041A4"
 ```
 
-
 ## Key Principles
 
-### Read notes.json first
+### How to take session notes
 
-Prior sessions may have already ruled out your first hypothesis. Starting from the notes rather than from scratch saves significant time in multi-session investigations.
+Session notes are a persistent JSON file that serves as the AI's working memory across target resets, context compactions, and multiple sessions on the same project.
+
+See https://mcu-debug.github.io/mcu-debug/docs/ai/session-notes for notes format and allowed operations
+
+### Read .mcu-debug/notes.json first
+
+Prior sessions may have already ruled out your first hypothesis. Starting from the notes rather than from scratch saves significant time in multi-session investigations. 
 
 ### Update notes as you go
 
-Context compaction will eventually truncate conversation history. Notes are the durable record. If your reasoning only exists in the conversation, it disappears at compaction. If it exists in `notes.json`, it survives indefinitely.
+Context compaction will eventually truncate conversation history. Notes are the durable record. If your reasoning only exists in the conversation, it disappears at compaction. If it exists in `.mcu-debug/notes.json`, it survives indefinitely.
 
-### Use `!!SIGINT` over GDB `interrupt`
+### Use meta-command `!!SIGINT` over GDB `interrupt`
 
 The `!!SIGINT` meta-command is more reliable across different gdb-server topologies than GDB's built-in `interrupt` command. In remote debugging scenarios (SSH, WSL), `!!SIGINT` is routed correctly by the proxy.
+
+See https://mcu-debug.github.io/mcu-debug/docs/reference/meta-commands for a full list of all meta-commands
 
 ### Search the log rather than relying on scrollback
 
@@ -95,7 +102,7 @@ TBD: Combined with Live Watch, this gives you continuous visibility without dist
 
 ## Advanced: Autonomous Investigation Script
 
-For fully autonomous bug hunting, a skill can structure a systematic investigation:
+For fully autonomous bug hunting, you can structure a systematic investigation:
 
 ```
 Example session: You are debugging a firmware crash. Follow this process:
@@ -111,21 +118,29 @@ Example session: You are debugging a firmware crash. Follow this process:
 5. Add instrumentation (RTT logging) near the suspected location
 6. Request a firmware rebuild from the user if needed
 7. Repeat from step 2 with new instrumentation
-8. When you identify the root cause, summarize in notes.json
+8. When you identify the root cause, update your notes and that will be summarized in `.mcu-debug/notes.json`
 ```
 
 ## Troubleshooting
 
-- If you are having issues with gdb remote timeouts, add this to `preLaunchCommands`. It rarely requires 15 seconds but it is possible.
+### GDB Remote Timeouts
+If the AI stream or proxy pipeline drops due to communication latency, add this configuration block. It is rarely necessary to wait a full 15 seconds, but it provides a safe buffer for slow debug probes or multi-hop network boundaries (like SSH or WSL over NAT).
 ```json
 "preLaunchCommands": [
-  "set remotetimeout 15"
+    "set remotetimeout 15"
 ]
 ```
-- If you are having issues accessing memory (with gdb, RTT, liveWatch, etc.) try adding this snippet
+
+### Background Memory and RTT Failures
+If automated skills or real-time inspection features (like Live Watch or RTT) fail to read memory while the core is running, your hardware target likely restricts background bus access by default (common on PSoC/Infineon devices). Add these directives to unlock the bus:
 ```json
 "postLaunchCommands": [
-  "set mem inaccessible-by-default off",
-  "set remotetimeout 15"
+    "set mem inaccessible-by-default off",
+    "set remotetimeout 15"
 ]
 ```
+*(Note: `set mem inaccessible-by-default off` instructs GDB to attempt reading unmapped or unkown memory regions rather than immediately rejecting the request).*
+
+### Target Stalls or "notStopped"/"readMemory" Errors
+If background memory monitoring causes erratic target lockups or slips into a persistent state of `readMemory failed..` or `Read memory error:` on what should be valid memory, your debug server may be colliding with high-speed hardware tasks (like active DMA or peripheral bus transactions). 
+* **Fix:** Disable any high-frequency continuous streaming loops in your AI skill prompt, and rely on targeted on-demand reads using the `status` command or localized memory expressions instead.
