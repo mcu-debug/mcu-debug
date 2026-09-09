@@ -1,7 +1,7 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
 import { ErrorDestination, InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEvent } from "@vscode/debugadapter";
-import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent, UARTConfigureEvent } from "./servers/common";
+import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent, UARTConfigureEvent, PostInitializedEvent } from "./servers/common";
 import os from "os";
 import fs from "fs";
 import path from "path";
@@ -1445,6 +1445,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.gdbInstance.currentCommandTimeout = GdbInstance.DefaultCommandTimeout;
             reportTime("Ready for full debugging");
             await postInitPromise;
+            this.sendEvent(new PostInitializedEvent(this.args));
         } catch (e) {
             return finishWithError(`Launch/Attach request failed: ${formatThrown(e)}`);
         }

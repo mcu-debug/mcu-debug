@@ -31,6 +31,7 @@ import {
     SetExpressionArgumentsLive,
 } from "../../adapter/custom-requests";
 import { VarUpdateRecord } from "../../adapter/gdb-mi/mi-types";
+import { ConfigurationArguments } from "../../adapter/servers/common";
 
 // Configuration interfaces
 interface LiveWatchConfig {
@@ -940,11 +941,13 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
     }
 
     public debugSessionTerminated(session: vscode.DebugSession) {
+        this.disabledSessionIds.delete(session.id);
         if (this.isSameSession(session)) {
             this.sessionStatus = "none";
             LiveWatchTreeProvider.session = undefined;
             this.fire();
             this.saveState();
+            this.registerClientPromise = undefined
             this.liveSessionId = undefined;
         }
     }
@@ -970,44 +973,107 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         }
     }
 
-    liveWatchConnected(e_: vscode.DebugSessionCustomEvent) {
+    private haveRealChildren(): boolean {
+        for (const child of this.rootNode.getChildren()) {
+            if (!child.isDummyNode()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    async postInitializeNotification(e: vscode.DebugSessionCustomEvent) {
+        const session = e.session;
+        if (!this.isSameSession(session)) {
+            return;
+        }
+        const args = e.body as ConfigurationArguments;
+        if (args.liveWatch && "enabled" in args.liveWatch && !args.liveWatch.enabled) {
+            // User explicitly disabled it
+            this.disabledSessionIds.add(session.id);
+        }
+        if (args.chainedConfigurations?.enabled || args.pvtParent) {
+            // For chained configurations liveWatch has to be enabled explicitly
+            if (args.liveWatch?.enabled) {
+                // Let the normal flow work
+                return;
+            }
+            this.disabledSessionIds.add(session.id);
+        }
+        if (!args.liveWatch?.enabled && this.haveRealChildren() && !this.disabledSessionIds.has(session.id)) {
+            // User did not explicitly disable liveWatch but we have children
+            this.resetSession(session);
+            await this.registerAsClient(session);
+        }
+    }
+
+    /**
+     * Note that we can get a connected message on of several ways.
+     * 1. Some external client (RTOS viewer) registered and caused a connect attempt
+     * 2. When the debug session started, we noticed we have children but liveWatch was not enabled
+     * 3. When the user explicitly enabled liveWatch in the configuration
+     * 4. User added the first variable to an empty liveWatch window and there was no active connection
+     * THis gets called wheter the connection succeeds or not. We also need to remember a failed connection
+     * so we don't attempt again for this debug session.
+     * 
+     * Here, we assume if someone already registered, we get a connected message as well.
+     */
+    private disabledSessionIds: Set<string> = new Set();
+    async liveWatchConnected(e_: vscode.DebugSessionCustomEvent) {
         const session = e_.session;
         if (!this.isSameSession(session)) {
             return;
         }
         const e = e_ as any as LiveConnectedEvent;
         if (!e.body?.connected) {
+            this.disabledSessionIds.add(session.id);
             // Live GDB connection failed/unavailable for this session (e.g. gdb-server doesn't
             // support it) - nothing to register, and this session won't get another 'connected' event.
+            if (e.body?.reason) {
+                vscode.window.showErrorMessage("Live Watch connection failed: " + e.body.reason);
+            }
             return;
         }
         if (this.sessionStatus !== "stopped") {
             this.sessionStatus = "running";
         }
-        const req: RegisterClientRequest = {
-            command: "registerClient",
-            clientId: this.clientId,
-            version: this.liveSessionVersion,
-            notifyMode: "always",
-            sessionId: "",
-        };
-        session.customRequest(req.command, req).then(
-            async (result_) => {
-                const result = result_ as RegisterClientResponse["body"];
-                this.liveSessionId = result.sessionId;
-                await this.refresh();
-                this.fire();
-            },
-            (e) => {
-                vscode.window.showErrorMessage("Unable to register Live Watch client with debug adapter. Live Watch will be disabled. $(e)");
-            },
-        );
+        await this.registerAsClient(session);
+    }
+
+    private registerClientPromise: Promise<void> | undefined;
+    private registerAsClient(session: vscode.DebugSession) {
+        if (this.registerClientPromise) {
+            return this.registerClientPromise;
+        }
+        this.registerClientPromise = new Promise<void>((resolve, reject) => {
+            const req: RegisterClientRequest = {
+                command: "registerClient",
+                clientId: this.clientId,
+                version: this.liveSessionVersion,
+                notifyMode: "always",
+                sessionId: "",
+            };
+            session.customRequest(req.command, req).then(
+                async (result_) => {
+                    const result = result_ as RegisterClientResponse["body"];
+                    this.liveSessionId = result.sessionId;
+                    await this.refresh();
+                    this.fire();
+                    resolve();
+                },
+                (e) => {
+                    vscode.window.showErrorMessage("Unable to register Live Watch client with debug adapter. Live Watch will be disabled. $(e)");
+                    reject(e);
+                }
+            );
+        });
+        return this.registerClientPromise;
     }
 
     public debugSessionStarted(session: vscode.DebugSession) {
         const liveWatch = session.configuration.liveWatch as LiveWatchConfig;
         if (!liveWatch?.enabled) {
-            if (!LiveWatchTreeProvider.session) {
+            if (!LiveWatchTreeProvider.session && !this.haveRealChildren()) {
                 // Force a child node to be created to provide a Hint
                 this.fire();
             }
@@ -1017,6 +1083,10 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
             vscode.window.showErrorMessage("Error: You can have live-watch enabled to only one debug session at a time. Live Watch is already enabled for " + LiveWatchTreeProvider.session.name);
             return;
         }
+        this.resetSession(session);
+    }
+
+    private resetSession(session: vscode.DebugSession) {
         LiveWatchTreeProvider.session = session;
         this.sessionStatus = "none";
         this.rootNode.reset(true);
@@ -1036,9 +1106,19 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         }
     }
 
-    public addWatchExpr(expr: string) {
+    public async addWatchExpr(expr: string) {
+        const hadChildren = this.haveRealChildren();
         expr = expr.trim();
         if (expr && this.rootNode.addNewExpr(expr)) {
+            const session = LiveWatchTreeProvider.session ?? vscode.debug.activeDebugSession;
+            if (session && !hadChildren && this.haveRealChildren() && !this.liveSessionId && !this.disabledSessionIds.has(session.id)) {
+                vscode.window.showInformationMessage(
+                    "Auto registering Live Watch client with debug session '" + session.name +
+                    "'. Consider adding liveWatch configuration to your launch.json. " +
+                    "Auto registering may not work in the future.");
+                this.resetSession(session);
+                await this.registerAsClient(session);
+            }
             this.saveState();
             this.refresh();
         }

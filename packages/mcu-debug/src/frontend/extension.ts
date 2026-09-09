@@ -466,6 +466,9 @@ export class MCUDebugExtension {
             case "uart-configure":
                 this.receivedUARTConfigureEvent(e);
                 break;
+            case "post-initialized":
+                this.receivedPostInitializedEvent(e);
+                break;
             case "record-event":
                 this.receivedEvent(e);
                 break;
@@ -513,6 +516,11 @@ export class MCUDebugExtension {
             default:
                 break;
         }
+    }
+
+    private receivedPostInitializedEvent(e: vscode.DebugSessionCustomEvent) {
+        // Handle the post-initialized event here
+        this.liveWatchProvider.postInitializeNotification(e);
     }
 
     private signalPortsAllocated(e: vscode.DebugSessionCustomEvent) {

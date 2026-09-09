@@ -8,7 +8,7 @@ If you’ve been using Cortex-Debug, this will feel familiar — but it’s not 
 
 ### What’s different?
 
-* **Not ARM-only anymore** Built to be truly **vendor-neutral**—use whatever probe, GDB server, or silicon you want.
+* **Truly vendor-neutral** Built to be use whatever MCU (not just ARM), probe, GDB server, or silicon you want. GDB Server is the only requirement
 
 * **Works where others break** Native support for **WSL, containers, and remote setups**—no more fragile hacks just to get a debugger running.
 

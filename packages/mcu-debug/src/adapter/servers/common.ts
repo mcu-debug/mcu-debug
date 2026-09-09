@@ -82,6 +82,16 @@ export class UARTConfigureEvent extends Event implements DebugProtocol.Event {
     }
 }
 
+export class PostInitializedEvent extends Event implements DebugProtocol.Event {
+    public event: string = "post-initialized";
+    public body: any;
+
+    constructor(params: ConfigurationArguments) {
+        super("post-initialized");
+        this.body = params;
+    }
+}
+
 export interface RTTConfigureBody {
     type: string; // Currently, only 'socket' is supported
     decoder: RTTCommonDecoderOpts;

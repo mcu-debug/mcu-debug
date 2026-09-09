@@ -199,7 +199,7 @@ The following is a complex example of `syncFiles` because there is quite a bit t
 "serverpath": "<path-to-gdb-server-on-remote>",
 "hostConfig": {
   "enabled": true,
-  "type": "auto"
+  "type": "auto",
   "syncFiles": [
       {"local": "openocd.tcl"},
       // Following is not needed if the executable was an elf file since gdb can load that data directly
@@ -220,7 +220,7 @@ The following is a complex example of `syncFiles` because there is quite a bit t
 Please keep your `syncFiles` simple and small. An rsync or a network drive may be a better method
 
 ```typescript
-/*
+/**
  * Sync files listed in hostConfig.syncFiles.
  *
  * Each entry has the shape:
