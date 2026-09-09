@@ -18,6 +18,27 @@ A "skill" or "prompt" tells the AI how to use mcu-debug effectively. A well-writ
 This skill template is still in development and has not been tested. It is here conceptually and all the implementation is already there. However, details here may not be accurate.
 :::
 
+:::tip
+PSoC vs. STM32 Background Memory Access
+
+Background memory inspection capabilities vary significantly between vendor hardware and debug server topologies:
+
+* **STM32 (ST-LINK/OpenOCD):** Typically permits background live memory reads seamlessly out of the box without special target initialization.
+* **PSoC (Infineon):** May require an explicit GDB instruction `set mem inaccessible-by-default off` to enable memory access while the processor core is actively executing.
+* **Remote Timout:** GDB may require a longer timeout `set remotetimeout 15` depending on the latency/speed of your gdb-server/probe. It could be longer than 15 seconds but that is rare.
+
+If you are debugging a **PSoC** target, you must force the GDB server into non-stop execution mode by adding the following snippet to your project's local `launch.json` file:
+
+```json
+"postLaunchCommands": [
+  "set mem inaccessible-by-default off"
+  "set remotetimeout 15"    // You may have to set this in "preLaunchCommands"
+]
+```
+
+Without these directives explicitly declared, background evaluations from automated skills or real-time inspection features will fail or cause the proxy pipeline to stall.
+:::
+
 For the frontmatter, you can put the entire `description` on one line if your agent/skill parser has trouble with a multi-line YAML string — but if you do, wrap it in single quotes. An unquoted YAML value ends at the first `: ` (colon-space), so an unquoted description containing a colon will fail to parse or be silently cut short. This is the single most common reason a skill "looks fine" but never loads.
 
 Save the template as `my-debug-skill/SKILL.md` (under `.claude/skills/` for Claude Code). The `name` in the frontmatter must match the name of the parent directory to follow the [SKILL specification](https://agentskills.io/specification).
