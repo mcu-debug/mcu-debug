@@ -113,3 +113,19 @@ Example session: You are debugging a firmware crash. Follow this process:
 7. Repeat from step 2 with new instrumentation
 8. When you identify the root cause, summarize in notes.json
 ```
+
+## Troubleshooting
+
+- If you are having issues with gdb remote timeouts, add this to `preLaunchCommands`. It rarely requires 15 seconds but it is possible.
+```json
+"preLaunchCommands": [
+  "set remotetimeout 15"
+]
+```
+- If you are having issues accessing memory (with gdb, RTT, liveWatch, etc.) try adding this snippet
+```json
+"postLaunchCommands": [
+  "set mem inaccessible-by-default off",
+  "set remotetimeout 15"
+]
+```

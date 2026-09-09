@@ -31,7 +31,7 @@ If you are debugging a **PSoC** target, you must force the GDB server into non-s
 
 ```json
 "postLaunchCommands": [
-  "set mem inaccessible-by-default off"
+  "set mem inaccessible-by-default off",
   "set remotetimeout 15"    // You may have to set this in "preLaunchCommands"
 ]
 ```
