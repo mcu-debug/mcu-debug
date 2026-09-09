@@ -15,13 +15,13 @@ The CLI is the foundation for AI-assisted debugging and for headless workflows l
 
 The CLI automatically selects a mode based on the environment:
 
-| Mode          | When                                         | How                                                    |
+| Mode          | Condition / stdout                           | How                                                    |
 | ------------- | -------------------------------------------- | ------------------------------------------------------ |
 | Terminal      | stdout is not a TTY, or `--no-tui` is passed | Raw terminal, readline input, plain text tagged output |
 | TUI           | stdout is a TTY (default)                    | ratatui-based full-screen terminal UI                  |
 | VS Code panel | Running inside VS Code                       | AI Cockpit WebviewPanel with xterm.js rendering        |
 
-**Auto-detection**: if stdout is a TTY, TUI mode starts automatically. If stdout is redirected (to a pipe, file, or AI subprocess), terminal mode activates. Running inside VS Code activates the VS Code panel mode.
+**Auto-detection**: if stdout is a TTY, TUI mode starts automatically, unless disabled by `--no-tui`. If stdout is redirected (to a pipe, file, or AI subprocess), terminal mode activates instead of TUI. Running inside VS Code activates the VS Code panel mode - this panel can be found inside the `MCU Debug` panel alongside `Terminal`, `Debug Console`, etc.
 
 ## Installation
 
@@ -38,7 +38,7 @@ Alternately, you can add `~/.mcu-debug/bin` to your $PATH environment variable y
 You have to restart your VSCode and Terminal Windows for $PATH changes to take effect
 :::
 
-**Requirements**: Node.js >= 22 installed on your system. The VS Code extension itself must be installed and active (the CLI delegates all debug adapter operations to the binaries bundled within the extension folder).
+**Requirements**: Node.js >= 22 installed on your system. The VS Code extension itself must be installed and active. The CLI delegates all debug adapter operations to the binaries bundled within the extension folder.
 
 ## Starting a Session
 

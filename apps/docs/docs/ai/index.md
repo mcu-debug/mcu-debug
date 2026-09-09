@@ -51,4 +51,4 @@ See [Meta-Commands](../reference/meta-commands.md) for the full reference.
 | [Autonomous Debugging](./autonomous.md) | AI runs the full session as a subprocess |
 | [Hybrid Mode](./hybrid-mode.md) | Human + AI on the same session |
 | [Session Notes](./session-notes.md) | Persistent working memory across sessions |
-| [Writing Skills and Prompts](./writing-skills.md) | How to write effective AI skills for mcu-debug |
+| [Writing Skills and Prompts](./writing-skills.mdx) | How to write effective AI skills for mcu-debug |
