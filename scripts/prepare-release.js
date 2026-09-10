@@ -343,7 +343,12 @@ function main() {
         // Proxy first. See the ordering rules in this file's header comment.
         for (const [name, vsix] of [["mcu-debug-proxy", proxyVsix], ["mcu-debug", mainVsix]]) {
             log(`Publishing ${name} to the VS Code Marketplace...`);
-            const args = ["npx", "vsce", "publish", "--packagePath", vsix];
+            // --skip-duplicate makes this loop resumable. Publishing two extensions is not
+            // atomic: if the first succeeds and the second fails (a network timeout is enough),
+            // re-running would otherwise abort on "version already exists" for the first one and
+            // need manual surgery. With this, a re-run silently skips what already landed and
+            // publishes what did not.
+            const args = ["npx", "vsce", "publish", "--packagePath", vsix, "--skip-duplicate"];
             if (preRelease) {
                 args.push("--pre-release");
             }
