@@ -1,9 +1,21 @@
 {
     "editor.formatOnSave": true,
     "editor.defaultFormatter": "esbenp.prettier-vscode",
+    // Highlight non-ASCII characters in code files so look-alikes (em dash vs hyphen, curly vs
+    // straight quotes, non-breaking space) are visible as you type. Scoped to code languages on
+    // purpose — Markdown uses emoji deliberately and would be noise. See AGENTS.md.
     "[typescript]": {
         "editor.formatOnSave": true,
-        "editor.defaultFormatter": "vscode.typescript-language-features"
+        "editor.defaultFormatter": "vscode.typescript-language-features",
+        "editor.unicodeHighlight.nonBasicASCII": true,
+        "editor.unicodeHighlight.includeComments": true
+    },
+    "[rust]": {
+        "editor.unicodeHighlight.nonBasicASCII": true,
+        "editor.unicodeHighlight.includeComments": true
+    },
+    "[json]": {
+        "editor.unicodeHighlight.nonBasicASCII": true
     },
     "[javascript]": {
         "editor.formatOnSave": true,

@@ -131,7 +131,11 @@ export class CliSessionDriver {
         if (!this.isTTY) {
             process.stderr.write(infoMsg + os.EOL);
         }
-        logger.info(infoMsg, { source: 'DA', skipConsole: true });
+        // `status`/`reason` ride along as structured meta so consumers (AI agents reading the
+        // JSON stream) never have to regex `infoMsg`. Only isConsole/color/skipConsole are
+        // stripped before format.json(), so these survive as top-level fields on the log line.
+        // `infoMsg` stays as-is for humans reading stderr/TUI — do not make it the contract.
+        logger.info(infoMsg, { source: 'DA', status: state, reason: reason ?? '', skipConsole: true });
     }
 
     async startSession(cliArgs: any) {
@@ -435,7 +439,8 @@ export class CliSessionDriver {
         if (!trimmedInput) {
             return Promise.resolve();
         }
-        logger.debug(input, { source: 'user-input', skipConsole: true }); // log user input, but not to console to avoid confusion with DA output
+        const src = isTerminal ? 'user-input' : 'socket-input';
+        logger.info(input, { source: src, skipConsole: true }); // log user input, but not to console to avoid confusion with DA output
         // Handle user input and send it to the debug session
         const continueCommands = ['continue', 'c', 'cont', 'run'];
         if (continueCommands.includes(trimmedInput.toLowerCase())) {
@@ -523,6 +528,7 @@ export class CliSessionDriver {
             // This is a command from the DA to the CLI to update the notes. The payload is in the format of !!NOTE:{"doc":[{...json-patch...}]}
             const jsonStr = trimmedInput.substring(7);
             this.handleNotes(jsonStr);
+            return true;
         } else if (isTerminal && trimmedInput.startsWith('!!')) {
             process.stdout?.write(`Sent to any connected AI: ${trimmedInput.substring(2)}\n`);
             logger.info(trimmedInput.substring(2), { skipConsole: true, source: 'USER-REQUEST' });
@@ -1105,7 +1111,7 @@ export class CliSessionDriver {
         try {
             const dir = path.dirname(socketPathJson);
             fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(socketPathJson, JSON.stringify(sockInfo, null, 2));
+            fs.writeFileSync(socketPathJson, JSON.stringify(sockInfo, null, 2) + "\n");
         } catch (err) {
             logger.error(`Failed to write socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
             if (this.cliArgs.waitForClient) {

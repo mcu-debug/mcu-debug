@@ -236,6 +236,34 @@ part of the compiler. This repo surfaces clippy in three places, all running the
 **How to apply:** if you add or change Rust code, run `npm run lint:rust` (or trust the live
 rust-analyzer diagnostics) before considering the change done — don't rely on CI to catch it first.
 
+## Look-alike characters in machine-parsed strings
+
+Non-ASCII is fine — emoji in docs and UI strings are deliberate. The hazard is the narrower set
+of characters that **render almost identically to an ASCII character** but are a different code
+point: `—` `–` `‑` (vs `-`), `"` `"` `'` `'` (vs `"` and `'`), `…` (vs `...`), and a non-breaking
+space (vs a space). These reach the repo by copy/paste from a browser or a chat window, or from
+an editor's smart-quote substitution — nobody types them on purpose, and code review does not
+catch them because there is nothing to see.
+
+They are harmless in prose. They are a real bug in any string another program parses. The status
+notification in `cli-driver.ts` carried an em dash in `: Reason — ${reason}` for exactly this
+reason, and an AI agent matching on the documented `Reason - ` never matched.
+
+**How to apply:**
+
+- Never make a human-readable string the contract. If a consumer needs a value, pass it as
+  structured data alongside the text. `setState()` is the pattern: it logs `infoMsg` for humans
+  *and* `status`/`reason` as winston meta, which `format.json()` emits as top-level fields on the
+  log line. Only `isConsole`/`color`/`skipConsole` are stripped before serialization, so any other
+  meta key survives to consumers.
+- Where a literal genuinely is a protocol token (a prefix, a delimiter, a sentinel), keep it
+  ASCII, and prefer a character with no look-alike.
+- When a doc gives a format spec next to sample output, check that the spec's punctuation matches
+  the sample's. A mismatch there is the tell.
+- `.vscode/settings.json` turns on `editor.unicodeHighlight.nonBasicASCII` for TypeScript, Rust
+  and JSON (not Markdown, where emoji are intentional), so these render boxed in the editor as you
+  type. That is the check that fires early; there is no CI check for this.
+
 ## Documentation site (`apps/docs/`)
 
 The `.md`/`.mdx` files under `apps/docs/` are **Docusaurus**, not GitHub-flavored Markdown. The

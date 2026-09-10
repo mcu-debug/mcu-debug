@@ -6,6 +6,9 @@ on:
       - main
     paths:
       - "apps/docs/**"
+      # Published verbatim by the docs site via `staticDirectories` in
+      # docusaurus.config.ts, so edits here must redeploy the site too.
+      - "packages/mcu-debug/support/skills/**"
   workflow_dispatch:
 
 permissions:

@@ -36,6 +36,15 @@ const config: Config = {
     locales: ['en'],
   },
 
+  // The AI skill template is owned by the extension package (it ships with the
+  // product); the docs site publishes it verbatim rather than keeping a copy.
+  // Listing the directory here makes Docusaurus serve its contents from the site
+  // root, which also lets writing-skills.mdx raw-load it as `/mcu-debug-fw.md`.
+  staticDirectories: [
+    'static',
+    '../../packages/mcu-debug/support/skills/mcu-debug-fw',
+  ],
+
   markdown: {
     mermaid: true,
   },
