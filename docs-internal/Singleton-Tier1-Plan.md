@@ -41,7 +41,7 @@ Per (user, instance), on the Probe Host:
   "port": 51234,               // loopback control/funnel port
   "token": "…",                // connection token (Tier-1 shared token; §8 replaces later)
   "state": "active",           // "active" | "draining"
-  "startedAt": "2026-07-31T…"
+  "started": "2026-07-31T…"
 }
 ```
 

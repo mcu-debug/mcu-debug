@@ -303,7 +303,7 @@ Global state is UI-side only, is invisible to the CLI, and lies across crashes. 
   "instance": "default",
   "pid": 9876,
   "version": "1.4.2",
-  "startedAt": "2026-07-30T18:55:00Z",
+  "started": "2026-07-30T18:55:00Z",
   "transport": { "kind": "uds", "path": ".../control.sock" }
   //           | { "kind": "pipe", "name": "\\\\.\\pipe\\mcu-debug-<user>-default" }
   //           | { "kind": "tcp",  "port": 51234 }

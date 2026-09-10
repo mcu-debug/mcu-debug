@@ -1104,7 +1104,7 @@ export class CliSessionDriver {
             pipe: process.platform === 'win32' ? socketPath : undefined,
             cwd: process.cwd(),
             config: this.config.name,
-            startedAt: new Date().toISOString(),
+            started: new Date().toISOString(),
             logFile: this.cliArgs.logFile
         };
         const socketPathJson = this.createSocketJsonPath();

@@ -87,7 +87,7 @@ The following is an example `.mcu-debug/socket.json` file, as written on Linux/M
   "socket": "/tmp/mcu-debug-745960-0.sock",
   "cwd": "/home/hdm/src/mtb37-p6h",
   "config": "Launch (OpenOCD)",
-  "startedAt": "2026-08-12T18:29:27.859Z",
+  "started": "2026-08-12T18:29:27.859Z",
   "logFile": "/tmp/mcu-debug.log"
 }
 ```
