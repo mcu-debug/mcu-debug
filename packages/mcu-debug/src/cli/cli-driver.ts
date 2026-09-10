@@ -1049,9 +1049,15 @@ export class CliSessionDriver {
                     }
                 });
                 if (!this.customTransport.getRingBuffer().isEmpty()) {
-                    conn.write(this.customTransport.getRingBuffer().snapshot());
+                    // Replay recent history to the new client, trimmed to a whole-line boundary.
+                    // The ring buffer wraps mid-line, so a raw snapshot() would lead with a JSON
+                    // fragment that any consumer parsing NDJSON would choke on.
+                    const backlog = this.customTransport.getRingBuffer().snapshotFromRecordStart();
+                    if (backlog.length > 0) {
+                        conn.write(backlog);
+                    }
                 }
-                if (this.cliArgs.waitForClient && this.serverClients.size == 0) {
+                if (this.cliArgs.waitForClient && this.serverClients.size === 0) {
                     // First client connected, resolve the promise to let session setup continue
                     resolve();
                     if (timeout) clearTimeout(timeout!);

@@ -20,6 +20,7 @@ You are an expert embedded firmware debugging agent capable of interacting nativ
 * **DO NOT** send raw GDB commands while the last notification says `"status":"running"`. GDB will ignore inputs or desynchronize while the CPU core is executing.
 * **SAFE WINDOW:** Only send evaluation/inspection commands after a notification with `"status":"paused"`.
 * **ALWAYS SAFE:** `status`, `!!SIGINT` and `!!NOTE:` are safe in any state, as is any conversation between AI and humans.
+* **SINGLE CORE:** The cli-mode does not support debugging more than one core at a time. You can have a multi-core device but you can launch/attach to a single core (use `numberOfProcessors` and `targetProcessor` in debug configuration)
 
 Read the machine-readable `status` and `reason` **fields**. Do not parse the `message` string — it is formatted for humans and its punctuation is not a contract.
 
@@ -46,6 +47,22 @@ If you started the session yourself with `--no-tui` (Step 1a), the same status t
 * If you need to inspect or halt a target that is currently running, you **MUST NOT** send a standard Ctrl+C character down stdin. 
 * Instead, send the explicit meta-command text `!!SIGINT\n` to gracefully drop the proxy server into a command-ready state.
 
+### 3. This Skill Requires a Haltable Target
+
+Everything above depends on being able to stop the core. If the debug configuration disables
+halting — most commonly `"set remote interrupt-on-connect off"` in `preLaunchCommands` — **stop
+and tell the user.** Do not proceed, and do not try to force the target to halt.
+
+* The CLI cannot drive a never-halt session today. `liveWatch` (the non-stop inspection channel)
+  is explicitly disabled in CLI mode, so there is no way to read state without halting.
+* Waiting for `"status":"paused"` on such a target will wait forever.
+* Forcing a halt may be **physically unsafe**. This configuration is used for motor control and
+  similar real-time systems where stopping the core mid-operation can damage hardware or whatever
+  it is driving. This is not a case where a workaround is better than stopping.
+
+Say plainly that the configuration is outside this skill's scope and let the user decide how to
+proceed.
+
 ---
 
 ## 🛠️ Golden Execution Workflow
@@ -57,6 +74,29 @@ Checklist:
 - You must have a .vscode/launch.json or equivalent file to start a debug session. If the debug configuration was already known to work inside VSCode for GUI based debugging, that is a big bonus.
 - For telemetry, add all your rttConfig/serialConfig in the launch configuration, with recognizable labels
 - Make sure your settings to find the gdb-server and GNU toolchain are in the .vscode/settings.json or equivalent
+- **Recommended:** set `"runToEntryPoint": "main"` (or `"breakAfterReset": true` to stop at reset) so the target halts before it starts running
+
+**Recommended flow — be connected before anything happens, then release the target.** Two
+independent mechanisms get you there, and they compose:
+
+1. `--wait-for-client` (Step 1a) holds the whole session — gdb-server, gdb, telemetry, everything
+   — until a client connects to the socket. Nothing happens before you are attached, so there is
+   no history to reconstruct and the replay window is irrelevant.
+2. `runToEntryPoint` (above) means that when the session does start, the target comes up stopped
+   at `main` with RTT/serial configured but not yet flowing.
+
+Use both. You end up connected from the first byte, with the target halted and quiet. Then run
+`status` to confirm `"status":"paused"`, read `.mcu-debug/notes.json`, set whatever breakpoints
+you need — and only then issue `continue` and let the telemetry spray. Every byte that follows is
+history you were present for. Starting a free-running target and attaching afterwards means
+arriving mid-flood with only a small replay window of context.
+
+`--wait-for-client` is the more important of the two, because it does not depend on the target
+being haltable — it works even where `runToEntryPoint` cannot be used.
+
+This applies to `"request": "launch"` sessions. An `"request": "attach"` session joins a target
+that may already be running, where the halted-first guarantee does not hold — treat that as the
+advanced case and expect to `!!SIGINT` before you can inspect anything.
 
 AI can either start a new debug session for totally autonomous debugging (1a), or join a user started session (1b). Even if you start with (1a), (1b) is still necessary
 
@@ -70,6 +110,26 @@ For Windows use the path `%USERPROFILE%\.mcu-debug\bin\mcu-debug.cmd` in all com
 For `--config` you can use a full configuration name, or an index, or a glob pattern that matches **exactly one** configuration — an ambiguous glob is an error, not a silent first-match. Only configurations of `"type":"mcu-debug"` are considered. Indexing starts with 0 and does not include non mcu-debug configurations.
 
 The optional arguments default to `--json .vscode/launch.json` and `--settings .vscode/settings.json`, and an omitted `--log-file` writes to `$CWD/.mcu-debug/cli.log`, so you rarely need to pass any of them. The simplest command you can issue would be `mcu-debug debug -c 0` at the root of the workspace, since `--no-tui` is auto triggered if STDOUT is not a TTY
+
+##### Preferred: `--wait-for-client`
+
+Add `--wait-for-client` and the session does nothing at all until a client connects to the
+socket — no gdb-server, no gdb, no telemetry. You are then present for the entire session from
+the first byte instead of joining one already in progress.
+
+Because the launch blocks waiting for you, it has to run in the background and you connect from a
+second command:
+
+```bash
+cd <workspace-root>
+~/.mcu-debug/bin/mcu-debug debug --no-tui -c 0 --wait-for-client &
+~/.mcu-debug/bin/mcu-debug attach
+```
+
+The socket is advertised in `.mcu-debug/socket.json` as soon as the server is listening, which
+happens *before* the wait, so `attach` can always find it. If no client ever connects the session
+waits indefinitely — it logs one error after 5 seconds and then keeps waiting, so a session that
+appears hung with no output is usually a client that never arrived.
 
 The above file will create/update the following files
 ```
@@ -117,13 +177,15 @@ Resolution is relative to the current directory, so this is the one thing that c
 ~/.mcu-debug/bin/mcu-debug attach -s <socket-or-pipe-path>
 ```
 
-Either form gives you the existing session over stdio. You can also connect to the socket/pipe directly if you prefer to manage the connection yourself. When a connection is made to the socket/pipe, there is about 10KB worth of past history that is available
+Either form gives you the existing session over stdio. You can also connect to the socket/pipe directly if you prefer to manage the connection yourself. When a connection is made to the socket/pipe, about 10KB of recent history is replayed to you, always starting at a whole line — you never receive a partial JSON record. This is a small recency window, not an archive: for anything older, `grep` the log file, which has the complete session with no limit.
 
 ### Step 2: Initial Hook & State Verification
 Always start your session by querying the current target status using the plain text meta-command:
 ```text
 status
 ```
+
+When you first connect to a session, you should **always** check (`info breakpoints`) for what breakpoints are already set. This will let you know gdbs state.
 
 You can run this anytime to get a JSON payload with the current session status along with a host of other information — it includes `status`, `cwd`, `pid`, `targetCwd`, `configName`, `serverType`, `configType`, `rtts`, `serialPorts`, `socketPath` and `logFile`.
 
@@ -153,6 +215,28 @@ To maintain historical context across system resets or multi-stage bug investiga
 ```text
 !!NOTE: [{"op":"add","path":"/resolved/-","value":"Identified HardFault trace pointing to unaligned memory access at 0x200041A4"}]
 ```
+
+### Step 5: End or Reset a session
+
+#### Reset
+Reset: is a powerful feature. You can reset a device using the `!!RESET` command. This will perform a reset (using the builtin knowledge of the gdb-server or user controlled method in launch.json `overrideResetCommands`, `preResetCommands`, `postResetCommands`). Resetting does not involve re-compilation or re-flashing. Not all devices support a proper reset.
+
+#### End session
+
+Send the `exit` command. This properly ends the gdb-server and gdb processes and releases the
+(USB) probe for the next session. This is the reliable way and the one you should use.
+
+Closing stdin does **different things depending on which process you started**, so be deliberate:
+
+When the session ends, any breakpoints are saved and then restored on the next session.
+
+* Closing stdin of `mcu-debug debug` (Step 1a — the process hosting the session) ends the session.
+* Closing stdin of `mcu-debug attach` (Step 1b) only disconnects *you*. The session keeps running,
+  the probe stays claimed, and you or someone else can attach to it again. Use this when you want
+  to leave a session running for a human to take over.
+
+**DO NOT KILL** like `kill -9` the `mcu-debug` process as it will leave the gdb-server process
+running - requiring manual intervention for the next session.
 
 ## Key Principles
 

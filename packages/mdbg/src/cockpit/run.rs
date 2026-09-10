@@ -91,7 +91,10 @@ pub struct DebugArgs {
     #[arg(short = 'd', long = "debug")]
     pub debug: bool,
 
-    /// Wait for a DAP client to connect before starting the debug session.
+    /// Wait for a client to connect to the session socket/pipe before starting the debug
+    /// session.  The socket carries the tagged mux stream and meta-commands (not DAP), so this
+    /// is the flag an AI agent or script uses to be connected from the first byte rather than
+    /// joining a session already in progress.  Waits indefinitely if no client connects.
     #[arg(long = "wait-for-client")]
     pub wait_for_client: bool,
 
@@ -211,28 +214,40 @@ impl ClonableDuplex for std::fs::File {
 }
 
 /// Pipe our stdin to `connection` and echo `connection`'s output to our
-/// stdout, until the peer disconnects.
+/// stdout.  Either stream ending tears down the whole attach: we disconnect
+/// from the DA, but the debug session itself keeps running and can be
+/// re-attached to later.
 fn pump_stdio<S: ClonableDuplex + Send + 'static>(connection: S) -> Result<()> {
-    // Our stdin -> connection runs on a background thread since reading
-    // stdin blocks independently of the connection. It has no explicit
-    // shutdown: once the peer disconnects, this function returns and the
-    // whole process exits, tearing the thread down with it.
+    // Our stdin -> connection runs on a background thread since reading stdin
+    // blocks independently of the connection.
     let mut writer = connection
         .try_clone_duplex()
         .context("failed to clone the connection for writing")?;
     std::thread::spawn(move || {
         let _ = std::io::copy(&mut std::io::stdin(), &mut writer);
+        // stdin hit EOF (Ctrl-D, a closed pipe, or a parent that went away), so we are done
+        // talking.  Exit the process rather than trying to unblock the main thread's read:
+        // there is no portable way to interrupt a blocking read on both a Unix socket and a
+        // Windows named pipe, and we want to quit anyway.  Exiting closes our socket fd, which
+        // the DA sees as a normal client disconnect -- it drops us from its client set and the
+        // session continues.  Status 0 with no message: this teardown is one we initiated, so
+        // it is not an error.
+        let _ = std::io::stdout().flush();
+        std::process::exit(0);
     });
 
-    // connection -> our stdout, on the main thread. Returns once the peer
-    // disconnects (read returns 0).
+    // connection -> our stdout, on the main thread.
     let mut reader = connection;
     let mut stdout = std::io::stdout();
     let mut buf = [0u8; 4096];
     loop {
-        let n = reader.read(&mut buf).context("error reading from the connection")?;
+        // A read error here is an abrupt disconnect (the DA died, or the socket was reset)
+        // rather than an orderly shutdown, so let it propagate and be reported.
+        let n = reader
+            .read(&mut buf)
+            .context("connection to the debug session was lost unexpectedly")?;
         if n == 0 {
-            break;
+            break; // Peer closed cleanly -- the session ended on its own terms.
         }
         stdout.write_all(&buf[..n])?;
         stdout.flush()?;

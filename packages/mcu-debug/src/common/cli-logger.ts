@@ -34,7 +34,10 @@ export class CustomTransport extends Transport {
     private pathMap: { [path: string]: NodeJS.WritableStream } = {};
     public usingDefaultLogFile: string | undefined;
     public readonly timeCreated = new Date().toISOString().replace(/[:.]/g, '-');   // e.g. 2024-06-01T12-34-56-789Z
-    private binaryRingBuffer = new BinaryRingBuffer(1024 * 10); // 1MB buffer for binary data from the target (e.g. GDB, RTT, SWO)
+    // 10KB replay window handed to each newly-connected socket client. Deliberately small: it only
+    // has to bridge "session started" -> "client connected". The log file is the unbounded archive,
+    // and a bigger window would just cost an AI consumer context on telemetry it never asked for.
+    private binaryRingBuffer = new BinaryRingBuffer(1024 * 10);
     constructor(opts: Transport.TransportStreamOptions & { callback: (info: winston.Logform.TransformableInfo) => void }) {
         super(opts);
         this.callback = opts.callback;
