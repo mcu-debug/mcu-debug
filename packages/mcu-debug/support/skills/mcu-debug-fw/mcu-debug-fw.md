@@ -133,14 +133,30 @@ Add `--wait-for-client` and the session does nothing at all until a client conne
 socket — no gdb-server, no gdb, no telemetry. You are then present for the entire session from
 the first byte instead of joining one already in progress.
 
-Because the launch blocks waiting for you, it has to run in the background and you connect from a
-second command:
+Because the launch blocks waiting for you, it must run as its **own process**, and you connect to
+it from a second one:
 
 ```bash
+# Process 1 — blocks until a client connects. Run it in its own terminal, or spawn it
+# as a child process and keep its stdin open.
 cd <workspace-root>
-~/.mcu-debug/bin/mcu-debug debug --no-tui -c 0 --wait-for-client &
+~/.mcu-debug/bin/mcu-debug debug --no-tui -c 0 --wait-for-client
+
+# Process 2 — this is you.
+cd <workspace-root>
 ~/.mcu-debug/bin/mcu-debug attach
 ```
+
+If you are an AI agent, spawn process 1 the way you spawn any long-running child process, holding
+its stdin open, and do your work over process 2.
+
+**Two ways to get this wrong:**
+
+* **Do not background it with `&` from an interactive shell.** The session reads its own stdin, so
+  a background job attempting a terminal read is stopped by the OS (`SIGTTIN`) and sits there
+  suspended until you `fg` it. It also does not exist as a concept in Windows `cmd`.
+* **Do not redirect stdin from `/dev/null` or `NUL`.** Closing stdin *ends the session* (see Step
+  5), so it would shut down the moment it started.
 
 The socket is advertised in `.mcu-debug/socket.json` as soon as the server is listening, which
 happens *before* the wait, so `attach` can always find it. If no client ever connects the session
