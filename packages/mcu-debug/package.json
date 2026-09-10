@@ -1,7 +1,7 @@
 {
   "name": "mcu-debug",
   "publisher": "mcu-debug",
-  "version": "0.1.12",
+  "version": "0.1.14",
   "preview": true,
   "description": "A debugger and debug adapter for MCUs",
   "displayName": "MCU-Debug",
@@ -4074,6 +4074,7 @@
     "mcu-debug.debug-tracker-vscode",
     "mcu-debug.memory-view",
     "mcu-debug.rtos-views",
-    "mcu-debug.peripheral-viewer"
+    "mcu-debug.peripheral-viewer",
+    "mcu-debug.mcu-debug-proxy"
   ]
 }

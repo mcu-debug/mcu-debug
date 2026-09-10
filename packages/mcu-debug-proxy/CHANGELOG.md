@@ -9,6 +9,12 @@ extension's
 
 ## [Unreleased]
 
+## [v0.1.14] - 2026-09-10
+
+- MCU-Debug now declares this extension as a dependency, so it installs automatically alongside
+  MCU-Debug instead of having to be picked up separately
+- Otherwise a version bump to stay in lockstep with `mcu-debug` v0.1.14
+
 ## [v0.1.12] - 2026-09-10
 
 - Better error reporting from the proxy's memory read/write path, including `Busy` and

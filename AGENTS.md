@@ -264,6 +264,21 @@ reason, and an AI agent matching on the documented `Reason - ` never matched.
   and JSON (not Markdown, where emoji are intentional), so these render boxed in the editor as you
   type. That is the check that fires early; there is no CI check for this.
 
+## Version bumps: one constant, never the manifests
+
+**Do not edit the `version` field in any `package.json` or `Cargo.toml`.** Three files carry a
+version and they must agree — `packages/mcu-debug/package.json`,
+`packages/mcu-debug-proxy/package.json`, and `packages/mdbg/Cargo.toml`. The two extensions ship
+as a matched pair and the release script refuses to publish if they differ.
+
+The single source of truth is the `VERSION` constant at the top of `scripts/sync-versions.js`.
+
+**How to apply:** edit that constant, then run `npm run version:sync` to propagate it. Verify with
+`node scripts/sync-versions.js --check`, which reports any file that drifted and exits non-zero —
+that is also what `npm run build` runs, so a hand-edited manifest surfaces as a build failure
+rather than a bad release. Version numbering itself (odd minor means pre-release) and the release
+flow are in [docs-internal/Publishing.md](docs-internal/Publishing.md).
+
 ## Documentation site (`apps/docs/`)
 
 The `.md`/`.mdx` files under `apps/docs/` are **Docusaurus**, not GitHub-flavored Markdown. The

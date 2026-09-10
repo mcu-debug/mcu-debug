@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [v0.1.14] - 2026-09-10
+
+- MCU-Debug now declares
+  [MCU-Debug Proxy Server](https://marketplace.visualstudio.com/items?itemName=mcu-debug.mcu-debug-proxy)
+  as an extension dependency, so VS Code installs it for you. The proxy is what lets MCU-Debug
+  reach a debug probe attached to a different machine than your workspace — WSL, a dev container,
+  or a lab server over SSH. If you only debug locally it sits idle and costs nothing, but do not
+  uninstall it: VS Code will not load MCU-Debug while a declared dependency is missing
+
 ## [v0.1.12] - 2026-09-10
 
 ### AI / CLI
