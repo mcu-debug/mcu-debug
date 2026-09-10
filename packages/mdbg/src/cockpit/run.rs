@@ -98,6 +98,16 @@ pub struct DebugArgs {
     #[arg(long = "wait-for-client")]
     pub wait_for_client: bool,
 
+    /// Never read stdin; drive the session over the socket instead.  Implies
+    /// `--wait-for-client`.
+    ///
+    /// Required when backgrounding the process from an interactive shell: a background job that
+    /// reads the controlling terminal is stopped by the OS with SIGTTIN, and no amount of probing
+    /// can detect that the caller intends to background us.  Spelled without a hyphen to match
+    /// the Node side, where commander would read `--no-stdin` as negating a `--stdin` option.
+    #[arg(long = "nostdin")]
+    pub nostdin: bool,
+
     /// Path to the script to run.
     #[arg(short = 'r', long = "script")]
     pub script: Option<String>,
@@ -121,16 +131,29 @@ pub struct AttachArgs {
 }
 
 pub fn run(args: DebugArgs) -> Result<()> {
+    // Auto-detect headless mode: if stdout is not a TTY (piped, redirected,
+    // or spawned by an AI agent) we behave as --no-tui automatically.
+    // The flag remains useful as an explicit override when stdout IS a TTY.
+    let headless = args.no_tui || !std::io::stdout().is_terminal();
+
+    // Argument validation first, before probing the environment: a bad flag combination should
+    // be reported as such, not as a missing Node or a missing CLI bundle.
+    //
+    // The TUI's whole job is to read your keystrokes and feed them to the session over node's
+    // stdin.  With --nostdin the Node side never opens a reader, so the TUI would render, accept
+    // typing, and silently discard every command.  Refuse rather than fail quietly.
+    if args.nostdin && !headless {
+        anyhow::bail!(
+            "--nostdin cannot be used with the TUI, which drives the session through stdin.\n\
+             Add --no-tui (or redirect stdout) to run headless."
+        );
+    }
+
     check_node_version()?;
 
     let cli_js = spawn::find_node_cli().context(
         "cannot locate mcu-debug-cli.js — build the Node package first (`npm run build` in packages/mcu-debug)",
     )?;
-
-    // Auto-detect headless mode: if stdout is not a TTY (piped, redirected,
-    // or spawned by an AI agent) we behave as --no-tui automatically.
-    // The flag remains useful as an explicit override when stdout IS a TTY.
-    let headless = args.no_tui || !std::io::stdout().is_terminal();
 
     // Build the args to forward to the Node CLI from the parsed Rust fields.
     let mut node_args: Vec<String> = Vec::new();
@@ -147,6 +170,9 @@ pub fn run(args: DebugArgs) -> Result<()> {
     }
     if args.wait_for_client {
         node_args.push("--wait-for-client".to_string());
+    }
+    if args.nostdin {
+        node_args.push("--nostdin".to_string());
     }
     if args.dump_config {
         node_args.push("--dump-config".to_string());

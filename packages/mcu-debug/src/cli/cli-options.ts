@@ -13,6 +13,10 @@ export interface CliArgs {
     dumpConfig?: boolean;
     showServerOutput?: boolean;
     waitForClient?: boolean;
+    // Deliberately spelled without a hyphen. Commander treats a `--no-` prefix as negation, so
+    // `--no-stdin` would define an option called `stdin` that defaults to true — the inverse of
+    // what the name suggests every time you read it.
+    nostdin?: boolean;
     script?: string;
 }
 
@@ -27,12 +31,19 @@ program
     .option('--dump-config', 'Dump the configuration and exit')
     .option('--show-server-output', 'Show server output in the console')
     .option('--wait-for-client', 'Wait for a client to connect before starting the debug session')
+    .option('--nostdin', 'Never read stdin; drive the session over the socket instead. Required when backgrounding the process from an interactive shell. Implies --wait-for-client')
     .option('-r, --script <string>', 'script file to execute after startup as though commands were entered on stdin')
     .version(version, '-V, --version', 'Show version information')
     .helpOption('-h, --help', 'Show this help message')
     .parse(process.argv);
 
 export const cliArgs = program.opts<CliArgs>();
+
+// --nostdin means the socket is the only way in, so waiting for a client is not optional:
+// without it the session would start, run unattended, and accept commands from nobody.
+if (cliArgs.nostdin) {
+    cliArgs.waitForClient = true;
+}
 
 export function printHelp() {
     console.log(program.helpInformation());

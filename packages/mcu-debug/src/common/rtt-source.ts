@@ -21,10 +21,10 @@ export function createRTTSource(mySession: CDebugSession, tcpPort: string, chann
         }
         mySession.rttPortMap[channel] = src; // Yes, we put this in the list even if start() can fail
         resolve(src); // Yes, it is okay to resolve it even though the connection isn't made yet
-        process.stdout.write(`Connecting to RTT TCP port ${tcpPort} for channel ${channel}...\n`);
+        getHostAdapter().debugConsoleMessage(`Connecting to RTT TCP port ${tcpPort} for channel ${channel}...`);
         src.start()
             .then(() => {
-                process.stdout.write(`Connected to RTT TCP port ${tcpPort} for channel ${channel}\n`);
+                getHostAdapter().debugConsoleMessage(`Connected to RTT TCP port ${tcpPort} for channel ${channel}`);
                 if (!mySession.config.rttConfig?.useBuiltinRTT?.enabled) {
                     mySession.session.customRequest("rtt-poll");
                 }

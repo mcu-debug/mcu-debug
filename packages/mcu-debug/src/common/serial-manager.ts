@@ -1108,6 +1108,10 @@ export class ProxySerialTcpServer {
                 this.socket.destroy();
             }
             this.socket = socket;
+            // Serial traffic is small, interactive writes. Nagle would hold them back waiting
+            // for a full segment, and paired with the peer's delayed ACK that stalls a line
+            // mid-flight for tens of milliseconds -- long enough to split it downstream.
+            socket.setNoDelay(true);
             if (this.pendingBytes > 0) {
                 socket.write(Buffer.concat(this.pending, this.pendingBytes));
                 this.pending = [];

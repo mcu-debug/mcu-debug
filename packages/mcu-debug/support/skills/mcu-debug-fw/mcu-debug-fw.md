@@ -150,13 +150,21 @@ cd <workspace-root>
 If you are an AI agent, spawn process 1 the way you spawn any long-running child process, holding
 its stdin open, and do your work over process 2.
 
-**Two ways to get this wrong:**
+**If you do background it, add `--nostdin`:**
 
-* **Do not background it with `&` from an interactive shell.** The session reads its own stdin, so
-  a background job attempting a terminal read is stopped by the OS (`SIGTTIN`) and sits there
-  suspended until you `fg` it. It also does not exist as a concept in Windows `cmd`.
-* **Do not redirect stdin from `/dev/null` or `NUL`.** Closing stdin *ends the session* (see Step
-  5), so it would shut down the moment it started.
+```bash
+~/.mcu-debug/bin/mcu-debug debug --no-tui -c 0 --wait-for-client --nostdin &
+~/.mcu-debug/bin/mcu-debug attach
+```
+
+`--nostdin` tells the session never to read stdin, which is what makes backgrounding safe — a
+background job that reads the controlling terminal is stopped by the OS (`SIGTTIN`) and sits
+suspended until someone runs `fg`. The session cannot detect that intent on its own, so you have
+to say it. It implies `--wait-for-client` and cannot be combined with the TUI.
+
+Redirecting instead (`< /dev/null`) also works: the session detects that stdin was closed at
+startup, and either continues over the socket if `--wait-for-client` was given, or exits
+immediately with a message telling you which flag to add. It will not silently run unattended.
 
 The socket is advertised in `.mcu-debug/socket.json` as soon as the server is listening, which
 happens *before* the wait, so `attach` can always find it. If no client ever connects the session
@@ -262,10 +270,19 @@ Closing stdin does **different things depending on which process you started**, 
 
 When the session ends, any breakpoints are saved and then restored on the next session.
 
-* Closing stdin of `mcu-debug debug` (Step 1a — the process hosting the session) ends the session.
-* Closing stdin of `mcu-debug attach` (Step 1b) only disconnects *you*. The session keeps running,
-  the probe stays claimed, and you or someone else can attach to it again. Use this when you want
-  to leave a session running for a human to take over.
+* Closing stdin of `mcu-debug debug` (Step 1a — the process hosting the session) ends the session,
+  **even if you are attached over the socket**. Whoever started the session on stdin owns its
+  lifetime; you are the copilot and do not inherit the controls when they leave.
+* Closing stdin of `mcu-debug attach` (Step 1b) disconnects *you*. What happens next depends on how
+  the session was started:
+  * A session started by a human in a terminal keeps running — their stdin is still flying it, and
+    you or someone else can attach again.
+  * A session started with `--nostdin` (nobody on stdin) **ends when the last client
+    disconnects**, releasing the probe. There is no one left to fly it, and an abandoned session
+    would hold the probe and block the next session from starting.
+
+So if you started the session yourself with `--nostdin`, disconnecting *is* ending it. Send `exit`
+when you mean to end it, and stay attached when you do not.
 
 **DO NOT KILL** like `kill -9` the `mcu-debug` process as it will leave the gdb-server process
 running - requiring manual intervention for the next session.

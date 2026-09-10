@@ -153,6 +153,7 @@ export class CLISerialPortView implements ISerialPortView {
         this.destroySocket();
         // The helper will create a TCP server for this serial port and report the port number back to us. Once we have the port number, we can connect to it.
         const socket = new net.Socket();
+        socket.setNoDelay(true); // keystrokes to the target must not wait for Nagle to fill a segment
         socket.connect(this.tcpPort, "127.0.0.1", () => {
             getHostAdapter().debugMessage(`Connected to serial port ${this.device} at 127.0.0.1:${this.tcpPort}`);
             this.socket = socket;

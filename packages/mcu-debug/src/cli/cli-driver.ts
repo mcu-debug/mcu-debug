@@ -139,6 +139,16 @@ export class CliSessionDriver {
     }
 
     async startSession(cliArgs: any) {
+        // Nobody would be flying: stdin cannot be the pilot and no client is expected either.
+        // Refuse now, before the gdb-server is launched and has to be torn down again.
+        if (!this.restarting && !this.stdinIsPilot && !this.cliArgs.waitForClient) {
+            const msg =
+                'stdin is closed and no client can connect, so nothing would be able to control this session.\n' +
+                'Use --wait-for-client (and --nostdin if you are backgrounding this process) to drive it over the socket.';
+            process.stderr.write(msg + os.EOL);
+            logger.error(msg.replace(/\n/g, ' '), { source: 'DA' });
+            process.exit(1);
+        }
         try {
             if (!this.restarting) {
                 await this.startSocketReader();
@@ -282,6 +292,13 @@ export class CliSessionDriver {
         if (this.rl) {
             return;
         }
+        if (!this.stdinIsPilot) {
+            // Either the caller passed --nostdin, or stdin was already at EOF when we started.
+            // Do not open a reader: with --nostdin, reading the controlling terminal from a
+            // backgrounded process raises SIGTTIN and suspends us, and no probe can detect that
+            // intent. The socket is flying this session.
+            return;
+        }
         this.rl = readline.createInterface({
             input: process.stdin,
             output: process.stdout,
@@ -319,6 +336,10 @@ export class CliSessionDriver {
         });
 
         this.rl.on('close', () => {
+            // We only ever open a reader when stdin is the pilot, so its EOF ends the session --
+            // even if an AI is attached over the socket. The AI is the copilot; it does not
+            // inherit the controls when the human walks away. A deliberate handoff is expressed
+            // at launch with --wait-for-client --nostdin, not by closing a terminal.
             if (!this.isInternalClose) {
                 this.doExit(true);
             }
@@ -362,6 +383,76 @@ export class CliSessionDriver {
     private get isTTY(): boolean {
         return !!process.stdin.isTTY;
     }
+
+    /**
+     * True when stdin was already at EOF as this process started — `< /dev/null` on POSIX,
+     * `< NUL` on Windows, or no fd 0 at all.
+     *
+     * The `isCharacterDevice()` gate is what makes the probe safe. A blocking `readSync` on fd 0
+     * would consume a byte from a pipe that has data, and would *block indefinitely* on a pipe
+     * that does not have data yet — which is exactly how the TUI runs us (spawn.rs gives node a
+     * piped stdin). Pipes and files are FIFO/FILE and never reach the read; only a non-TTY
+     * character device does, and there the read returns 0 immediately.
+     */
+    private startedWithNoStdin(): boolean {
+        if (process.stdin.isTTY) {
+            return false; // A terminal is real stdin.
+        }
+        let st: fs.Stats;
+        try {
+            st = fs.fstatSync(0);
+        } catch (e) {
+            return true; // No fd 0 at all.
+        }
+        if (!st.isCharacterDevice()) {
+            return false; // FIFO or regular file: real stdin, never probe it.
+        }
+        if (process.platform !== 'win32') {
+            // Compare device ids rather than reading. /dev/zero and /dev/urandom are also non-TTY
+            // character devices, and a read would consume a byte from them; /dev/null has a
+            // distinct rdev, so this answers the question without touching the stream at all.
+            try {
+                return st.rdev === fs.statSync('/dev/null').rdev;
+            } catch (e) {
+                // Fall through to the read below.
+            }
+        }
+        // Windows NUL, and the fallback if /dev/null could not be stat'd. NUL is always at EOF,
+        // so this reads zero bytes and consumes nothing.
+        try {
+            return fs.readSync(0, Buffer.alloc(1), 0, 1, null) === 0;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
+     * Who owns this session's lifetime, decided once at startup and never changed.
+     *
+     * Two people can be in the cockpit — a human on stdin and an AI on the socket — but only one
+     * is flying. Deciding that up front is what keeps the session from being orphaned: if
+     * ownership could move at runtime (say, to whoever is still connected), a human closing their
+     * terminal would silently promote the AI without telling it, and when the AI also left,
+     * nothing would be left to shut the session down or release the probe.
+     *
+     * stdin is the pilot whenever it is a usable control channel. Otherwise the socket is, and
+     * stdin is never read at all.
+     */
+    private stdinIsPilotCached: boolean | undefined;
+    private get stdinIsPilot(): boolean {
+        if (this.stdinIsPilotCached === undefined) {
+            // startedWithNoStdin() stats fd 0, so evaluate it once and remember the answer.
+            this.stdinIsPilotCached = !this.cliArgs.nostdin && !this.startedWithNoStdin();
+        }
+        return this.stdinIsPilotCached;
+    }
+
+    /**
+     * Set once the first socket client connects. Distinguishes "waiting for the first client",
+     * where zero clients is normal, from "the last client left", where in socket-pilot mode
+     * nobody is flying any more.
+     */
+    private hasEverHadClient = false;
 
     /**
      * Update the prompt string and redraw the input line in place.
@@ -922,8 +1013,18 @@ export class CliSessionDriver {
                 } else if (category === 'stderr') {
                     this.stderrLogger.info(text);
                 } else {
+                    // A leading '\r' is the gdb-server overwriting its own line -- erase/program
+                    // progress. Overwriting in place only means something on a terminal. When
+                    // stdout is a pipe (TUI, socket, an AI driving the session) the escape is
+                    // noise, and returning early would drop the progress from the log file too.
+                    // During a 30-second flash it is the only evidence the session is alive, so
+                    // off a terminal it becomes an ordinary log event.
                     if (text.startsWith('\r') && !text.startsWith('\r[100')) {
-                        this.terminalWrite(text); // overwrite current line (e.g. progress updates) — no need to log
+                        if (this.isTTY) {
+                            this.terminalWrite(text); // overwrite current line -- no need to log
+                            return;
+                        }
+                        this.stdoutLogger.info(text.replace(/^\r+/, ''));
                         return;
                     }
                     this.stdoutLogger.info(text);
@@ -1080,8 +1181,21 @@ export class CliSessionDriver {
                 }
                 // Also pipe mux output back to this connection
                 this.serverClients.add(conn);
+                this.hasEverHadClient = true;
                 this.customTransport.addStream(conn, socketPath);
-                conn.on('close', () => this.serverClients.delete(conn));
+                conn.on('close', () => {
+                    this.serverClients.delete(conn);
+                    // In socket-pilot mode the last client leaving means nobody is flying. Exit
+                    // cleanly rather than lingering: a debug session holds the probe exclusively,
+                    // so an abandoned one blocks the *next* session from starting. We cannot rely
+                    // on a well-behaved `exit` -- an AI client can vanish in plenty of ways that
+                    // never reach us. Waiting around for a possible re-attach would trade a
+                    // recoverable inconvenience for a resource nobody else can use.
+                    if (!this.stdinIsPilot && this.hasEverHadClient && this.serverClients.size === 0) {
+                        logger.info('Last client disconnected and there is no stdin to fall back on; ending the session and releasing the probe.', { source: 'DA' });
+                        this.doExit(false);
+                    }
+                });
             });
             this.server.listen(socketPath, () => {
                 this.socketPath = socketPath;
@@ -1090,6 +1204,14 @@ export class CliSessionDriver {
                 if (!this.cliArgs.waitForClient) {
                     resolve();
                 } else {
+                    // Announce the wait on stderr before blocking. This is a deliberate,
+                    // unbounded wait and stdout carries the mux stream, so without a word here an
+                    // operator just sees a process that appears hung.
+                    process.stderr.write(
+                        `Waiting for a client to connect before starting the debug session.` + os.EOL +
+                        `  socket: ${socketPath}` + os.EOL +
+                        `  connect with: mcu-debug attach` + os.EOL +
+                        `This waits indefinitely; press Ctrl-C to abort.` + os.EOL);
                     timeout = setTimeout(() => {
                         if (timeout && this.serverClients.size === 0) {
                             logger.error('waitForClient is true but no client connected within timeout. Is the client side running and configured correctly?', { source: 'DA', isConsole: true });
