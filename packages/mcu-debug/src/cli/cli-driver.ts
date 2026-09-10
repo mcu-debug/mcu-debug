@@ -730,11 +730,27 @@ export class CliSessionDriver {
         if (!trimmedInput) {
             return Promise.resolve();
         }
+        const src = isTerminal ? 'user-input' : 'socket-input';
+        logger.info(input, { source: src, skipConsole: true });
         try {
-            this.handleSpecialCommands(trimmedInput, isTerminal);
+            if (this.handleSpecialCommands(trimmedInput, isTerminal)) {
+                return Promise.resolve();
+            }
         } catch {
         }
-        return Promise.resolve();
+        // Everything else goes to GDB, exactly as it does when paused. We used to drop these
+        // silently, which was a self-inflicted limitation: because we drive GDB through the MI
+        // interface (not a terminal REPL), GDB accepts plenty of commands while the target is
+        // running -- `info breakpoints`, `info threads`, breakpoint management, symbol/type and
+        // source queries. Only commands that actually read or write target state need a halted
+        // core, and GDB rejects those itself with a clear error. GDB is the authority on what is
+        // legal in the current state; our job is to deliver the command and report the answer.
+        return this.doReplCommand(trimmedInput).then((response) => {
+            if (!response.success) {
+                logger.warn(`Evaluate request failed: ${response.message}`);
+            }
+            return Promise.resolve();
+        });
     }
 
     /**
