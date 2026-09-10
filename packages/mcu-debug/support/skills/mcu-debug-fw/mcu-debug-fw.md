@@ -4,6 +4,9 @@ description: >
   Debug embedded firmware on a microcontroller through the mcu-debug CLI — drive execution, set breakpoints,
   inspect registers and memory, and follow live RTT/UART telemetry. Use when investigating a crash or
   HardFault, inspecting firmware state, or tracing runtime behavior on a connected hardware target.
+license: Apache-2.0
+metadata:
+  author: Haneef Mohammed (haneefdm)
 ---
 
 # mcu-debug Skill Template for AI Tools

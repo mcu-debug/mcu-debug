@@ -27,7 +27,10 @@
     "lint:rust:linux": "cargo clippy --manifest-path packages/mdbg/Cargo.toml --lib --target x86_64-unknown-linux-musl -- -D warnings",
     "lint:rust:all": "npm run lint:rust && npm run lint:rust:win && npm run lint:rust:linux",
     "fmt:rust": "cargo fmt --manifest-path packages/mdbg/Cargo.toml",
-    "fmt:rust:check": "cargo fmt --manifest-path packages/mdbg/Cargo.toml -- --check"
+    "fmt:rust:check": "cargo fmt --manifest-path packages/mdbg/Cargo.toml -- --check",
+    "publish": "node scripts/prepare-release.js --publish",
+    "publish:dryrun": "node scripts/prepare-release.js --publish --dryrun",
+    "release": "node scripts/prepare-release.js"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",
