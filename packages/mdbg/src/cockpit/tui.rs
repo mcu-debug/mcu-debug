@@ -574,6 +574,58 @@ fn render(frame: &mut ratatui::Frame, app: &mut App, output_height: &Cell<u16>) 
     }
 }
 
+/// How many rows `line` occupies once ratatui word-wraps it into `width` columns.
+///
+/// Mirrors `Wrap { trim: false }`: break at whitespace, hard-split a word that cannot fit on a
+/// line of its own. Kept in step with the real renderer by `wrapped_rows_matches_renderer`.
+fn wrapped_rows(line: &Line, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    if text.is_empty() {
+        return 1;
+    }
+    let mut rows = 1usize;
+    let mut col = 0usize;
+    for word in text.split_inclusive(char::is_whitespace) {
+        let w = word.chars().count();
+        if col + w > width && col > 0 {
+            rows += 1;
+            col = 0;
+        }
+        if w > width {
+            // Hard-split: the word alone spans several rows.
+            let extra = (w - 1) / width;
+            rows += extra;
+            col = w - extra * width;
+        } else {
+            col += w;
+        }
+    }
+    rows
+}
+
+/// Pick the slice of lines to hand a wrapped Paragraph so the newest one lands on the bottom row.
+///
+/// Taking the last `visible_height` *logical* lines overflows the pane as soon as any of them
+/// wrap, and ratatui clips a Paragraph at the bottom -- so the newest output is exactly what
+/// disappears. Fill the pane by rendered rows instead, walking backwards from the newest line.
+fn visible_range(all: &[Line], visible_height: usize, scroll: usize, width: usize) -> (usize, usize) {
+    let end = all.len().saturating_sub(scroll);
+    let mut start = end;
+    let mut rows = 0usize;
+    while start > 0 {
+        let need = wrapped_rows(&all[start - 1], width);
+        if rows + need > visible_height && rows > 0 {
+            break;
+        }
+        rows += need;
+        start -= 1;
+    }
+    (start, end)
+}
+
 fn render_output(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect, output_height: &Cell<u16>) {
     // How many content lines fit (subtract 2 for the block border).
     // Write back so handle_key can compute proportional page-scroll amounts.
@@ -582,10 +634,9 @@ fn render_output(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::R
 
     let all_lines: Vec<Line> = app.output.iter().map(|s| ansi_line(s)).collect();
 
-    let total = all_lines.len();
-    let scroll = app.scroll as usize;
-    let start = total.saturating_sub(visible_height + scroll);
-    let visible: Vec<Line> = all_lines.into_iter().skip(start).collect();
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let (start, end) = visible_range(&all_lines, visible_height, app.scroll as usize, inner_width);
+    let visible: Vec<Line> = all_lines[start..end].to_vec();
 
     let status_str = if app.status.is_empty() {
         "".to_owned()
@@ -850,4 +901,95 @@ fn event_loop(
     }
 
     Ok(app.output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Render `lines` into a `width` x `height` bordered pane and return the rows as strings.
+    fn render_rows(lines: &[Line], width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let visible = lines.to_vec();
+        terminal
+            .draw(|frame| {
+                let para = Paragraph::new(Text::from(visible))
+                    .block(Block::default().borders(Borders::ALL))
+                    .wrap(Wrap { trim: false });
+                frame.render_widget(para, frame.area());
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol().to_owned()).collect::<String>())
+            .collect()
+    }
+
+    /// Rows a single line actually occupies, measured from a real render.
+    fn measured_rows(text: &str, inner_width: u16) -> usize {
+        let rows = render_rows(&[Line::from(text.to_owned())], inner_width + 2, 40);
+        rows[1..rows.len() - 1]
+            .iter()
+            .filter(|r| {
+                // Strip the border glyphs by character, not byte: they are multi-byte.
+                let n = r.chars().count();
+                let inner: String = r.chars().skip(1).take(n.saturating_sub(2)).collect();
+                !inner.trim().is_empty()
+            })
+            .count()
+    }
+
+    /// The estimate must never come in *under* the real thing: undercounting is what lets the
+    /// newest line overflow the pane and get clipped.
+    #[test]
+    fn wrapped_rows_matches_renderer() {
+        let samples = [
+            "one",
+            "[cu.usbmodem11103] LED blinking paused ",
+            "[cu.usbmodem11103] https://github.com/Infineon/Code-Examples-for-ModusToolbox-Software",
+            "[cu.usbmodem11103] ****************** HAL: Hello World! Example ****************** ",
+            "a very long line that must wrap onto a second row",
+            "supercalifragilisticexpialidociousandthensomemoretomakeitlonger",
+            "short words that just barely fit in here ok",
+            "",
+        ];
+        for w in [20u16, 22, 40, 80] {
+            for s in samples {
+                let predicted = wrapped_rows(&Line::from(s.to_owned()), w as usize);
+                let actual = measured_rows(s, w);
+                assert!(
+                    predicted >= actual,
+                    "width {w}: predicted {predicted} < actual {actual} for {s:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn newest_line_survives_a_wrapped_earlier_line() {
+        let texts = [
+            "one",
+            "two",
+            "a very long line that must wrap onto a second row",
+            "four",
+            "NEWEST",
+        ];
+        let all: Vec<Line> = texts.iter().map(|s| Line::from((*s).to_owned())).collect();
+        // 24 wide -> 22 usable; 7 tall -> 5 usable rows. The long line needs three of them.
+        let (start, end) = visible_range(&all, 5, 0, 22);
+        let joined = render_rows(&all[start..end], 24, 7).join("\n");
+        assert!(
+            joined.contains("NEWEST"),
+            "newest line must reach the bottom row:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn scroll_offset_still_walks_back_through_history() {
+        let all: Vec<Line> = (0..50).map(|i| Line::from(format!("line {i}"))).collect();
+        let (_, end) = visible_range(&all, 5, 10, 22);
+        assert_eq!(end, 40, "scroll of 10 should stop 10 lines short of the newest");
+    }
 }

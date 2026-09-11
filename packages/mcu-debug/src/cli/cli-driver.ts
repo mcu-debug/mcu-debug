@@ -239,7 +239,10 @@ export class CliSessionDriver {
             logger.error("Failed to run script: " + (error instanceof Error ? error.message : String(error)));
             return;
         }
-        const lines = scriptContent.split('\n');
+        // Split on either line ending. Unlike the readline-based stdin and socket readers, this
+        // path would otherwise leave a \r on every line of a CRLF file, and commands that take
+        // their arguments verbatim (!!send) would pass it through to the target.
+        const lines = scriptContent.split(/\r?\n/);
         for (const line of lines) {
             // Execute each line of the GDB script here
             if (this.isPaused) {
@@ -546,7 +549,7 @@ export class CliSessionDriver {
                 }
                 return Promise.resolve();
             });
-        } else if (this.handleSpecialCommands(trimmedInput, isTerminal)) {
+        } else if (this.handleSpecialCommands(trimmedInput, isTerminal, input)) {
             // Special commands handled
             return Promise.resolve();
         } else {
@@ -575,15 +578,22 @@ export class CliSessionDriver {
      * These commands are special commands that are okay to use in both paused and running states,
      * and don't get sent to the DA as raw GDB commands. They are for controlling the session itself,
      * not the target. Some are not even gdb commands (e.g. reset)
-     * @param trimmedInput 
+     * @param trimmedInput use for dispatch and for commands whose arguments are tokens
      * @param isTerminal use true for stdin
+     * @param rawInput the line as typed. Use this where whitespace is payload rather than
+     *                 separator -- `!!send` carries text meant for the target verbatim.
      * @returns true if handled
      */
-    private handleSpecialCommands(trimmedInput: string, isTerminal: boolean): boolean {
-        if (trimmedInput === 'pause' || trimmedInput.toLowerCase() === '!!sigint') {
+    private handleSpecialCommands(trimmedInput: string, isTerminal: boolean, rawInput: string): boolean {
+        // Match on the lower-cased copy; slice payloads out of `trimmedInput` so their own case
+        // survives. Meta-commands are recognised case-insensitively because a near-miss does not
+        // fail loudly -- it falls through to the catch-all below and is quietly relayed as a
+        // free-text message, which for an agent looks like the command succeeded.
+        const lower = trimmedInput.toLowerCase();
+        if (lower === 'pause' || lower === '!!sigint') {
             this.doInterrupt();
             return true;
-        } if (trimmedInput === 'reset' || trimmedInput.toLowerCase() === '!!reset') {
+        } if (lower === 'reset' || lower === '!!reset') {
             this.sendRequest<DebugProtocol.RestartResponse>({
                 seq: 0,          // overwritten by sendRequest
                 type: 'request', // overwritten by sendRequest
@@ -594,38 +604,56 @@ export class CliSessionDriver {
                 }
             });
             return true;
-        } else if (trimmedInput.toLowerCase() === 'status' || trimmedInput.toLowerCase() === '!!status') {
+        } else if (lower === 'status' || lower === '!!status') {
             this.doStatus();
             return true;
-        } else if (trimmedInput.toLowerCase() === 'restart' || trimmedInput.toLowerCase() === '!!restart') {
+        } else if (lower === 'restart' || lower === '!!restart') {
             this.doRestart(isTerminal);
             return true;
-        } else if (trimmedInput.toLowerCase() === 'exit') {
+        } else if (lower === 'exit') {
             this.doExit(isTerminal);
             return true;
-        } else if (trimmedInput.startsWith('!!AI-REQUEST-CLEAR')) {
+        } else if (lower.startsWith('!!ai-request-clear')) {
             // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
             // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
             // to the UI to clear/display something
             logger.info('!!AI-REQUEST-CLEAR', { isConsole: true, source: 'AI' });
             return true;
-        } else if (trimmedInput.startsWith('!!AI-REQUEST:')) {
+        } else if (lower.startsWith('!!ai-request:')) {
             // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
             // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
             // to the UI to clear/display something
-            logger.info(trimmedInput, { isConsole: true, source: 'AI' });
+            // Re-emit the canonical spelling rather than what was typed: the TUI matches this
+            // prefix exactly (cockpit/tui.rs), so a lower-case variant would pass through here
+            // and then fail to be intercepted downstream.
+            logger.info(`!!AI-REQUEST:${trimmedInput.substring('!!AI-REQUEST:'.length)}`, { isConsole: true, source: 'AI' });
             return true;
-        } else if (trimmedInput.startsWith('!!NOTE:')) {
+        } else if (lower.startsWith('!!note:')) {
             // This is a command from the DA to the CLI to update the notes. The payload is in the format of !!NOTE:{"doc":[{...json-patch...}]}
-            const jsonStr = trimmedInput.substring(7);
+            const jsonStr = trimmedInput.substring('!!NOTE:'.length);
             this.handleNotes(jsonStr);
             return true;
-        } else if (isTerminal && trimmedInput.startsWith('!!')) {
-            process.stdout?.write(`Sent to any connected AI: ${trimmedInput.substring(2)}\n`);
-            logger.info(trimmedInput.substring(2), { skipConsole: true, source: 'USER-REQUEST' });
+        } else if (/^!!send(\s|$)/i.test(trimmedInput)) {
+            // Match on a whitespace boundary, not a literal space: `!!send\t[]` used to miss this
+            // branch and fall through to the catch-all below, which forwards anything starting
+            // with `!!` to the AI -- so a tab silently turned a target write into a chat message.
+            // Take the arguments from the raw line: trimStart() drops indentation before the
+            // command, but anything after it -- trailing spaces included -- is the target's data.
+            this.doSendToStream(rawInput.trimStart().substring('!!send'.length).replace(/^\s/, ''));
             return true;
-        } else if (trimmedInput.toLowerCase().startsWith('!!')) {
-            // Future meta-commands (!!RESET, !!NOTE:, etc.)
+        } else if (isTerminal && trimmedInput.startsWith('!!')) {
+            // Anything else starting with `!!` typed on stdin is a free-text message to whatever
+            // client is attached. Two events on purpose: the USER-REQUEST line carries the payload
+            // alone, so a reader never has to strip our wording out of it, and the DA line is the
+            // human's confirmation. Socket clients are registered as transport streams, so the
+            // first one reaches them as JSON without anything further being written by hand.
+            const request = trimmedInput.substring(2);
+            logger.info(request, { skipConsole: true, source: 'USER-REQUEST' });
+            this.stdoutLogger.info(`Sent to any connected AI: ${request}`);
+            return true;
+        } else if (lower.startsWith('!!')) {
+            // An unrecognised meta-command from a socket client. This is the agent's only signal
+            // that it got the spelling wrong, so it is reported rather than dropped.
             this.unknowMetaCommand(trimmedInput);
             return true;
         }
@@ -753,6 +781,97 @@ export class CliSessionDriver {
         });
     }
 
+    /**
+     * `!!send [<prefix>] [text]` — write a line to one of the target's own I/O streams.
+     *
+     * stdin belongs to GDB, so without this there is no way to answer firmware that prompts for
+     * input ("Press 'Enter' to continue").
+     *
+     * Brackets are what separate an address from payload, so a command means the same thing no
+     * matter how many streams happen to exist:
+     *
+     *   !!send [RTT#0] hello    -> that stream
+     *   !!send hello            -> the only stream; an error when there is more than one
+     *   !!send                  -> a bare newline to the only stream
+     *   !!send [] hello         -> the only stream, said out loud, for text starting with '['
+     *
+     * Resolving an unbracketed first word against the stream list instead would make the parse
+     * depend on session state: text would be swallowed as an address whenever it collided with
+     * a name, and the same command would change meaning as streams came and went.
+     *
+     * The prefix is the tag that labels that stream's own output and is listed by `status`, so
+     * the address is discoverable from the stream itself. A line terminator is always appended.
+     * Everything after the address is payload, whitespace included -- which is why the caller
+     * hands us the raw line rather than a trimmed one.
+     */
+    private doSendToStream(args: string): void {
+        type Sink = { prefix: string; write: (text: string) => boolean };
+        const sinks: Sink[] = [
+            ...this.rtts.map((r) => ({
+                prefix: r.getPrefix(),
+                write: (text: string) => r.sendToTarget(`${text}\r\n`),
+            })),
+            ...(this.adapter as CliAdapter).getSerialPortViews().map((p) => ({
+                prefix: p.getPrefix(),
+                // onUserInput() appends the terminator itself; the RTT path above adds its own.
+                write: (text: string) => {
+                    if (p.getStatus() !== 'connected') {
+                        return false;
+                    }
+                    p.onUserInput(text);
+                    return true;
+                },
+            })),
+        ];
+        const names = () => sinks.map((s) => s.prefix);
+        const fail = (msg: string, error: string, extra: object = {}) => {
+            logger.error(`!!send: ${msg}`, { source: 'DA', isConsole: true, command: 'send', error, ...extra });
+        };
+
+        // Look for the address past any extra spacing: `!!send   [port]` means the port, not the
+        // literal text "[port]" to the only stream. Payload keeps its leading spaces because it
+        // is only reached when there is no bracket to find.
+        const addressPart = args.trimStart();
+        let addressed: string | undefined;
+        let text: string;
+        if (addressPart.startsWith('[')) {
+            const end = addressPart.indexOf(']');
+            if (end < 0) {
+                fail(`unterminated stream name in '${addressPart}'`, 'bad-prefix');
+                return;
+            }
+            const prefix = addressPart.substring(0, end + 1);
+            addressed = prefix === '[]' ? undefined : prefix;         // '[]' is "the only one", stated explicitly
+            text = addressPart.substring(end + 1).replace(/^\s/, ''); // drop the separator, keep the rest
+        } else {
+            text = args;                                              // unbracketed: all of it is payload
+        }
+
+        let target: Sink | undefined;
+        if (addressed) {
+            target = sinks.find((s) => s.prefix === addressed);
+            if (!target) {
+                fail(`no stream named ${addressed}. Known streams: ${names().join(', ') || '(none)'}`, 'unknown-stream', { target: addressed, available: names() });
+                return;
+            }
+        } else if (sinks.length > 1) {
+            fail(`more than one stream, name the one you mean: ${names().join(', ')}`, 'ambiguous', { available: names() });
+            return;
+        } else {
+            target = sinks[0];      // undefined when the session has no streams at all
+        }
+        if (!target) {
+            fail('this session has no serial or RTT streams to send to', 'no-streams', { available: [] });
+            return;
+        }
+
+        if (!target.write(text)) {
+            fail(`${target.prefix} is not connected`, 'not-connected', { target: target.prefix });
+            return;
+        }
+        logger.info(`${target.prefix} <= ${text}`, { source: 'DA', skipConsole: true, command: 'send', target: target.prefix, text });
+    }
+
     private doStatus() {
         // We summarize our current status
         const serialPorts = (this.adapter as CliAdapter).getSerialPortViews().map((port) => {
@@ -824,7 +943,7 @@ export class CliSessionDriver {
         const src = isTerminal ? 'user-input' : 'socket-input';
         logger.info(input, { source: src, skipConsole: true });
         try {
-            if (this.handleSpecialCommands(trimmedInput, isTerminal)) {
+            if (this.handleSpecialCommands(trimmedInput, isTerminal, input)) {
                 return Promise.resolve();
             }
         } catch {
@@ -1024,7 +1143,10 @@ export class CliSessionDriver {
                             this.terminalWrite(text); // overwrite current line -- no need to log
                             return;
                         }
-                        this.stdoutLogger.info(text.replace(/^\r+/, ''));
+                        // Several updates may have coalesced into one flush, each separated by
+                        // its own '\r'. Only the last one is the current state -- that is what
+                        // overwriting in place would have left on screen.
+                        this.stdoutLogger.info(text.split('\r').pop() ?? text);
                         return;
                     }
                     this.stdoutLogger.info(text);
@@ -1065,6 +1187,24 @@ export class CliSessionDriver {
             this.previousPartialTimer = setTimeout(() => {
                 flushPartial();
             }, 100);
+        } else if (this.previousParialLine) {
+            // A complete line must not overtake a partial that is still pending. When it
+            // continues that same partial it is the rest of the line, so join them; when it
+            // comes from a different source, flush the partial first to preserve ordering.
+            // Without this a line split across chunks ("Erasing wo" + "rld\n") emitted "rld"
+            // immediately and "Erasing wo" after the timer -- split and out of order.
+            if (category === this.previousParitalCategory) {
+                output = this.previousParialLine + output;
+                this.previousParialLine = "";
+                this.previousParitalCategory = "";
+                if (this.previousPartialTimer) {
+                    clearTimeout(this.previousPartialTimer);
+                    this.previousPartialTimer = null;
+                }
+            } else {
+                flushPartial();
+            }
+            doOutput(category, output);
         } else {
             doOutput(category, output);
         }
@@ -1235,7 +1375,9 @@ export class CliSessionDriver {
     }
 
     private unknowMetaCommand(cmd: string) {
-        logger.info(`Unhandled meta-command from clients: ${cmd}`, { source: 'DA', isConsole: true });
+        // warn, not info: this is the only indication a client gets that its command was not
+        // understood, and an agent filtering on level would read an info line as normal traffic.
+        logger.warn(`Unhandled meta-command from clients: ${cmd}`, { source: 'DA', isConsole: true, command: cmd, error: 'unknown-meta-command' });
     }
 
     private writeSockFile(socketPath: string) {

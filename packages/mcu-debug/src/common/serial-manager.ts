@@ -230,6 +230,9 @@ export class ProxyConnection {
         return new Promise((resolve) => {
             this.logInfo(`Attempting to connect to proxy on ${host}:${port}...`);
             const socket = new net.Socket();
+            // host is not always loopback -- WSL, Docker and SSH probe hosts make this a real
+            // network link, where Nagle plus the peer's delayed ACK stalls small writes.
+            socket.setNoDelay(true);
             socket.on("data", (data: Buffer) => {
                 this.handleProxyData(data);
             });

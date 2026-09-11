@@ -31,9 +31,14 @@ export class CLIRTTTerminal {
             this.options.iencoding = TextEncoding.UTF8;
         }
         this.lineBuffer = new LineBuffer(this.prefix, (source, line) => {
-            line = line.trimEnd();
+            // No trimEnd: trailing spaces are the target's output, not our whitespace. LineBuffer
+            // has already removed the CRLF terminator, so anything left here the firmware sent.
+            const clean = AnsiHelpers.stripTerminalControl(line);
+            if (line && !clean) {
+                return;     // pure cursor control: not blank spacing the firmware asked for
+            }
             const ts = options.timestamp ? HrTimer.createDateTimestamp() + " " : "";
-            logger.info(`${source} ${ts}${line}`, { source: this.kind, isConsole: true });
+            logger.info(clean || ts ? `${source} ${ts}${clean}` : source, { source: this.kind, isConsole: true });
         });
         this.binaryFormatter = new BinaryFormatter(this!, this.options.encoding, this.options.scale);
         this.connectToSource();
@@ -106,11 +111,25 @@ export class CLIRTTTerminal {
         }
     }
 
+    /**
+     * Display path. Named `send` because it implements DataSink for BinaryFormatter, which is
+     * its only caller -- this writes to the log and the console, never to the target. To reach
+     * the firmware use sendToTarget() below.
+     */
     send(data: string) {
         let str = `${this.prefix} ${data}`
         this.writeLogFile(str);
         str = str.trimEnd();
         logger.info(str, { source: this.kind, isConsole: true });
+    }
+
+    /** Write to the target over this channel. The opposite direction from send(). */
+    public sendToTarget(data: string): boolean {
+        if (!this.source.connected) {
+            return false;
+        }
+        this.source.write(data);
+        return true;
     }
 
     private openLogFile() {

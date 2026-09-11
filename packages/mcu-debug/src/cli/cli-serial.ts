@@ -34,8 +34,13 @@ export class CLISerialPortView implements ISerialPortView {
             this.setLogFile(this.serialConfig.log_file);
         }
         this.lineBuffer = new LineBuffer(this.txtPrefix, (source, line) => {
-            line = line.trimEnd();
-            const str = `${source} ${line}`;
+            // No trimEnd: trailing spaces are the target's output, not our whitespace. LineBuffer
+            // has already removed the CRLF terminator, so anything left here the firmware sent.
+            const clean = AnsiHelpers.stripTerminalControl(line);
+            if (line && !clean) {
+                return;     // pure cursor control: not blank spacing the firmware asked for
+            }
+            const str = clean ? `${source} ${clean}` : source;
             if (this.logFileStream) {
                 this.logFileStream.write(str + "\n");
             }
@@ -92,18 +97,18 @@ export class CLISerialPortView implements ISerialPortView {
     }
 
     public notifyConnected(reason: string) {
-        this.sendDA(AnsiHelpers.greenFormat(`[${this.device} connected] ${reason}\r\n`));
+        this.sendDA(AnsiHelpers.greenFormat(`[${path.basename(this.device)} connected] ${reason}\r\n`));
         this.setState({ kind: "active" });
     }
 
     public notifyDisconnected(reason: string) {
         this.destroySocket();
-        this.sendDA(AnsiHelpers.yellowFormat(`[${this.device} disconnected: ${reason} — retrying...]\r\n`));
+        this.sendDA(AnsiHelpers.yellowFormat(`[${path.basename(this.device)} disconnected: ${reason} — retrying...]\r\n`));
         this.setState({ kind: "inactive" });
     }
 
     public notifyReconnected() {
-        this.sendDA(AnsiHelpers.greenFormat(`[${this.device} reconnected]\r\n`));
+        this.sendDA(AnsiHelpers.greenFormat(`[${path.basename(this.device)} reconnected]\r\n`));
         this.setState({ kind: "active" });
     }
 

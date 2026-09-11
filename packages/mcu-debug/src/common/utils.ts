@@ -191,10 +191,21 @@ export class LineBuffer {
         while ((nl = this.buf.indexOf('\n')) !== -1) {
             const line = this.buf.slice(0, nl).replace(/\r$/, ''); // strip \r from \r\n
             this.buf = this.buf.slice(nl + 1);
-            if (line.length > 0) this.emit(this.source, line);
+            // Emit empty lines too. Splitting on \n never invents one -- an empty line here
+            // means the device really sent a bare newline, which is deliberate spacing by the
+            // firmware author (printf("...\r\n\n")) and a record separator to anything parsing
+            // the stream. Dropping them silently reflowed the target's output.
+            this.emit(this.source, line);
         }
-        // Arm timer for trailing data without \n
-        if (this.buf.length > 0 && !this.timer) {
+        // Arm a timer for trailing data without \n. Restart it on every chunk so it measures
+        // silence on the port rather than time since the buffer first became non-empty. Left
+        // armed, it becomes a fixed metronome that cuts a line wherever it happens to fire --
+        // which is how a line well inside the timeout still arrived split in two.
+        if (this.timer) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+        if (this.buf.length > 0) {
             this.timer = setTimeout(() => {
                 this.timer = null;
                 if (this.buf.length > 0) {

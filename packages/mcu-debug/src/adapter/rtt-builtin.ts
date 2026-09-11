@@ -525,6 +525,7 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
             }
             this.server = net.createServer((socket) => {
                 // 1. Add new client
+                socket.setNoDelay(true); // short RTT lines then silence -- exactly what Nagle delays
                 this.rttChannelToSocket.get(channel)?.add(socket);
                 this.mainSession.handleMsg(Stdout, `Client connected to RTT channel: ${channel}. Total clients: ${this.rttChannelToSocket.get(channel)?.size}`);
                 this.emit("clientConnected", socket);

@@ -25,7 +25,7 @@ You are an expert embedded firmware debugging agent capable of interacting nativ
 * **WHAT WORKS WHILE RUNNING:** anything GDB can answer from its own bookkeeping without going to the target — `info breakpoints` is the canonical example.
 * **A REJECTION IS FREE.** If you guess wrong, GDB returns an error and *nothing else happens* — the session is not disturbed, the target keeps running, no state is corrupted. One wasted round trip is the entire cost. Prefer trying over halting the target on speculation.
 * **TO INSPECT TARGET STATE:** send `!!SIGINT` and wait for `"status":"paused"`, then read what you need.
-* **ALWAYS SAFE:** `status`, `!!SIGINT` and `!!NOTE:` are safe in any state, as is any conversation between AI and humans.
+* **ALWAYS SAFE:** `status`, `!!SIGINT`, `!!NOTE:` and `!!send` are safe in any state, as is any conversation between AI and humans. `!!send` writes to the target's UART/RTT, not to its debug state, so it does not need — and does not want — a halted core: firmware waiting at a prompt is by definition running.
 * **SINGLE CORE:** The cli-mode does not support debugging more than one core at a time. You can have a multi-core device but you can launch/attach to a single core (use `numberOfProcessors` and `targetProcessor` in debug configuration)
 
 Do not maintain your own allow-list of "commands that work while running". The real boundary
@@ -242,13 +242,38 @@ Full source list:
 * `source: "GDB-MI"` ➡️ These are debug messages you should never see unless `debugFlags.gdbTraces === true` in the debug configuration
 * `source: "GDB-SERVER"` ➡️ are messages from the gdb-server (openocd, jlink, etc.)
 * `source: "AI"` ➡️ are messages from the socket/pipe, presumably from AI. An `!!AI-REQUEST:...` is asking the user to do something (like press a button) and `!!AI-REQUEST-CLEAR` is asking the GUI/UI to clear area displaying the last request. Seeing these messages is an acknowledgement that the message was processed by the DA
-* `source: "USER-REQUEST"` ➡️ are messages from the user to AI
+* `source: "USER-REQUEST"` ➡️ a message the human typed to you, as `!!<text>` at their keyboard — the mirror of your `!!AI-REQUEST:`. The `!!` is already stripped, so the `message` is their words alone. **Treat it as addressed to you and answer it**; it is not session telemetry and it will not repeat. Because that syntax is a catch-all, a mistyped meta-command arrives here too: if a `USER-REQUEST` reads like a garbled command rather than a sentence, say so instead of acting on it.
 * `source: "user-input"` ➡️ Echoes what the user typed
 * `source: "socket-input"` ➡️ Echoes what came over the socket, presumably from AI
 * `source: "RTT"` ➡️ Live RTT print statements containing application telemetry
 * `source: "serial"` ➡️ Live UART/serial print statements containing application telemetry
 
-Note on telemetry labels: the label you set in `rttConfig`/`serialConfig` does **not** appear in `source` — it is prepended to the `message` text as a prefix. To tell one RTT channel or serial port from another, match the message prefix, not the source. TODO: Formalize per-label source tagging.
+Note on telemetry labels: the label you set in `rttConfig`/`serialConfig` does **not** appear in `source` — it is prepended to the `message` text as a prefix. To tell one RTT channel or serial port from another, match the message prefix, not the source. That same prefix is the address you use to write *back* to that stream with `!!send` (Step 3a), and `status` lists them all under `serialPorts[].prefix` and `rtts[].prefix`. TODO: Formalize per-label source tagging.
+
+Terminal control is stripped from telemetry before you see it. Firmware that redraws in place — a status line rewritten with `ESC[1F`, a `ESC[2J` clear-screen at boot — has its cursor movement removed, because that positioning is wrong once every line carries a stream prefix. What you get is a scrolling transcript: a status line the firmware meant to overwrite appears as repeated lines instead. Colour (SGR) is preserved. Do not treat repetition as a fault; it is what in-place redraw looks like once it is written down.
+
+### Step 3a: Talking Back to the Firmware
+
+stdin belongs to GDB. When firmware prompts for input — "Press 'Enter' to continue", a serial menu, a UART shell — `!!send` is the only way to answer it.
+
+```text
+!!send [<prefix>] [text]
+```
+
+| Command                  | Goes to                                                       |
+| ------------------------ | ------------------------------------------------------------- |
+| `!!send [ttyACM0] help`  | that stream                                                    |
+| `!!send help`            | the only stream; an error if the session has more than one     |
+| `!!send`                 | a bare newline — this is how you answer "press Enter"          |
+| `!!send [] help`         | the only stream, when the text itself starts with `[`          |
+
+**Always bracket the stream name.** Unbracketed text is treated as payload and delivered to the sole stream, so it silently means something different the moment a session has two. Bracketing costs nothing and never changes meaning.
+
+A line terminator is always appended. Firmware reading a single keypress without waiting for Enter will see it as an extra character.
+
+If you get the name wrong the error carries `error: "unknown-stream"` and an `available` array of valid prefixes — read it and retry rather than guessing again. `ambiguous` means you omitted the prefix in a multi-stream session.
+
+**Confirm what was actually sent.** The echo carries a `text` field with the exact payload. Check it: firmware that ignores everything except a terminator will look like it accepted your command even when the payload was mangled, and only `text` will show you the difference.
 
 ### Step 4: Session Notes Cache
 To maintain historical context across system resets or multi-stage bug investigations, use the session notes meta-command to commit summaries of your findings directly into persistent memory:

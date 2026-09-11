@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+## [v0.1.15] - 2026-09-11
+
+### Serial and RTT are now two-way
+
+- **New `!!send` meta-command writes to a serial port or RTT channel.** Until now those streams
+  were read-only from a debug session: you could watch firmware print `Press 'Enter' to continue`
+  and had no way to answer it, because stdin belongs to GDB. `!!send` addresses a stream by the
+  same prefix that tags its output — `!!send [ttyACM0] help`, or just `!!send` to answer a bare
+  Enter prompt. Serial menus and UART shells are now reachable from the session, and from an AI
+  agent driving it. See
+  [Meta-Commands](https://mcu-debug.github.io/mcu-debug/docs/reference/meta-commands)
+- Messages you type to an attached AI agent (any other `!!` text) are now documented, and are no
+  longer written straight to the console outside the normal output stream. They are seen by any
+  AI attached to the session as user requests
+
+### Target output fidelity
+
+- **Lines from a serial port no longer arrive split.** The reassembly timer measured time since
+  the first byte rather than silence on the port, so on a busy port it fired mid-line at fixed
+  intervals and cut output at arbitrary places
+- Blank lines and trailing spaces printed by firmware are preserved instead of being dropped —
+  `printf("...\r\n\n")` now renders the way it was written
+- Cursor movement and screen control from the target is stripped, keeping colour. Firmware that
+  redraws a status line in place was overwriting the stream's prefix and producing garbled text,
+  and a `\x1b[2J` at startup could clear the debug session's scrollback. In-place redraws now
+  read as a scrolling transcript
+- Lower latency on serial and RTT traffic, most noticeably to a probe on another machine
+  (WSL, container, or SSH)
+
+### TUI
+
+- **The newest output is no longer hidden when a line wraps.** The output pane sized itself in
+  lines rather than screen rows, so every wrapped line pushed one line off the bottom — on a
+  narrow window the most recent output could be permanently invisible
+
+### CLI
+
+- Added `--nostdin` for running a session in the background, where reading the terminal would
+  otherwise suspend the process. Implies `--wait-for-client`
+- Meta-commands are now recognised regardless of case. `!!NOTE:` and `!!AI-REQUEST:` used to
+  require exact capitalisation, and a lower-case variant was silently relayed as a message
+  instead of being executed — losing the note
+- An unrecognised meta-command is now reported as a warning rather than an informational line
+
 ## [v0.1.14] - 2026-09-10
 
 - MCU-Debug now declares

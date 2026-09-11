@@ -134,6 +134,15 @@ Use your existing `cortex-debug` configurations. For example:
       "servertype": "openocd",
       "executable": "./build/firmware.elf",
       "device": "STM32F103C8",
+      "serialConfig": {   // New in "mcu-debug", ignored by "cortex-debug"
+        "enabled": true,
+        "ports": [
+            {
+                "match": "stlink",    // Match a serial port with 'stlink' in the description
+                "baud_rate": 115200
+            }
+        ]        
+      },
       "configFiles": [
         "interface/stlink.cfg",
         "target/stm32f1x.cfg"

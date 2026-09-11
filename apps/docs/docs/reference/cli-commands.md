@@ -171,13 +171,16 @@ commands that need a halted core.
 | Command                       | Description                                                                 |
 | ----------------------------- | --------------------------------------------------------------------------- |
 | `status`                      | Session summary as JSON — config name, state, RTT/serial sources, file paths |
+| `!!send [<prefix>] [text]`    | Write a line to a serial port or RTT channel — the only way to answer firmware that prompts for input. See [Meta-Commands](./meta-commands.md#send) |
 | `continue` (`c`, `cont`, `run`) | Resume the target                                                          |
 | `pause`                       | Halt a running target                                                       |
 | `reset`                       | Reset the device                                                             |
 | `restart`                     | Restart the debug session                                                    |
 | `exit`                        | Graceful session exit — disconnect GDB, stop the gdb-server, clean up        |
 
-`status`, `pause` and the meta-commands are safe to issue in any state.
+`status`, `pause` and the meta-commands are safe to issue in any state. `!!send` in particular is
+most useful while the target is **running** — that is when firmware is sitting at a prompt waiting
+for a keypress.
 
 Closing stdin of the `mcu-debug debug` process also ends the session, but `exit` is the reliable
 way. Do not `kill -9` it — that leaves the gdb-server running and the probe claimed.

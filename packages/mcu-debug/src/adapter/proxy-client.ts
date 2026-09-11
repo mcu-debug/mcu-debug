@@ -383,6 +383,9 @@ export class ProxyClient extends EventEmitter {
         return new Promise((resolve) => {
             this.logInfo(`Attempting to connect to proxy on ${host}:${port}...`);
             const socket = new net.Socket();
+            // host is not always loopback -- WSL, Docker and SSH probe hosts make this a real
+            // network link, where Nagle plus the peer's delayed ACK stalls small writes.
+            socket.setNoDelay(true);
             socket.once("connect", () => {
                 this.logInfo(`Successfully connected to proxy on ${host}:${port}`);
                 this.socket = socket;
@@ -708,6 +711,7 @@ export class RemoteServer {
         };
         this.server = net
             .createServer(async (socket) => {
+                socket.setNoDelay(true); // multiplexed serial/RTT/probe traffic: small, interactive writes
                 socket.on("close", () => {
                     cleanupSocket(socket);
                 });
