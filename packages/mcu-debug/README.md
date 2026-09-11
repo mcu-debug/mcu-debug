@@ -5,6 +5,7 @@
 If you’ve been using Cortex-Debug, this will feel familiar — but it’s not just an update. **mcu-debug is a ground-up rebuild** to support how embedded development actually works today. MCU-Debug bridges the gap between your local hardware probes and your modern development environments.
 
 👉 [View a 3-Minute Interactive Intro & Architecture Deck](https://mcu-debug.github.io/mcu-debug/mcu_debug_slides.html)
+👉 [Full documentation for MCU Debug Family](https://mcu-debug.github.io/mcu-debug/)
 
 ### What’s different?
 
