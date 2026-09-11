@@ -22,6 +22,7 @@ import { ConfigurationArguments, HostConfig, SerialConfig } from "../adapter/ser
 import { getProxyForSerialPorts } from "./proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { getHostAdapter, ISerialPortView } from "./host-adapter";
+import { PROXY_KEEPALIVE_MS } from "./utils";
 
 const PROXY_TIMOUT = 5000;
 
@@ -233,6 +234,7 @@ export class ProxyConnection {
             // host is not always loopback -- WSL, Docker and SSH probe hosts make this a real
             // network link, where Nagle plus the peer's delayed ACK stalls small writes.
             socket.setNoDelay(true);
+            socket.setKeepAlive(true, PROXY_KEEPALIVE_MS);
             socket.on("data", (data: Buffer) => {
                 this.handleProxyData(data);
             });
@@ -246,8 +248,13 @@ export class ProxyConnection {
                 this.socket = socket;
                 this.proxyInfo = { host: host, port: port, token };
                 await this.subscribeToSerialAvailability();
-                // TODO: See if we need a heartbeat and what its frequency should be
-                // this.startHeartbeat();
+                // No application-level heartbeat. TCP keepalive above does the two jobs that
+                // matter -- keeping a NAT/tunnel mapping warm and stopping a half-open socket
+                // from hanging the next command -- using empty segments, so a session left up
+                // overnight costs nothing in the log. The one thing it cannot prove is that the
+                // peer *process* is responsive: a wedged proxy keeps ACKing probes. That risk is
+                // accepted, since we reconnect on demand and would discover it on the next
+                // command anyway. Revisit only if a hung-but-alive proxy is ever observed.
                 resolve(true);
             });
             socket.once("error", (e) => {

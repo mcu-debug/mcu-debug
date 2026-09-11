@@ -1,5 +1,23 @@
 import * as net from "net";
 
+/**
+ * Idle time before TCP starts probing a proxy connection, in ms.
+ *
+ * The control connection to a proxy can sit silent for hours between commands. Left bare, an
+ * idle connection through anything that keeps state -- an SSH tunnel, a NAT, a container bridge
+ * -- gets its mapping reaped and the next command hangs on a socket that no longer goes
+ * anywhere. TCP keepalive probes are empty segments, so unlike an application-level heartbeat
+ * they keep the path warm without putting a single line into the logs of a session left running
+ * overnight. Chosen well under the 5-15 minutes such reapers typically allow.
+ *
+ * Node can only set this initial delay; TCP_KEEPINTVL and TCP_KEEPCNT are system-wide, so how
+ * fast a dead peer is finally declared dead after the first unanswered probe is the OS's call
+ * (order of ten minutes on macOS defaults). That is fine here -- this exists to keep a live path
+ * open and to stop a half-open socket hanging forever, not to fail fast.
+ */
+export const PROXY_KEEPALIVE_MS = 60_000;
+
+
 export function hexFormat(value: number, padding: number = 8, includePrefix: boolean = true): string {
     let base = (value >>> 0).toString(16);
     base = base.padStart(padding, "0");

@@ -7,6 +7,7 @@ import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, pr
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
 import { DefaultPortBase } from "@mcu-debug/shared";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
+import { PROXY_KEEPALIVE_MS } from "../common/utils";
 import { PortReserved } from "@mcu-debug/shared/proxy-protocol/PortReserved";
 import { PortSet } from "@mcu-debug/shared/proxy-protocol/PortSet";
 import { PortAllocatorSpec } from "@mcu-debug/shared/proxy-protocol/PortAllocatorSpec";
@@ -386,6 +387,7 @@ export class ProxyClient extends EventEmitter {
             // host is not always loopback -- WSL, Docker and SSH probe hosts make this a real
             // network link, where Nagle plus the peer's delayed ACK stalls small writes.
             socket.setNoDelay(true);
+            socket.setKeepAlive(true, PROXY_KEEPALIVE_MS);
             socket.once("connect", () => {
                 this.logInfo(`Successfully connected to proxy on ${host}:${port}`);
                 this.socket = socket;
@@ -471,8 +473,20 @@ export class ProxyClient extends EventEmitter {
      * forwarded streams itself, in one place (see `server-session.ts`'s `matchRegex`).
      */
     async launchServer(executable: string, args: string[]): Promise<void> {
-        // TODO: See if we need a heartbeat and what its frequency should be
-        // this.startHeartbeat();
+        // No application-level heartbeat; TCP keepalive (set on the socket in connectToProxy)
+        // covers this instead, with empty segments that cost a long-running session nothing in
+        // the log.
+        //
+        // Unlike the serial manager, this connection cannot be rebuilt: a debug session holds a
+        // dozen streams whose ids would all have to be restored, and by the time the socket is
+        // gone the far end has usually killed the gdb-server anyway. So keepalive is here to
+        // *prevent* the loss -- keeping a NAT/tunnel mapping warm across a quiet session --
+        // rather than to detect it. Detection buys only an earlier, cleaner failure, which is
+        // also why a heartbeat would add little: knowing sooner does not make the session
+        // recoverable, and pending commands already fail on close.
+        //
+        // Opt-in reconnect was considered and deferred, with the conditions it would have to
+        // meet: docs-internal/Proxy-Connection-Loss.md.
         await this.syncFiles();
         const cmd: ControlMessage = {
             seq: this.nextSeq++,
