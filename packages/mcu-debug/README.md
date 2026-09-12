@@ -1,10 +1,19 @@
 # MCU-Debug: The Next-Generation Embedded Debugger for VS Code
 
+#### ⚠️︎ Pre-release software — you are an early adopter! Thanks
+
+> There is **no release version yet**; every build published so far is a pre-release. Expect rough edges, expect things to change, and please [report what breaks](https://github.com/mcu-debug/mcu-debug/issues) — that feedback is the reason for shipping this early.
+>
+> **To install:** in VS Code, use the dropdown arrow beside the **Install** button and choose *Install Pre-Release Version*. Plain **Install** assumes a release version exists, so it tells you there is none before offering you the pre-release. Nothing is wrong when that happens — the message is about the release channel, not a broken listing — but the dropdown skips it.
+>
+> Odd minor versions are pre-release (`0.1.x`), even ones are release (`0.2.x`).
+
 **mcu-debug — Cortex-Debug, rethought for modern embedded** by the same author
 
 If you’ve been using Cortex-Debug, this will feel familiar — but it’s not just an update. **mcu-debug is a ground-up rebuild** to support how embedded development actually works today. MCU-Debug bridges the gap between your local hardware probes and your modern development environments.
 
 👉 [View a 3-Minute Interactive Intro & Architecture Deck](https://mcu-debug.github.io/mcu-debug/mcu_debug_slides.html)
+
 👉 [Full documentation for MCU Debug Family](https://mcu-debug.github.io/mcu-debug/)
 
 ### What’s different?

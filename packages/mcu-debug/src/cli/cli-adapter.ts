@@ -5,7 +5,7 @@ import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { HostConfig, ChainedConfig, ConfigurationArguments, processVarSubstitution, getAnyFreePort } from "../adapter/servers/common";
 import { SymbolInformation } from "../adapter/symbols";
 import { IDebugSession, IHostAdapter, IOutputChannel, ISerialPortView, ISWORTTView } from "../common/host-adapter";
-import { logger } from "../common/cli-logger";
+import { logger } from "../common/logger";
 import { GraphConfiguration } from "../common/swo/common";
 import JSONC from 'jsonc-simple-parser';
 import { CLISerialPortView } from './cli-serial';

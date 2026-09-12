@@ -12,7 +12,7 @@
 // limitations under the License.
 
 import * as vscode from "vscode";
-import { logger } from "../common/cli-logger";
+import { logger } from "../common/logger";
 import { compareVersions, isPreReleaseVersion, PROXY_EXT_ID, PROXY_NAME, PROXY_PING_CMD, shouldPinInstall } from "./proxy-ext-policy";
 
 export { needsProxyExtension } from "./proxy-ext-policy";

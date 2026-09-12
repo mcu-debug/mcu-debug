@@ -19,7 +19,7 @@ import * as path from "path";
 import * as os from "os";
 import * as ChildProcess from "child_process";
 import { CockpitPanel } from "./views/CockpitPanel";
-import { logger } from "../common/cli-logger";
+import { logger } from "../common/logger";
 import { ConfigurationArguments } from "../adapter/servers/common";
 import { ManagedTab } from "./views/ManagedTab";
 import { CockpitToolbarAction, TabKind, TabState } from "@mcu-debug/shared";

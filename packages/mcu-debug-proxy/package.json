@@ -1,7 +1,7 @@
 {
   "name": "mcu-debug-proxy",
   "publisher": "mcu-debug",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "preview": true,
   "description": "A proxy server for MCU-Debug extension to handle remote VSCode debug sessions via WSL, Docker, SSH.",
   "displayName": "MCU-Debug Proxy Server",

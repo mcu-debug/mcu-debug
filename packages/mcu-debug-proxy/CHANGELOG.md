@@ -1,5 +1,7 @@
 # Change Log
 
+> **Pre-release:** there is no release version yet. Install via the dropdown beside **Install** and pick *Install Pre-Release Version*.
+
 This extension's version tracks the main
 [MCU-Debug](https://marketplace.visualstudio.com/items?itemName=mcu-debug.mcu-debug) extension so
 that the two always install as a matched pair. Most entries here are version bumps with no

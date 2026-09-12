@@ -1,5 +1,11 @@
 # MCU-Debug Proxy Server
 
+> ### Pre-release software
+>
+> There is no release version yet. In VS Code, install using the dropdown beside **Install** and
+> choose *Install Pre-Release Version* — plain **Install** reports that no release exists before
+> offering you the pre-release, which is about the release channel rather than a broken listing.
+
 Companion extension for [MCU-Debug](https://marketplace.visualstudio.com/items?itemName=mcu-debug.mcu-debug).
 Install it on the machine your debug probe is **physically plugged into**, and MCU-Debug can drive
 that probe from an editor running somewhere else — inside WSL, a dev container, or on another

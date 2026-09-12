@@ -1,6 +1,36 @@
 # Change Log
 
+> **Pre-release:** there is no release version yet. Install via the dropdown beside **Install**
+> and pick *Install Pre-Release Version*; see the README for why the plain button complains.
+
 ## [Unreleased]
+
+## [v0.1.16] - 
+
+### Session notes
+
+- **Fixed a way to lose every note you had ever taken.** `.mcu-debug/notes.json` is the record
+  an AI builds up across sessions, and it was rewritten by truncating the file and writing it
+  again. A crash, a power cut, or the `kill -9` we tell you not to use, landing in that window,
+  left it truncated — not this session's notes, all of them. It is now written to a temporary
+  file and renamed into place, so the file on disk is always a complete one
+- A `!!NOTE:` no longer discards notes taken by another session running in the same workspace.
+  The whole file was rewritten from whatever was loaded at startup, so a second session on a
+  different launch configuration would roll the first one back
+- Bursts of notes are coalesced into a single write. `!!NOTE:` is issued by an AI, not typed by
+  a person, so dozens can arrive at once — and each one used to rewrite the entire file twice
+  while the debug session waited. Notes now reach disk within a quarter-second of the first one
+  in a burst
+
+### Housekeeping
+
+- The `.mcu-debug` directory the CLI creates now gets a `.gitignore`, so session logs and notes
+  stop showing up in `git status`. An existing one is left alone
+- `.mcu-debug/archive` is pruned in the background: the 50 most recent sessions, or 64 MB of
+  logs, whichever comes first. A session's log and its notes snapshot are removed together, so
+  you never end up with evidence and no conclusions or the reverse. A gdb-server that loses its
+  USB device can emit hundreds of errors a second, and one such afternoon could leave tens of
+  megabytes behind
 
 ## [v0.1.15] - 2026-09-11
 

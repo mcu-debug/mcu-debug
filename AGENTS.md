@@ -295,6 +295,18 @@ Docusaurus. Also :::tip, :::info, :::caution, :::warning, :::important — close
 :::
 ```
 
+**Admonition titles use brackets.** This project is on Docusaurus v3, where a title goes
+`:::note[My title]`. The v2 form `:::note My title` is still what most examples on the web show
+and is what gets written from memory — in v3 it silently renders the whole block as ordinary
+text, no admonition, no build error. If an admonition comes out looking like a plain paragraph,
+this is why. Plain `:::note` with no title is always fine.
+
+```md
+:::caution[Install the proxy first]
+Docusaurus v3. Writing `:::caution Install the proxy first` produces a paragraph.
+:::
+```
+
 Other differences that bite: `.md` is parsed as MDX, so `{` and `<` are interpreted — `{/* … */}`
 is the comment form, and a bare `<something>` is read as a JSX tag. Internal links are relative
 file paths including the extension (`./index.md#anchor`), which is what lets the build verify

@@ -91,7 +91,7 @@
       // "cwd": "${workspaceFolder}",
       // "cwd": "/Users/hdm/mtw37/Hello_World",
       // "cwd": "/Users/hdm/rtt/Hello_RTT",
-      "cwd": "/Users/hdm/mtw37/Hello_World",
+      "cwd": "/Users/hdm/test/mtb37-p6h",
       // "cwd": "c:/Users/hdm/mtw37/Empty_App",
       "runtimeArgs": [
         "--nolazy",
@@ -105,8 +105,7 @@
       "args": [
         "-c",
         "0",
-        "-s",
-        ".vscode/settings.json",
+        "-d",
         "-l",
         "/tmp/mcu-debug.log"
       ],

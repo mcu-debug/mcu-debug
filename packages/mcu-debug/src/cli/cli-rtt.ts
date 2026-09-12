@@ -2,7 +2,7 @@ import fs from 'fs';
 import { BinaryFormatter } from "../common/binary-encoding";
 import { HrTimer, RTTConsoleDecoderOpts, TextEncoding } from "../adapter/servers/common";
 import { AnsiHelpers } from "../common/ansi-helpers";
-import { logger } from "../common/cli-logger";
+import { logger } from "../common/logger";
 import { SocketIOSource } from "../common/swo/sources/socket";
 import { LineBuffer, trimBrackets } from "../common/utils";
 

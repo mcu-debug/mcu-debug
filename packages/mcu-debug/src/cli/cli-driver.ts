@@ -4,10 +4,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import find from 'find-process';
-import { apply_patch } from "jsonpatch";
 import { ConfigurationArguments, RTTConsoleDecoderOpts } from "../adapter/servers/common";
 import { CLISessionType, IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
-import { CustomTransport, logger } from "../common/cli-logger";
+import { CustomTransport, logger } from "../common/logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import winston from "winston";
@@ -19,6 +18,7 @@ import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
 import { LineSplitter } from "../../../shared/lib/src/line-splitter";
 import { generateNonce } from "@mcu-debug/shared";
+import { NotesManager } from "./notes";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -1419,73 +1419,7 @@ export class CliSessionDriver {
     }
 
     dispose() {
+        this.notesManager.flushNow();
         SerialPortManager.Dispose();
-    }
-}
-class NotesManager {
-    private notesFile: string;
-    private notes: { [name: string]: any } = {};
-    private mtime: number = 0;
-
-    // We use the same timestamp for the entire session regardless when we actually create/update the various session files
-    constructor(private sessionTimestamp: string) {
-        this.notesFile = `${process.cwd()}/.mcu-debug/notes.json`;
-        this.loadNotes();
-    }
-
-    private loadNotes() {
-        if (fs.existsSync(this.notesFile)) {
-            try {
-                const content = fs.readFileSync(this.notesFile, 'utf-8');
-                const stuff = JSON.parse(content);
-                if (Array.isArray(stuff)) {
-                    logger.debug(`Loaded ${stuff.length} notes from ${this.notesFile}`);
-                    this.notes = stuff.reduce((acc: Record<string, any>, note: any) => {
-                        acc[note.name] = note;
-                        return acc;
-                    }, {});
-                    this.mtime = fs.statSync(this.notesFile).mtimeMs;
-                } else {
-                    this.notes = {};
-                }
-            } catch (err) {
-                logger.error(`Failed to load notes from ${this.notesFile}: ${err instanceof Error ? err.message : String(err)}`);
-                this.notes = {};
-            }
-        }
-    }
-
-    applyPatches(configName: string, patches: any[]) {
-        const mtime = fs.existsSync(this.notesFile) ? fs.statSync(this.notesFile).mtimeMs : 0;
-        if (mtime !== this.mtime) {
-            logger.warn(`Notes file ${this.notesFile} has been modified since it was last loaded. Reloading notes to avoid overwriting external changes.`);
-            this.loadNotes();
-        }
-        const existing = this.notes[configName] ?? {};
-        try {
-            this.notes[configName] = apply_patch(existing, patches);
-        } catch (err) {
-            logger.error(`Failed to apply notes patches for config ${configName}: ${err instanceof Error ? err.message : String(err)}`);
-            return;
-        }
-        this.saveNotes();
-    }
-
-    private saveNotes() {
-        try {
-            const jsonStr = JSON.stringify(Object.values(this.notes), null, 2);
-            const dir = path.dirname(this.notesFile);
-            fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(this.notesFile, jsonStr);
-            this.mtime = fs.statSync(this.notesFile).mtimeMs;
-            try {
-                const archiveDir = `${process.cwd()}/.mcu-debug/archive/${this.sessionTimestamp}-notes.json`;
-                fs.mkdirSync(path.dirname(archiveDir), { recursive: true });
-                fs.writeFileSync(archiveDir, jsonStr);
-                logger.debug(`Archived notes to ${archiveDir}`);
-            } catch (err) { }
-        } catch (err) {
-            logger.error(`Failed to save notes to ${this.notesFile}: ${err instanceof Error ? err.message : String(err)}`);
-        }
     }
 }

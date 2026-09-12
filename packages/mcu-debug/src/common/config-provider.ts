@@ -13,6 +13,7 @@ import {
     substituteEnvVarsInConfig,
 } from "../adapter/servers/common";
 import { IHostAdapter } from "./host-adapter";
+import { logger } from "./logger";
 
 // ConfigOptions extends ConfigurationArguments with a string index signature so that
 // dynamic property access (config[propName]) and OS-overlay merges compile cleanly.
@@ -490,20 +491,29 @@ export class McuDebugConfigurationProviderBase {
 
     private setOsSpecficConfigSetting(config: ConfigOptions, dstName: string, propName: string = "") {
         if (!config[dstName]) {
+            const printName = propName ? `${dstName} (${propName})` : `${dstName}`;
+            const osName = os.platform();
+            const osSuffix = osName === "win32" ? "windows" : osName === "darwin" ? "osx" : "linux";
             propName = propName || dstName;
             for (const configName of ["mcu-debug", "cortex-debug"]) {
+                const osVal = this.hostAdapter.getSetting<any>(configName, `${propName}.${osSuffix}`);
+                if (osVal !== undefined && osVal !== null) {
+                    config[dstName] = osVal;
+                    logger.debug(`Setting ${printName} for OS override: ${osSuffix}: ${osVal}`);
+                    return;
+                }
                 const obj = this.hostAdapter.getSetting<any>(configName, propName);
                 if (obj !== undefined && obj !== null) {
                     if (typeof obj === "object") {
-                        const osName = os.platform();
-                        const osOverride = osName === "win32" ? "windows" : osName === "darwin" ? "osx" : "linux";
-                        const val = obj[osOverride];
+                        const val = obj[osSuffix];
                         if (val !== undefined) {
-                            config[dstName] = obj[osOverride];
+                            config[dstName] = obj[osSuffix];
+                            logger.debug(`Setting ${printName} for OS override: ${osSuffix}: ${val}`);
                             return;
                         }
                     } else {
                         config[dstName] = obj;
+                        logger.debug(`Setting ${printName} for OS default: ${obj}`);
                         return;
                     }
                 }

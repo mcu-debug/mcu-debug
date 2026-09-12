@@ -8,7 +8,7 @@ import { ConfigurationArguments, substituteEnvVarsInConfig } from "../adapter/se
 import { McuDebugConfigurationProviderBase } from "../common/config-provider";
 import { processVarSubstitution } from "../adapter/servers/common";
 import { getHostAdapter } from "../common/host-adapter";
-import { CustomTransport } from "../common/cli-logger";
+import { CustomTransport } from "../common/logger";
 
 export interface ConfigLoaderArgs {
     json?: string;           // JSON file if any

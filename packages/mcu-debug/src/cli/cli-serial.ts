@@ -5,7 +5,7 @@ import * as net from 'net';
 import { EventEmitter } from 'node:events';
 import * as path from 'node:path';
 import { AnsiHelpers } from '../common/ansi-helpers';
-import { logger } from '../common/cli-logger';
+import { logger } from '../common/logger';
 import { ISerialPortView, getHostAdapter } from '../common/host-adapter';
 import { LineBuffer, trimBrackets } from '../common/utils';
 

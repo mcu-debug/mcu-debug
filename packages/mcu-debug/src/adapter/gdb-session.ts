@@ -1156,13 +1156,16 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     private getGdbPath(): string {
-        let gdbExePath = os.platform() !== "win32" ? `${this.args.toolchainPrefix}-gdb` : `${this.args.toolchainPrefix}-gdb.exe`;
+        const prefix = this.args.toolchainPrefix || "arm-none-eabi";
+        let gdbExePath = os.platform() !== "win32" ? `${prefix}-gdb` : `${prefix}-gdb.exe`;
         if (this.args.toolchainPath) {
+            // Everything was normalized be frontend to toolchainPath if provided. Join it with the gdb executable name.
             gdbExePath = path.normalize(path.join(this.args.toolchainPath, gdbExePath));
         }
-        const gdbMissingMsg = `GDB executable "${gdbExePath}" was not found.\n` + 'Please configure "mcu-debug.armToolchainPath" or "mcu-debug.gdbPath" correctly.';
+        const gdbMissingMsg = `GDB executable "${gdbExePath}" was not found.\n` + 'Please configure "mcu-debug.gdbPath" or "mcu-debug.armToolchainPath"  correctly.';
 
         if (this.args.gdbPath) {
+            // This trumps everything else and uses the explicitly provided gdbPath.
             gdbExePath = this.args.gdbPath;
         } else if (path.isAbsolute(gdbExePath)) {
             if (fs.existsSync(gdbExePath) === false) {
