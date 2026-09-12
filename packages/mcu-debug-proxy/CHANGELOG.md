@@ -9,6 +9,16 @@ extension's
 
 ## [Unreleased]
 
+## [v0.1.15] - 2026-09-11
+
+- MCU-Debug no longer declares this extension as a dependency — that prevented MCU-Debug from
+  activating at all in a remote workspace, since VS Code resolves dependencies on the workspace
+  side while this extension has to run on the UI side. It is now detected at runtime instead,
+  and you are prompted to install it when a configuration needs it. See the main extension's
+  [changelog](https://github.com/mcu-debug/mcu-debug/blob/main/packages/mcu-debug/CHANGELOG.md)
+- Added an internal `ping` command so MCU-Debug can detect this extension across extension
+  hosts, which is something the VS Code extension API cannot otherwise do
+
 ## [v0.1.14] - 2026-09-10
 
 - MCU-Debug now declares this extension as a dependency, so it installs automatically alongside

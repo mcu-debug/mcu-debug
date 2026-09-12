@@ -262,6 +262,20 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     const disposables = [
+        // Liveness probe for the mcu-debug extension.
+        //
+        // That extension is `workspace`-kind, so in a remote window it runs in a different
+        // extension host from this one and `vscode.extensions.getExtension()` cannot see us —
+        // extension registries are per-host, commands are not. Calling this is therefore the
+        // only way it can find out whether we are installed, and the call activates us as a
+        // side effect. The version lets it detect a mismatched pair, which matters because the
+        // two extensions are published in lockstep.
+        //
+        // Keep this free of side effects and cheap: it is called on activation and before
+        // every launch that needs a remote probe.
+        vscode.commands.registerCommand("mcu-debug-proxy.ping", () => {
+            return { version: context.extension.packageJSON.version as string };
+        }),
         // The main command the mcu-debug extension calls to obtain the proxy. It
         // launches-or-reuses the singleton and returns its port + reported token.
         vscode.commands.registerCommand("mcu-debug-proxy.startProxyServer", (policy: ProxyLaunchPolicy) => {

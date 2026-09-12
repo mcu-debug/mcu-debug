@@ -4,6 +4,26 @@
 
 ## [v0.1.15] - 2026-09-11
 
+### Fixed: MCU-Debug would not start in a remote workspace
+
+- **If you are on v0.1.14 and work in WSL, a dev container, or over Remote-SSH, upgrade.** In
+  that release MCU-Debug declared
+  [MCU-Debug Proxy Server](https://marketplace.visualstudio.com/items?itemName=mcu-debug.mcu-debug-proxy)
+  as an extension dependency so VS Code would install it for you. That works locally, but VS
+  Code resolves extension dependencies on the *workspace* side — and the proxy runs on the UI
+  side, because it has to reach a debug probe attached to your local machine. In a remote
+  window the requirement could therefore never be satisfied, and VS Code refused to activate
+  MCU-Debug at all
+- The declaration is gone. MCU-Debug now checks for the proxy at runtime, and only for
+  configurations that actually need it — `hostConfig` with type `auto`. Local debugging never
+  needs it, and `hostConfig.type: "ssh"` does not either, since that path starts its own agent
+  over SSH
+- If the proxy is missing when it is needed, you are told why and offered the install, rather
+  than finding the extension silently inactive
+- New command **MCU-Debug Developer: Check MCU-Debug Proxy** reports whether the proxy is
+  reachable and which versions the two extensions are at. Worth running first if remote
+  debugging misbehaves
+
 ### Serial and RTT are now two-way
 
 - **New `!!send` meta-command writes to a serial port or RTT channel.** Until now those streams

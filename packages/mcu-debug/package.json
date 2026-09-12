@@ -28,7 +28,6 @@
   ],
   "icon": "images/mcu-debug-128x128.png",
   "activationEvents": [
-    "onDebugResolve:cortex-debug",
     "onDebugResolve:mcu-debug",
     "onStartupFinished",
     "onUri"
@@ -469,6 +468,11 @@
         "category": "MCU-Debug",
         "command": "mcu-debug.installCli",
         "title": "Install CLI Tools"
+      },
+      {
+        "category": "MCU-Debug Developer",
+        "command": "mcu-debug.checkProxy",
+        "title": "Check MCU-Debug Proxy"
       }
     ],
     "keybindings": [
@@ -4074,7 +4078,6 @@
     "mcu-debug.debug-tracker-vscode",
     "mcu-debug.memory-view",
     "mcu-debug.rtos-views",
-    "mcu-debug.peripheral-viewer",
-    "mcu-debug.mcu-debug-proxy"
+    "mcu-debug.peripheral-viewer"
   ]
 }

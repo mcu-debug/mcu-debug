@@ -37,6 +37,7 @@ import { getWSLNetworkingMode, ProvisioningResults, ProxyProvisionRequest, setDe
 import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
 import { AICockpit } from "./ai-cockpit";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
+import { checkProxyCommand, promptProxyInstallOnce } from "./activate-proxy";
 interface SVDInfo {
     expression: RegExp;
     path: string;
@@ -132,6 +133,11 @@ export class MCUDebugExtension {
             vscode.commands.registerCommand("mcu-debug.resumeAll", this.resumeAll.bind(this)),
 
             vscode.commands.registerCommand("mcu-debug.listAvailableSerialPorts", (noDisplay?: boolean) => this.serialPortManager.listAvailablePortsCmd(noDisplay)),
+
+            // Diagnostic: is the companion proxy extension reachable, and do the versions agree?
+            // The answer cannot be obtained from vscode.extensions in a remote window -- see
+            // activate-proxy.ts -- so this asks the proxy directly.
+            vscode.commands.registerCommand("mcu-debug.checkProxy", () => checkProxyCommand(context)),
 
             vscode.commands.registerCommand("mcu-debug.liveWatch.addExpr", this.addLiveWatchExpr.bind(this)),
             vscode.commands.registerCommand("mcu-debug.liveWatch.removeExpr", this.removeLiveWatchExpr.bind(this)),
@@ -1072,6 +1078,15 @@ export async function activate(context: vscode.ExtensionContext) {
         Reporting.activateTelemetry(context);
         MCUDebugChannel.createDebugChannel();
         logger.add(new VscodeOutputChannelTransport(MCUDebugChannel.outputChannel, { level: 'debug' }));
+
+        // Nudge the user to install the companion proxy extension before anything depends on
+        // it -- the failure this avoids is discovering it is missing at the moment F5 is
+        // pressed. Fire-and-forget so activation is never held up by a dialog; it remembers a
+        // "Don't Ask Again" and stays quiet once the proxy answers.
+        promptProxyInstallOnce(context).catch((err) => {
+            logger.error(`MCU-Debug Proxy install prompt failed: ${err}`);
+        });
+
         const packageJson = context.extension.packageJSON;
         const version = packageJson.version || "unknown";
         MCUDebugChannel.debugMessage(`Starting mcu-debug extension. Version = ${version}, Path = ${context.extensionPath}, PID=${process.pid}`);

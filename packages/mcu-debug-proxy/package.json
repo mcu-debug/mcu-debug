@@ -28,7 +28,7 @@
   ],
   "icon": "images/mcu-debug-proxy.png",
   "activationEvents": [
-    "onDebugResolve:cortex-debug",
+    "onCommand:mcu-debug-proxy.ping",
     "onDebugResolve:mcu-debug",
     "onStartupFinished"
   ],
