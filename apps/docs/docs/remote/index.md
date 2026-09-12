@@ -264,25 +264,48 @@ The debug adapter (running in VS Code or the CLI) connects to the proxy rather t
 
 ## VS Code Port Forwarding
 
-During a remote session the debug adapter opens listeners on the **workspace** side — one per
-gdb-server stream (gdb, tcl, telnet, SWO) plus one per serial view. All of them bind `127.0.0.1`,
-and GDB and the views connect to them from that same machine.
+During a remote session the debug adapter opens listeners on the **workspace** side — three to
+five per core (gdb, tcl, telnet, SWO, console), one per serial view, one per RTT channel. All of
+them bind `127.0.0.1`, and GDB and the views connect to them from that same machine.
 
-VS Code's Remote extensions notice these and forward them back to your local machine. That is
-normal and harmless — nothing outside the workspace needs to use them, and a forwarded loopback
-port stays as private as the original.
+VS Code's Remote extensions notice these and forward them back to your local machine. The
+forwarding itself is harmless — a forwarded loopback port stays as private as the original — but
+two of VS Code's reactions to it are worth pre-empting.
 
-One thing worth knowing: **don't open these ports in a browser.** A browser sends
-`GET / HTTP/1.1`, which the gdb, tcl and telnet endpoints will try to interpret as their own
-protocol. At best it does nothing; at worst it disrupts the running session.
+### Do not open these ports in a browser
 
-:::note
-If VS Code ever *prompts* you to open one of these ports — rather than forwarding it quietly —
-please [file an issue](https://github.com/mcu-debug/mcu-debug/issues) with your topology (WSL,
-dev container, or Remote-SSH) and the port number. That is not expected behaviour and we would
-rather fix the cause than ask you to change your VS Code settings, which would affect your other
-projects too. See [How do I file a bug?](../troubleshooting/index.md) for what to include.
-:::
+VS Code sometimes offers to open a forwarded port in a browser. **Decline for gdb, tcl and telnet
+ports.** A browser sends `GET / HTTP/1.1`, which those endpoints try to interpret as their own
+protocol; at best nothing happens, at worst the gdb-server shuts down and takes your session with
+it.
+
+### Twenty forwarded ports changes your settings
+
+Past twenty, VS Code switches automatic port forwarding from `process` to `hybrid` and notifies
+you that it has done so. This is easier to reach than it sounds: a single-core session already
+sits around seventeen ports, most of them VS Code's own, so a second core or a handful of RTT
+channels crosses the threshold.
+
+### Settling both
+
+Give mcu-debug's port band its own rule in the **workspace-side** `settings.json`:
+
+```json
+"remote.portsAttributes": {
+    "2000-2600": { "onAutoForward": "ignore", "label": "mcu-debug internal" }
+}
+```
+
+`ignore` means "do not forward at all", which removes the browser offer and keeps the port count
+down. It is the right answer whenever everything that talks to these ports lives on the workspace
+side — which is the case for WSL in mirrored mode, and for dev containers.
+
+Use `"onAutoForward": "silent"` instead if you are unsure. That keeps the forwarding and only
+suppresses the noise, so it cannot break a topology that turns out to depend on it. WSL in **NAT**
+mode is the case to be careful with; see [WSL](./wsl.md#vs-code-port-forwarding).
+
+The `2000-2600` range is mcu-debug's own allocation band, so neither setting affects the ports
+your other projects use.
 
 ## Prerequisites
 

@@ -109,7 +109,42 @@ and look at `hosts`. On Docker Desktop, `127.0.0.1` alone is expected and correc
 
 ## Dev Container Configuration
 
-In your `.devcontainer/devcontainer.json`, no special probe forwarding is needed — the proxy handles routing. However, the container must be able to reach the host network:
+### List every extension, including the dependencies
+
+A container starts with no extensions, and `devcontainer.json` is the only thing that puts them
+there. **Dependencies are not resolved for you** — listing only `mcu-debug.mcu-debug` gives you a
+container where the extension is present and refuses to activate, with nothing obvious to explain
+why.
+
+```json
+{
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "mcu-debug.mcu-debug",
+        "mcu-debug.debug-tracker-vscode",
+        "mcu-debug.memory-view",
+        "mcu-debug.rtos-views",
+        "mcu-debug.peripheral-viewer"
+      ]
+    }
+  }
+}
+```
+
+**Do not list the proxy extension here.** `mcu-debug.mcu-debug-proxy` runs on your local machine,
+not in the container — that is the whole point of it, since the probe is attached to the machine
+you are sitting at. Install it locally; MCU-Debug offers to do that for you the first time a
+configuration needs it.
+
+The same caveat applies to installing from a VSIX anywhere: `code --install-extension` does not
+pull in dependencies either. It matters less there, because you are working in a live environment
+and can add what is missing — a container rebuild silently starts over.
+
+### Reaching the host network
+
+No special probe forwarding is needed — the proxy handles routing. But the container must be able
+to reach the host:
 
 ```json
 {
@@ -121,10 +156,21 @@ This is automatic on Docker Desktop but may need explicit configuration on Linux
 
 ## VS Code Port Forwarding
 
-VS Code automatically forwards the debug-adapter's internal ports back to your local machine and
-offers to open them in a browser. Opening a gdb port that way can abort the gdb-server. See
-[VS Code Port Forwarding](./index.md#vs-code-port-forwarding) for the `settings.json` snippet that
-turns this off — it applies to every remote topology, not just this one.
+A debug session opens a listener per gdb-server stream, per serial view and per RTT channel, all
+inside the container. VS Code forwards each one back to your local machine, may offer to open one
+in a browser — which can kill the gdb-server — and changes your settings once more than twenty
+are forwarded.
+
+Everything that uses these ports lives in the container alongside them, so they do not need
+forwarding at all:
+
+```json
+"remote.portsAttributes": {
+    "2000-2600": { "onAutoForward": "ignore", "label": "mcu-debug internal" }
+}
+```
+
+See [VS Code Port Forwarding](./index.md#vs-code-port-forwarding) for the full explanation.
 
 ## Troubleshooting
 
