@@ -323,6 +323,69 @@ function startProxyServerWrapper(proxyPolicy: ProxyLaunchPolicy): Promise<ProxyL
     });
 }
 
+const STATUS_TIMEOUT_MS = 5_000;
+
+/**
+ * Run `mdbg proxy --status` and return its JSON report.
+ *
+ * This has to live on this side of the extension pair. The agent runs on the machine with
+ * the probe, which in a remote window is *this* host, not the workspace one — so the main
+ * extension can neither see this binary (it is inside this extension's install directory,
+ * over here) nor reach the agent's loopback admin port. Commands cross extension hosts;
+ * file paths and sockets do not.
+ *
+ * `--status` is a client mode: it queries whatever is already running and exits without
+ * ever starting an agent, so calling this is free of side effects. It is also
+ * instance-agnostic — it surveys every instance, so no `--instance` is passed and the
+ * report covers a `dev` agent alongside the default one.
+ *
+ * Resolves `{ count: 0, instances: [] }` when no agent is running, and rejects only when
+ * the binary could not be run at all.
+ */
+function proxyStatus(): Promise<unknown> {
+    return new Promise<unknown>((resolve, reject) => {
+        trace("status.request", { proxyPath });
+        const child = spawn(proxyPath, ["proxy", "--status"], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+        let stdout = "";
+        let stderr = "";
+        let settled = false;
+        const finish = (fn: () => void) => {
+            if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                fn();
+            }
+        };
+        const timer = setTimeout(() => {
+            finish(() => {
+                child.kill();
+                traceWarn("status.timeout", { ms: STATUS_TIMEOUT_MS, stdout, stderr });
+                reject(new Error(`'mdbg proxy --status' did not answer within ${STATUS_TIMEOUT_MS / 1000}s`));
+            });
+        }, STATUS_TIMEOUT_MS);
+
+        child.stdout?.on("data", (d) => (stdout += d.toString()));
+        child.stderr?.on("data", (d) => (stderr += d.toString()));
+        child.on("error", (err) => finish(() => {
+            traceWarn("status.spawn-failed", { error: `${err}` });
+            reject(new Error(`could not run '${proxyPath} proxy --status': ${err}`));
+        }));
+        // Wait for exit rather than parsing the first chunk: unlike a launch, there is no
+        // single discovery line to watch for — the report is one JSON document that may
+        // arrive in pieces, and the process is short-lived by design.
+        child.on("close", (code) => finish(() => {
+            try {
+                const report = JSON.parse(stdout);
+                trace("status.ok", { count: (report as { count?: number })?.count, exit: code });
+                resolve(report);
+            } catch (e) {
+                traceWarn("status.unparseable", { exit: code, stdout, stderr, error: `${e}` });
+                reject(new Error(`'mdbg proxy --status' returned no JSON (exit ${code}): ${stderr || stdout}`));
+            }
+        }));
+    });
+}
+
 /**
  * This design is such that this extension doesn't do anything until the workspace extension (mcu-debug) sends a
  * command to start the proxy server. This way, we avoid starting the proxy server unnecessarily if the user is
@@ -397,6 +460,12 @@ export function activate(context: vscode.ExtensionContext) {
             // very different problem from the one it has. Leave a record of which it was.
             traceWarn("startProxy.no-policy", { note: "command invoked without a ProxyLaunchPolicy" });
         }),
+        // Report on the Probe Agent(s) running on this machine. Like `ping`, deliberately
+        // NOT in `contributes.commands`: the palette entry users should find belongs on the
+        // main extension, which is the one always installed and the one that can say "the
+        // proxy extension is missing". Two similar entries would just invite picking the one
+        // that does nothing in a remote window.
+        vscode.commands.registerCommand("mcu-debug-proxy.proxyStatus", () => proxyStatus()),
         // Establishes an SSH reverse tunnel so the DA (running on the remote SSH host in
         // auto-ssh-remote mode) can connect back to the Proxy Agent on this machine.
         // Returns the remote port number assigned by the SSH server, or rejects on failure.

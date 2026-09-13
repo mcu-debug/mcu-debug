@@ -450,11 +450,17 @@ fn print_close_serial(results: Vec<CloseSerialResult>) -> Result<()> {
 
 /// `--status` output: every running instance, with a `count` (which replaces the
 /// old boolean `ok` — a per-instance concept that had no meaning across many).
-#[derive(serde::Serialize)]
-struct StatusReport {
+///
+/// Exported to TypeScript because the extensions parse this document: `proxyStatus` on the
+/// proxy side runs `--status` and hands the JSON to the main extension. Hand-writing the
+/// interface over there is how the two drift — this is the only wire type on the admin
+/// channel that TS reads, and it should stay generated.
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
+pub struct StatusReport {
     /// Number of instances that answered a status query (i.e. are actually running).
-    count: usize,
-    instances: Vec<admin::StatusInfo>,
+    pub count: usize,
+    pub instances: Vec<admin::StatusInfo>,
 }
 
 /// Enumerate every instance dir, query the ones that are alive, and print them

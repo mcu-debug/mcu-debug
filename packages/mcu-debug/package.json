@@ -471,8 +471,13 @@
       },
       {
         "category": "MCU-Debug Developer",
-        "command": "mcu-debug.checkProxy",
-        "title": "Check MCU-Debug Proxy"
+        "command": "mcu-debug.checkProxyExtension",
+        "title": "Check Proxy Extension"
+      },
+      {
+        "category": "MCU-Debug Developer",
+        "command": "mcu-debug.probeAgentStatus",
+        "title": "Show Probe Agent Status"
       }
     ],
     "keybindings": [

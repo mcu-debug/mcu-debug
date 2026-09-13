@@ -29,6 +29,7 @@
   "icon": "images/mcu-debug-proxy.png",
   "activationEvents": [
     "onCommand:mcu-debug-proxy.ping",
+    "onCommand:mcu-debug-proxy.proxyStatus",
     "onDebugResolve:mcu-debug",
     "onStartupFinished"
   ],

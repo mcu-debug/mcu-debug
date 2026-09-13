@@ -36,6 +36,9 @@ crossterm = "0.28"
 libc = "0.2"
 fd-lock = "4.0.4"
 dirs = "6.0.0"
+# Human-readable timestamps in `proxy --status`. Costs no extra build: flexi_logger
+# already pulls chrono in, so this only makes an existing dependency direct.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 getrandom = "0.2"
 
 [profile.release]

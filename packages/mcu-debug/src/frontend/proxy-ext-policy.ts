@@ -19,6 +19,10 @@
 
 export const PROXY_EXT_ID = "mcu-debug.mcu-debug-proxy";
 export const PROXY_PING_CMD = "mcu-debug-proxy.ping";
+/** Asks the proxy extension to run `mdbg proxy --status` on the probe host and hand back
+ *  its JSON. Only that extension can: the agent's binary and its loopback admin port are
+ *  both on the UI side, which in a remote window is a different machine from this one. */
+export const PROXY_STATUS_CMD = "mcu-debug-proxy.proxyStatus";
 export const PROXY_NAME = "MCU-Debug Proxy Server";
 
 /**

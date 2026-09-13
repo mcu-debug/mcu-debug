@@ -204,6 +204,58 @@ pub fn is_newer(a: &str, b: &str) -> bool {
     version_tuple(a) > version_tuple(b)
 }
 
+/// What `--status` reports about the executable a running proxy is serving from.
+///
+/// The daemon answers this itself rather than leaving the caller to compare numbers,
+/// because only the daemon knows what it started with, and it is the one process
+/// guaranteed to be on the same filesystem as the file in question.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
+pub struct ExeStatus {
+    /// Path this proxy was launched from.
+    pub path: String,
+    /// The file's mtime when this proxy started, in epoch milliseconds, and the same
+    /// value rendered in local time.
+    pub started_with_mtime_ms: Option<u64>,
+    pub started_with_mtime: String,
+    /// What is at `path` right now. Differs from the above once the binary has been
+    /// replaced -- which is normal and expected during a build or a reinstall.
+    pub on_disk_mtime_ms: Option<u64>,
+    pub on_disk_mtime: String,
+    /// The question worth asking: **is this proxy serving code that is no longer on
+    /// disk?** True after a rebuild or a same-version reinstall, until the next launch
+    /// hands over to the replacement (see [`decide_handover`]). `false` when either
+    /// mtime is unknown -- absent evidence is not evidence.
+    pub replaced_since_start: bool,
+}
+
+impl ExeStatus {
+    /// Build a report by stat-ing `stamp.path` now and comparing with what it held at
+    /// startup. Cheap: one `stat` per status query.
+    pub fn describe(stamp: &ExeStamp) -> ExeStatus {
+        let on_disk_mtime_ms = if stamp.path.is_empty() {
+            None
+        } else {
+            std::fs::metadata(&stamp.path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+        };
+        ExeStatus {
+            path: stamp.path.clone(),
+            started_with_mtime_ms: stamp.mtime_ms,
+            started_with_mtime: format_epoch_ms(stamp.mtime_ms),
+            on_disk_mtime_ms,
+            on_disk_mtime: format_epoch_ms(on_disk_mtime_ms),
+            replaced_since_start: match (stamp.mtime_ms, on_disk_mtime_ms) {
+                (Some(started), Some(now)) => now != started,
+                _ => false,
+            },
+        }
+    }
+}
+
 /// Which executable a proxy is running, and how old that file was when it started.
 ///
 /// The mtime **must** be taken at startup and then never re-read, because the file it
@@ -229,6 +281,21 @@ pub struct ExeStamp {
     /// `None` when the stat failed, which is treated as "no evidence" rather than "old".
     #[serde(default)]
     pub mtime_ms: Option<u64>,
+}
+
+/// Format epoch milliseconds as a local-time string, or `""` for `None`.
+///
+/// `mtime_ms` is plain Unix epoch milliseconds, so consumers can do this themselves
+/// (`new Date(ms)`, `date -r $((ms/1000))`). This exists because `--status` is read by
+/// people, and a bare 13-digit number is not something anyone eyeballs.
+pub fn format_epoch_ms(ms: Option<u64>) -> String {
+    let Some(ms) = ms else {
+        return String::new();
+    };
+    match chrono::DateTime::from_timestamp_millis(ms as i64) {
+        Some(dt) => dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => String::new(),
+    }
 }
 
 /// Stat our own executable. Call once, at startup -- see [`ExeStamp`].
@@ -745,5 +812,84 @@ mod handover_tests {
         let e = exe_stamp();
         assert!(!e.path.is_empty(), "current_exe() should resolve");
         assert!(e.mtime_ms.is_some(), "the test binary should be stat-able");
+    }
+}
+
+/// What `--status` reports about the executable, which is the operator-facing half of
+/// the handover rule: it answers "is this daemon serving code that is still on disk?"
+#[cfg(test)]
+mod exe_status_tests {
+    use super::*;
+
+    #[test]
+    fn epoch_ms_is_plain_unix_time_and_formats() {
+        // Unix epoch milliseconds, so any consumer can do this itself.
+        let formatted = format_epoch_ms(Some(0));
+        assert!(
+            formatted.starts_with("1969-12-31") || formatted.starts_with("1970-01-01"),
+            "epoch 0 renders as the epoch in some timezone, got {formatted}"
+        );
+        assert_eq!(format_epoch_ms(None), "", "unknown renders empty, never as 1970");
+    }
+
+    #[test]
+    fn an_untouched_binary_does_not_read_as_replaced() {
+        let me = exe_stamp();
+        let status = ExeStatus::describe(&me);
+        assert_eq!(status.path, me.path);
+        assert_eq!(status.started_with_mtime_ms, me.mtime_ms);
+        assert_eq!(status.on_disk_mtime_ms, me.mtime_ms, "nothing replaced it mid-test");
+        assert!(!status.replaced_since_start);
+        assert!(!status.started_with_mtime.is_empty(), "a known mtime must render");
+    }
+
+    #[test]
+    fn a_replaced_binary_reads_as_replaced() {
+        let dir = std::env::temp_dir().join(format!("mdbg-exe-status-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("mdbg");
+        std::fs::write(&file, b"v1").expect("write");
+        let started = ExeStamp {
+            path: file.to_string_lossy().into_owned(),
+            mtime_ms: Some(1_000),
+        };
+        let status = ExeStatus::describe(&started);
+        assert!(
+            status.replaced_since_start,
+            "the file on disk has a real mtime, not the 1000 we claim to have started with"
+        );
+        assert!(status.on_disk_mtime_ms.unwrap() > 1_000);
+        assert!(!status.on_disk_mtime.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Absent evidence must not be reported as "replaced" — an unknown mtime or a path we
+    /// cannot stat is a gap in the report, not a finding.
+    #[test]
+    fn unknown_mtimes_never_claim_a_replacement() {
+        let no_path = ExeStamp::default();
+        assert!(!ExeStatus::describe(&no_path).replaced_since_start);
+
+        let missing_file = ExeStamp {
+            path: "/nonexistent/mdbg".to_string(),
+            mtime_ms: Some(1_000),
+        };
+        let s = ExeStatus::describe(&missing_file);
+        assert_eq!(s.on_disk_mtime_ms, None);
+        assert!(!s.replaced_since_start, "could not stat is not the same as replaced");
+    }
+
+    /// A status reply from a proxy that predates the field must still parse, because that
+    /// is precisely what a mid-handover query hits.
+    #[test]
+    fn a_status_reply_without_an_exe_field_still_parses() {
+        let json = r#"{
+            "pid": 1, "version": "0.1.15", "port": 1, "instance": "default",
+            "state": "active", "active_refs": 0, "uptime_secs": 5
+        }"#;
+        let info: crate::proxy_helper::admin::StatusInfo =
+            serde_json::from_str(json).expect("a pre-exe status reply must parse");
+        assert_eq!(info.exe, ExeStatus::default());
+        assert!(!info.exe.replaced_since_start);
     }
 }

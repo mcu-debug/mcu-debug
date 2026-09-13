@@ -98,7 +98,8 @@ pub struct AdminRequest {
     pub exe: singleton::ExeStamp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
 pub struct StatusInfo {
     pub pid: u32,
     pub version: String,
@@ -116,6 +117,12 @@ pub struct StatusInfo {
     /// from an older proxy (during an upgrade handover) still parses.
     #[serde(default)]
     pub serial_ports: Vec<crate::proxy_helper::proxy_server::SerialStatus>,
+    /// Which executable this proxy is serving from, and whether that file has been
+    /// replaced since it started — the difference between "running the build you think
+    /// it is" and "still serving code that no longer exists on disk". `default` so a
+    /// reply from an older proxy (which happens mid-handover) still parses.
+    #[serde(default)]
+    pub exe: singleton::ExeStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +260,9 @@ fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool)
                 uptime_secs: Endpoint::now_unix().saturating_sub(ctx.started_at_unix),
                 hosts: ctx.accept_set.hosts(),
                 serial_ports: crate::proxy_helper::proxy_server::serial_status(&ctx.serial_registry),
+                // Stat-ed here, not by the caller: we are the only process that knows what
+                // we started with, and the one certain to share a filesystem with the file.
+                exe: singleton::ExeStatus::describe(&ctx.exe),
             }),
             closed: Vec::new(),
             hosts: Vec::new(),

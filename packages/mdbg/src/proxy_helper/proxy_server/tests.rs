@@ -30,6 +30,13 @@ fn ensure_ts_exports() {
     SerialTransport::export(&config).unwrap();
     AvailablePort::export(&config).unwrap();
     SerialErrorKind::export(&config).unwrap();
+    // Admin channel: the `--status` report, which the extensions parse (see
+    // `mcu-debug-proxy.proxyStatus`). The funnel protocol above was exported from the
+    // start; the admin channel had no TS consumer until that command existed.
+    crate::proxy_helper::run::StatusReport::export(&config).unwrap();
+    crate::proxy_helper::admin::StatusInfo::export(&config).unwrap();
+    crate::proxy_helper::singleton::ExeStatus::export(&config).unwrap();
+    SerialStatus::export(&config).unwrap();
 }
 
 static TEST_MUTEX: Mutex<()> = Mutex::new(()); // Don't really need a mutex for this simple test, but is there in case the tests get more complex in the future and need to synchronize access to the stream

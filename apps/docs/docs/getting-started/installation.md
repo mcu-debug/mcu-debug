@@ -150,5 +150,9 @@ To verify the installation:
 The extension activates when a `launch.json` with `"type": "mcu-debug"` is opened.
 
 If you are debugging a probe attached to a different machine than your workspace, run
-**MCU-Debug Developer: Check MCU-Debug Proxy** from the Command Palette. It reports whether the
-proxy is reachable and whether the two extension versions match.
+**MCU-Debug Developer: Check Proxy Extension** from the Command Palette. It reports whether the
+proxy extension is reachable and whether the two extension versions match.
+
+**MCU-Debug Developer: Show Probe Agent Status** answers the other half: what is actually running
+on the machine with the probe — which version, how long it has been up, how many debug sessions it
+is serving, and which addresses it accepts connections on.

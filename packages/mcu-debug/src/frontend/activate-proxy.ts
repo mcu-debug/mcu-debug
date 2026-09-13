@@ -13,7 +13,11 @@
 
 import * as vscode from "vscode";
 import { logger } from "../common/logger";
-import { compareVersions, isPreReleaseVersion, PROXY_EXT_ID, PROXY_NAME, PROXY_PING_CMD, shouldPinInstall } from "./proxy-ext-policy";
+// Generated from the Rust definitions by ts-rs (`cargo test ensure_ts_exports`) -- the
+// `--status` document is a wire type, and hand-writing it here is how the two ends drift.
+import { StatusReport } from "@mcu-debug/shared/proxy-protocol/StatusReport";
+import { StatusInfo } from "@mcu-debug/shared/proxy-protocol/StatusInfo";
+import { compareVersions, isPreReleaseVersion, PROXY_EXT_ID, PROXY_NAME, PROXY_PING_CMD, PROXY_STATUS_CMD, shouldPinInstall } from "./proxy-ext-policy";
 
 export { needsProxyExtension } from "./proxy-ext-policy";
 
@@ -386,7 +390,12 @@ export async function promptProxyInstallOnce(context: vscode.ExtensionContext): 
 }
 
 /**
- * `Developer: Check MCU-Debug Proxy` — report what we can actually see of the proxy.
+ * `Developer: Check Proxy Extension` — report what we can see of the companion *extension*.
+ *
+ * Deliberately only about the extension: is it installed, reachable, and version-matched.
+ * The running Probe Agent is a separate question with its own command
+ * ([`probeAgentStatusCommand`]) -- "proxy" has meant both things in this codebase, and one
+ * command answering both would be the confusing kind of convenient.
  *
  * Written for support as much as for testing. "Remote debugging does not work" is otherwise a
  * log-hunting expedition, and the three facts that resolve most of those reports — is the proxy
@@ -394,6 +403,127 @@ export async function promptProxyInstallOnce(context: vscode.ExtensionContext): 
  * It deliberately reports the *ping* result rather than anything from `vscode.extensions`,
  * because that is the only view that is true across extension hosts.
  */
+/** `<n>h <n>m` / `<n>m` — uptime in the form someone reads rather than counts. */
+function formatUptime(secs: number | undefined): string {
+    if (typeof secs !== "number" || secs < 0) {
+        return "?";
+    }
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+/**
+ * `Developer: Show Probe Agent Status` — what is actually running on the probe host.
+ *
+ * A different question from [`checkProxyCommand`], which is about the *extension*. This one
+ * is about the long-lived `mdbg proxy` daemon: it outlives the window that started it, is
+ * shared by every window and the CLI, and until now nothing in the UI could see it at all.
+ *
+ * The facts worth having in one place: which instance, which version, how long up, how many
+ * live sessions, which addresses it accepts on — and whether the executable it is serving
+ * from has been replaced since it started, which is the one that explains "I installed a new
+ * build and nothing changed".
+ *
+ * Only the proxy extension can answer, so a missing one is reported as exactly that rather
+ * than as a failure, and points at the command that deals with it.
+ */
+export async function probeAgentStatusCommand(context: vscode.ExtensionContext): Promise<void> {
+    const ourVersion = context.extension.packageJSON.version as string;
+    trace("agentStatus.begin", { ourVersion, remote: vscode.env.remoteName ?? "local" });
+
+    // Ping first: without it, a missing proxy extension surfaces as "command not found",
+    // which reads like a bug in MCU-Debug rather than an extension that is not installed.
+    const pong = await pingProxy();
+    if (!pong) {
+        trace("agentStatus.proxy-unreachable");
+        const choice = await vscode.window.showWarningMessage(
+            `The '${PROXY_NAME}' extension is not reachable, so there is no Probe Agent to report on.`,
+            "Check Proxy Extension",
+        );
+        if (choice) {
+            await vscode.commands.executeCommand("mcu-debug.checkProxyExtension");
+        }
+        return;
+    }
+
+    let report: StatusReport | undefined;
+    try {
+        report = await vscode.commands.executeCommand<StatusReport>(PROXY_STATUS_CMD);
+    } catch (e) {
+        trace("agentStatus.failed", { error: `${e}` });
+        void vscode.window.showErrorMessage(`Could not read Probe Agent status: ${e}`);
+        return;
+    }
+
+    const instances = report?.instances ?? [];
+    trace("agentStatus.ok", { count: instances.length, report: JSON.stringify(report) });
+
+    if (instances.length === 0) {
+        // Not a problem. The agent is started on demand and exits when idle, so "none" is
+        // the normal state between debug sessions.
+        void vscode.window.showInformationMessage(
+            `No Probe Agent is running. One starts automatically when a debug session needs it. (${PROXY_NAME} ${pong.version})`,
+        );
+        return;
+    }
+
+    // Read defensively even though the generated types declare every field required. They
+    // describe what the *current* Rust emits, and this reply can come from an older agent:
+    // that is exactly the case during a handover, when the outgoing one is still answering.
+    // `#[serde(default)]` on the Rust side keeps such a reply parsing, and that shows up here
+    // as a field that is absent at runtime while the type says otherwise.
+    const lines = instances.map((i: StatusInfo) => {
+        const parts = [
+            `${i.instance ?? "?"}: v${i.version ?? "?"}`,
+            `pid ${i.pid ?? "?"}`,
+            `port ${i.port ?? "?"}`,
+            i.state && i.state !== "active" ? i.state : undefined,
+            `up ${formatUptime(i.uptime_secs)}`,
+            `${i.active_refs ?? 0} session(s)`,
+            i.hosts?.length ? `on ${i.hosts.join(", ")}` : undefined,
+            i.serial_ports?.length ? `${i.serial_ports.length} serial port(s)` : undefined,
+            i.exe?.replaced_since_start ? "EXECUTABLE REPLACED since start" : undefined,
+        ];
+        return parts.filter(Boolean).join("  •  ");
+    });
+
+    const stale = instances.filter((i) => i.exe?.replaced_since_start);
+    const versionMismatch = instances.filter((i) => i.version && i.version !== ourVersion);
+
+    // `modal: true` with the report in `detail` is the only way this renders as separate
+    // lines. A plain notification lays the message out as one wrapped line whatever the
+    // string contains -- the newlines survive a copy-paste but are invisible on screen,
+    // which for a one-row-per-instance report reads as mangled output rather than a choice.
+    // `detail` is also only honoured on a modal, so the two go together.
+    const headline = instances.length === 1 ? "1 Probe Agent running" : `${instances.length} Probe Agents running`;
+    const detail = lines.join("\n");
+
+    // The full JSON is in the log either way; what a person needs is whether to care.
+    if (stale.length > 0) {
+        void vscode.window.showWarningMessage(
+            `${headline} — executable replaced since start`,
+            {
+                modal: true,
+                detail:
+                    `${detail}\n\nThe executable has been replaced since ${stale.length === 1 ? "this agent" : "these agents"} started, ` +
+                    `so it is still serving the previous build. The next debug session hands over to the new one automatically.`,
+            },
+        );
+        return;
+    }
+    if (versionMismatch.length > 0) {
+        void vscode.window.showWarningMessage(`${headline} — version differs from MCU-Debug`, {
+            modal: true,
+            detail:
+                `${detail}\n\nMCU-Debug is ${ourVersion}. A Probe Agent at a different version is usually a shared agent ` +
+                `started by another window; it hands over on the next launch if ours is newer.`,
+        });
+        return;
+    }
+    void vscode.window.showInformationMessage(headline, { modal: true, detail });
+}
+
 export async function checkProxyCommand(context: vscode.ExtensionContext): Promise<void> {
     const ourVersion = context.extension.packageJSON.version as string;
     const remote = vscode.env.remoteName ?? "none (local window)";

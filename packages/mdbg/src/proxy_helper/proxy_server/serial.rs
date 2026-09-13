@@ -232,7 +232,8 @@ pub fn force_close_serial(registry: &SerialPortRegistry, path: &str) -> Vec<Stri
 pub const CLOSE_ALL_SERIAL: &str = "all";
 
 /// Snapshot of one open port for `--status`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
 pub struct SerialStatus {
     pub path: String,
     /// TCP port of the direct bridge, if one is up.

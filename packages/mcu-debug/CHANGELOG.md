@@ -7,6 +7,23 @@
 
 ## [v0.1.16] - 
 
+### Seeing what the Probe Agent is doing
+
+- **New command: MCU-Debug Developer: Show Probe Agent Status.** The Probe Agent is the
+  background process that talks to your debug probe. It is shared by every window and by the
+  CLI, and it outlives the window that started it — so until now there was no way to see it at
+  all from inside VS Code. The command reports every agent running on the machine with the
+  probe: version, uptime, how many debug sessions it is serving, which addresses it accepts
+  connections on, any serial ports it holds open, and whether its executable has been replaced
+  since it started
+- **MCU-Debug Developer: Check MCU-Debug Proxy** is now **Check Proxy Extension**. "Proxy"
+  was being used for two different things — the companion extension and the background agent —
+  and the two questions have separate answers, so they now have separate commands with names
+  that say which is which
+- `mcu-debug proxy --status` reports the same executable detail, with timestamps in a form you
+  can read rather than epoch numbers
+
+
 ### Session notes
 
 - **Fixed a way to lose every note you had ever taken.** `.mcu-debug/notes.json` is the record
@@ -50,7 +67,7 @@
   over SSH
 - If the proxy is missing when it is needed, you are told why and offered the install, rather
   than finding the extension silently inactive
-- New command **MCU-Debug Developer: Check MCU-Debug Proxy** reports whether the proxy is
+- New command **MCU-Debug Developer: Check Proxy Extension** reports whether the proxy is
   reachable and which versions the two extensions are at. Worth running first if remote
   debugging misbehaves
 

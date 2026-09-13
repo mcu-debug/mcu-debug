@@ -21,6 +21,9 @@ extension's
 - Added a **MCU-Debug Proxy** output channel recording what happens on each launch: which agent
   answered, its version and port, the addresses it accepts on, and whether that is the agent this
   build shipped. Worth opening first when remote debugging does not behave
+- Added an internal `proxyStatus` command so MCU-Debug can report on the Probe Agent running on
+  this machine. It has to be asked from here: the agent's binary and its control port are both on
+  this side, which in a remote window is a different machine from the workspace
 
 ## [v0.1.15] - 2026-09-11
 

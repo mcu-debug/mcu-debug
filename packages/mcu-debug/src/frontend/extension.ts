@@ -37,7 +37,7 @@ import { getWSLNetworkingMode, ProvisioningResults, ProxyProvisionRequest, setDe
 import { createRTTSource, handleRTTConfigureEvent } from "../common/rtt-source";
 import { AICockpit } from "./ai-cockpit";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
-import { checkProxyCommand, promptProxyInstallOnce } from "./activate-proxy";
+import { checkProxyCommand, probeAgentStatusCommand, promptProxyInstallOnce } from "./activate-proxy";
 interface SVDInfo {
     expression: RegExp;
     path: string;
@@ -134,10 +134,14 @@ export class MCUDebugExtension {
 
             vscode.commands.registerCommand("mcu-debug.listAvailableSerialPorts", (noDisplay?: boolean) => this.serialPortManager.listAvailablePortsCmd(noDisplay)),
 
-            // Diagnostic: is the companion proxy extension reachable, and do the versions agree?
-            // The answer cannot be obtained from vscode.extensions in a remote window -- see
+            // Two separate diagnostics, because "proxy" means two things. This one is about the
+            // companion *extension*: is it reachable, and do the versions agree? The answer
+            // cannot be obtained from vscode.extensions in a remote window -- see
             // activate-proxy.ts -- so this asks the proxy directly.
-            vscode.commands.registerCommand("mcu-debug.checkProxy", () => checkProxyCommand(context)),
+            vscode.commands.registerCommand("mcu-debug.checkProxyExtension", () => checkProxyCommand(context)),
+            // ...and this one is about the long-lived `mdbg proxy` daemon (the Probe Agent) on
+            // the machine with the probe, which outlives every window and was invisible from here.
+            vscode.commands.registerCommand("mcu-debug.probeAgentStatus", () => probeAgentStatusCommand(context)),
 
             vscode.commands.registerCommand("mcu-debug.liveWatch.addExpr", this.addLiveWatchExpr.bind(this)),
             vscode.commands.registerCommand("mcu-debug.liveWatch.removeExpr", this.removeLiveWatchExpr.bind(this)),

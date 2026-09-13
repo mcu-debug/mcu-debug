@@ -755,6 +755,7 @@ dependencies = [
  "addr2line",
  "anyhow",
  "capstone",
+ "chrono",
  "clap",
  "cpp_demangle 0.5.1",
  "crossterm",

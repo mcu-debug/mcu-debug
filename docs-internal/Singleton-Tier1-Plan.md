@@ -200,7 +200,38 @@ If a new session asks for a probe the draining old proxy still holds, the new pr
     That hammer took out every instance, including one another window was mid-session on, and killed
     rather than drained. The function is kept for a daemon too wedged to answer its admin channel.
 
-**Tier 1 is complete** (A–D, plus D.1). The singleton is discoverable, use-bounded, admin-controllable, and self-upgrading. Next up is Tier 2 (credentials §8, provisioning ladder §4–6) from [CLI-Proxy-Provisioning.md](./CLI-Proxy-Provisioning.md).
+- **Phase D.2 — Diagnostics. ✅ LANDED.** The singleton is shared, detached and long-lived, which
+  made it the one component nothing could see. Three pieces, each where it is for a reason:
+  - **`--status` reports the executable**, not just the port: the mtime the agent started with,
+    what is at that path now (both as epoch ms *and* a local-time string), and
+    `replaced_since_start` — the derived answer to "is this serving code that is still on disk?".
+    The agent computes it rather than the caller: it is the only process that knows what it
+    started with, and the only one certain to share a filesystem with the file. `--status` was
+    already instance-agnostic, so one call covers a `dev` agent beside the default one.
+  - **`mcu-debug-proxy.proxyStatus`** (proxy extension, no palette entry) spawns `--status` and
+    returns the JSON. It cannot live on the main extension: the binary sits inside *this*
+    extension's install directory and the admin port is loopback on the probe host, which in a
+    remote window is not the workspace machine. Commands cross extension hosts; paths and sockets
+    do not.
+  - **`mcu-debug.probeAgentStatus`** → *"Show Probe Agent Status"* (main extension) is the command
+    users run — the main extension is the one always installed, so it is the only one that can
+    report a *missing* proxy extension. `mcu-debug.checkProxy` became
+    **`checkProxyExtension`**/*"Check Proxy Extension"*: "proxy" had come to mean both the
+    companion extension and this daemon, and those are two questions. The daemon is the **Probe
+    Agent** throughout the docs, so the commands now use that word for it.
+
+  The `--status` document is a wire type and is generated for TypeScript by ts-rs like the rest
+  (`StatusReport`, `StatusInfo`, `ExeStatus`, `SerialStatus`). The admin channel had never been
+  exported because nothing in TS read an admin reply until this command existed. Notes:
+  - **No standalone cleanup utility.** It was considered, and Phase D.1 removed the need: the
+    agent upgrades itself, `--shutdown --all` drains every instance, and `--status` already
+    answers the rest. The extensions ask; they do not reimplement.
+  - Deferred: the discovery line does not say which branch `acquire_or_reuse` took, so a
+    *refused* handover is indistinguishable from an ordinary reuse without reading the agent's
+    log. An `"action": "started" | "reused" | "upgraded"` field would settle it —
+    `#[serde(default)]` keeps that compatible. Not worth it while nothing is biting.
+
+**Tier 1 is complete** (A–D, plus D.1 and D.2). The singleton is discoverable, use-bounded, admin-controllable, and self-upgrading. Next up is Tier 2 (credentials §8, provisioning ladder §4–6) from [CLI-Proxy-Provisioning.md](./CLI-Proxy-Provisioning.md).
 
 ---
 
