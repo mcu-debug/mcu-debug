@@ -240,7 +240,7 @@ Full source list:
 * `source: "DA"` ➡️ Every other message from the debug adapter
 * `source: "GDB"` ➡️ Contains messages from gdb responses to commands initiated by DA, AI, or humans
 * `source: "GDB-MI"` ➡️ These are debug messages you should never see unless `debugFlags.gdbTraces === true` in the debug configuration
-* `source: "GDB-SERVER"` ➡️ are messages from the gdb-server (openocd, jlink, etc.)
+* `source: "GDB-SERVER"` ➡️ are messages from the gdb-server process. Which server it is does **not** appear in `source` — the `message` is prefixed with it in brackets: `[openocd]`, `[jlink]`, whatever `servertype` is set to in the debug configuration (`[gdb-server]` when it is unset). Same rule as the telemetry labels below: match the message prefix, not the source.
 * `source: "AI"` ➡️ are messages from the socket/pipe, presumably from AI. An `!!AI-REQUEST:...` is asking the user to do something (like press a button) and `!!AI-REQUEST-CLEAR` is asking the GUI/UI to clear area displaying the last request. Seeing these messages is an acknowledgement that the message was processed by the DA
 * `source: "USER-REQUEST"` ➡️ a message the human typed to you, as `!!<text>` at their keyboard — the mirror of your `!!AI-REQUEST:`. The `!!` is already stripped, so the `message` is their words alone. **Treat it as addressed to you and answer it**; it is not session telemetry and it will not repeat. Because that syntax is a catch-all, a mistyped meta-command arrives here too: if a `USER-REQUEST` reads like a garbled command rather than a sentence, say so instead of acting on it.
 * `source: "user-input"` ➡️ Echoes what the user typed

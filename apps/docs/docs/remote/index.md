@@ -13,41 +13,40 @@ For terminology, for example with WSL or Docker, `"remote"` is your host machine
 
 ## Architecture
 
-In the picture below, the "Workspace" and the "Probe Proxy" can be on very different comuters. The "proxy" server provides access to the HW Probe as if it is locally available. The connection is handled depending on the type of the environment each part is. The Workspace can be inside WSL or Docker. The "Probe" could be on a host machine hosting the WSL/Docker environment or some other machine The system automatically detects the type of the "Workspace" environment with the help of VSCode. But you can always use `ssh` to connect the two environments. The same architecture is also used for CLI mode except VSCode services cannot be used but the Probe environment can be described in launch.json. However, for WSL, CLI mode will detect and make the connection automatically
+In the picture below, the "Workspace" and the "Probe Proxy" can be on very different computers. The "proxy" server provides access to the HW Probe as if it is locally available. The connection is handled depending on the type of the environment each part is. The Workspace can be inside WSL or Docker. The "Probe" could be on a host machine hosting the WSL/Docker environment or some other machine The system automatically detects the type of the "Workspace" environment with the help of VSCode. But you can always use `ssh` to connect the two environments. The same architecture is also used for CLI mode except VSCode services cannot be used but the Probe environment can be described in launch.json. However, for WSL, CLI mode will detect and make the connection automatically
 
 ```mermaid
-flowchart
+flowchart LR
   subgraph WS["Workspace"]
-     direction TD
+     direction TB
      SRC["Source code<br>Compilers<br>launch.json"]
      MD["MCU Debug<br>Extension"]
      DA["Debug Adapter"]
      PC["Proxy Client"]
      GDB["GDB"]
      VIEWS["Views (RTT, SWO, UART<br>Memory, RTOS, SVD)"]
+     SRC --> MD
+     MD <--> DA
+     DA <--> PC
+     PC <--> GDB
+     PC --> VIEWS
   end
-  SRC --> MD
-  MD <--> DA
-  DA <--> PC
-  PC <--> GDB
-  PC --> VIEWS
 
   subgraph PROXY["Probe Proxy"]
-     direction TD
+     direction TB
      MDP["MCU Debug<br>Proxy Extension"]
      MDBG["MCU Debug<br>Proxy Server"]
      GDBS["Gdb server<br>(openocd, jlink)"]
      PROBE["Debug Probe<br>(STLink, KitProg3, JLink)"]
+     MDP --> MDBG
+     MDBG --> GDBS
+     GDBS <--> PROBE
   end
+
   MCU["MCU"]
 
-  MDP   --> MDBG
-  MDBG  --> GDBS
-  GDBS <--> PROBE
-  PROBE <--> MCU
-  MDBG --> VIEWS
-
-  PC <--> MDBG
+  WS <==>|"Proxy Client &harr; Proxy Server<br>debug traffic + RTT/SWO/UART"| PROXY
+  PROXY <--> MCU
 ```
 
 ## Supported Topologies
@@ -60,7 +59,26 @@ flowchart
 
 ## The `hostConfig` Property
 
-All remote topologies are configured via the `hostConfig` block in `launch.json`: For everything except for 'ssh', the `hostConfig` can be a simple boolean, for non-CLI use
+All remote topologies are configured via the `hostConfig` block in `launch.json`. The variants
+differ in one thing — **who starts the Probe Agent, and therefore how much we do for you**:
+
+| `hostConfig`                                           | Who starts the agent | What mcu-debug does                                                                       |
+| ------------------------------------------------------ | -------------------- | ----------------------------------------------------------------------------------------- |
+| `true`, or `{ "type": "auto" }`                        | mcu-debug            | Detects the topology (WSL, dev container, Remote-SSH) and launches the agent on the machine with the probe |
+| `{ "type": "ssh", "ssh": { "host" } }`                 | mcu-debug            | Copies `mdbg` to the host, launches it there, opens an `ssh -L` tunnel                    |
+| `{ "type": "ssh", "ssh": { "host", "serverPath" } }`   | mcu-debug            | As above without the copy — runs the `mdbg` you installed                                  |
+| `{ "type": "ssh", "ssh": { "host", "proxyPort", "token" } }` | **you**         | Only the `ssh -L` tunnel. No copy, no launch                                              |
+| `{ "proxy": { "host", "port", "token" } }`              | **you**             | Nothing at all — connects to that endpoint exactly as given                               |
+
+Two things worth committing to memory, because they are what the variants turn on:
+
+- **`proxyPort` is the switch** in the `ssh` rows. Supply it and we assume the agent is already
+  running and only build the tunnel; omit it and we deploy and launch one. See
+  [what the remote host has to provide](./ssh.md#what-the-remote-host-has-to-provide).
+- **`proxy` outranks `type`.** It is checked first, so when it is present `type` is not even read —
+  the override says "I manage the agent", which makes the topology irrelevant.
+
+For everything except for 'ssh', the `hostConfig` can be a simple boolean, for non-CLI use
 
 ```json
 "serverpath": "<path-to-gdb-server-on-remote>",
@@ -124,7 +142,14 @@ and mcu-debug will skip detection entirely:
 }
 ```
 
-The above also applies to "ssh" but the launch.json should be for "ssh" as shown in the previous section
+This works just as well when the agent is on an SSH host — but note that you must then reach it
+yourself, with your own `ssh -L` tunnel or a directly routable address, because `hostConfig.proxy`
+skips the tunnel along with everything else. If you want us to build the tunnel while you manage
+the agent, use `ssh` with `proxyPort` + `token` from the previous section instead.
+
+Either way the rest of the remote settings still apply: `serverpath` is the **gdb-server's** path
+on the machine with the probe, wherever that machine is. (Not to be confused with
+`hostConfig.ssh.serverPath`, which is where `mdbg` itself lives on an SSH host.)
 
 Start the agent yourself on the machine with the probe:
 
