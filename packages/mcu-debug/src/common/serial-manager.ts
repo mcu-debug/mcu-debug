@@ -92,7 +92,7 @@ function serialLogError(message: string) {
     getHostAdapter().debugConsoleError(message);
 }
 function serialLogDebug(message: string) {
-    getHostAdapter().debugConsoleMessage(message);
+    getHostAdapter().debugMessage(message);
 }
 
 /**
