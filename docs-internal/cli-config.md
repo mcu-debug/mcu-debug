@@ -154,7 +154,7 @@ For users who already have `${config:mcu-debug.armToolchainPath}` in their `laun
 
 ### File locations (precedence order, highest first)
 
-1. `.vscode/.vscode/settings.json` — workspace-scoped
+1. `.vscode/settings.json` — workspace-scoped
 2. `~/.mcu-debug/settings.json` — user-scoped global fallback
 
 ### Who writes it
@@ -201,7 +201,7 @@ When the CLI loads a launch configuration:
 
 3. Substitute all variable references in the config tree (our pass):
    a. ${env:VAR}            → mergedEnv lookup
-   b. ${config:KEY}         → .vscode/.vscode/settings.json, then ~/.mcu-debug/settings.json
+   b. ${config:KEY}         → .vscode/settings.json, then ~/.mcu-debug/settings.json
    (VS Code handles ${workspaceFolder}, ${userHome}, ${input:...} etc. in its own pass after us)
 
 4. (VS Code only) Return config from resolveDebugConfiguration.

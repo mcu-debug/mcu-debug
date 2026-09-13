@@ -91,7 +91,7 @@ interface IHostAdapter {
 
     // Settings bridge:
     //   VS Code:  vscode.workspace.getConfiguration("mcu-debug").get(key)
-    //   CLI:      .vscode/.vscode/settings.json → ~/.mcu-debug/settings.json
+    //   CLI:      .vscode/settings.json → ~/.mcu-debug/settings.json
     getSetting<T>(key: string): T | undefined;
 
     // User-facing diagnostics during config resolution
@@ -203,7 +203,7 @@ Runs first thing in the Node process before any session logic.
   - [x] `${workspaceFolder}`→ directory containing `launch.json`
   - [x] `${userHome}`       → `os.homedir()`
   - [x] `${pathSeparator}`  → `path.sep`
-  - [x] `${config:KEY}`     → `.vscode/.vscode/settings.json` then `~/.mcu-debug/settings.json`
+  - [x] `${config:KEY}`     → `.vscode/settings.json` then `~/.mcu-debug/settings.json`
   - [x] `${command:...}`    → always error: tell user to expand manually
   - [x] Collect ALL unresolved — report together, exit non-zero, never partial
 
