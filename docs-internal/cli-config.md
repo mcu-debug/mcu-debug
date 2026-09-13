@@ -26,7 +26,7 @@ The `${config:...}` form was historically the gap — toolchain paths set in VS 
 
 2. **`envFile`** (see below). Variables loaded from a file feed `${env:VAR}` substitution. Build systems and CMake can emit a fully-resolved env file rather than editing `launch.json`. Covers the "I want one file for my toolchain paths" use case without `${config:...}`.
 
-`${config:...}` support via `mcu-debug-settings.json` (see below) remains as a migration path for existing VS Code users, not the primary story.
+`${config:...}` support via `.vscode/settings.json` (see below) remains as a migration path for existing VS Code users, not the primary story.
 
 `${command:...}` is explicitly out of scope — requires an extension runtime, inherently interactive.
 
@@ -115,7 +115,7 @@ Processing order:
 1. `resolveDebugConfiguration` fires
 2. Extension loads and parses `envFile`(s), performs in-file substitution, builds `mergedEnv`
 3. Extension walks the config tree and substitutes **all** `${env:VAR}` references using `mergedEnv`, replacing them with their resolved string values
-4. Extension also resolves `${config:KEY}` via `mcu-debug-settings.json` in the same pass
+4. Extension also resolves `${config:KEY}` via `.vscode/settings.json` in the same pass
 5. Returns the partially-resolved config (env and config vars already expanded, others left for VS Code)
 6. VS Code performs its own substitution pass — finds no `${env:...}` references remaining (already resolved), handles `${workspaceFolder}`, `${input:...}`, and any other VS Code-specific vars unimpeded
 7. `resolveDebugConfigurationWithSubstitutedVariables` fires → config is fully resolved
@@ -146,15 +146,15 @@ The build system writes fully resolved values — no in-file substitution needed
 
 ---
 
-## `mcu-debug-settings.json` — Migration Bridge for `${config:...}`
+## `.vscode/settings.json` — Migration Bridge for `${config:...}`
 
 For users who already have `${config:mcu-debug.armToolchainPath}` in their `launch.json`, the CLI needs a way to resolve those references without VS Code's settings store.
 
-`mcu-debug-settings.json` is a flat JSON file that mirrors the VS Code settings namespace. It is a **migration bridge**, not the primary story — new users should use `launch.json` properties or `envFile` directly.
+`.vscode/settings.json` is a flat JSON file that mirrors the VS Code settings namespace. It is a **migration bridge**, not the primary story — new users should use `launch.json` properties or `envFile` directly.
 
 ### File locations (precedence order, highest first)
 
-1. `.vscode/mcu-debug-settings.json` — workspace-scoped
+1. `.vscode/.vscode/settings.json` — workspace-scoped
 2. `~/.mcu-debug/settings.json` — user-scoped global fallback
 
 ### Who writes it
@@ -201,7 +201,7 @@ When the CLI loads a launch configuration:
 
 3. Substitute all variable references in the config tree (our pass):
    a. ${env:VAR}            → mergedEnv lookup
-   b. ${config:KEY}         → .vscode/mcu-debug-settings.json, then ~/.mcu-debug/settings.json
+   b. ${config:KEY}         → .vscode/.vscode/settings.json, then ~/.mcu-debug/settings.json
    (VS Code handles ${workspaceFolder}, ${userHome}, ${input:...} etc. in its own pass after us)
 
 4. (VS Code only) Return config from resolveDebugConfiguration.
@@ -210,7 +210,7 @@ When the CLI loads a launch configuration:
 
 5. Collect all unresolved variables. If any remain:
    → Report ALL of them at once (not one at a time)
-   → Show the three resolution paths for each (launch.json property / envFile / mcu-debug-settings.json)
+   → Show the three resolution paths for each (launch.json property / envFile / .vscode/settings.json)
    → Exit non-zero. Never run a partially-resolved config.
 
 6. Proceed with the fully-resolved config.

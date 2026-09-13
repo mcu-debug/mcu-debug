@@ -91,7 +91,7 @@ interface IHostAdapter {
 
     // Settings bridge:
     //   VS Code:  vscode.workspace.getConfiguration("mcu-debug").get(key)
-    //   CLI:      .vscode/mcu-debug-settings.json → ~/.mcu-debug/settings.json
+    //   CLI:      .vscode/.vscode/settings.json → ~/.mcu-debug/settings.json
     getSetting<T>(key: string): T | undefined;
 
     // User-facing diagnostics during config resolution
@@ -203,7 +203,7 @@ Runs first thing in the Node process before any session logic.
   - [x] `${workspaceFolder}`→ directory containing `launch.json`
   - [x] `${userHome}`       → `os.homedir()`
   - [x] `${pathSeparator}`  → `path.sep`
-  - [x] `${config:KEY}`     → `.vscode/mcu-debug-settings.json` then `~/.mcu-debug/settings.json`
+  - [x] `${config:KEY}`     → `.vscode/.vscode/settings.json` then `~/.mcu-debug/settings.json`
   - [x] `${command:...}`    → always error: tell user to expand manually
   - [x] Collect ALL unresolved — report together, exit non-zero, never partial
 
@@ -336,7 +336,7 @@ Can proceed in parallel with phases above once the `common/` structure is define
       (envFile, variable substitution, validation, defaults — all pure logic, no vscode deps)
 - [x] Implement `VscodeAdapter` in `frontend/vscode-adapter.ts`
 - [x] Implement `CliAdapter` in `cli/cli-adapter.ts`
-      (reads `mcu-debug-settings.json`, workspaceFolder = dir containing launch.json)
+      (reads `.vscode/settings.json`, workspaceFolder = dir containing launch.json)
 - [x] Thin down `frontend/configprovider.ts` to: create VscodeAdapter, delegate to
       common/ConfigProvider — VS Code lifecycle hooks stay, logic moves out
 - [x] Move `frontend/swo/` → `common/swo/` (decoders + sources — no vscode deps)

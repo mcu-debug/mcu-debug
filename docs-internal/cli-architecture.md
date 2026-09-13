@@ -476,7 +476,7 @@ The npm package version is kept in sync with the extension version. A version mi
 | ------------------------------------ | ---------------------------------------------------------------------- |
 | VS Code as DAP client                | Replaced by `mcu-debug debug` acting as DAP client (§2)                |
 | `vscode.env.remoteName`              | Replaced by OS-level detection (§6)                                    |
-| VS Code settings store               | Replaced by `mcu-debug-settings.json` + `envFile` (see cli-config.md)  |
+| VS Code settings store               | Replaced by `.vscode/settings.json` + `envFile` (see cli-config.md)    |
 | Workspace state (Memento)            | UART config and session state from `launch.json` + `~/.mcu-debug/`     |
 | Auto-start Probe Agent on probe host | v1: require pre-running for WSL/Docker; SSH auto-deploy for LAB        |
 | Webview / xterm.js Cockpit           | Replaced by ratatui TUI (Mode 2) or headless stream (Mode 1)           |
