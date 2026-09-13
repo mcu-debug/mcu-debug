@@ -82,7 +82,7 @@ function main() {
             execSyncWithEcho(`rsync -avr ${dryRun} --exclude=.DS_Store --delete --progress ./dist "${process.env.MDBG_ARTIFACTS_PATH}"`, { stdio: "inherit" });
         }
         if (opts.doPull) {
-            execSyncWithEcho(`rsync -avr ${dryRun} --progress "${process.env.MDBG_ARTIFACTS_PATH}" ./dist/`, { stdio: "inherit" });
+            execSyncWithEcho(`rsync -avr ${dryRun} --progress "${process.env.MDBG_ARTIFACTS_PATH}/dist" ./`, { stdio: "inherit" });
         }
     } else {
         console.log("No artifacts path specified with MDBG_ARTIFACTS_PATH.");
