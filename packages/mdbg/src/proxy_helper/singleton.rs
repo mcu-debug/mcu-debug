@@ -149,6 +149,13 @@ pub struct Endpoint {
     pub state: String,
     /// Unix seconds when the proxy started (for `--status` uptime later).
     pub started_at_unix: u64,
+    /// The executable this proxy is running, stamped at its startup. Lets a later launch
+    /// tell "same version, same binary" from "same version, binary replaced since" — the
+    /// difference between a legitimate reuse and serving stale code. `default` so a
+    /// record written before this field still parses; see [`decide_handover`] for how an
+    /// empty stamp is read.
+    #[serde(default)]
+    pub exe: ExeStamp,
 }
 
 impl Endpoint {
@@ -195,6 +202,139 @@ fn version_tuple(v: &str) -> (u64, u64, u64) {
 /// True when version `a` is strictly newer than `b` (semver-ish, suffix-ignoring).
 pub fn is_newer(a: &str, b: &str) -> bool {
     version_tuple(a) > version_tuple(b)
+}
+
+/// Which executable a proxy is running, and how old that file was when it started.
+///
+/// The mtime **must** be taken at startup and then never re-read, because the file it
+/// describes can be replaced underneath a running daemon. Both ways of replacing it
+/// swap the inode rather than writing into it (`scripts/build-binaries.sh copy_artifact`
+/// does `mv` deliberately; VS Code extracts an extension into a fresh directory), so
+/// stat-ing the path later reports the *replacement* and says nothing about the code
+/// actually executing. On Linux it is worse than useless: `current_exe()` resolves
+/// `/proc/self/exe` to the inode, so after a swap the running daemon's own path reads
+/// back as `…/mdbg (deleted)` and the stat fails outright.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExeStamp {
+    /// Absolute path this proxy was launched from. Empty when it could not be determined.
+    #[serde(default)]
+    pub path: String,
+    /// The file's mtime when this proxy started, in **milliseconds** since the Unix epoch.
+    ///
+    /// Milliseconds rather than nanoseconds so the number stays exactly representable as
+    /// a JSON double -- nanos since 1970 are ~1.7e18, well past 2^53, and any JavaScript
+    /// reader of `endpoint.json` would silently round them. Millisecond resolution is far
+    /// finer than the question being asked ("was this file replaced?").
+    ///
+    /// `None` when the stat failed, which is treated as "no evidence" rather than "old".
+    #[serde(default)]
+    pub mtime_ms: Option<u64>,
+}
+
+/// Stat our own executable. Call once, at startup -- see [`ExeStamp`].
+pub fn exe_stamp() -> ExeStamp {
+    let Ok(path) = std::env::current_exe() else {
+        return ExeStamp::default();
+    };
+    let mtime_ms = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    ExeStamp {
+        path: path.to_string_lossy().into_owned(),
+        mtime_ms,
+    }
+}
+
+/// What a launching proxy should do about the proxy already holding the instance lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handover {
+    /// Leave the running proxy alone and use it as it is.
+    Reuse,
+    /// The running proxy is strictly older by version — the Phase D handover.
+    UpgradeByVersion,
+    /// Same version, but our executable is a *newer file at the same path*: the binary
+    /// was replaced in place, so the running daemon is executing code that no longer
+    /// exists on disk.
+    UpgradeByExe,
+}
+
+/// Decide whether `challenger` should supersede `running`.
+///
+/// Both ends run this: the launching proxy to decide whether to ask, and the running
+/// proxy to decide whether to agree. Same inputs, same answer — a challenger cannot talk
+/// its way past a rule the incumbent applies for itself.
+///
+/// The version comparison is the original rule and still decides most cases. What it
+/// cannot see is the case that actually dominates in practice: **installing the same
+/// version on top of itself**. A release happens once; a test build gets carried to half
+/// a dozen machines and reinstalled repeatedly, each time leaving a daemon whose version
+/// is identical and whose code is stale. `is_newer` says "not newer", the daemon is
+/// reused, and the debugging happens against the previous binary with nothing to show for
+/// it. The exe stamp is what distinguishes that from a legitimate reuse.
+///
+/// `auto_upgrade` gates only the *question*, never the answer: a daemon agrees to step
+/// down on the evidence regardless of how it was itself started. Gating the answer too
+/// would mean a daemon launched by a plain window could never be replaced, which is the
+/// hole the whole mechanism exists to close.
+pub fn decide_handover(
+    challenger_version: &str,
+    challenger_exe: &ExeStamp,
+    running_version: &str,
+    running_exe: &ExeStamp,
+    auto_upgrade: bool,
+) -> Handover {
+    if is_newer(challenger_version, running_version) {
+        return Handover::UpgradeByVersion;
+    }
+    // Downgrade guard: an older binary never evicts a newer running one, whatever its
+    // file dates say. Rebuilding an old checkout produces a new file with old code.
+    if is_newer(running_version, challenger_version) {
+        return Handover::Reuse;
+    }
+    if !auto_upgrade {
+        return Handover::Reuse;
+    }
+    // No mtime of our own is no evidence, and the burden is on the challenger.
+    let Some(mine) = challenger_exe.mtime_ms else {
+        return Handover::Reuse;
+    };
+    // A record with neither path nor mtime predates this field entirely, so the daemon
+    // that wrote it cannot be compared with — and is by definition running code from
+    // before the current install. Supersede it once; its successor records a stamp, so
+    // this branch fires at most once per daemon rather than on every launch.
+    if running_exe.path.is_empty() && running_exe.mtime_ms.is_none() {
+        return Handover::UpgradeByExe;
+    }
+    // Different paths make the mtimes incomparable, not merely inconvenient: a freshly
+    // installed extension can easily hold an older file than a dev build. Versions being
+    // equal, a differing path means two separate installs, and neither is "newer".
+    if running_exe.path != challenger_exe.path {
+        return Handover::Reuse;
+    }
+    match running_exe.mtime_ms {
+        Some(theirs) if mine > theirs => Handover::UpgradeByExe,
+        // Equal is the common case (same file, second window) and must reuse. An absent
+        // mtime *with* a known path means that daemon tried to stat and failed; treating
+        // that as "old" would hand over on every single launch, so it reuses instead.
+        _ => Handover::Reuse,
+    }
+}
+
+/// Whether this launch may ask a same-version daemon to step down.
+///
+/// Defaults to **on**, and `MDBG_PROXY_AUTO_UPGRADE=0` turns it off. On by default
+/// because the alternative is a variable you have to remember to set on every machine
+/// you test on — the same failure mode as remembering to kill the daemon by hand, with
+/// the same silent symptom. The two outcomes are also nowhere near equally bad: not
+/// upgrading means debugging against code you did not build, while upgrading
+/// unnecessarily costs a graceful drain in which live sessions finish where they are.
+pub fn auto_upgrade_enabled() -> bool {
+    match std::env::var("MDBG_PROXY_AUTO_UPGRADE") {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
 }
 
 /// This proxy's own version. Normally `CARGO_PKG_VERSION`; `MDBG_PROXY_VERSION`
@@ -410,6 +550,7 @@ mod endpoint_bind_host_tests {
                 token: "t".to_string(),
                 state: "active".to_string(),
                 started_at_unix: 1,
+                exe: Default::default(),
             };
             let text = serde_json::to_string(&ep).unwrap();
             let back: Endpoint = serde_json::from_str(&text).unwrap();
@@ -434,5 +575,175 @@ mod endpoint_bind_host_tests {
         .unwrap();
         assert_eq!(loopback.bind_host, "127.0.0.1");
         assert_ne!(wildcard.bind_host, loopback.bind_host);
+    }
+}
+
+/// The same-version handover rule, which is the one that fires most often in practice:
+/// a test build carried to several machines and reinstalled over itself, or a dev
+/// rebuild, leaves a daemon whose version is identical and whose code is stale.
+#[cfg(test)]
+mod handover_tests {
+    use super::*;
+
+    fn stamp(path: &str, mtime_ms: Option<u64>) -> ExeStamp {
+        ExeStamp {
+            path: path.to_string(),
+            mtime_ms,
+        }
+    }
+
+    /// Unchanged behaviour: version still decides whenever the versions differ, and it
+    /// outranks the file dates in both directions.
+    #[test]
+    fn version_still_decides_when_versions_differ() {
+        let old = stamp("/x/mdbg", Some(1_000));
+        let new = stamp("/x/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.17", &new, "0.1.16", &old, true),
+            Handover::UpgradeByVersion
+        );
+        // Downgrade guard: rebuilding an old checkout yields a NEW file with OLD code,
+        // and must not evict the newer running proxy.
+        assert_eq!(decide_handover("0.1.15", &new, "0.1.16", &old, true), Handover::Reuse);
+    }
+
+    #[test]
+    fn same_version_newer_file_at_same_path_supersedes() {
+        let running = stamp("/ext/mcu-debug-proxy-0.1.16/bin/mdbg", Some(1_000));
+        let reinstalled = stamp("/ext/mcu-debug-proxy-0.1.16/bin/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.16", &reinstalled, "0.1.16", &running, true),
+            Handover::UpgradeByExe
+        );
+    }
+
+    /// The ordinary case a second window hits: same binary, nothing to do. Getting this
+    /// wrong would turn every window open into a daemon churn.
+    #[test]
+    fn same_version_same_file_reuses() {
+        let e = stamp("/x/mdbg", Some(1_000));
+        assert_eq!(decide_handover("0.1.16", &e, "0.1.16", &e, true), Handover::Reuse);
+    }
+
+    #[test]
+    fn older_file_never_supersedes() {
+        let running = stamp("/x/mdbg", Some(2_000));
+        let mine = stamp("/x/mdbg", Some(1_000));
+        assert_eq!(
+            decide_handover("0.1.16", &mine, "0.1.16", &running, true),
+            Handover::Reuse
+        );
+    }
+
+    /// Two different installs of the same version: the mtimes describe different files
+    /// and comparing them is meaningless, so neither is "newer".
+    #[test]
+    fn different_paths_are_not_comparable() {
+        let running = stamp("/opt/mdbg", Some(1_000));
+        let mine = stamp("/home/me/build/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.16", &mine, "0.1.16", &running, true),
+            Handover::Reuse
+        );
+    }
+
+    /// A daemon predating the stamp (neither path nor mtime) is superseded once, so the
+    /// feature works on the first install rather than the second. Its successor records a
+    /// stamp, which is what keeps this from firing on every subsequent launch.
+    #[test]
+    fn a_daemon_with_no_stamp_is_superseded_once() {
+        let pre_feature = ExeStamp::default();
+        let mine = stamp("/x/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.16", &mine, "0.1.16", &pre_feature, true),
+            Handover::UpgradeByExe
+        );
+        // ...and once it has a stamp of its own, an identical launch reuses it.
+        let successor = stamp("/x/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.16", &mine, "0.1.16", &successor, true),
+            Handover::Reuse
+        );
+    }
+
+    /// A known path with no mtime means that daemon tried to stat itself and failed.
+    /// Treating that as "old" would hand over on *every* launch, so it reuses — the one
+    /// case where absent evidence must not be read as absent-therefore-old.
+    #[test]
+    fn a_failed_stat_on_the_running_side_does_not_loop() {
+        let cannot_stat = stamp("/x/mdbg", None);
+        let mine = stamp("/x/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.16", &mine, "0.1.16", &cannot_stat, true),
+            Handover::Reuse
+        );
+    }
+
+    /// No mtime of our own is no evidence, and the burden is on the challenger.
+    #[test]
+    fn a_challenger_that_cannot_stat_itself_reuses() {
+        let running = stamp("/x/mdbg", Some(1_000));
+        let mine = stamp("/x/mdbg", None);
+        assert_eq!(
+            decide_handover("0.1.16", &mine, "0.1.16", &running, true),
+            Handover::Reuse
+        );
+    }
+
+    /// `MDBG_PROXY_AUTO_UPGRADE=0` suppresses the exe rule only — a genuine version
+    /// upgrade still happens, because that was never opt-in.
+    #[test]
+    fn opting_out_suppresses_only_the_exe_rule() {
+        let running = stamp("/x/mdbg", Some(1_000));
+        let mine = stamp("/x/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.16", &mine, "0.1.16", &running, false),
+            Handover::Reuse
+        );
+        assert_eq!(
+            decide_handover("0.1.17", &mine, "0.1.16", &running, false),
+            Handover::UpgradeByVersion
+        );
+    }
+
+    /// An endpoint.json written before `exe` existed must still parse, or an upgrade
+    /// would fail at the worst possible moment: against the very daemon it must replace.
+    #[test]
+    fn an_endpoint_record_without_an_exe_field_still_parses() {
+        let json = r#"{
+            "v": 3, "instance": "default", "pid": 42, "version": "0.1.15",
+            "port": 51234, "bind_host": "127.0.0.1", "hosts": ["127.0.0.1"],
+            "token": "abc", "state": "active", "started_at_unix": 1
+        }"#;
+        let ep: Endpoint = serde_json::from_str(json).expect("a pre-exe record must parse");
+        assert_eq!(ep.exe, ExeStamp::default());
+        assert_eq!(
+            decide_handover("0.1.15", &stamp("/x/mdbg", Some(9)), &ep.version, &ep.exe, true),
+            Handover::UpgradeByExe
+        );
+    }
+
+    /// The published stamp is what the next launch compares against, so it has to
+    /// survive a round trip through the file — and stay a plain JSON number a
+    /// JavaScript reader can hold exactly (milliseconds, not nanoseconds).
+    #[test]
+    fn the_stamp_round_trips_as_an_exact_json_number() {
+        let e = stamp("/x/mdbg", Some(1_757_700_093_000));
+        let json = serde_json::to_string(&e).expect("serialize");
+        assert!(json.contains("1757700093000"), "no exponent or rounding: {json}");
+        assert_eq!(serde_json::from_str::<ExeStamp>(&json).expect("deserialize"), e);
+        assert!(
+            (1_757_700_093_000f64 as u64) == 1_757_700_093_000,
+            "milliseconds stay exact as a double; nanoseconds would not"
+        );
+    }
+
+    /// Stamping ourselves must work in the test binary too — if `current_exe()` or the
+    /// stat fails everywhere, the whole mechanism silently degrades to Reuse.
+    #[test]
+    fn stamping_our_own_executable_yields_a_path_and_an_mtime() {
+        let e = exe_stamp();
+        assert!(!e.path.is_empty(), "current_exe() should resolve");
+        assert!(e.mtime_ms.is_some(), "the test binary should be stat-able");
     }
 }

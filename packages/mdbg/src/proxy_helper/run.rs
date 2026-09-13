@@ -101,6 +101,13 @@ pub struct ProxyArgs {
     /// Seconds with no active session (and no `--heartbeat` window keep-alive)
     /// before the proxy self-exits. 0 disables idle shutdown (run until killed
     /// or explicitly stopped) — use it for a persistent lab/SSH daemon.
+    ///
+    /// The default is **5 hours**, not the 5 minutes the `5*60*60` might be misread as.
+    /// Deliberate: minutes reaped the daemon out from under anyone who stepped away
+    /// mid-session, and an idle proxy holding nothing costs a few MB. The consequence
+    /// worth knowing is that a daemon from the previously installed version is almost
+    /// always still alive when someone updates the extension — so the upgrade/handover
+    /// path in `acquire_or_reuse` is the normal case after a release, not an edge case.
     #[arg(long = "idle-timeout", env = "MDBG_PROXY_IDLE_TIMEOUT", default_value_t = 5*60*60)]
     pub idle_timeout: u64,
 
@@ -326,6 +333,7 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
         version: String::new(),
         path: String::new(),
         host: String::new(),
+        exe: Default::default(),
     };
     match admin::query(&endpoint, &req) {
         Ok(resp) => print(&resp),
@@ -364,6 +372,7 @@ fn close_serial_request(endpoint: &singleton::Endpoint, path: &str) -> admin::Ad
         version: String::new(),
         path: path.to_string(),
         host: String::new(),
+        exe: Default::default(),
     }
 }
 
@@ -466,6 +475,7 @@ fn print_status_all() -> Result<()> {
             graceful: true,
             version: String::new(),
             host: String::new(),
+            exe: Default::default(),
         };
         if let Ok(resp) = admin::query(&endpoint, &req) {
             if let Some(status) = resp.status {
@@ -520,6 +530,7 @@ fn shutdown_all() -> Result<()> {
             version: String::new(),
             path: String::new(),
             host: String::new(),
+            exe: Default::default(),
         };
         // Only report instances that actually answered — a dead proxy's stale
         // endpoint refuses the connection and needs no shutdown.
@@ -576,6 +587,7 @@ fn widen_running_proxy(ep: &singleton::Endpoint, args: &ProxyArgs) -> (Vec<Strin
         version: String::new(),
         path: String::new(),
         host: host.to_string(),
+        exe: Default::default(),
     };
     match admin::query(ep, &req) {
         Ok(resp) if resp.ok => (if resp.hosts.is_empty() { known } else { resp.hosts }, Vec::new()),
@@ -598,6 +610,7 @@ fn acquire_or_reuse<'a>(
     instance: &singleton::Instance,
     args: &ProxyArgs,
     mine: &str,
+    my_exe: &singleton::ExeStamp,
 ) -> Result<Option<fd_lock::RwLockWriteGuard<'a, std::fs::File>>> {
     // Probe *without* holding the guard (the temporary guard drops at the end of
     // this statement), so the decision below doesn't pin the `proxy_lock` borrow
@@ -609,8 +622,10 @@ fn acquire_or_reuse<'a>(
         // The running proxy's token, so a reusing client can authenticate to it.
         let token = Some(ep.token.as_str());
 
-        if !singleton::is_newer(mine, &ep.version) {
-            // Same or older → reuse the running proxy.
+        let decision =
+            singleton::decide_handover(mine, my_exe, &ep.version, &ep.exe, singleton::auto_upgrade_enabled());
+
+        if decision == singleton::Handover::Reuse {
             if singleton::is_newer(&ep.version, mine) {
                 log::warn!(
                     "A newer proxy v{} is already running for '{}'; using it",
@@ -635,14 +650,27 @@ fn acquire_or_reuse<'a>(
             return Ok(None);
         }
 
-        // We are newer → ask the running proxy to step down, then take over its
-        // identity (Phase D drain-and-replace). Fall through to the acquire loop.
-        log::info!(
-            "Newer proxy v{mine} > running v{} for '{}' — requesting handover",
-            ep.version,
-            instance.name
-        );
-        if let Err(e) = admin::request_upgrade(&ep, mine) {
+        // We supersede it → ask it to step down, then take over its identity (Phase D
+        // drain-and-replace). Fall through to the acquire loop.
+        match decision {
+            singleton::Handover::UpgradeByVersion => log::info!(
+                "Newer proxy v{mine} > running v{} for '{}' — requesting handover",
+                ep.version,
+                instance.name
+            ),
+            // The case `is_newer` cannot see, and the one that dominates in practice:
+            // the same version reinstalled or rebuilt over itself, leaving a daemon
+            // executing code that is no longer on disk.
+            singleton::Handover::UpgradeByExe => log::info!(
+                "Same version v{mine} for '{}' but our executable is newer ({:?} > {:?}) at {} — requesting handover",
+                instance.name,
+                my_exe.mtime_ms,
+                ep.exe.mtime_ms,
+                my_exe.path
+            ),
+            singleton::Handover::Reuse => unreachable!("handled above"),
+        }
+        if let Err(e) = admin::request_upgrade(&ep, mine, my_exe) {
             log::warn!("Handover request failed: {e:#}; reusing the existing proxy");
             let (hosts, bind_errors) = widen_running_proxy(&ep, args);
             // `ep.version`, not ours: the caller is being handed the *running* proxy's
@@ -824,13 +852,17 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         .with_context(|| format!("could not open {}", instance.lock_path.display()))?;
     let mut proxy_lock = fd_lock::RwLock::new(lock_file);
     let mine = singleton::self_version();
+    // Stat our own executable ONCE, here, before anything else can replace it -- see
+    // `singleton::ExeStamp`. Used both to challenge a running same-version daemon and,
+    // if we win the lock, as the stamp we publish for the next launch to compare against.
+    let my_exe = singleton::exe_stamp();
 
     // Acquire the instance lock, or reuse / take over a running proxy. `None`
     // means we reused an existing proxy (discovery JSON already printed) and
     // should just exit. Held for the process lifetime — except on an upgrade
     // handover, where it's released early (see `superseded` near the end), so
     // it's an `Option` we can `take()`.
-    let mut lock_guard = match acquire_or_reuse(&mut proxy_lock, &instance, &args, &mine)? {
+    let mut lock_guard = match acquire_or_reuse(&mut proxy_lock, &instance, &args, &mine, &my_exe)? {
         Some(guard) => Some(guard),
         None => return Ok(()),
     };
@@ -896,6 +928,7 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         token: token.clone(),
         state: "active".to_string(),
         started_at_unix: singleton::Endpoint::now_unix(),
+        exe: my_exe.clone(),
     };
     singleton::write_endpoint_atomic(&instance.endpoint_path, &endpoint)?;
 
@@ -943,6 +976,8 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         version: singleton::self_version(),
         instance: instance.name.clone(),
         started_at_unix: endpoint.started_at_unix,
+        // The same stamp published in endpoint.json — taken at startup, never re-read.
+        exe: my_exe.clone(),
     });
 
     // Stdin heartbeat watchdog — only when explicitly requested via --heartbeat.

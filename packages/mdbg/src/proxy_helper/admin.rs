@@ -86,6 +86,16 @@ pub struct AdminRequest {
     /// Empty for every other command.
     #[serde(default)]
     pub host: String,
+    /// For `upgrade`: the requester's executable path and mtime, which is what lets a
+    /// *same-version* handover be justified (the binary was replaced in place).
+    ///
+    /// Self-reported, and safe to be: the running proxy checks it against its own stamp
+    /// with [`singleton::decide_handover`], and every field can only *narrow* the outcome
+    /// — a lie about the path makes acceptance harder, not easier. Combined with the
+    /// loopback requirement on `upgrade`, a caller able to abuse this could already have
+    /// sent `shutdown`.
+    #[serde(default)]
+    pub exe: singleton::ExeStamp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +210,10 @@ pub struct AdminContext {
     pub version: String,
     pub instance: String,
     pub started_at_unix: u64,
+    /// This proxy's executable as stamped at *its* startup — the incumbent half of the
+    /// comparison in [`singleton::decide_handover`]. Never re-stat it: the file may have
+    /// been replaced since, which is exactly the condition being detected.
+    pub exe: singleton::ExeStamp,
 }
 
 /// Handle one admin connection: read the request line, act, reply, close.
@@ -244,7 +258,7 @@ fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool)
             hosts: Vec::new(),
         },
         "shutdown" => begin_drain(ctx),
-        "upgrade" => begin_upgrade(req, ctx),
+        "upgrade" => begin_upgrade(req, ctx, peer_is_loopback),
         "serialClose" => close_serial(req, ctx),
         "widen" => widen(req, ctx, peer_is_loopback),
         "narrow" => narrow(req, ctx, peer_is_loopback),
@@ -255,13 +269,32 @@ fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool)
 /// Hand off to a newer proxy: stop accepting immediately (so the lock is
 /// released for the successor at once), keep serving existing sessions to
 /// completion, and do not delete `endpoint.json` on exit. Idempotent.
-fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
-    if !singleton::is_newer(&req.version, &ctx.version) {
-        return AdminResponse::err(format!(
-            "requester v{} is not newer than running v{}",
-            req.version, ctx.version
-        ));
+fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool) -> AdminResponse {
+    // Local-only, unlike `shutdown`. Replacing the binary is inherently a local act, so
+    // there is no legitimate remote upgrade to support — and accepting a same-version
+    // handover on self-reported file evidence is not something to expose off-box. (An
+    // off-box `shutdown` does have a use: draining a lab daemon from elsewhere.)
+    if !peer_is_loopback {
+        return AdminResponse::err("upgrade may only be requested from loopback");
     }
+    // Re-derive the decision instead of trusting the requester's: same function, same
+    // inputs, so a challenger cannot argue its way past the rule. `true` for
+    // auto_upgrade — the env var gates whether a launch *asks*, never whether we agree,
+    // because a daemon started by an ordinary window must still be replaceable.
+    let decision = singleton::decide_handover(&req.version, &req.exe, &ctx.version, &ctx.exe, true);
+    let reason = match decision {
+        singleton::Handover::Reuse => {
+            return AdminResponse::err(format!(
+                "requester v{} does not supersede running v{} (exe {} vs {})",
+                req.version,
+                ctx.version,
+                req.exe.mtime_ms.map(|m| m.to_string()).unwrap_or_else(|| "?".into()),
+                ctx.exe.mtime_ms.map(|m| m.to_string()).unwrap_or_else(|| "?".into()),
+            ));
+        }
+        singleton::Handover::UpgradeByVersion => "newer version",
+        singleton::Handover::UpgradeByExe => "same version, newer executable",
+    };
     let active = ctx.lifetime.count();
     if !ctx.superseded.swap(true, Ordering::SeqCst) {
         ctx.draining.store(true, Ordering::SeqCst);
@@ -272,7 +305,7 @@ fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>) -> AdminResponse {
         // Break the accept loop NOW so run() releases the lock immediately; the
         // successor is waiting to acquire it. Existing sessions keep running.
         log::info!(
-            "Superseded by v{} — releasing identity; {active} session(s) will finish here",
+            "Superseded by v{} ({reason}) — releasing identity; {active} session(s) will finish here",
             req.version
         );
         crate::proxy_helper::run::trigger_graceful_shutdown(&ctx.stop_flag, &ctx.accept_set);
@@ -429,9 +462,12 @@ fn publish_hosts(ctx: &Arc<AdminContext>, hosts: &[String]) {
 
 // ── Client side (invoked by `mdbg proxy --status` / `--shutdown`) ─────────────
 
-/// Ask the running (older) proxy to step down in favor of our newer version.
+/// Ask the running proxy to step down in favor of us.
 /// Returns once it has acknowledged (it releases its lock right after).
-pub fn request_upgrade(endpoint: &Endpoint, my_version: &str) -> Result<AdminResponse> {
+///
+/// `my_exe` is what justifies a *same-version* handover — the running proxy re-derives the
+/// decision from it rather than taking our word for the outcome.
+pub fn request_upgrade(endpoint: &Endpoint, my_version: &str, my_exe: &singleton::ExeStamp) -> Result<AdminResponse> {
     let req = AdminRequest {
         v: 1,
         cmd: "upgrade".into(),
@@ -440,6 +476,7 @@ pub fn request_upgrade(endpoint: &Endpoint, my_version: &str) -> Result<AdminRes
         path: String::new(),
         host: String::new(),
         version: my_version.into(),
+        exe: my_exe.clone(),
     };
     let resp = query(endpoint, &req)?;
     if !resp.ok {

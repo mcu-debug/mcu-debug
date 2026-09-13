@@ -30,6 +30,8 @@
 
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { ChildProcess, spawn } from "node:child_process";
 import { SSH_BATCH_OPTS, computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults, ProvisioningResults, ProxyProvisionRequest, startProxyServerWithPolicy, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
 
@@ -194,6 +196,82 @@ function startSshReverseTunnel(sshHost: string, localProxyPort: number): Promise
 
 const STARTUP_TIMEOUT_MS = 10_000;
 
+// ── Tracing ───────────────────────────────────────────────────────────────────
+// A `LogOutputChannel` rather than an ordinary one: it timestamps, carries levels, and
+// respects the user's log-level setting, so trace output costs nothing when nobody is
+// looking. `console.log` only reaches the Extension Host log, which is not something we
+// can ask a user to find.
+//
+// What this is for: launching the proxy means launching-or-reusing a SINGLETON, and the
+// discovery line does not say which happened. A reused daemon may be an older release's,
+// with an older feature set and possibly the wrong bind addresses, and until now nothing
+// on either side of the extension pair could tell. `step` is a stable identifier -- grep
+// for `startProxy.reused-stale` rather than reading sentences.
+let logChannel: vscode.LogOutputChannel | undefined;
+let extVersion = "unknown";
+
+function trace(step: string, meta: Record<string, unknown> = {}) {
+    const detail = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : "";
+    logChannel?.info(`${step}${detail}`);
+}
+
+function traceWarn(step: string, meta: Record<string, unknown> = {}) {
+    const detail = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : "";
+    logChannel?.warn(`${step}${detail}`);
+}
+
+/**
+ * Record what the singleton actually handed us, and whether that is what this build asked for.
+ *
+ * Two things can silently not happen, and they fail in opposite ways:
+ *
+ *  - **Version.** `mdbg proxy` only takes over from a *strictly older* daemon. An equal version
+ *    reuses, which is correct for a second window but means a rebuild during development (same
+ *    `CARGO_PKG_VERSION`, and dev mode sets `--idle-timeout 0` so the daemon never exits) keeps
+ *    talking to a daemon built hours ago. A handover that was attempted and *failed* also falls
+ *    back to reuse, and says so only in the daemon's own log file.
+ *  - **Widen.** Asking for an address the running daemon does not serve goes through the `widen`
+ *    admin path. That one does report failure (`bind_errors`), but a caller that never compares
+ *    the requested host against `hosts` cannot see a widen that was refused outright.
+ */
+function traceLaunchOutcome(policy: ProxyLaunchPolicy, result: ProxyLaunchResults) {
+    const daemon = result.version;
+    trace("startProxy.ready", {
+        port: result.serverPort,
+        daemonPid: result.pid,
+        daemonVersion: daemon ?? "unknown",
+        extVersion,
+        hosts: result.hosts,
+        bindErrors: result.bindErrors ?? [],
+    });
+
+    if (!daemon) {
+        traceWarn("startProxy.version-unknown", {
+            note: "daemon did not report a version; it predates the discovery `version` field",
+        });
+    } else if (daemon !== extVersion) {
+        // Not fatal, and not necessarily wrong -- a newer daemon is the downgrade guard doing
+        // its job. Either way the user is not running the proxy this extension shipped.
+        traceWarn("startProxy.version-mismatch", {
+            daemonVersion: daemon,
+            extVersion,
+            reused: "an already-running singleton answered instead of the binary we launched",
+            // --all, not the bare form: the daemon that answered may be on another instance
+            // (dev runs use `dev`), and without it only `default` is drained.
+            hint: "`mdbg proxy --shutdown --all` drains them; the next launch starts this build",
+        });
+    }
+
+    const wanted = policy?.bindHost;
+    if (wanted && !result.hosts.includes(wanted)) {
+        traceWarn("startProxy.host-not-served", {
+            requested: wanted,
+            hosts: result.hosts,
+            note: "widen did not take -- the DA may not be able to reach this proxy",
+        });
+    }
+}
+
 function resolveNetworkMode(hostType: ProxyHostType = "auto") {
     return resolveProxyNetworkMode(hostType, vscode.env.remoteName);
 }
@@ -209,19 +287,37 @@ function computeLaunchPolicy(hostType: ProxyHostType = "auto"): ProxyLaunchPolic
 // The daemon (owner) survives on its own; we never own or manage it.
 function startProxyServerWrapper(proxyPolicy: ProxyLaunchPolicy): Promise<ProxyLaunchResults> {
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
+        trace("startProxy.request", { policy: proxyPolicy, proxyPath });
         startProxyServerWithPolicy(proxyPolicy!, proxyPath, STARTUP_TIMEOUT_MS)
             .then((result: ProxyLaunchResults) => {
+                if (result.serverPort === -1) {
+                    // The launch-failure sentinel. The reason is only in these arrays, which
+                    // every caller discards, so this is the one place it can be recorded.
+                    traceWarn("startProxy.failed", {
+                        errors: result.consoleErrors,
+                        messages: result.consoleMessages,
+                    });
+                } else {
+                    traceLaunchOutcome(proxyPolicy, result);
+                }
                 if (proxyPolicy!.reverseTunnelSshHost) {
                     // Start the reverse tunnel here — we already know the local port (json.port)
                     // so there is no need for the workspace extension to make a second round-trip.
                     startSshReverseTunnel(proxyPolicy!.reverseTunnelSshHost, result.serverPort!)
-                        .then((remotePort) => resolve({ ...result, reverseTunnelPort: remotePort }))
-                        .catch((err) => reject(err));
+                        .then((remotePort) => {
+                            trace("revTunnel.up", { sshHost: proxyPolicy!.reverseTunnelSshHost, remotePort, localPort: result.serverPort });
+                            resolve({ ...result, reverseTunnelPort: remotePort });
+                        })
+                        .catch((err) => {
+                            traceWarn("revTunnel.failed", { sshHost: proxyPolicy!.reverseTunnelSshHost, error: `${err}` });
+                            reject(err);
+                        });
                 } else {
                     resolve(result);
                 }
             })
             .catch((err) => {
+                traceWarn("startProxy.rejected", { error: `${err}` });
                 reject(err);
             });
     });
@@ -241,10 +337,25 @@ function startProxyServerWrapper(proxyPolicy: ProxyLaunchPolicy): Promise<ProxyL
 
 export function activate(context: vscode.ExtensionContext) {
     console.log("[mcu-debug-proxy] Activating MCU Debug Proxy extension");
-    if (context.extensionMode === vscode.ExtensionMode.Development) {
+    logChannel = vscode.window.createOutputChannel("MCU-Debug Proxy", { log: true });
+    context.subscriptions.push(logChannel);
+    extVersion = context.extension.packageJSON.version as string;
+    const isDev = context.extensionMode === vscode.ExtensionMode.Development;
+    if (isDev) {
         console.log("[mcu-debug-proxy] Running in development mode");
         setDevelopmentModeEnvVars();
     }
+    trace("activate", {
+        extVersion,
+        dev: isDev,
+        remoteName: vscode.env.remoteName ?? "local",
+        // The daemon's own log records which branch it took ("Reusing existing proxy" /
+        // "Newer proxy ... requesting handover"). That decision is made inside the launcher
+        // process, not here, so point at the log rather than guessing. Same default the proxy
+        // computes from `std::env::temp_dir()`, and it inherits this process's environment.
+        daemonLogDir: path.join(os.tmpdir(), "mcu-debug", "proxy-logs"),
+        instance: process.env["MDBG_PROXY_INSTANCE"] ?? "default",
+    });
     const platform = process.platform;
     const exeName = "mdbg" + (platform === "win32" ? ".exe" : "");
     const devPath = context.asAbsolutePath(`bin/${exeName}`);
@@ -282,6 +393,9 @@ export function activate(context: vscode.ExtensionContext) {
             if (policy) {
                 return startProxyServerWrapper(policy);
             }
+            // Returning undefined reads to the caller as "the command is not there", which is a
+            // very different problem from the one it has. Leave a record of which it was.
+            traceWarn("startProxy.no-policy", { note: "command invoked without a ProxyLaunchPolicy" });
         }),
         // Establishes an SSH reverse tunnel so the DA (running on the remote SSH host in
         // auto-ssh-remote mode) can connect back to the Proxy Agent on this machine.

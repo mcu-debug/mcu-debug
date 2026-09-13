@@ -88,7 +88,7 @@ Cross-platform locking: use an advisory-lock crate (`fd-lock` / `fs2`) — `floc
 ## 4. Lifecycle: ref-counting + idle-timeout
 
 - **Refs** = reasons to stay alive. Tier 1: each accepted **session** is +1, dropped to −1 on session end. (Provisioning later adds "keep-alive" refs from the Broker/CLI, §7.2.)
-- **Idle-timeout**: when refs reach 0, start a timer (default 5 min, configurable); still 0 at expiry → exit, releasing the lock. Any new ref cancels the timer.
+- **Idle-timeout**: when refs reach 0, start a timer (default **5 hours**, configurable); still 0 at expiry → exit, releasing the lock. Any new ref cancels the timer. Long on purpose: a debug session that pauses for lunch must not lose its gdb-servers, and the cost of an idle daemon is a few MB.
 - **Decoupled from the VS Code window**: today `--heartbeat` (stdin pings from the launching extension) *is* the lifecycle — no heartbeat → die. New model: `--heartbeat` becomes just **one ref source** (a window keep-alive), not the killer. The proxy outlives the window if a CLI session still holds a ref. (Migration note, §8.)
 
 ---
@@ -149,7 +149,7 @@ If a new session asks for a probe the draining old proxy still holds, the new pr
   - `MDBG_PROXY_STATE_DIR` env overrides the `~/.mcu-debug/proxy` base (containers without a writable `$HOME`, tests).
   - `endpoint.json` is removed on graceful exit; on a hard kill it's left stale but the OS releases the lock, so the next launch **acquires** (not reuses) and overwrites it. Reuse only ever happens against a *held* lock (= a live proxy) — verified: a killed proxy's stale endpoint is never reused.
   - Version-based branching is deferred to Phase D; Phase A reuses any live same-instance proxy regardless of version.
-- **Phase B — Use-bounded lifetime. ✅ LANDED.** Ref-counting ([lifetime.rs](../packages/mdbg/src/proxy_helper/lifetime.rs): `Lifetime` + RAII `Ref`) + an idle-monitor thread that self-exits after `--idle-timeout` (default 300s; `0` = never, for a persistent lab/SSH daemon). `--heartbeat` demoted to a **window keep-alive ref** — losing it no longer kills the proxy, it just drops a ref, so a live session keeps the proxy up after the window closes. Verified end-to-end: idle-exit fires with no sessions; a held session prevents it and the proxy exits only after the session closes. Notes:
+- **Phase B — Use-bounded lifetime. ✅ LANDED.** Ref-counting ([lifetime.rs](../packages/mdbg/src/proxy_helper/lifetime.rs): `Lifetime` + RAII `Ref`) + an idle-monitor thread that self-exits after `--idle-timeout` (default 5 hours = 18000s; `0` = never, for a persistent lab/SSH daemon). `--heartbeat` demoted to a **window keep-alive ref** — losing it no longer kills the proxy, it just drops a ref, so a live session keeps the proxy up after the window closes. Verified end-to-end: idle-exit fires with no sessions; a held session prevents it and the proxy exits only after the session closes. Notes:
   - Each accepted session holds a ref for its thread's lifetime; the idle timer only arms when refs hit 0.
   - Small accepted race: a client connecting in the microsecond the idle monitor fires may get dropped (self-heals via relaunch). A race-free handover is Phase C/D territory (drain).
 - **Phase C — Admin surface. ✅ LANDED.** First-frame discriminator ([admin.rs](../packages/mdbg/src/proxy_helper/admin.rs) `discriminate`: first byte `0x00` = funnel session, `{` = admin line-JSON) on the same listener — no second port. `mdbg proxy --status` and `--shutdown` are client modes (query a running proxy, print JSON, exit; never start one). Admin requests carry the token. `--shutdown` = **graceful drain**: set `draining`, refuse new connections, mark `endpoint.json` `state:"draining"`, and exit when the last session ends (reuses `wait_until_idle(Duration::ZERO)`). Verified: status (running + not-running), drain with no sessions (immediate exit), and drain with an active session (stays alive, reports "1 active", exits after it ends — **does not kill live sessions**). Notes:
@@ -159,7 +159,48 @@ If a new session asks for a probe the draining old proxy still holds, the new pr
   - Probe-contention during drain (§6) and stale-file takeover (§7) are the remaining edges — a new session on the successor that needs a probe the draining old proxy still holds gets a transient OS "busy" error; not yet given a friendly message.
   - Shell `kill -0`/`wait` proved unreliable in the test harness; the proxy's own log timestamps are the source of truth for the lifecycle assertions.
 
-**Tier 1 is complete** (A–D). The singleton is discoverable, use-bounded, admin-controllable, and self-upgrading. Next up is Tier 2 (credentials §8, provisioning ladder §4–6) from [CLI-Proxy-Provisioning.md](./CLI-Proxy-Provisioning.md).
+- **Phase D.1 — Same-version handover by executable mtime. ✅ LANDED.** `is_newer` decides nothing
+  when the versions are equal, and equal is the common case in practice: a release happens once,
+  while a test build is carried to half a dozen machines and reinstalled over itself repeatedly,
+  each time leaving a daemon whose version matches and whose code is stale. Each proxy now stamps
+  its own executable's path and mtime at startup (`singleton::ExeStamp`, published in
+  `endpoint.json` and held in `AdminContext`), and a launch supersedes a running daemon when the
+  versions are equal **and** the path is identical **and** its own file is strictly newer. One pure
+  function, `singleton::decide_handover`, is run by both ends — the challenger to decide whether to
+  ask, the incumbent to decide whether to agree — so a challenger cannot argue its way past a rule
+  the incumbent applies for itself. Notes:
+  - **Stat at startup, never again.** Both ways of replacing the binary swap the inode rather than
+    writing into it (`copy_artifact` does `mv` deliberately; VS Code extracts an extension into a
+    fresh directory), so a later stat describes the *replacement*. On Linux it is worse: after a
+    swap the running daemon's `current_exe()` reads back as `…/mdbg (deleted)` and the stat fails.
+  - Milliseconds, not nanoseconds, so the value stays exactly representable as a JSON double for
+    any JavaScript reader of `endpoint.json`.
+  - **`MDBG_PROXY_AUTO_UPGRADE=0`** suppresses it. Default **on**: opt-in would have meant a
+    variable to remember on every machine you test on — the same failure mode as remembering to
+    kill the daemon, with the same silent symptom. And the outcomes are not symmetric: not
+    upgrading means debugging against code you did not build, while upgrading unnecessarily costs a
+    graceful drain in which live sessions finish where they are. The variable gates whether a launch
+    *asks*, never whether a daemon agrees — otherwise a daemon started by an ordinary window could
+    never be replaced, which is the hole this closes.
+  - `upgrade` is now **loopback-only**, like `widen`/`narrow`. Replacing a binary is inherently
+    local, so there is no remote upgrade to support, and accepting a same-version handover on
+    self-reported file evidence should not be reachable from off-box. `shutdown` is deliberately
+    left open: draining a lab daemon from elsewhere is a real use.
+  - Guards, each with a unit test and verified live: an older *version* never wins however new its
+    file (rebuilding an old checkout makes a new file with old code); differing paths are treated as
+    incomparable rather than ordered (a fresh install can easily hold an older file than a dev
+    build); an identical file reuses, so a second window does not churn the daemon; and a running
+    record with a path but no mtime reuses, since reading that as "old" would hand over on every
+    launch.
+  - **One-time limitation:** a daemon running code from *before* this landed refuses an
+    equal-version handover, because its own `begin_upgrade` predates the rule. The launch falls back
+    to reuse and logs the refusal, so the first relaunch after upgrading to this still needs
+    `mdbg proxy --shutdown --all`. Every one after that is automatic.
+  - `scripts/build-binaries.sh` no longer calls `stop_running_proxies` (`pkill -f 'mdbg proxy'`).
+    That hammer took out every instance, including one another window was mid-session on, and killed
+    rather than drained. The function is kept for a daemon too wedged to answer its admin channel.
+
+**Tier 1 is complete** (A–D, plus D.1). The singleton is discoverable, use-bounded, admin-controllable, and self-upgrading. Next up is Tier 2 (credentials §8, provisioning ladder §4–6) from [CLI-Proxy-Provisioning.md](./CLI-Proxy-Provisioning.md).
 
 ---
 
@@ -167,6 +208,6 @@ If a new session asks for a probe the draining old proxy still holds, the new pr
 
 1. **Control channel** (§2): same-port first-frame discriminator **(A, recommended)** vs. separate control port (B).
 2. **Downgrade** (§3): older-launched-vs-newer-running → use-existing silently, or warn + exit?
-3. **Idle-timeout default** — 5 min reasonable, or longer for a lab daemon?
+3. **Idle-timeout default** — ~~5 min reasonable, or longer for a lab daemon?~~ **Settled: 5 hours** (`5*60*60`). 5 minutes was far too short — it reaped the daemon out from under anyone who stepped away mid-session. `0` remains the persistent lab/SSH daemon.
 4. **Takeover aggressiveness** (§7) — how much evidence before removing another process's stale files?
 5. **Locking crate** — `fd-lock` vs `fs2` vs hand-rolled per-OS.

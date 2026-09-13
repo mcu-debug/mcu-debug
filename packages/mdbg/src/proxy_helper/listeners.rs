@@ -168,6 +168,16 @@ impl AcceptSet {
     }
 
     /// Stop accepting on `host`. The inverse of [`widen`](Self::widen).
+    ///
+    /// **Deliberately has no caller in the extensions, and should not gain one.** The only
+    /// address that is ever widened to is a WSL NAT gateway, and once a host has served a WSL
+    /// guest it can be assumed it will again — usually the daemon is started that way, and only
+    /// someone alternating Windows and WSL sessions in one sitting sees it acquired mid-life. So a
+    /// widened address stays for the daemon's life: withdrawing it buys nothing and costs a
+    /// per-address refcount (two WSL windows can share one gateway) plus a reconnect hazard.
+    ///
+    /// It stays implemented and tested because the admin surface is the place to *have* the
+    /// capability, not because anything drives it.
     pub fn narrow(&self, host: Ipv4Addr, port: u16) -> Result<bool, String> {
         if host.is_loopback() {
             return Err("refusing to stop accepting on loopback".to_string());
@@ -700,6 +710,7 @@ mod tests {
             version: "test".to_string(),
             instance: "default".to_string(),
             started_at_unix: 0,
+            exe: Default::default(),
         });
         AcceptCtx {
             conn_args,

@@ -65,6 +65,18 @@ export interface ProxyLaunchResults {
     serverPort: number;
     hosts: string[];
     bindErrors: string[] | null;
+    /**
+     * Version of the proxy daemon we are actually talking to -- NOT necessarily the version of
+     * the binary we just launched. `mdbg proxy` is a singleton: launching it may reuse a daemon
+     * an older extension started, and on that path it reports the *running* proxy's version.
+     *
+     * So this is the only way a caller can tell "my upgrade took effect" from "I am still
+     * driving the previous release's daemon". Undefined only if a proxy predating the field
+     * answered, or the launch failed.
+     */
+    version?: string;
+    /** PID of the daemon serving us. Same caveat as `version`: it may be a reused daemon. */
+    pid?: number;
     /** Set when ProxyLaunchPolicy.reverseTunnelSshHost was provided.
      *  The port on the remote SSH host's loopback that forwards back to serverPort here. */
     reverseTunnelPort?: number;

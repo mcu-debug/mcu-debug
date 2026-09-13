@@ -56,7 +56,7 @@ function createInitialTransports(cliArgs: CliArgs, consoleLogLevel: string): Cus
     customTransport.replaceStream('', archivePathFor(customTransport));
 
     // Write the .gitignore here rather than from the pruning pass below. Pruning is deferred and
-    // never runs for a short invocation -- a bad argument -- but those still
+    // never runs for a short invocation -- `--dump-config`, a bad argument -- but those still
     // create log files, and a directory of logs that only becomes ignored after someone happens
     // to run a long session is worse than two syscalls on startup.
     try {
