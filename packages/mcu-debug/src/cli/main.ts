@@ -56,7 +56,7 @@ function createInitialTransports(cliArgs: CliArgs, consoleLogLevel: string): Cus
     customTransport.replaceStream('', archivePathFor(customTransport));
 
     // Write the .gitignore here rather than from the pruning pass below. Pruning is deferred and
-    // never runs for a short invocation -- `--dump-config`, a bad argument -- but those still
+    // never runs for a short invocation -- a bad argument -- but those still
     // create log files, and a directory of logs that only becomes ignored after someone happens
     // to run a long session is worse than two syscalls on startup.
     try {
@@ -180,9 +180,27 @@ async function main() {
         process.exit(1);
     }
 
-    if (cliArgs.dumpConfig) {
-        console.log(JSON.stringify(config, null, 2));
-        process.exit(0);
+    let debugFlagEnabled = false;
+    if (config.debugFlags) {
+        for (const flag in config.debugFlags) {
+            if (!config.debugFlags.hasOwnProperty(flag)) {
+                continue;
+            }
+            const val = (config.debugFlags as any)[flag];
+            if (val === true) {
+                debugFlagEnabled = true;
+                logger.level = 'debug';
+                logger.debug(`Debug flag enabled: ${flag}`);
+            }
+        }
+    }
+
+    if (cliArgs.dumpConfig || debugFlagEnabled) {
+        logger.info("Dumping resolved configuration:", { source: 'DA' });
+        logger.info(JSON.stringify(config, null, 2), { source: 'DA' });
+        if (cliArgs.dumpConfig) {
+            process.exit(0);
+        }
     }
 
     const session = new CliSessionDriver(cliArgs, customTransport, adapter, config);

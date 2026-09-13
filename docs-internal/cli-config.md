@@ -10,15 +10,15 @@ Related: [cli-architecture.md](cli-architecture.md) (binary rename, no-DAP model
 
 `launch.json` was designed for VS Code. It supports variable interpolation that leans on the VS Code runtime:
 
-| Variable form | Source | CLI-resolvable? |
-|---|---|---|
-| `${workspaceFolder}` | Directory containing `launch.json` | **Yes** — trivial |
-| `${workspaceFolder}/path/to/elf` | Same | **Yes** |
-| `${env:VAR}` | Process environment or `envFile` | **Yes** |
-| `${userHome}` | Well-known OS path | **Yes** |
-| `${pathSeparator}` | Well-known | **Yes** |
-| `${config:mcu-debug.armToolchainPath}` | VS Code settings | **Narrow bridge only — see below** |
-| `${command:someExtension.someCommand}` | Extension runtime | **No** — never supported |
+| Variable form                          | Source                             | CLI-resolvable?                    |
+| -------------------------------------- | ---------------------------------- | ---------------------------------- |
+| `${workspaceFolder}`                   | Directory containing `launch.json` | **Yes** — trivial                  |
+| `${workspaceFolder}/path/to/elf`       | Same                               | **Yes**                            |
+| `${env:VAR}`                           | Process environment or `envFile`   | **Yes**                            |
+| `${userHome}`                          | Well-known OS path                 | **Yes**                            |
+| `${pathSeparator}`                     | Well-known                         | **Yes**                            |
+| `${config:mcu-debug.armToolchainPath}` | VS Code settings                   | **Narrow bridge only — see below** |
+| `${command:someExtension.someCommand}` | Extension runtime                  | **No** — never supported           |
 
 The `${config:...}` form was historically the gap — toolchain paths set in VS Code settings and referenced from `launch.json`. In practice this gap is largely closed by two things:
 
@@ -222,7 +222,6 @@ When the CLI loads a launch configuration:
 
 ```sh
 mcu-debug dump-config "My Config" launch.json
-mcu-debug dump-config "My Config" launch.json --diff   # show what changed
 ```
 
 Prints the fully-resolved config. Useful for diagnosing wrong paths, generating portable configs, and verifying that envFile and settings files contain the expected values.

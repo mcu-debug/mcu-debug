@@ -91,6 +91,9 @@ function serialLogInfo(message: string) {
 function serialLogError(message: string) {
     getHostAdapter().debugConsoleError(message);
 }
+function serialLogDebug(message: string) {
+    getHostAdapter().debugConsoleMessage(message);
+}
 
 /**
  * The `serial.open` response: what *this* client got for the port it just opened.
@@ -189,6 +192,9 @@ export class ProxyConnection {
     }
     public logError(message: string) {
         serialLogError(message);
+    }
+    public logDebug(message: string) {
+        serialLogDebug(message);
     }
 
     private destroySocket() {
@@ -353,7 +359,7 @@ export class ProxyConnection {
             // would bury the requests worth reading. A failing one still logs its timeout.
             const routine = cmd.method === "heartbeat";
             if (!routine) {
-                this.logInfo(`Sending request: seq ${cmd.seq} '${cmd.method}'`);
+                this.logDebug(`Sending request: seq ${cmd.seq} '${cmd.method}'`);
             }
             // Every exit goes through here, so the map entry and the timer are released exactly
             // once regardless of who wins the race -- response, timeout, or dispose().
@@ -370,7 +376,7 @@ export class ProxyConnection {
                 this.pendingPromises.delete(cmd.seq);
                 if (!routine) {
                     const outcome = ok ? "ok" : `error: ${arg?.message ?? arg}`;
-                    this.logInfo(`Settled request: seq ${cmd.seq} '${cmd.method}' ${outcome} after ${Date.now() - sentAt}ms`);
+                    this.logDebug(`Settled request: seq ${cmd.seq} '${cmd.method}' ${outcome} after ${Date.now() - sentAt}ms`);
                 }
                 done(arg);
             };
