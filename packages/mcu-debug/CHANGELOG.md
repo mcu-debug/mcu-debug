@@ -5,7 +5,7 @@
 
 ## [Unreleased]
 
-## [v0.1.16] - 
+## [v0.1.16] - 2026-09-13
 
 ### Seeing what the Probe Agent is doing
 

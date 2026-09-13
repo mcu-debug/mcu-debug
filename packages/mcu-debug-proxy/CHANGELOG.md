@@ -11,13 +11,12 @@ extension's
 
 ## [Unreleased]
 
-## [v0.1.16] - 
+## [v0.1.16] - 2026-09-13
 
 - This extension ships the Probe Agent binary, and reinstalling a build over itself used to leave
   the previously running agent in place — the new install then talked to the old code. The agent
   now notices that its executable has been replaced and hands over gracefully, finishing any live
-  debug sessions on the way out. See the main extension's
-  [changelog](https://github.com/mcu-debug/mcu-debug/blob/main/packages/mcu-debug/CHANGELOG.md)
+  debug sessions on the way out.
 - Added a **MCU-Debug Proxy** output channel recording what happens on each launch: which agent
   answered, its version and port, the addresses it accepts on, and whether that is the agent this
   build shipped. Worth opening first when remote debugging does not behave
