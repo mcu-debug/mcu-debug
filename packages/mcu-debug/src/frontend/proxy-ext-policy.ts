@@ -29,7 +29,7 @@ export const PROXY_NAME = "MCU-Debug Proxy Server";
  * Does this debug configuration need the UI-side proxy extension?
  *
  * `hostConfig` may be `true` (shorthand for the defaults) or an object, and its `enabled`
- * property defaults to **true** in the manifest schema — so the ordinary `{"type": "auto"}`
+ * property defaults to **true** in the manifest schema — so the ordinary `{"enabled": true, "type": "auto"}`
  * form has no `enabled` at all and must still count as enabled. Requiring `enabled === true`
  * was the bug that made this whole check silently do nothing.
  *

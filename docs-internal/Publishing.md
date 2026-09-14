@@ -69,9 +69,18 @@ actually consume these.
 
 `prepare-release.js` publishes `mcu-debug-proxy` before `mcu-debug`. Two reasons:
 
-1. **Dependency resolution.** The main extension lists the proxy in `extensionDependencies`.
-   A dependency that does not yet exist in the Marketplace makes the main extension
-   uninstallable.
+1. **Version pinning at install time.** The proxy is *no longer* in `extensionDependencies` — that
+   was removed in v0.1.15, because VS Code resolves dependencies on the workspace side and the
+   proxy is a UI-side extension, so the requirement could never be satisfied in a remote window and
+   MCU-Debug refused to activate there at all. The ordering still matters, for a runtime reason:
+   MCU-Debug detects the proxy by ping, warns when the two versions differ, and offers an install
+   pinned to its own version (`mcu-debug.mcu-debug-proxy@<version>`). Publish the main extension
+   first and everyone who updates is told their pair is mismatched, against a proxy version that is
+   not in the Marketplace yet.
+
+   `extensionDependencies` itself still exists and still lists the four workspace-side companions
+   (`debug-tracker-vscode`, `memory-view`, `rtos-views`, `peripheral-viewer`), so the
+   "dependency must already exist in the Marketplace" rule below continues to apply to those.
 2. **Blast radius.** A *first* publish of a new extension ID is where Marketplace verification
    is most likely to flag something. Publishing the proxy first makes it the canary — if
    verification objects, it objects to the proxy while the main listing is untouched.

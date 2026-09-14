@@ -8,7 +8,7 @@
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Engineer Machine**   | The physical machine the engineer sits at. Runs VS Code UI. Has source code.                                                                                                                                                         |
 | **Probe Host**         | The machine the USB debug probe and target hardware are physically attached to. Runs the Probe Agent and gdb-server. May be the same as Engineer Machine (local case) or a completely different machine across a network (LAB case). |
-| **Probe Agent**        | `mdbg proxy` — the Rust binary that manages gdb-server lifecycle and implements the Funnel Protocol. Always runs on the **Probe Host**.                                                                                  |
+| **Probe Agent**        | `mdbg proxy` — the Rust binary that manages gdb-server lifecycle and implements the Funnel Protocol. Always runs on the **Probe Host**.                                                                                              |
 | **Debug Adapter (DA)** | The TypeScript core of `mcu-debug`. Communicates with GDB and with the Probe Agent. Runs on the Engineer Machine (or VS Code's workspace extension host, which may be WSL/container on the Engineer Machine).                        |
 
 ---
@@ -221,6 +221,7 @@ Only two user-facing types. Everything else is an implementation detail.
 ```jsonc
 {
     "hostConfig": {
+        "enabled": true,
         // "auto"  — extension detects VS Code remote environment automatically (default)
         // "ssh"   — explicit SSH to a separate probe host (lab machines)
         "type": "auto",
@@ -323,6 +324,7 @@ Corresponding `launch.json`:
 
 ```jsonc
 "hostConfig": {
+    "enabled": true,
     "type": "auto",
     "wslProxyPort": 54320   // fixed port within the range you opened
 }

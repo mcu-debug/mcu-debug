@@ -24,14 +24,18 @@ machine over SSH.
 | Workspace in a dev container, probe on the host       | Yes            | The host       |
 | Workspace on your laptop, probe on a lab server       | Yes            | The lab server |
 
-**You will have it installed either way, and that is fine.** MCU-Debug lists this extension as a
-dependency, so VS Code installs it alongside MCU-Debug automatically. If you only ever debug with
-the probe attached to the same machine you edit on, it simply sits there doing nothing — it has no
-UI, and it costs you nothing at runtime.
+**You most likely arrived here because MCU-Debug offered to install it.** MCU-Debug looks for this
+extension at runtime, and only for a configuration that actually needs it — one reaching a probe on
+a different machine than your workspace. When it is needed and missing, you are told why and
+offered the install. Purely local debugging never asks, and having it installed anyway costs you
+nothing: no UI, nothing running.
 
-> ⚠️ **Do not uninstall it** because you decided you do not need it. VS Code will not load
-> MCU-Debug while a declared dependency is missing, so removing this extension disables your
-> debugger until you reinstall it.
+> ⚠️ **Uninstalling it no longer breaks MCU-Debug, but keeping it is still the easier path.**
+> Up to v0.1.14 this extension was a declared dependency and VS Code refused to load MCU-Debug
+> without it. That is gone — it could never be satisfied in a remote workspace, which broke
+> MCU-Debug there entirely. Today a missing proxy only costs you a prompt at the moment you next
+> need remote debugging. The reason to leave it installed is that the two are versioned in
+> lockstep and are expected to match: kept in place, it updates alongside MCU-Debug on its own.
 
 ## How it works
 

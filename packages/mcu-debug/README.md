@@ -173,7 +173,7 @@ THe above is equivalent to the following
 
 ```json
 "hostConfig": {
-  "enabled" true,
+  "enabled": true,
   "type": "auto" // Automatically resolves WSL or Dev Container namespaces
 }
 ```
