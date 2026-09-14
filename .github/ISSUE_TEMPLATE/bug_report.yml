@@ -1,46 +1,89 @@
-name: bug report
+name: Bug Report
 description: Report a bug in MCU-Debug
-title: "[bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        ### Before submitting
-        - If your issue is for **Peripherals / SVD Viewer**, file it at https://github.com/mcu-debug/peripheral-viewer/issues/new/choose
-        - If your issue is for **Memory Viewer**, file it at https://github.com/mcu-debug/memview/issues/new/choose
-        - If your issue is for **RTOS Viewer**, file it at https://github.com/mcu-debug/rtos-views/issues/new/choose
-        - For MCU-Debug issues, include Debug Console logs with **`"debugFlags": { "gdbTraces": true }`** enabled
+        ### Before submitting, please check the following:
+        - If your issue is for **Peripherals / SVD Viewer**, file it at https://github.com
+        - If your issue is for **Memory Viewer**, file it at https://github.com
+        - If your issue is for **RTOS Viewer**, file it at https://github.com
+        - Ensure you have checked the topic-specific troubleshooting guides at https://github.io
 
   - type: textarea
-    id: what-happened
+    id: description
     attributes:
       label: What happened?
-      description: Describe the bug and what you expected to happen.
+      description: Provide a clear and concise description of what the bug is and what you expected to happen.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment_type
+    attributes:
+      label: Environment Topology
+      description: Where is your source code/editor running relative to your hardware probe?
+      options:
+        - "Local (Editor and probe on the same machine/OS, no containers)"
+        - "WSL - Probe on Windows Host, Editor in WSL"
+        - "WSL - Probe passed into WSL via usbipd (Proxy not used)"
+        - "Docker / Dev Container - Probe on Host, Editor in Container"
+        - "SSH / Lab Server"
+        - "CLI / Headless Mode"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: wsl_networking
+    attributes:
+      label: WSL Networking Mode (If applicable)
+      description: If using WSL, what networking mode are you using? Run `wslinfo --networking-mode` in WSL to check.
+      options:
+        - "Not using WSL"
+        - "Mirrored (Windows 11)"
+        - "NAT (Default / Older Windows)"
+        - "Unsure"
+    validations:
+      required: false
+
+  - type: input
+    id: gdb_server
+    attributes:
+      label: GDB Server Type
+      description: e.g., OpenOCD, J-Link, probe-rs, pyOCD, ST-Link, BMP, etc.
+      placeholder: OpenOCD
     validations:
       required: true
 
   - type: textarea
-    id: steps-to-reproduce
+    id: steps
     attributes:
       label: Steps to reproduce
+      description: Steps to consistently reproduce the behavior.
+      placeholder: |
+        1. Open workspace in WSL
+        2. Set hostConfig to true
+        3. Press F5 to start debugging
     validations:
       required: true
 
   - type: textarea
-    id: debug-console-logs
+    id: launch_json
+    attributes:
+      label: launch.json Configuration
+      description: Paste the relevant block from your `launch.json`. Please strip out any sensitive SSH passwords or explicit tokens.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug_logs
     attributes:
       label: Debug Console Logs
-      description: 'Paste logs from the VS Code Debug Console. Enable **`"debugFlags": { "gdbTraces": true }`** first; reports without logs are usually not actionable.'
-      render: shell
-    validations:
-      required: true
-
-  - type: textarea
-    id: launch-json
-    attributes:
-      label: launch.json
-      description: Paste relevant launch.json content (remove sensitive values).
-      render: json
+      description: |
+        Paste your logs from the VS Code Debug Console. 
+        **Crucial:** You must enable `"debugFlags": { "gdbTraces": true }` in your configuration first. Reports missing raw traces are rarely actionable.
+      render: text
     validations:
       required: true

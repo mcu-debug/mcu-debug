@@ -13,7 +13,19 @@ The CLI is the foundation for AI-assisted debugging and for headless workflows l
 
 ## Three Modes
 
-The CLI automatically selects a mode based on the environment:
+```
+                          ┌───────────────────────────────┐
+                          │      MCU-Debug Core Engine    │
+                          │   (DAP-Based, Rust-Powered)   │
+                          └───────────────┬───────────────┘
+                                          │
+                 ┌────────────────────────┼────────────────────────┐
+                 ▼                        ▼                        ▼
+          [ IDE Surface ]          [ TUI Surface ]        [ Terminal Surface ]
+        VS Code Native Panel     ratatui Interactive       Raw stdout Streams
+        (via webview xterm.js)    Terminal Dashboard      (for CI/CD & AI Agents)
+```
+DAP is **Debug Adapter Protocol**. TUI is **Terminal User Interface**. The CLI automatically selects a mode based on the environment:
 
 | Mode          | Condition / stdout                           | How                                                    |
 | ------------- | -------------------------------------------- | ------------------------------------------------------ |
