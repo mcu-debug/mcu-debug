@@ -31,7 +31,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -108,6 +108,12 @@ pub fn list_instances() -> Result<Vec<Instance>> {
     Ok(out)
 }
 
+/// `Endpoint::state` for a proxy serving its instance.
+pub const STATE_ACTIVE: &str = "active";
+/// `Endpoint::state` for a proxy that is handing its instance over or shutting down. Written
+/// by `admin.rs` and read back by `acquire_or_reuse`, so the spelling lives in one place.
+pub const STATE_DRAINING: &str = "draining";
+
 /// The discovery anchor written by the proxy that owns the lock.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Endpoint {
@@ -145,7 +151,7 @@ pub struct Endpoint {
     /// Connection token (Tier-1 shared token; replaced by minted tokens later).
     #[serde(default)]
     pub token: String,
-    /// `"active"` or `"draining"` (draining arrives in Phase D).
+    /// [`STATE_ACTIVE`] or [`STATE_DRAINING`].
     pub state: String,
     /// Unix seconds when the proxy started (for `--status` uptime later).
     pub started_at_unix: u64,
@@ -416,19 +422,71 @@ pub fn read_endpoint(path: &std::path::Path) -> Result<Endpoint> {
     serde_json::from_slice(&bytes).with_context(|| format!("could not parse {}", path.display()))
 }
 
-/// Read `endpoint.json`, retrying briefly.
+/// What a launch found holding the instance lock.
+#[derive(Debug)]
+pub enum Holder {
+    /// A proxy serving the instance, with its published record: reuse it or ask it to hand over.
+    Active(Endpoint),
+    /// A proxy on its way out — draining, superseded, or already gone — and the lock is now
+    /// free. Its record must never be handed out. `pid` is the departing proxy's, when it
+    /// published a record before leaving.
+    Leaving { pid: Option<u32> },
+}
+
+/// Another proxy holds the instance lock; wait until it is clear which kind of holder it is.
 ///
-/// Covers the startup race where the owner holds the lock but has not written
-/// `endpoint.json` yet (it deletes any stale file on acquire, then writes a
-/// fresh one after binding — see [`write_endpoint_atomic`]).
-pub fn read_endpoint_retry(path: &std::path::Path) -> Result<Endpoint> {
-    for _ in 0..40 {
-        if let Ok(ep) = read_endpoint(path) {
-            return Ok(ep);
+/// "Read `endpoint.json`" is the wrong question on its own, because a held lock does not mean a
+/// usable record exists. There are two windows where the two disagree:
+///
+/// - **Starting:** a new proxy takes the lock *before* it publishes its record (it removes any
+///   stale file on acquire and writes a fresh one after binding). Wait for the record.
+/// - **Leaving:** a draining proxy marks its record [`STATE_DRAINING`], stops accepting, and only
+///   then releases the lock — and on shutdown it removes the record first. Reusing that record
+///   hands out a proxy that refuses the connection; waiting for the record means waiting for a
+///   file nobody will write. Wait for the lock instead.
+///
+/// So watch both: return [`Holder::Active`] the moment a non-draining record appears, or
+/// [`Holder::Leaving`] the moment the lock frees. The lock is only ever *probed* here — no guard
+/// escapes — so the caller still takes it once, for real.
+pub fn await_holder(
+    lock: &mut fd_lock::RwLock<std::fs::File>,
+    endpoint_path: &std::path::Path,
+    patience: Duration,
+) -> Result<Holder> {
+    let deadline = Instant::now() + patience;
+    let mut last_seen: Option<Endpoint> = None;
+    loop {
+        match read_endpoint(endpoint_path) {
+            Ok(ep) if ep.state != STATE_DRAINING => return Ok(Holder::Active(ep)),
+            Ok(ep) => last_seen = Some(ep),
+            Err(_) => {} // not published yet, or already removed on the way out
+        }
+        // Probe only: the guard is a temporary dropped at the end of the condition.
+        if lock.try_write().is_ok() {
+            return Ok(Holder::Leaving {
+                pid: last_seen.map(|ep| ep.pid),
+            });
+        }
+        if Instant::now() >= deadline {
+            match last_seen {
+                // The draining proxy is still serving a session and holding the lock — the
+                // pre-fix behaviour, which an older binary still running would show.
+                Some(ep) => bail!(
+                    "the instance is held by proxy pid {}, which is draining but has not released it after {}s — \
+                     it is still serving a session. Close that client, or kill {}",
+                    ep.pid,
+                    patience.as_secs(),
+                    ep.pid
+                ),
+                None => bail!(
+                    "the instance lock is held but no proxy published {} within {}s",
+                    endpoint_path.display(),
+                    patience.as_secs()
+                ),
+            }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    read_endpoint(path) // final attempt surfaces the real error
 }
 
 /// Write `endpoint.json` atomically (temp file + rename) so a concurrent reader
@@ -891,5 +949,180 @@ mod exe_status_tests {
             serde_json::from_str(json).expect("a pre-exe status reply must parse");
         assert_eq!(info.exe, ExeStatus::default());
         assert!(!info.exe.replaced_since_start);
+    }
+}
+
+/// Pins `await_holder` against the two windows in which a held lock and a usable record
+/// disagree. Each test holds the instance lock from a second thread through its own open
+/// file description. `fd-lock` uses `flock` on Unix, which contends across descriptions even
+/// within one process — and every test asserts that before trusting its result, so a
+/// platform where it did not would fail loudly rather than pass vacuously.
+#[cfg(test)]
+mod holder_tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::thread;
+
+    fn open_lock(path: &Path) -> fd_lock::RwLock<std::fs::File> {
+        fd_lock::RwLock::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(path)
+                .expect("open lock file"),
+        )
+    }
+
+    fn record(pid: u32, state: &str) -> Endpoint {
+        Endpoint {
+            v: 3,
+            instance: "test".into(),
+            pid,
+            version: "0.1.16".into(),
+            port: 5000,
+            bind_host: "127.0.0.1".into(),
+            hosts: vec!["127.0.0.1".into()],
+            token: "t".into(),
+            state: state.into(),
+            started_at_unix: 1,
+            exe: ExeStamp::default(),
+        }
+    }
+
+    struct Dirs {
+        _tmp: tempfile::TempDir,
+        lock: PathBuf,
+        endpoint: PathBuf,
+    }
+
+    fn dirs() -> Dirs {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        Dirs {
+            lock: tmp.path().join("proxy.lock"),
+            endpoint: tmp.path().join("endpoint.json"),
+            _tmp: tmp,
+        }
+    }
+
+    /// Hold the instance lock on another thread for exactly as long as `script` runs.
+    fn while_holding(lock_path: &Path, script: impl FnOnce() + Send + 'static) -> thread::JoinHandle<()> {
+        let lock_path = lock_path.to_path_buf();
+        let (held_tx, held_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut lock = open_lock(&lock_path);
+            let _guard = lock.write().expect("holder takes the lock");
+            held_tx.send(()).expect("signal held");
+            script();
+        });
+        held_rx.recv().expect("holder took the lock");
+        handle
+    }
+
+    /// Our own view of the lock, after proving it really is blocked by the holder.
+    fn contender(lock_path: &Path) -> fd_lock::RwLock<std::fs::File> {
+        let mut mine = open_lock(lock_path);
+        assert!(
+            mine.try_write().is_err(),
+            "the holder's lock must block a second description in this process, or these tests prove nothing"
+        );
+        mine
+    }
+
+    #[test]
+    fn an_active_record_is_used_while_the_lock_is_held() {
+        let d = dirs();
+        write_endpoint_atomic(&d.endpoint, &record(111, STATE_ACTIVE)).unwrap();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = while_holding(&d.lock, move || {
+            let _ = release_rx.recv();
+        });
+        let mut mine = contender(&d.lock);
+        match await_holder(&mut mine, &d.endpoint, Duration::from_secs(5)).unwrap() {
+            Holder::Active(ep) => assert_eq!(ep.pid, 111),
+            other => panic!("expected the live owner, got {other:?}"),
+        }
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+    }
+
+    /// A record marked draining is never handed out, however long it stays on disk; the launch
+    /// waits for the lock instead, and learns which proxy it was waiting on.
+    #[test]
+    fn a_draining_record_is_waited_out_until_the_lock_frees() {
+        let d = dirs();
+        write_endpoint_atomic(&d.endpoint, &record(222, STATE_DRAINING)).unwrap();
+        let holder = while_holding(&d.lock, || thread::sleep(Duration::from_millis(400)));
+        let mut mine = contender(&d.lock);
+        let started = Instant::now();
+        match await_holder(&mut mine, &d.endpoint, Duration::from_secs(5)).unwrap() {
+            Holder::Leaving { pid } => assert_eq!(pid, Some(222), "the departing proxy is named"),
+            other => panic!("a draining record must not be handed out, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() >= Duration::from_millis(300),
+            "returned before the lock was released"
+        );
+        holder.join().unwrap();
+    }
+
+    /// The shutdown gap: the record is already removed while the lock is still held. The old
+    /// retry read spent its budget on a file nobody would ever write, then failed the launch.
+    #[test]
+    fn a_removed_record_with_the_lock_still_held_waits_for_the_lock() {
+        let d = dirs(); // no endpoint.json at all
+        let holder = while_holding(&d.lock, || thread::sleep(Duration::from_millis(400)));
+        let mut mine = contender(&d.lock);
+        let started = Instant::now();
+        match await_holder(&mut mine, &d.endpoint, Duration::from_secs(5)).unwrap() {
+            Holder::Leaving { pid } => assert_eq!(pid, None),
+            other => panic!("expected to take over once the lock freed, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() >= Duration::from_millis(300),
+            "returned before the lock was released"
+        );
+        holder.join().unwrap();
+    }
+
+    /// The startup gap, which the old retry read existed for: the lock is taken before the record
+    /// is published. Wait for the record rather than treating the owner as gone.
+    #[test]
+    fn a_starting_proxy_is_waited_for_until_it_publishes() {
+        let d = dirs();
+        let endpoint = d.endpoint.clone();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = while_holding(&d.lock, move || {
+            thread::sleep(Duration::from_millis(300));
+            write_endpoint_atomic(&endpoint, &record(333, STATE_ACTIVE)).unwrap();
+            let _ = release_rx.recv();
+        });
+        let mut mine = contender(&d.lock);
+        match await_holder(&mut mine, &d.endpoint, Duration::from_secs(5)).unwrap() {
+            Holder::Active(ep) => assert_eq!(ep.pid, 333),
+            other => panic!("expected the proxy once it published, got {other:?}"),
+        }
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+    }
+
+    /// A draining proxy that never lets go — which an older binary still running would do —
+    /// fails with its pid named, rather than hanging or being handed out.
+    #[test]
+    fn a_draining_holder_that_never_leaves_times_out_naming_its_pid() {
+        let d = dirs();
+        write_endpoint_atomic(&d.endpoint, &record(444, STATE_DRAINING)).unwrap();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = while_holding(&d.lock, move || {
+            let _ = release_rx.recv();
+        });
+        let mut mine = contender(&d.lock);
+        let err = await_holder(&mut mine, &d.endpoint, Duration::from_millis(300)).expect_err("must time out");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("444"), "the message names the pid to act on: {msg}");
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
     }
 }

@@ -353,20 +353,25 @@ fn accept_loop(listener: TcpListener, ctx: Arc<AcceptCtx>, stop: Arc<AtomicBool>
         }
         match stream {
             Ok(stream) => {
-                // Draining (admin shutdown): refuse new connections; existing
-                // sessions run to completion, then the proxy exits.
-                if ctx.draining.load(Ordering::SeqCst) {
-                    log::info!("Draining — refusing new connection on {addr}");
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    continue;
-                }
                 let conn_args = ctx.conn_args.clone();
                 let registry = Arc::clone(&ctx.serial_registry);
                 let hub = Arc::clone(&ctx.serial_available_hub);
                 let lifetime = Arc::clone(&ctx.lifetime);
                 let admin_ctx = Arc::clone(&ctx.admin_ctx);
+                let draining = Arc::clone(&ctx.draining);
+                let conn_addr = addr.clone();
                 let handle = thread::spawn(move || match admin::discriminate(&stream) {
                     admin::Kind::Session => {
+                        // Draining refuses new *sessions* only, which means deciding after
+                        // discrimination rather than before it. Refusing every connection up
+                        // front also turned away admin requests, so a draining proxy could
+                        // not answer `--status` (it reported zero instances while one was
+                        // plainly running) and could not be asked to upgrade.
+                        if draining.load(Ordering::SeqCst) {
+                            log::info!("Draining — refusing new session on {conn_addr}");
+                            let _ = stream.shutdown(std::net::Shutdown::Both);
+                            return;
+                        }
                         // Session ref held for the session's lifetime; its drop
                         // (session end) may arm the idle timer.
                         let _session_ref = lifetime.acquire();
@@ -670,6 +675,61 @@ mod tests {
         joiner.join().expect("joiner thread");
         trigger.join().expect("trigger thread");
         assert!(set.addrs().is_empty(), "the set is empty after join_all");
+    }
+
+    /// A draining proxy refuses new sessions but must still answer admin requests.
+    ///
+    /// It used to refuse every connection before discriminating, which made `--status`
+    /// report zero instances for a proxy that was plainly running and left no way to ask
+    /// it to upgrade.
+    #[test]
+    fn draining_refuses_sessions_but_still_answers_admin() {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let ctx = Arc::new(test_ctx());
+        ctx.draining.store(true, Ordering::SeqCst);
+        let set = AcceptSet::new();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        let addr = set.add(listener, Arc::clone(&ctx)).expect("add");
+
+        // Admin: a status request gets a real reply.
+        let mut admin = TcpStream::connect(addr).expect("connect admin");
+        admin.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        admin
+            .write_all(b"{\"v\":1,\"cmd\":\"status\",\"token\":\"test-token-0123456789\"}\n")
+            .expect("send admin request");
+        let mut line = String::new();
+        BufReader::new(&admin).read_line(&mut line).expect("admin reply");
+        assert!(
+            line.contains("\"ok\":true"),
+            "a draining proxy must still answer status, got {line:?}"
+        );
+
+        // Session: first byte 0x00, refused promptly. The deadline is well inside
+        // `discriminate`'s 5s peek timeout, so a close here is the drain refusal and not an
+        // unrecognised connection timing out. The server closes with our peeked byte still
+        // unread, which can turn its FIN into a RST — either one is a refusal.
+        let mut session = TcpStream::connect(addr).expect("connect session");
+        session.write_all(&[0x00]).expect("send session byte");
+        session.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut buf = [0u8; 16];
+        match session.read(&mut buf) {
+            Ok(0) => {}
+            Ok(n) => panic!("a new session must be refused while draining, but it got {n} bytes"),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) => {}
+            Err(e) => panic!("expected the refusal to close the session promptly, got {e}"),
+        }
+
+        ctx.stop_flag.store(true, Ordering::SeqCst);
+        set.wake_all();
+        set.join_all();
+        for handle in ctx.take_client_threads() {
+            handle.join().ok();
+        }
     }
 
     /// Minimal `AcceptCtx` — these tests exercise the accept plumbing, never a real

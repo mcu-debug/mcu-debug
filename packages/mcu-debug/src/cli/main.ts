@@ -6,6 +6,7 @@ import { CLIConfigLoader } from './cli-config-loader';
 import { CliAdapter } from './cli-adapter';
 import { setHostAdapter } from '../common/host-adapter';
 import { CliSessionDriver } from './cli-driver';
+import { setDevelopmentModeEnvVars } from '../../../shared/lib/src/proxy-starter';
 
 /**
  * How much of `.mcu-debug/archive/` to keep. Two caps because either one alone fails: a count
@@ -156,7 +157,19 @@ export function validateCliArgs(args: CliArgs): boolean {
     return true;
 }
 
+function isDevVersion(): boolean {
+    const dir = __dirname;
+    if (fs.existsSync(path.join(dir, '..', '..', '..', 'packages', 'mcu-debug'))) {
+        return true;
+    }
+    return false;
+}
+
 async function main() {
+    if (isDevVersion()) {
+        logger.debug("Running in development version");
+        setDevelopmentModeEnvVars();
+    }
     const { cliArgs } = await import("./cli-options");
     const customTransport = createInitialTransports(cliArgs, cliArgs.debug ? 'debug' : 'info');
 

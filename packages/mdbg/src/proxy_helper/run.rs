@@ -622,75 +622,94 @@ fn acquire_or_reuse<'a>(
     // this statement), so the decision below doesn't pin the `proxy_lock` borrow
     // across the acquire-loop (NLL problem case #3).
     let held_by_other = proxy_lock.try_write().is_err();
+    // The proxy we are waiting on to leave, if any. Its own record is never handed out below,
+    // whatever state it claims.
+    let mut departing: Option<u32> = None;
 
     if held_by_other {
-        let ep = singleton::read_endpoint_retry(&instance.endpoint_path)?;
-        // The running proxy's token, so a reusing client can authenticate to it.
-        let token = Some(ep.token.as_str());
-
-        let decision =
-            singleton::decide_handover(mine, my_exe, &ep.version, &ep.exe, singleton::auto_upgrade_enabled());
-
-        if decision == singleton::Handover::Reuse {
-            if singleton::is_newer(&ep.version, mine) {
-                log::warn!(
-                    "A newer proxy v{} is already running for '{}'; using it",
-                    ep.version,
-                    instance.name
+        // Not a plain read of endpoint.json: a held lock can mean a proxy that has not published
+        // yet, or one that is draining and about to let go. See `await_holder`.
+        match singleton::await_holder(proxy_lock, &instance.endpoint_path, HOLDER_PATIENCE)? {
+            singleton::Holder::Leaving { pid } => {
+                log::info!(
+                    "The proxy holding '{}'{} is shutting down — taking over the instance",
+                    instance.name,
+                    pid.map(|p| format!(" (pid {p})")).unwrap_or_default()
                 );
+                departing = pid;
             }
-            log::info!(
-                "Reusing existing proxy for '{}' (pid {}, port {})",
-                instance.name,
-                ep.pid,
-                ep.port
-            );
-            // Reuse is also the widen path. Starting the proxy is a single idiom —
-            // "run it and read the discovery line" — so asking for an address the
-            // running daemon does not yet serve must work the same way, rather than
-            // needing a separate command the caller has to know to issue.
-            let (hosts, bind_errors) = widen_running_proxy(&ep, args);
-            // `ep.version`, not ours: the caller is being handed the *running* proxy's
-            // endpoint, and that is the version its `initialize` will insist on.
-            singleton::print_discovery(ep.port, ep.pid, &ep.version, token, &hosts, bind_errors);
-            return Ok(None);
-        }
+            singleton::Holder::Active(ep) => {
+                let decision =
+                    singleton::decide_handover(mine, my_exe, &ep.version, &ep.exe, singleton::auto_upgrade_enabled());
 
-        // We supersede it → ask it to step down, then take over its identity (Phase D
-        // drain-and-replace). Fall through to the acquire loop.
-        match decision {
-            singleton::Handover::UpgradeByVersion => log::info!(
-                "Newer proxy v{mine} > running v{} for '{}' — requesting handover",
-                ep.version,
-                instance.name
-            ),
-            // The case `is_newer` cannot see, and the one that dominates in practice:
-            // the same version reinstalled or rebuilt over itself, leaving a daemon
-            // executing code that is no longer on disk.
-            singleton::Handover::UpgradeByExe => log::info!(
-                "Same version v{mine} for '{}' but our executable is newer ({:?} > {:?}) at {} — requesting handover",
-                instance.name,
-                my_exe.mtime_ms,
-                ep.exe.mtime_ms,
-                my_exe.path
-            ),
-            singleton::Handover::Reuse => unreachable!("handled above"),
-        }
-        if let Err(e) = admin::request_upgrade(&ep, mine, my_exe) {
-            log::warn!("Handover request failed: {e:#}; reusing the existing proxy");
-            let (hosts, bind_errors) = widen_running_proxy(&ep, args);
-            // `ep.version`, not ours: the caller is being handed the *running* proxy's
-            // endpoint, and that is the version its `initialize` will insist on.
-            singleton::print_discovery(ep.port, ep.pid, &ep.version, token, &hosts, bind_errors);
-            return Ok(None);
+                if decision == singleton::Handover::Reuse {
+                    if singleton::is_newer(&ep.version, mine) {
+                        log::warn!(
+                            "A newer proxy v{} is already running for '{}'; using it",
+                            ep.version,
+                            instance.name
+                        );
+                    }
+                    log::info!(
+                        "Reusing existing proxy for '{}' (pid {}, port {})",
+                        instance.name,
+                        ep.pid,
+                        ep.port
+                    );
+                    reuse_existing(&ep, args);
+                    return Ok(None);
+                }
+
+                // We supersede it → ask it to step down, then take over its identity (Phase D
+                // drain-and-replace). Fall through to the acquire loop.
+                match decision {
+                    singleton::Handover::UpgradeByVersion => log::info!(
+                        "Newer proxy v{mine} > running v{} for '{}' — requesting handover",
+                        ep.version,
+                        instance.name
+                    ),
+                    // The case `is_newer` cannot see, and the one that dominates in practice:
+                    // the same version reinstalled or rebuilt over itself, leaving a daemon
+                    // executing code that is no longer on disk.
+                    singleton::Handover::UpgradeByExe => log::info!(
+                        "Same version v{mine} for '{}' but our executable is newer ({:?} > {:?}) at {} — requesting handover",
+                        instance.name,
+                        my_exe.mtime_ms,
+                        ep.exe.mtime_ms,
+                        my_exe.path
+                    ),
+                    singleton::Handover::Reuse => unreachable!("handled above"),
+                }
+                if let Err(e) = admin::request_upgrade(&ep, mine, my_exe) {
+                    log::warn!("Handover request failed: {e:#}; reusing the existing proxy");
+                    reuse_existing(&ep, args);
+                    return Ok(None);
+                }
+                departing = Some(ep.pid);
+            }
         }
     }
 
-    // Wait until the lock is free (probe-only — a guard returned from inside the
-    // loop would trip NLL problem case #3), covering both the momentary free-race
-    // after the probe and the upgrade handoff window. Then acquire once for real.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // Wait until the lock is free (probe-only — a guard returned from inside the loop would
+    // trip NLL problem case #3), covering the momentary free-race after the probe, the upgrade
+    // hand-off window, and a draining proxy's release. Then acquire once for real.
+    let deadline = std::time::Instant::now() + HOLDER_PATIENCE;
     while proxy_lock.try_write().is_err() {
+        // Still held — but perhaps by someone new. A concurrent launch can win the lock the
+        // departing proxy just released, and that owner will never let go. Rather than wait out
+        // the deadline and fail, use it as soon as it has published. Returning `None` carries no
+        // borrow of the lock, so this is safe inside the loop.
+        if let Ok(ep) = singleton::read_endpoint(&instance.endpoint_path) {
+            if ep.state != singleton::STATE_DRAINING && Some(ep.pid) != departing {
+                log::info!(
+                    "Another launch took '{}' first (pid {}); reusing it",
+                    instance.name,
+                    ep.pid
+                );
+                reuse_existing(&ep, args);
+                return Ok(None);
+            }
+        }
         if std::time::Instant::now() >= deadline {
             anyhow::bail!("could not acquire the instance lock (another proxy won the race?)");
         }
@@ -703,6 +722,30 @@ fn acquire_or_reuse<'a>(
         }
         Err(_) => anyhow::bail!("lost the instance-lock race after waiting"),
     }
+}
+
+/// How long a launch waits on another proxy holding the instance: for a starting one to
+/// publish, or for a departing one to release the lock.
+const HOLDER_PATIENCE: Duration = Duration::from_secs(10);
+
+/// Hand the caller a proxy that is already running: widen it to `--host` if needed, then
+/// print its discovery line.
+fn reuse_existing(ep: &singleton::Endpoint, args: &ProxyArgs) {
+    // Reuse is also the widen path. Starting the proxy is a single idiom — "run it and read
+    // the discovery line" — so asking for an address the running daemon does not yet serve
+    // must work the same way, rather than needing a separate command the caller has to know
+    // to issue.
+    let (hosts, bind_errors) = widen_running_proxy(ep, args);
+    // `ep.version`, not ours: the caller is being handed the *running* proxy's endpoint, and
+    // that is the version its `initialize` will insist on. Likewise its token, not ours.
+    singleton::print_discovery(
+        ep.port,
+        ep.pid,
+        &ep.version,
+        Some(ep.token.as_str()),
+        &hosts,
+        bind_errors,
+    );
 }
 
 /// Re-spawn ourselves as a detached daemon and forward its one discovery line.
@@ -932,7 +975,7 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         },
         hosts: bound_hosts.clone(),
         token: token.clone(),
-        state: "active".to_string(),
+        state: singleton::STATE_ACTIVE.to_string(),
         started_at_unix: singleton::Endpoint::now_unix(),
         exe: my_exe.clone(),
     };
@@ -1107,15 +1150,33 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
 
     let client_threads = accept_ctx.take_client_threads();
 
-    // Upgrade handover: if a newer proxy superseded us, release the lock NOW (so
-    // it can bind) and leave endpoint.json alone (the successor owns it). We then
-    // serve our existing sessions to completion, headless.
+    // Both kinds of drain give up the instance as soon as the accept loops exit, then serve
+    // their existing sessions to completion, headless. This is §0 of the Tier-1 plan: a
+    // draining proxy is a session host that has given up its listener identity.
+    //   - Upgrade: a successor is waiting on the lock and writes its own endpoint.json,
+    //     so leave the file alone.
+    //   - Shutdown: there is no successor. Remove the anchor, and do it *before* releasing
+    //     the lock -- while we hold it nobody else can acquire it, so nobody can have
+    //     written a fresh endpoint.json that we would then delete.
     let was_superseded = superseded.load(Ordering::SeqCst);
-    if was_superseded {
+    // `begin_upgrade` sets `draining` as well, so this covers both.
+    let handed_off = was_superseded || draining.load(Ordering::SeqCst);
+    if handed_off {
+        if !was_superseded {
+            let _ = std::fs::remove_file(&instance.endpoint_path);
+        }
         drop(lock_guard.take());
         log::info!(
-            "Handed off identity; serving {} existing session(s) to completion",
-            client_threads.len()
+            "{}; serving {} existing session(s) to completion",
+            if was_superseded {
+                "Handed off identity to a successor"
+            } else {
+                "Released the instance for shutdown"
+            },
+            // Sessions, not `client_threads.len()`: that also counts the admin handler
+            // that delivered this very drain request (tracked, finished, never a session),
+            // so it reported one more session than the drain response had just announced.
+            lifetime.count()
         );
     }
 
@@ -1127,10 +1188,10 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
     }
     let _ = serial_available_watcher_stop.send(());
 
-    // Best-effort: remove the discovery anchor — unless a successor now owns it.
-    // The advisory lock auto-releases when `lock_guard` drops on return (if not
-    // already released above).
-    if !was_superseded {
+    // Best-effort: remove the discovery anchor on an ordinary exit (idle timeout), while
+    // we still hold the lock. Never after a hand-off: the drain paths above already dealt
+    // with it, and by now another proxy may own the instance and the file.
+    if !handed_off {
         let _ = std::fs::remove_file(&instance.endpoint_path);
     }
     log::info!("All client threads finished — proxy exiting cleanly");

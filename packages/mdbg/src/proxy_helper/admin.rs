@@ -252,9 +252,9 @@ fn dispatch(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: bool)
                 port: ctx.local_port,
                 instance: ctx.instance.clone(),
                 state: if ctx.draining.load(Ordering::SeqCst) {
-                    "draining".into()
+                    singleton::STATE_DRAINING.into()
                 } else {
-                    "active".into()
+                    singleton::STATE_ACTIVE.into()
                 },
                 active_refs: ctx.lifetime.count(),
                 uptime_secs: Endpoint::now_unix().saturating_sub(ctx.started_at_unix),
@@ -309,7 +309,7 @@ fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: 
     if !ctx.superseded.swap(true, Ordering::SeqCst) {
         ctx.draining.store(true, Ordering::SeqCst);
         if let Ok(mut ep) = singleton::read_endpoint(&ctx.endpoint_path) {
-            ep.state = "draining".into();
+            ep.state = singleton::STATE_DRAINING.into();
             let _ = singleton::write_endpoint_atomic(&ctx.endpoint_path, &ep);
         }
         // Break the accept loop NOW so run() releases the lock immediately; the
@@ -332,24 +332,31 @@ fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: 
     }
 }
 
-/// Enter drain: stop accepting new sessions, mark the endpoint `draining`, and
-/// exit once the last session ends. Idempotent.
+/// Enter drain: give up the instance immediately and exit once the last *existing*
+/// session ends. Idempotent. The same shape as an upgrade hand-off, minus the successor
+/// — `run()` releases the lock and removes `endpoint.json` as soon as the accept loops stop.
 fn begin_drain(ctx: &Arc<AdminContext>) -> AdminResponse {
     let active = ctx.lifetime.count();
 
     if !ctx.draining.swap(true, Ordering::SeqCst) {
-        // First drain request: publish the state and start the drain monitor.
+        // Say so. Without this the only evidence a drain ever started was the stream of
+        // refusals that followed it, with nothing to explain them.
+        log::info!(
+            "Drain requested — {active} active session(s); releasing the instance and serving them to completion"
+        );
+        // Mark the record first: run() removes it once the accept loops exit, and until
+        // then this is what tells a reader the instance is on its way out.
         if let Ok(mut ep) = singleton::read_endpoint(&ctx.endpoint_path) {
-            ep.state = "draining".into();
+            ep.state = singleton::STATE_DRAINING.into();
             let _ = singleton::write_endpoint_atomic(&ctx.endpoint_path, &ep);
         }
-        let ctx = Arc::clone(ctx);
-        std::thread::spawn(move || {
-            // Zero window → return as soon as the last ref drops.
-            ctx.lifetime.wait_until_idle(Duration::ZERO);
-            log::info!("Drain complete — no active sessions; shutting down");
-            crate::proxy_helper::run::trigger_graceful_shutdown(&ctx.stop_flag, &ctx.accept_set);
-        });
+        // Give up the instance *now*, exactly as an upgrade does, rather than holding it
+        // until the last session ends. Holding it is what made a drained proxy a deadlock:
+        // it kept the lock and the listener only to refuse everything, so no new proxy
+        // could start, while a single long-lived session -- a serial port left open in an
+        // editor panel -- kept it from ever exiting. run() serves existing sessions to
+        // completion after the loops stop, and exits when they finish.
+        crate::proxy_helper::run::trigger_graceful_shutdown(&ctx.stop_flag, &ctx.accept_set);
     }
 
     AdminResponse {

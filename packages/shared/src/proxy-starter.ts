@@ -454,6 +454,6 @@ export function startProxyServerWithPolicy(
 }
 
 export function setDevelopmentModeEnvVars() {
-    process.env["MDBG_PROXY_INSTANCE"] = "dev"; // signal to the proxy that it is running in dev mode
-    process.env["MDBG_PROXY_IDLE_TIMEOUT"] = "0"; // 0 is do not exit on idle, for dev mode only
+    process.env["MDBG_PROXY_INSTANCE"] = process.env["MDBG_PROXY_INSTANCE"] || "dev"; // signal to the proxy that it is running in dev mode
+    process.env["MDBG_PROXY_IDLE_TIMEOUT"] = process.env["MDBG_PROXY_IDLE_TIMEOUT"] || "0"; // 0 is do not exit on idle, for dev mode only
 }
