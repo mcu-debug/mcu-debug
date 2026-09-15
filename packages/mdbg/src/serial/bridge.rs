@@ -32,9 +32,10 @@
 //! For each accepted TCP connection, on its own thread:
 //!
 //! 1. **Attach**: The TCP write-half is registered with [`PortHandle`] as a live
-//!    client. `attach_client` seeds the ring buffer snapshot into the client's
-//!    queue atomically with going live, so a client that connects late gets the
-//!    history and then every live byte, in order, exactly once.
+//!    client. `attach_client` seeds recent history into the client's queue
+//!    atomically with going live, so a client that connects late gets the output
+//!    from the replay window (the last minute, by default) and then every live
+//!    byte, in order, exactly once.
 //!
 //! 2. **TCP→serial thread**: A second thread reads from the TCP socket and
 //!    calls [`PortHandle::write_to_port`]. That call holds the port's lock for a
@@ -346,6 +347,19 @@ mod multi_client_tests {
         (firmware, Arc::new(handle))
     }
 
+    /// As `fake_device`, with a replay window of the test's choosing.
+    fn fake_device_replaying(window: Duration) -> (serialport::TTYPort, Arc<PortHandle>) {
+        let (mut firmware, device) = serialport::TTYPort::pair().expect("create a pty pair");
+        firmware
+            .set_timeout(Duration::from_millis(100))
+            .expect("set pty read timeout");
+        let path = device.name().expect("pty device has a path");
+        let handle = PortHandle::from_port(path, params(), Box::new(device))
+            .expect("serve the pty device")
+            .with_replay_window(window);
+        (firmware, Arc::new(handle))
+    }
+
     fn connect(bridge: &TcpBridge) -> TcpStream {
         let s = TcpStream::connect(("127.0.0.1", bridge.tcp_port)).expect("connect to the bridge");
         s.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
@@ -418,6 +432,48 @@ mod multi_client_tests {
 
         firmware.write_all(b"still here\n").unwrap();
         read_until_all(&mut b, &[b"still here"], "the remaining client");
+
+        bridge.stop();
+        handle.close();
+    }
+
+    /// A late client is caught up on recent output only. What arrived before the replay window is
+    /// left out — a client joining an hour into a session is no longer handed all of it — while
+    /// what arrived inside the window is still delivered.
+    #[test]
+    fn a_late_client_is_replayed_only_recent_output() {
+        let (mut firmware, handle) = fake_device_replaying(Duration::from_secs(1));
+        let mut bridge = TcpBridge::start("127.0.0.1", 0, Arc::clone(&handle)).expect("start the bridge");
+
+        firmware.write_all(b"stale line\n").unwrap();
+        // Past the window plus one ring GROUP_SPAN, so the stale line's group has aged out.
+        std::thread::sleep(Duration::from_millis(2_200));
+        firmware.write_all(b"fresh line\n").unwrap();
+        // Let the reader thread take it into the ring before anyone attaches.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let mut late = connect(&bridge);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        while !got.windows(b"fresh line".len()).any(|w| w == b"fresh line") {
+            assert!(
+                Instant::now() < deadline,
+                "the late client never received the recent line; got {:?}",
+                String::from_utf8_lossy(&got)
+            );
+            match late.read(&mut buf) {
+                Ok(0) => panic!("the late client was closed; got {:?}", String::from_utf8_lossy(&got)),
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                Err(e) => panic!("the late client: read failed: {e}"),
+            }
+        }
+        assert!(
+            !got.windows(b"stale line".len()).any(|w| w == b"stale line"),
+            "output older than the replay window was replayed: {:?}",
+            String::from_utf8_lossy(&got)
+        );
 
         bridge.stop();
         handle.close();

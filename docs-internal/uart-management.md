@@ -361,7 +361,7 @@ One event type for v1 — errors only. `port_closed` and `port_alive` are intent
 
 ### How `direct` works (server side)
 
-The server allocates a `TcpBridge` (already implemented in Step 7a): binds a `TcpListener` on an OS-assigned port, accepts one connection, sends the ring snapshot, then forwards bytes bidirectionally between that TCP socket and the `PortHandle`. The response carries the `tcp_port`; the client opens a plain TCP socket to it.
+The server allocates a `TcpBridge` (already implemented in Step 7a): binds a `TcpListener` on an OS-assigned port and serves any number of clients concurrently, each on its own thread: it sends each one the recent history from the ring, then forwards bytes bidirectionally between that client's TCP socket and the `PortHandle`. The response carries the `tcp_port`; the client opens a plain TCP socket to it.
 
 ### How `funnel` works (server side)
 
@@ -405,10 +405,18 @@ Keeping the port open without buffering just moves the data-loss point. If no TC
 
 ### Behavior
 
-- **One ring per open serial port**, bounded size (default 1 MB, configurable per port).
+- **One ring per open serial port**, fixed at 1 MB.
 - **Always-on reader.** A server thread continuously reads from the serial port and writes into the ring, regardless of whether any client is attached.
-- **Catch-up on connect.** When a TCP/funnel client attaches, the server first flushes the ring's current contents (snapshot), then streams live.
+- **Catch-up on connect, by age.** When a TCP/funnel client attaches, the server first sends what arrived within the **replay window** — the last 60 seconds by default — then streams live. `MDBG_SERIAL_REPLAY_SECS` overrides the window for the process; `0` turns replay off.
 - **No client = older data overwritten.** Bounded memory by design.
+
+### Why replay by age
+
+Capacity alone was the wrong bound. A quiet port holds hours of output in 1 MB, and a client that joined an hour into a session was handed all of it — correct by the original design, and strange in use. The ring now also records when bytes arrived, and replay leaves out anything older than the window. Nothing is discarded early; it is simply not replayed.
+
+The window can be short because of how ports are opened: the client opens them before it launches the debug adapter, so the session that opens a port is attached before the target runs and sees its boot output live, with no replay needed. What replay is still for is a client that joins a session already under way, or reconnects after a drop — and for those, the last minute is what matters.
+
+Arrival times are recorded per group of pushes spanning at most a second, not per byte, and a group is replayed whole if any of it is recent. So the window is honoured to within a second, erring towards replaying slightly more, never towards dropping a recent byte. A group is judged by its *latest* arrival, so old output followed by a long silence is not dragged back in.
 
 ### Interaction with the log file (see §9)
 

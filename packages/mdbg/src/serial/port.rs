@@ -36,18 +36,24 @@
 //!
 //! ## Late-attach catch-up
 //!
-//! [`PortHandle::attach_client`] seeds the ring snapshot into the new client's
-//! queue as its first item, atomically with going live — both the seed and the
-//! reader's push+fan-out happen under the `clients` lock. Catch-up is therefore
-//! **exactly-once**: every buffered and live byte reaches the client, in order,
-//! with none lost between snapshot and attach and none duplicated.
+//! [`PortHandle::attach_client`] seeds recent history into the new client's queue
+//! as its first item, atomically with going live — both the seed and the reader's
+//! push+fan-out happen under the `clients` lock. Catch-up is therefore
+//! **exactly-once**: every byte from the start of the replay window onwards reaches
+//! the client, in order, with none lost between snapshot and attach and none
+//! duplicated.
+//!
+//! "Recent" means [`replay_window`] — the last minute, by default. Serial ports are
+//! opened before the debug adapter starts, so the session that opens a port sees its
+//! boot output live; replay is for clients that join later or reconnect, and for them
+//! output from an hour ago is noise.
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -346,6 +352,46 @@ struct Shared {
     clients: Mutex<HashMap<u64, ClientSink>>,
 }
 
+// ── Replay window ─────────────────────────────────────────────────────────────
+
+/// How far back a newly attached client is caught up, unless `MDBG_SERIAL_REPLAY_SECS` says
+/// otherwise.
+///
+/// A minute covers what replay is still for — a client joining a session already under way, or
+/// reconnecting after a drop — without handing it an hour of history.
+pub const DEFAULT_REPLAY_WINDOW: Duration = Duration::from_secs(60);
+
+/// This process's replay window: `MDBG_SERIAL_REPLAY_SECS` if it is a whole number of seconds
+/// (`0` turns replay off), otherwise [`DEFAULT_REPLAY_WINDOW`]. Read once, on first use.
+pub fn replay_window() -> Duration {
+    static WINDOW: OnceLock<Duration> = OnceLock::new();
+    *WINDOW.get_or_init(
+        || match parse_replay_secs(std::env::var("MDBG_SERIAL_REPLAY_SECS").ok().as_deref()) {
+            Ok(window) => window,
+            Err(bad) => {
+                log::warn!(
+                    "MDBG_SERIAL_REPLAY_SECS={bad:?} is not a whole number of seconds; using the default {}s",
+                    DEFAULT_REPLAY_WINDOW.as_secs()
+                );
+                DEFAULT_REPLAY_WINDOW
+            }
+        },
+    )
+}
+
+/// Unset or blank → the default; a whole number of seconds → that window; anything else → `Err`
+/// carrying the text, so the caller can say what it rejected. Pure, so it is testable without
+/// touching the process-wide environment.
+fn parse_replay_secs(raw: Option<&str>) -> Result<Duration, String> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(DEFAULT_REPLAY_WINDOW),
+        Some(text) => text
+            .parse::<u64>()
+            .map(Duration::from_secs)
+            .map_err(|_| text.to_string()),
+    }
+}
+
 // ── PortHandle ────────────────────────────────────────────────────────────────
 
 /// Per-port handle. Holds the serial device open for the program lifetime.
@@ -369,6 +415,8 @@ pub struct PortHandle {
     /// Each `ProxyServer` session that opens this port registers a sender here.
     /// Dead senders (closed receiver) are pruned automatically on the next error.
     error_subs: Arc<Mutex<Vec<Sender<PortErrorEvent>>>>,
+    /// How far back a newly attached client is caught up (see [`replay_window`]).
+    replay_window: Duration,
 }
 
 impl PortHandle {
@@ -431,6 +479,7 @@ impl PortHandle {
             reader_thread: Mutex::new(Some(reader_thread)),
             next_id: AtomicU64::new(1),
             error_subs,
+            replay_window: replay_window(),
         })
     }
 
@@ -513,7 +562,7 @@ impl PortHandle {
         // is missed in the gap. The sink is not yet in the map, so this first
         // send into its fresh CLIENT_QUEUE_DEPTH-slot channel cannot be `Full`.
         let mut clients = self.shared.clients.lock_recover();
-        let history = self.shared.ring.snapshot();
+        let history = self.shared.ring.snapshot_recent(self.replay_window);
         if !history.is_empty() {
             let _ = tx.try_send(history);
         }
@@ -673,6 +722,40 @@ impl Drop for PortHandle {
     fn drop(&mut self) {
         self.close();
         // config_port Mutex drops here → second (last) fd reference released.
+    }
+}
+
+#[cfg(test)]
+impl PortHandle {
+    /// Override this port's replay window, so a test can watch output age out in seconds.
+    pub(crate) fn with_replay_window(mut self, window: Duration) -> Self {
+        self.replay_window = window;
+        self
+    }
+}
+
+#[cfg(test)]
+mod replay_window_tests {
+    use super::*;
+
+    #[test]
+    fn unset_or_blank_uses_the_default() {
+        assert_eq!(parse_replay_secs(None), Ok(DEFAULT_REPLAY_WINDOW));
+        assert_eq!(parse_replay_secs(Some("  ")), Ok(DEFAULT_REPLAY_WINDOW));
+    }
+
+    #[test]
+    fn whole_seconds_are_taken_as_given_and_zero_turns_replay_off() {
+        assert_eq!(parse_replay_secs(Some("300")), Ok(Duration::from_secs(300)));
+        assert_eq!(parse_replay_secs(Some(" 5 ")), Ok(Duration::from_secs(5)));
+        assert_eq!(parse_replay_secs(Some("0")), Ok(Duration::ZERO));
+    }
+
+    #[test]
+    fn anything_else_is_rejected_with_the_text_it_was_given() {
+        for bad in ["-1", "1.5", "60s", "sixty"] {
+            assert_eq!(parse_replay_secs(Some(bad)), Err(bad.to_string()));
+        }
     }
 }
 

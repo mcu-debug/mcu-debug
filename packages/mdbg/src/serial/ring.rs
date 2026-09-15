@@ -15,19 +15,53 @@
 //! Bounded, thread-safe ring buffer for serial port received data.
 //!
 //! One [`RingBuffer`] instance lives per open serial port. The always-on reader
-//! thread calls [`RingBuffer::push`] continuously; TCP clients call
-//! [`RingBuffer::snapshot`] on connect to receive buffered history before live
-//! streaming begins ("late-attach catch-up"). See `uart-management.md §6`.
+//! thread calls [`RingBuffer::push`] continuously; a client that attaches is sent
+//! recent history before live streaming begins ("late-attach catch-up"). See
+//! `uart-management.md §6`.
 //!
 //! Capacity is fixed at [`CAPACITY`] (1 MB). When the buffer is full, new
 //! bytes silently overwrite the oldest — "you snooze, you lose."
+//!
+//! ## Replay by age
+//!
+//! Capacity alone is the wrong bound for catch-up. A quiet port holds hours of output in
+//! 1 MB, and a client that joined an hour later used to be handed all of it. So the ring also
+//! records *when* bytes arrived, and [`RingBuffer::snapshot_since`] replays only what arrived
+//! after a cutoff. Nothing is discarded early; older bytes are simply left out of the replay.
+//!
+//! Arrival times are kept per group of pushes, not per byte: a group spans at most
+//! [`GROUP_SPAN`]. A group is replayed whole if any of it is recent, so a cutoff is honoured to
+//! within that span and always errs towards replaying slightly more — never towards dropping a
+//! recent byte.
 
+use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::common::sync::MutexExt;
 
 /// Ring buffer capacity: 1 MB.
 pub const CAPACITY: usize = 1024 * 1024;
+
+/// Longest span of arrival times recorded under one group. Coarse on purpose: replay windows
+/// are tens of seconds, and a record per push would cost more than the bytes it describes.
+pub const GROUP_SPAN: Duration = Duration::from_secs(1);
+
+/// Most arrival-time groups kept. At one per active [`GROUP_SPAN`] that is over an hour of
+/// continuous trickle; past it the oldest groups are dropped, and their bytes — older than any
+/// sensible window — are no longer replayed by age. Bounds the bookkeeping to a few hundred
+/// kilobytes however the port is used.
+const MAX_GROUPS: usize = 4096;
+
+/// Arrival times for the run of bytes starting at absolute offset `start` (see
+/// [`RingInner::total`]). The run ends where the next group starts.
+struct Group {
+    start: u64,
+    first: Instant,
+    /// The latest arrival in this group. Replay is decided on this, not on `first`: a group from
+    /// an hour ago followed by silence must not be treated as covering the silence.
+    last: Instant,
+}
 
 struct RingInner {
     data: Box<[u8]>,
@@ -35,10 +69,64 @@ struct RingInner {
     write_pos: usize,
     /// Number of valid (readable) bytes, capped at `data.len()`.
     filled: usize,
+    /// Bytes ever pushed. Gives every byte a stable absolute offset, so arrival records stay
+    /// valid while the ring wraps: the bytes still held are offsets `total - filled .. total`.
+    total: u64,
+    /// Arrival-time groups, oldest first, covering every byte still held (until capped).
+    groups: VecDeque<Group>,
+}
+
+impl RingInner {
+    /// Absolute offset of the oldest byte still held.
+    fn oldest_held(&self) -> u64 {
+        self.total - self.filled as u64
+    }
+
+    /// The newest `len` bytes held, oldest first. `len` is clamped to what is held.
+    fn tail(&self, len: usize) -> Vec<u8> {
+        let cap = self.data.len();
+        let len = len.min(self.filled);
+        if len == 0 {
+            return Vec::new();
+        }
+        // The first byte to return sits `len` slots behind the write position. When returning
+        // everything and the buffer is full, that is the write position itself.
+        let start = (self.write_pos + cap - len) % cap;
+        let mut out = Vec::with_capacity(len);
+        if start + len <= cap {
+            out.extend_from_slice(&self.data[start..start + len]);
+        } else {
+            out.extend_from_slice(&self.data[start..]);
+            out.extend_from_slice(&self.data[..len - (cap - start)]);
+        }
+        out
+    }
+
+    /// Record that the bytes from absolute offset `start` arrived at `now`, then forget what can
+    /// no longer matter. Called after `total` and `filled` have been updated.
+    fn record_arrival(&mut self, start: u64, now: Instant) {
+        match self.groups.back_mut() {
+            Some(group) if now.saturating_duration_since(group.first) < GROUP_SPAN => group.last = now,
+            _ => self.groups.push_back(Group {
+                start,
+                first: now,
+                last: now,
+            }),
+        }
+        // A group whose successor starts at or before the oldest held byte describes only
+        // overwritten bytes.
+        let oldest_held = self.oldest_held();
+        while self.groups.len() >= 2 && self.groups[1].start <= oldest_held {
+            self.groups.pop_front();
+        }
+        while self.groups.len() > MAX_GROUPS {
+            self.groups.pop_front();
+        }
+    }
 }
 
 /// Bounded, thread-safe ring buffer. Safe to share across threads via
-/// `Arc<RingBuffer>` — both `push` and `snapshot` take `&self`.
+/// `Arc<RingBuffer>` — every method takes `&self`.
 pub struct RingBuffer {
     inner: Mutex<RingInner>,
 }
@@ -51,27 +139,36 @@ impl RingBuffer {
                 data: vec![0u8; CAPACITY].into_boxed_slice(),
                 write_pos: 0,
                 filled: 0,
+                total: 0,
+                groups: VecDeque::new(),
             }),
         }
     }
 
-    /// Append `bytes` to the ring, overwriting the oldest bytes when full.
+    /// Append `bytes` to the ring, overwriting the oldest bytes when full, and note when they
+    /// arrived.
     ///
     /// If `bytes.len() >= CAPACITY`, only the last `CAPACITY` bytes are kept.
     pub fn push(&self, bytes: &[u8]) {
+        self.push_at(bytes, Instant::now());
+    }
+
+    /// [`RingBuffer::push`] with an explicit arrival time, so tests can place bytes in time.
+    fn push_at(&self, bytes: &[u8], now: Instant) {
         if bytes.is_empty() {
             return;
         }
         let mut g = self.inner.lock_recover();
         let cap = g.data.len();
-        let n = bytes.len();
+        let pushed = bytes.len();
+        let start = g.total;
 
         // If the incoming slice is at least as large as the buffer, only the
         // last `cap` bytes fit. Reset to a clean full state and fall through.
-        let bytes = if n >= cap {
+        let bytes = if pushed >= cap {
             g.write_pos = 0;
             g.filled = cap;
-            &bytes[n - cap..]
+            &bytes[pushed - cap..]
         } else {
             bytes
         };
@@ -87,6 +184,9 @@ impl RingBuffer {
         }
         g.write_pos = (wp + n) % cap;
         g.filled = (g.filled + n).min(cap);
+        // Advance by everything pushed, truncated or not: offsets are positions in the stream.
+        g.total = start + pushed as u64;
+        g.record_arrival(start, now);
     }
 
     /// Return a snapshot of all valid bytes in FIFO order (oldest first).
@@ -95,24 +195,35 @@ impl RingBuffer {
     /// blocking subsequent `push` calls.
     pub fn snapshot(&self) -> Vec<u8> {
         let g = self.inner.lock_recover();
-        let cap = g.data.len();
-        let filled = g.filled;
-        if filled == 0 {
+        g.tail(g.filled)
+    }
+
+    /// Bytes that arrived at or after `cutoff`, oldest first.
+    ///
+    /// A group of pushes is replayed whole if any of it arrived at or after `cutoff`, so up to
+    /// [`GROUP_SPAN`] of earlier bytes can come along with it. Bytes older than every retained
+    /// group are never replayed (see [`MAX_GROUPS`]).
+    pub fn snapshot_since(&self, cutoff: Instant) -> Vec<u8> {
+        let g = self.inner.lock_recover();
+        // Groups are in arrival order, so the first recent one starts the replay and every
+        // later one is recent too.
+        let Some(first_recent) = g.groups.iter().find(|group| group.last >= cutoff) else {
+            return Vec::new();
+        };
+        let from = first_recent.start.max(g.oldest_held());
+        g.tail((g.total - from) as usize)
+    }
+
+    /// Bytes that arrived within the last `window`, oldest first. A zero window replays nothing;
+    /// a window reaching back further than the clock can express replays everything held.
+    pub fn snapshot_recent(&self, window: Duration) -> Vec<u8> {
+        if window.is_zero() {
             return Vec::new();
         }
-        // The oldest byte lives at:
-        //   (write_pos + cap - filled) % cap
-        // When the buffer is not yet full: write_pos == filled, so start == 0.
-        // When the buffer is full: start == write_pos (the next slot to overwrite).
-        let start = (g.write_pos + cap - filled) % cap;
-        let mut out = Vec::with_capacity(filled);
-        if start + filled <= cap {
-            out.extend_from_slice(&g.data[start..start + filled]);
-        } else {
-            out.extend_from_slice(&g.data[start..]);
-            out.extend_from_slice(&g.data[..filled - (cap - start)]);
+        match Instant::now().checked_sub(window) {
+            Some(cutoff) => self.snapshot_since(cutoff),
+            None => self.snapshot(),
         }
-        out
     }
 
     /// Number of valid bytes currently in the ring (0..=`CAPACITY`).
@@ -122,6 +233,11 @@ impl RingBuffer {
 
     pub fn is_empty(&self) -> bool {
         self.inner.lock_recover().filled == 0
+    }
+
+    #[cfg(test)]
+    fn group_count(&self) -> usize {
+        self.inner.lock_recover().groups.len()
     }
 }
 
@@ -250,5 +366,106 @@ mod tests {
         // After the writer finishes, the buffer must be full and all 0x42.
         assert_eq!(rb.len(), CAPACITY);
         assert!(rb.snapshot().iter().all(|&b| b == 0x42));
+    }
+
+    // ── Replay by age ─────────────────────────────────────────────────────────
+
+    fn at(base: Instant, secs: u64) -> Instant {
+        base + Duration::from_secs(secs)
+    }
+
+    /// The complaint that motivated this: a client joining an hour later was handed everything
+    /// since the port opened. Only recent output is replayed — and nothing was discarded.
+    #[test]
+    fn replay_leaves_out_output_older_than_the_cutoff() {
+        let rb = RingBuffer::new();
+        let t0 = Instant::now();
+        rb.push_at(b"an hour ago\n", t0);
+        rb.push_at(b"just now\n", at(t0, 3600));
+        assert_eq!(rb.snapshot_since(at(t0, 3600 - 60)), b"just now\n");
+        assert_eq!(
+            rb.snapshot(),
+            b"an hour ago\njust now\n",
+            "older output is left out, not lost"
+        );
+    }
+
+    /// A group is judged by its latest arrival. Old output followed by a long silence must not be
+    /// read as covering the silence and dragged back into a recent replay.
+    #[test]
+    fn a_silence_after_old_output_does_not_pull_it_back_in() {
+        let rb = RingBuffer::new();
+        let t0 = Instant::now();
+        rb.push_at(b"boot ", t0);
+        rb.push_at(b"banner\n", t0 + Duration::from_millis(500)); // same group as "boot "
+        rb.push_at(b"heartbeat\n", at(t0, 7200));
+        assert_eq!(rb.snapshot_since(at(t0, 7200 - 10)), b"heartbeat\n");
+    }
+
+    /// A group with any recent byte is replayed whole: the cutoff errs towards more, never less.
+    #[test]
+    fn a_group_straddling_the_cutoff_is_replayed_whole() {
+        let rb = RingBuffer::new();
+        let t0 = Instant::now();
+        rb.push_at(b"early ", t0);
+        rb.push_at(b"late\n", t0 + Duration::from_millis(800)); // within GROUP_SPAN of "early "
+        assert_eq!(rb.snapshot_since(t0 + Duration::from_millis(500)), b"early late\n");
+    }
+
+    #[test]
+    fn a_window_longer_than_the_history_replays_everything() {
+        let rb = RingBuffer::new();
+        rb.push(b"abc");
+        rb.push(b"def");
+        assert_eq!(rb.snapshot_recent(Duration::from_secs(3600)), b"abcdef");
+    }
+
+    #[test]
+    fn a_zero_window_replays_nothing() {
+        let rb = RingBuffer::new();
+        rb.push(b"abc");
+        assert!(rb.snapshot_recent(Duration::ZERO).is_empty());
+    }
+
+    /// After a wrap, replay never reaches past what the ring still holds, and returns the right bytes.
+    #[test]
+    fn replay_is_clamped_to_what_the_ring_still_holds() {
+        let rb = RingBuffer::new();
+        let t0 = Instant::now();
+        rb.push_at(&vec![0xAAu8; CAPACITY - 2], t0);
+        rb.push_at(b"WXYZ", t0 + Duration::from_millis(100)); // same group; wraps over two 0xAA bytes
+        let replay = rb.snapshot_since(t0);
+        assert_eq!(replay.len(), CAPACITY);
+        assert_eq!(&replay[CAPACITY - 4..], b"WXYZ");
+        assert!(replay[..CAPACITY - 4].iter().all(|&b| b == 0xAA));
+    }
+
+    /// Records for overwritten bytes are forgotten, so they track what the ring holds rather than
+    /// growing with every push.
+    #[test]
+    fn records_are_forgotten_once_their_bytes_are_overwritten() {
+        let rb = RingBuffer::new();
+        let t0 = Instant::now();
+        // Three groups, each half the ring: the first one's bytes are entirely overwritten.
+        for i in 0..3u64 {
+            rb.push_at(&vec![i as u8; CAPACITY / 2], at(t0, 2 * i));
+        }
+        assert_eq!(rb.group_count(), 2, "the fully overwritten group is dropped");
+        let replay = rb.snapshot_since(at(t0, 3));
+        assert_eq!(replay.len(), CAPACITY / 2);
+        assert!(replay.iter().all(|&b| b == 2), "only the newest group is recent");
+    }
+
+    /// Bookkeeping is bounded however the port is used, and the newest records are the ones kept.
+    #[test]
+    fn the_number_of_records_is_capped() {
+        let rb = RingBuffer::new();
+        let t0 = Instant::now();
+        let pushes = MAX_GROUPS as u64 + 100;
+        for i in 0..pushes {
+            rb.push_at(b"x", at(t0, 2 * i)); // two seconds apart: a new group every time
+        }
+        assert_eq!(rb.group_count(), MAX_GROUPS);
+        assert_eq!(rb.snapshot_since(at(t0, 2 * (pushes - 1))), b"x");
     }
 }

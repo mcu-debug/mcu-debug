@@ -5,6 +5,20 @@
 
 ## [Unreleased]
 
+## [v0.1.17] - 2026-09-15
+
+### Serial ports
+
+- **Several clients can watch the same port at once.** The serial panel and the CLI attached
+  to one port used to take turns, so one of them showed nothing. Each now gets the full live
+  output and can type into the port
+- **Serial ports open before the debug session starts.** They were opened partway through the
+  launch, so a target that ran its firmware quickly could print its first lines before anyone
+  was listening. Early boot output is now captured
+- **A client that joins late sees the last minute of output, not everything since the port
+  opened.** A new panel or CLI session used to open with a backlog that could be an hour old,
+  with nothing to tell it apart from what the target was printing now
+
 ## [v0.1.16] - 2026-09-13
 
 ### Seeing what the Probe Agent is doing
