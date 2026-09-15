@@ -224,20 +224,27 @@ pub struct ExeStatus {
     /// value rendered in local time.
     pub started_with_mtime_ms: Option<u64>,
     pub started_with_mtime: String,
+    /// Fingerprint of the executable's contents when this proxy started (see
+    /// [`file_fingerprint`]). `default` so a reply from a proxy predating the field still parses —
+    /// without it a newer `--status` would fail to read that reply and silently drop the instance.
+    #[serde(default)]
+    pub started_with_hash: Option<String>,
     /// What is at `path` right now. Differs from the above once the binary has been
     /// replaced -- which is normal and expected during a build or a reinstall.
     pub on_disk_mtime_ms: Option<u64>,
     pub on_disk_mtime: String,
     /// The question worth asking: **is this proxy serving code that is no longer on
-    /// disk?** True after a rebuild or a same-version reinstall, until the next launch
-    /// hands over to the replacement (see [`decide_handover`]). `false` when either
-    /// mtime is unknown -- absent evidence is not evidence.
+    /// disk?** True after a rebuild or a same-version reinstall that changed the bytes, until
+    /// the next launch hands over to the replacement (see [`decide_handover`]). A re-copy of
+    /// identical bytes — a build that compiled nothing — is *not* a replacement. `false` when
+    /// either mtime is unknown -- absent evidence is not evidence.
     pub replaced_since_start: bool,
 }
 
 impl ExeStatus {
     /// Build a report by stat-ing `stamp.path` now and comparing with what it held at
-    /// startup. Cheap: one `stat` per status query.
+    /// startup. Cheap: one `stat` per status query, plus a read of the file only when its date
+    /// has moved.
     pub fn describe(stamp: &ExeStamp) -> ExeStatus {
         let on_disk_mtime_ms = if stamp.path.is_empty() {
             None
@@ -252,10 +259,19 @@ impl ExeStatus {
             path: stamp.path.clone(),
             started_with_mtime_ms: stamp.mtime_ms,
             started_with_mtime: format_epoch_ms(stamp.mtime_ms),
+            started_with_hash: stamp.hash.clone(),
             on_disk_mtime_ms,
             on_disk_mtime: format_epoch_ms(on_disk_mtime_ms),
             replaced_since_start: match (stamp.mtime_ms, on_disk_mtime_ms) {
-                (Some(started), Some(now)) => now != started,
+                // A moved date is only a candidate: compare contents, and only then, so an
+                // unchanged file still costs a single stat. Without a starting fingerprint the
+                // date is all there is.
+                (Some(started), Some(now)) if now != started => match &stamp.hash {
+                    Some(started_hash) => {
+                        file_fingerprint(std::path::Path::new(&stamp.path)).as_ref() != Some(started_hash)
+                    }
+                    None => true,
+                },
                 _ => false,
             },
         }
@@ -287,6 +303,14 @@ pub struct ExeStamp {
     /// `None` when the stat failed, which is treated as "no evidence" rather than "old".
     #[serde(default)]
     pub mtime_ms: Option<u64>,
+    /// Fingerprint of the file's *contents* at startup — see [`file_fingerprint`].
+    ///
+    /// The date alone cannot tell a rebuild from a re-copy. A build that compiles nothing still
+    /// copies the binary (a `preLaunchTask` does it before every launch), and handing over to
+    /// identical code stranded a serial port the old proxy still held. `None` when the file could
+    /// not be read; the date rule then applies, exactly as before fingerprints existed.
+    #[serde(default)]
+    pub hash: Option<String>,
 }
 
 /// Format epoch milliseconds as a local-time string, or `""` for `None`.
@@ -304,20 +328,83 @@ pub fn format_epoch_ms(ms: Option<u64>) -> String {
     }
 }
 
-/// Stat our own executable. Call once, at startup -- see [`ExeStamp`].
+/// Stamp our own executable. Call once, at startup -- see [`ExeStamp`].
 pub fn exe_stamp() -> ExeStamp {
-    let Ok(path) = std::env::current_exe() else {
-        return ExeStamp::default();
+    match std::env::current_exe() {
+        Ok(path) => stamp_path(&path),
+        Err(_) => ExeStamp::default(),
+    }
+}
+
+/// Stamp the file at `path`: its mtime and a fingerprint of its contents.
+///
+/// Both come from **one open handle**, so they describe the same file even if the path is swapped
+/// for a replacement mid-read — an inode swap leaves the handle on the original. If the file changes
+/// *underneath* the read (a write into it), the fingerprint is dropped rather than trusted.
+pub fn stamp_path(path: &std::path::Path) -> ExeStamp {
+    let path_str = path.to_string_lossy().into_owned();
+    let Ok(mut file) = std::fs::File::open(path) else {
+        // Unreadable but perhaps still stat-able: keep the date, with no fingerprint.
+        return ExeStamp {
+            path: path_str,
+            mtime_ms: std::fs::metadata(path).ok().as_ref().and_then(mtime_ms_of),
+            hash: None,
+        };
     };
-    let mtime_ms = std::fs::metadata(&path)
-        .and_then(|m| m.modified())
+    let before = file.metadata().ok();
+    let mtime_ms = before.as_ref().and_then(mtime_ms_of);
+    let len_before = before.as_ref().map(|m| m.len());
+    let hash = fingerprint(&mut file).filter(|_| {
+        let after = file.metadata().ok();
+        after.as_ref().and_then(mtime_ms_of) == mtime_ms && after.as_ref().map(|m| m.len()) == len_before
+    });
+    ExeStamp {
+        path: path_str,
+        mtime_ms,
+        hash,
+    }
+}
+
+fn mtime_ms_of(meta: &std::fs::Metadata) -> Option<u64> {
+    meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64);
-    ExeStamp {
-        path: path.to_string_lossy().into_owned(),
-        mtime_ms,
+        .map(|d| d.as_millis() as u64)
+}
+
+/// Fingerprint of a file's contents: `crc32:<8 hex digits>:<length in bytes>`, or `None` if it
+/// cannot be read.
+///
+/// Chosen by measurement on the proxy's own binaries (4 MB release, 22 MB debug):
+/// - **CRC-32 via `crc32fast`** was the fastest candidate. It uses the CPU's CRC instructions, so it
+///   stays fast even unoptimized, where XXH3 and rapidhash ran 3–5× slower; with the dev-profile
+///   override in `Cargo.toml` it takes ~6.5 ms on the debug binary, ~0.25 ms on a release one. It is
+///   also a fixed standard whose output cannot drift with a crate upgrade — which is not true of
+///   every hash: `twox-hash` 1.6's XXH3 gives different output from 2.x for the same bytes.
+/// - **Plus the length**, so a false "identical" needs a CRC collision *and* an equal size.
+/// - **A tagged string, not a number:** a `u64` would not survive a JSON double exactly, and the
+///   tag means a future change of algorithm compares as *different* — hand over, the
+///   pre-fingerprint behaviour — never as a silent match.
+pub fn file_fingerprint(path: &std::path::Path) -> Option<String> {
+    std::fs::File::open(path).ok().and_then(|mut f| fingerprint(&mut f))
+}
+
+fn fingerprint(reader: &mut impl std::io::Read) -> Option<String> {
+    let mut hasher = crc32fast::Hasher::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut len: u64 = 0;
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                hasher.update(&buf[..n]);
+                len += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
     }
+    Some(format!("crc32:{:08x}:{len}", hasher.finalize()))
 }
 
 /// What a launching proxy should do about the proxy already holding the instance lock.
@@ -387,7 +474,15 @@ pub fn decide_handover(
         return Handover::Reuse;
     }
     match running_exe.mtime_ms {
-        Some(theirs) if mine > theirs => Handover::UpgradeByExe,
+        // Newer by date — but a date only says the file was *written*. A build that compiled
+        // nothing still re-copies the binary, and handing over to identical code strands whatever
+        // the old proxy holds open (a serial port it cannot pass on). So hand over only when the
+        // contents differ, or when either side has no fingerprint to compare, which keeps the
+        // date rule for a proxy that predates fingerprints or could not read its own file.
+        Some(theirs) if mine > theirs => match (&challenger_exe.hash, &running_exe.hash) {
+            (Some(ours), Some(running)) if ours == running => Handover::Reuse,
+            _ => Handover::UpgradeByExe,
+        },
         // Equal is the common case (same file, second window) and must reuse. An absent
         // mtime *with* a known path means that daemon tried to stat and failed; treating
         // that as "old" would hand over on every single launch, so it reuses instead.
@@ -426,7 +521,9 @@ pub fn read_endpoint(path: &std::path::Path) -> Result<Endpoint> {
 #[derive(Debug)]
 pub enum Holder {
     /// A proxy serving the instance, with its published record: reuse it or ask it to hand over.
-    Active(Endpoint),
+    ///
+    /// Boxed only because the record dwarfs the other variant (`clippy::large_enum_variant`).
+    Active(Box<Endpoint>),
     /// A proxy on its way out — draining, superseded, or already gone — and the lock is now
     /// free. Its record must never be handed out. `pid` is the departing proxy's, when it
     /// published a record before leaving.
@@ -457,7 +554,7 @@ pub fn await_holder(
     let mut last_seen: Option<Endpoint> = None;
     loop {
         match read_endpoint(endpoint_path) {
-            Ok(ep) if ep.state != STATE_DRAINING => return Ok(Holder::Active(ep)),
+            Ok(ep) if ep.state != STATE_DRAINING => return Ok(Holder::Active(Box::new(ep))),
             Ok(ep) => last_seen = Some(ep),
             Err(_) => {} // not published yet, or already removed on the way out
         }
@@ -714,6 +811,7 @@ mod handover_tests {
         ExeStamp {
             path: path.to_string(),
             mtime_ms,
+            hash: None,
         }
     }
 
@@ -870,6 +968,11 @@ mod handover_tests {
         let e = exe_stamp();
         assert!(!e.path.is_empty(), "current_exe() should resolve");
         assert!(e.mtime_ms.is_some(), "the test binary should be stat-able");
+        assert!(
+            e.hash.as_deref().is_some_and(|h| h.starts_with("crc32:")),
+            "the test binary should be fingerprinted, got {:?}",
+            e.hash
+        );
     }
 }
 
@@ -910,6 +1013,7 @@ mod exe_status_tests {
         let started = ExeStamp {
             path: file.to_string_lossy().into_owned(),
             mtime_ms: Some(1_000),
+            hash: None,
         };
         let status = ExeStatus::describe(&started);
         assert!(
@@ -931,6 +1035,7 @@ mod exe_status_tests {
         let missing_file = ExeStamp {
             path: "/nonexistent/mdbg".to_string(),
             mtime_ms: Some(1_000),
+            hash: None,
         };
         let s = ExeStatus::describe(&missing_file);
         assert_eq!(s.on_disk_mtime_ms, None);
@@ -1124,5 +1229,146 @@ mod holder_tests {
         assert!(msg.contains("444"), "the message names the pid to act on: {msg}");
         release_tx.send(()).unwrap();
         holder.join().unwrap();
+    }
+}
+
+/// The content fingerprint: what separates a real rebuild from a re-copy of the same bytes. A build
+/// that compiles nothing still copies the binary — a `preLaunchTask` does it before every launch — and
+/// the date alone handed over to identical code, stranding a serial port the old proxy still held.
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    fn stamp(path: &str, mtime_ms: Option<u64>, hash: Option<&str>) -> ExeStamp {
+        ExeStamp {
+            path: path.to_string(),
+            mtime_ms,
+            hash: hash.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_recopy_of_identical_bytes_with_a_newer_date_reuses() {
+        let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
+        let recopied = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
+        assert_eq!(
+            decide_handover("0.1.16", &recopied, "0.1.16", &running, true),
+            Handover::Reuse
+        );
+    }
+
+    #[test]
+    fn different_bytes_with_a_newer_date_hand_over() {
+        let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
+        let rebuilt = stamp("/x/mdbg", Some(2_000), Some("crc32:deadbeef:42"));
+        assert_eq!(
+            decide_handover("0.1.16", &rebuilt, "0.1.16", &running, true),
+            Handover::UpgradeByExe
+        );
+    }
+
+    /// An equal CRC with a different length is still a different file.
+    #[test]
+    fn the_length_is_part_of_the_fingerprint() {
+        let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
+        let rebuilt = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:43"));
+        assert_eq!(
+            decide_handover("0.1.16", &rebuilt, "0.1.16", &running, true),
+            Handover::UpgradeByExe
+        );
+    }
+
+    /// No fingerprint on either side — a proxy from before this change, or one that could not read
+    /// its own file — keeps the date rule, rather than reusing forever.
+    #[test]
+    fn a_missing_fingerprint_on_either_side_keeps_the_date_rule() {
+        let old_without = stamp("/x/mdbg", Some(1_000), None);
+        let new_with = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
+        assert_eq!(
+            decide_handover("0.1.16", &new_with, "0.1.16", &old_without, true),
+            Handover::UpgradeByExe
+        );
+
+        let old_with = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
+        let new_without = stamp("/x/mdbg", Some(2_000), None);
+        assert_eq!(
+            decide_handover("0.1.16", &new_without, "0.1.16", &old_with, true),
+            Handover::UpgradeByExe
+        );
+    }
+
+    /// The date still orders: different contents never let an older file evict a newer one.
+    #[test]
+    fn different_bytes_with_an_older_date_still_reuse() {
+        let running = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
+        let older = stamp("/x/mdbg", Some(1_000), Some("crc32:deadbeef:42"));
+        assert_eq!(
+            decide_handover("0.1.16", &older, "0.1.16", &running, true),
+            Handover::Reuse
+        );
+    }
+
+    /// Pins the algorithm to standard CRC-32 through its published check value. A dependency that
+    /// quietly produced a variant would change every fingerprint and trigger one spurious handover
+    /// everywhere; this fails first.
+    #[test]
+    fn the_fingerprint_is_standard_crc32_plus_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("check");
+        std::fs::write(&file, b"123456789").unwrap();
+        assert_eq!(file_fingerprint(&file).as_deref(), Some("crc32:cbf43926:9"));
+    }
+
+    /// Identical bytes fingerprint identically; one flipped bit in a later chunk does not.
+    #[test]
+    fn identical_contents_match_and_any_change_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect(); // spans 3 read chunks
+        let mut changed = bytes.clone();
+        changed[2_500_000] ^= 1;
+        let (a, b, c) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("c"));
+        std::fs::write(&a, &bytes).unwrap();
+        std::fs::write(&b, &bytes).unwrap();
+        std::fs::write(&c, &changed).unwrap();
+        assert_eq!(file_fingerprint(&a), file_fingerprint(&b));
+        assert_ne!(file_fingerprint(&a), file_fingerprint(&c));
+    }
+
+    /// `--status` must not report a no-op rebuild as a replacement: a later date on identical bytes
+    /// is not a change to the code being served. A real change still is.
+    #[test]
+    fn status_does_not_report_a_recopy_of_identical_bytes_as_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("mdbg");
+        std::fs::write(&exe, b"the same build").unwrap();
+        let started = stamp_path(&exe);
+        let base = started.mtime_ms.expect("stat-able");
+        assert!(started.hash.is_some(), "readable, so fingerprinted");
+
+        std::fs::write(&exe, b"the same build").unwrap();
+        set_mtime(&exe, base + 10_000);
+        let status = ExeStatus::describe(&started);
+        assert_ne!(
+            status.on_disk_mtime_ms, status.started_with_mtime_ms,
+            "the date did move"
+        );
+        assert!(!status.replaced_since_start, "identical bytes are not a replacement");
+
+        std::fs::write(&exe, b"a different build").unwrap();
+        set_mtime(&exe, base + 20_000);
+        assert!(
+            ExeStatus::describe(&started).replaced_since_start,
+            "different bytes are"
+        );
+    }
+
+    fn set_mtime(path: &std::path::Path, ms: u64) {
+        let when = UNIX_EPOCH + Duration::from_millis(ms);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
     }
 }

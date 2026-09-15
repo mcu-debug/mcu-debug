@@ -758,6 +758,7 @@ dependencies = [
  "chrono",
  "clap",
  "cpp_demangle 0.5.1",
+ "crc32fast",
  "crossterm",
  "dirs",
  "dunce",

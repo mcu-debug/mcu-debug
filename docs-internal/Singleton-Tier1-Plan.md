@@ -199,6 +199,21 @@ If a new session asks for a probe the draining old proxy still holds, the new pr
   - `scripts/build-binaries.sh` no longer calls `stop_running_proxies` (`pkill -f 'mdbg proxy'`).
     That hammer took out every instance, including one another window was mid-session on, and killed
     rather than drained. The function is kept for a daemon too wedged to answer its admin channel.
+  - **Content fingerprint (2026-09-15).** The date alone could not tell a rebuild from a re-copy.
+    A `preLaunchTask` build that compiled nothing still re-copied the binary (`copy_artifact` copies
+    unconditionally), so two debug launches in a row handed over to *identical* code — and the
+    superseded proxy kept the serial port VS Code had open, so the successor could not open it.
+    Each stamp now also carries `crc32:<hex>:<length>` of the executable, read through the same
+    handle as its mtime, and a same-version handover requires a newer date **and** different
+    contents (a missing fingerprint on either side keeps the date rule). `--status` applies the same
+    test, so a no-op rebuild no longer reads as `replaced_since_start`. CRC-32 via `crc32fast` was the
+    fastest candidate measured in both profiles — it uses CPU CRC instructions, so it stays fast
+    unoptimized — and is a fixed standard, unlike `twox-hash` 1.6's pre-release XXH3, which hashes the
+    same bytes differently from 2.x. A dev-profile override (`opt-level = 3` for that one crate) takes
+    the 22 MB debug binary from ~49 ms to ~6.5 ms; release is ~1.4 ms, ~0.25 ms for the 4 MB
+    production binary. What this does *not* fix: a genuine rebuild between two launches still hands
+    over and strands an open port — whether to defer a same-version handover while the incumbent
+    holds a serial port or a gdb-server is an open decision.
 
 - **Phase D.2 — Diagnostics. ✅ LANDED.** The singleton is shared, detached and long-lived, which
   made it the one component nothing could see. Three pieces, each where it is for a reason:

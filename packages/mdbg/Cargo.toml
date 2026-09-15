@@ -39,9 +39,18 @@ dirs = "6.0.0"
 # Human-readable timestamps in `proxy --status`. Costs no extra build: flexi_logger
 # already pulls chrono in, so this only makes an existing dependency direct.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Content fingerprint of the proxy's own executable (singleton::file_fingerprint). Already compiled
+# in through `object`, so this only makes an existing dependency direct.
+crc32fast = "1.5"
 getrandom = "0.2"
 
 [profile.release]
 strip = "symbols"
 lto = true
 codegen-units = 1
+
+# The executable fingerprint hashes the proxy's own binary at every start. Unoptimized, crc32fast takes
+# ~49 ms on the 22 MB dev binary; optimized, ~6.5 ms. Only this one small crate is affected, so dev
+# builds stay quick to compile.
+[profile.dev.package.crc32fast]
+opt-level = 3

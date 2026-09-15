@@ -19,6 +19,12 @@ export type ExeStatus = {
     started_with_mtime_ms: number | null;
     started_with_mtime: string;
     /**
+     * Fingerprint of the executable's contents when this proxy started (see
+     * [`file_fingerprint`]). `default` so a reply from a proxy predating the field still parses —
+     * without it a newer `--status` would fail to read that reply and silently drop the instance.
+     */
+    started_with_hash: string | null;
+    /**
      * What is at `path` right now. Differs from the above once the binary has been
      * replaced -- which is normal and expected during a build or a reinstall.
      */
@@ -26,9 +32,10 @@ export type ExeStatus = {
     on_disk_mtime: string;
     /**
      * The question worth asking: **is this proxy serving code that is no longer on
-     * disk?** True after a rebuild or a same-version reinstall, until the next launch
-     * hands over to the replacement (see [`decide_handover`]). `false` when either
-     * mtime is unknown -- absent evidence is not evidence.
+     * disk?** True after a rebuild or a same-version reinstall that changed the bytes, until
+     * the next launch hands over to the replacement (see [`decide_handover`]). A re-copy of
+     * identical bytes — a build that compiled nothing — is *not* a replacement. `false` when
+     * either mtime is unknown -- absent evidence is not evidence.
      */
     replaced_since_start: boolean;
 };

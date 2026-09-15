@@ -643,6 +643,19 @@ fn acquire_or_reuse<'a>(
                     singleton::decide_handover(mine, my_exe, &ep.version, &ep.exe, singleton::auto_upgrade_enabled());
 
                 if decision == singleton::Handover::Reuse {
+                    // Say why when it would otherwise look like a missed upgrade: the executable is newer by
+                    // date but identical in content -- a build that compiled nothing and copied anyway.
+                    if my_exe.path == ep.exe.path
+                        && my_exe.mtime_ms > ep.exe.mtime_ms
+                        && my_exe.hash.is_some()
+                        && my_exe.hash == ep.exe.hash
+                    {
+                        log::info!(
+                            "Executable {} is newer by date but identical in content ({}); reusing rather than handing over",
+                            my_exe.path,
+                            my_exe.hash.as_deref().unwrap_or_default()
+                        );
+                    }
                     if singleton::is_newer(&ep.version, mine) {
                         log::warn!(
                             "A newer proxy v{} is already running for '{}'; using it",
