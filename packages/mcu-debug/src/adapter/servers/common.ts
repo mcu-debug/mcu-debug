@@ -72,16 +72,6 @@ export class SWOConfigureEvent extends Event implements DebugProtocol.Event {
     }
 }
 
-export class UARTConfigureEvent extends Event implements DebugProtocol.Event {
-    public event: string = "uart-configure";
-    public body: ConfigurationArguments
-
-    constructor(params: ConfigurationArguments) {
-        super("uart-configure");
-        this.body = params;
-    }
-}
-
 export class PostInitializedEvent extends Event implements DebugProtocol.Event {
     public event: string = "post-initialized";
     public body: any;

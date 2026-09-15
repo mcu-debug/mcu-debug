@@ -149,6 +149,17 @@ export class CliSessionDriver {
             logger.error(msg.replace(/\n/g, ' '), { source: 'DA' });
             process.exit(1);
         }
+
+        // Open serial ports first — before the gdb-server or GDB start, and before the target has run —
+        // so nothing the firmware prints is lost. This used to wait for the adapter's `uart-configure`
+        // event, which only arrived once GDB had connected and so raced the firmware. Not awaited: a slow
+        // port must not hold up the session, and one that fails to open must not end it. A JSON copy,
+        // because `createSerialPorts` edits its argument synchronously and `this.config` is about to be
+        // sent as the launch request.
+        this.serialManager.createSerialPorts(JSON.parse(JSON.stringify(this.config))).catch((error) => {
+            this.stderrLogger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
+        });
+
         try {
             if (!this.restarting) {
                 await this.startSocketReader();
@@ -1064,11 +1075,6 @@ export class CliSessionDriver {
             case "rtt-configure":
                 handleRTTConfigureEvent(event.body, this.debugSession!, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
                     this.rtts.push(new CLIRTTTerminal(decoder, src));
-                });
-                break;
-            case 'uart-configure':
-                this.serialManager.createSerialPorts(this.config).catch((error) => {
-                    this.stderrLogger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
                 });
                 break;
             default:

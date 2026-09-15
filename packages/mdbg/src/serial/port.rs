@@ -384,9 +384,25 @@ impl PortHandle {
         // Short read timeout so the reader thread can notice the shutdown flag
         // promptly even when no serial data is arriving.
         let read_timeout = Duration::from_millis(100);
-
-        // Open twice: reader_port goes to the thread; config_port stays here.
         let reader_port = open_port(&path, &params, read_timeout)?;
+        Self::from_port(path, params, reader_port)
+    }
+
+    /// Start serving a port that is already open and configured.
+    ///
+    /// [`PortHandle::open`] is exactly this plus the open. It is separate so tests can serve a
+    /// pseudo-terminal: `serialport` cannot open one on macOS, where every line setting goes
+    /// through the `IOSSIOSPEED` ioctl and a pty rejects it with `ENOTTY` ("Not a typewriter").
+    /// Everything after the open — reader thread, fan-out, writes — is the production path.
+    ///
+    /// The port should already have a short read timeout, so the reader thread notices the
+    /// shutdown flag promptly when no data is arriving.
+    pub(crate) fn from_port(
+        path: String,
+        params: SerialParams,
+        reader_port: Box<dyn serialport::SerialPort>,
+    ) -> Result<Self> {
+        // Two handles on one fd: reader_port goes to the thread; config_port stays here.
         let config_port = reader_port
             .try_clone()
             .with_context(|| format!("failed to clone serial port '{}'", path))?;

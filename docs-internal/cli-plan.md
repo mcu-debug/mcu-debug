@@ -116,7 +116,8 @@ the Driver overrides these to intercept events and route them to the mux stream:
 // 'stdout'    → target stdout mux channel
 // 'stderr'    → target stderr mux channel
 // Lifecycle events (StoppedEvent, ContinuedEvent, TerminatedEvent) → TUI state / session teardown
-// Custom events (SWOConfigureEvent, UARTConfigureEvent) → configure mux channels
+// Custom events (SWOConfigureEvent) → configure mux channels. Serial ports are opened by the client
+// before it launches the adapter (no event), so they attach before the target runs.
 ```
 
 ---
@@ -272,7 +273,8 @@ Promise resolver in `sendResponse()`.
   - [x] `OutputEvent{category:'stdout'/'stderr'}` → target output mux channels
   - [x] `StoppedEvent` / `ContinuedEvent / etc.` → TUI/VSCode-panel status indicator, goes to stderr
   - [x] `TerminatedEvent` → session teardown sequence
-  - [x] `SWOConfigureEvent`, `UARTConfigureEvent` (custom) → configure mux channels
+  - [x] `SWOConfigureEvent` (custom) → configure mux channels. (`UARTConfigureEvent` was removed: the CLI opens
+    serial ports at session start, before the adapter launches, instead of waiting for it.)
 - [ ] **No-op transport** — skip `super.sendEvent()` / `super.sendResponse()` calls so the
       uninitialized stdio transport is never touched
 - [x] **Dispatch synthetic requests** via `dispatchRequest()` — the same sequence as the

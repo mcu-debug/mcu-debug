@@ -114,6 +114,13 @@ There is no separate protocol, no second connection, no alternate entry point fo
 
 ### Fan-out
 
+> **Superseded (2026-09-15).** This was the original plan; the implementation fans out
+> **server-side**. `PortHandle` serves any number of clients over either transport, and the
+> direct TCP bridge serves all of its clients concurrently, so an IDE panel and a CLI session on
+> the same port both receive every byte. Write arbitration stayed simple: each client's input
+> reaches the port one whole chunk at a time under the port lock, and conflicting line settings
+> are logged rather than blocked. The text below is kept for the reasoning it records.
+
 **Client-side, not server-side.** The server bridges one serial port to one TCP endpoint. The extension reads from that TCP stream and multiplexes internally — to xterm.js, to the tee file, to any AI attacher.
 
 This is the same code path RTT/SWO already use. No server-side broadcasting, no write-arbitration logic in the helper. The extension is the single client; it owns policy.
@@ -642,7 +649,7 @@ Explicit non-goals, with reasons:
 | Non-goal                                                            | Reason                                                                                                                                                                                       |
 | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **libudev-based enumeration**                                       | Path-level enumeration (sysfs / registry / `/dev` walk) covers 90% of the need without pulling libudev. VID/PID and rich USB metadata are deferred. Keeps the helper binary dependency-free. |
-| **Server-side fan-out to multiple clients**                         | Client-side fan-out is simpler, reuses existing RTT/SWO code, and keeps the server dumb. Write arbitration would also become a design problem.                                               |
+| **Server-side fan-out to multiple clients**                         | **Superseded — now implemented** (see *Fan-out* above). Originally: client-side fan-out is simpler, reuses existing RTT/SWO code, and keeps the server dumb; write arbitration would also become a design problem. |
 | **`serial.reconfigure` as a distinct request**                      | Idempotent `serial.open` handles reconfiguration by design. Eliminates a state machine on the client side.                                                                                   |
 | **Rejecting param mismatches**                                      | Users iterate on baud/parity while debugging. Forcing explicit close/reopen is customer-hostile. Reconfigure in place.                                                                       |
 | **Mid-stream framing of the TCP bridge**                            | The bridge stays transparent (raw bytes). Errors travel on the side channel; the stream simply closes. Clean separation.                                                                     |

@@ -1,7 +1,7 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
 import { ErrorDestination, InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEvent } from "@vscode/debugadapter";
-import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent, UARTConfigureEvent, PostInitializedEvent } from "./servers/common";
+import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent, PostInitializedEvent } from "./servers/common";
 import os from "os";
 import fs from "fs";
 import path from "path";
@@ -1422,14 +1422,8 @@ export class GDBDebugSession extends SeqDebugSession {
             // happen, it will finally send a configDone request and now everything should be stable
             this.sendEvent(new GenericCustomEvent("post-start-gdb", this.args));
 
-            if (this.args.serialConfig?.enabled) {
-                // Technically, this can actually be done in the front end. It doesn't have to be done after the
-                // initialized event. But it is more intuitive to do it here since the serial event relies on the
-                // server being started and connected. Only because hopefully the FW is running at this point and
-                // can do the serial output. Downside is that we have lost a few chars. But we are doing this just at
-                // reset
-                this.sendEvent(new UARTConfigureEvent(this.args));
-            }
+            // Serial ports are not opened from here any more. Clients open them before they launch the
+            // adapter, so the ports attach before the target runs and no output is lost.
 
             // This part of the process happens after we have sent the initialized event
             // and responded to the launch/attach request. Or else, configrationDoneRequest

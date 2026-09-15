@@ -171,7 +171,7 @@ export class MCUDebugExtension {
             vscode.debug.onDidStartDebugSession(this.debugSessionStarted.bind(this)),
             vscode.debug.onDidTerminateDebugSession(this.debugSessionTerminated.bind(this)),
 
-            vscode.debug.registerDebugConfigurationProvider("mcu-debug", new McuDebugConfigurationProvider(context)),
+            vscode.debug.registerDebugConfigurationProvider("mcu-debug", new McuDebugConfigurationProvider(context, this.serialPortManager)),
         );
     }
 
@@ -410,19 +410,6 @@ export class MCUDebugExtension {
         );
     }
 
-    private receivedUARTConfigureEvent(e: vscode.DebugSessionCustomEvent) {
-        const mySession = CDebugSession.FindSession(e.session);
-        const args = e.body as ConfigurationArguments;
-        if (!mySession) {
-            return;
-        }
-        try {
-            this.serialPortManager.createSerialPorts(args);
-        } catch (error) {
-            // Errors already handled in SerialPortManager, but you can log them here if desired
-        }
-    }
-
     private debugSessionTerminated(session: vscode.DebugSession) {
         if (session.type !== "mcu-debug") {
             return;
@@ -472,9 +459,6 @@ export class MCUDebugExtension {
                 break;
             case "rtt-configure":
                 this.receivedRTTConfigureEvent(e);
-                break;
-            case "uart-configure":
-                this.receivedUARTConfigureEvent(e);
                 break;
             case "post-initialized":
                 this.receivedPostInitializedEvent(e);
