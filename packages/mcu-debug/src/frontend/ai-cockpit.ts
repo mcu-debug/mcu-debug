@@ -169,6 +169,8 @@ export class AICockpit extends ManagedTab {
             "  next/step/finish         Step through code (next/step-over, step-into, step-out/finish)",
             "  pause / Ctrl+C           Pause execution",
             "  reset/restart            Reset device or restart the session",
+            "  !!send text              Send text (including newlines) to RTT/Serial port if there is only one",
+            "  !!send [port] text       Send text (including newlines) to the specified RTT/Serial port",
             "  exit                     End the debug session (will do proper cleanup and then forward exit to gdb)",
             "",
         ].join("\n"));
