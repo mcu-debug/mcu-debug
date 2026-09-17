@@ -16,9 +16,9 @@ import { CDebugSession } from "../common/cli-session";
 import { handleRTTConfigureEvent } from "../common/rtt-source";
 import { SocketRTTSource } from "../common/swo/sources/socket";
 import { CliAdapter } from "./cli-adapter";
-import { LineSplitter } from "../../../shared/lib/src/line-splitter";
-import { generateNonce } from "@mcu-debug/shared";
+import { generateNonce, LineSplitter } from "@mcu-debug/shared";
 import { NotesManager } from "./notes";
+import { CliTelemetry } from "../analytics/telemetry-cli";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -72,6 +72,7 @@ export class CliSessionDriver {
     private restarting = false; // track whether we're in the middle of a restart to suppress TerminatedEvent during teardown
     private serverConsole: net.Server | null = null;
     private notesManager: NotesManager;
+    private telemetryId = generateNonce(); // anonymous per-invocation id for the offline queue
 
     // Socker server member variables
     private socketPromise: Promise<void> = Promise.resolve(); // used to wait for socket connections
@@ -100,6 +101,10 @@ export class CliSessionDriver {
         process.on('exit', () => {
             this.dispose();
         });
+
+        // Parked in ~/.mcu-debug/telemetry.json; the VS Code extension flushes it later (honoring
+        // opt-out at flush time). Records the shape of this config only — see telemetry-core.ts.
+        CliTelemetry.beginSession(this.telemetryId, this.config);
 
         this.setState("not-started");
     }
@@ -1433,6 +1438,7 @@ export class CliSessionDriver {
     }
 
     dispose() {
+        CliTelemetry.endSession(this.telemetryId); // no-op if already ended or opted out
         this.notesManager.flushNow();
         SerialPortManager.Dispose();
     }

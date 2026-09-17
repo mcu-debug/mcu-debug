@@ -28,6 +28,7 @@ import winston from "winston";
 import { Writable } from "stream";
 import { CLI_SESSION_TYPES, CLISessionType, getHostAdapter } from "../common/host-adapter";
 import JSONC from "jsonc-simple-parser";
+import { LAUNCH_ORIGIN_ENV } from "../analytics/telemetry-core";
 
 /**
  * TODO: Task list for AI Cockpit:
@@ -262,7 +263,9 @@ export class AICockpit extends ManagedTab {
         this.logger?.info(`Starting AI Cockpit debug session with command: ${cmd} ${args.join(" ")}`, { color: 'green.bold' });
         this.process = ChildProcess.spawn(cmd, args, {
             cwd: root.uri.fsPath,
-            env: process.env,
+            // Stamp the launch origin so CLI telemetry can tell a cockpit-panel session apart
+            // from a terminal/TUI one. See LAUNCH_ORIGIN_ENV in analytics/telemetry-core.ts.
+            env: { ...process.env, [LAUNCH_ORIGIN_ENV]: "vscode-panel" },
             stdio: "pipe",
             windowsHide: true
         });

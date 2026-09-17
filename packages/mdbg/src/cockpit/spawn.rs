@@ -51,6 +51,8 @@ pub fn spawn_node_cli_tui(cli_js: &PathBuf, extra_args: &[String]) -> Result<Chi
     command
         .arg(cli_js)
         .args(extra_args)
+        // Stamp the launch origin for CLI telemetry (see analytics/telemetry-core.ts).
+        .env("MCU_DEBUG_LAUNCH_ORIGIN", "tui")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -70,6 +72,8 @@ pub fn spawn_node_cli_headless(cli_js: &PathBuf, extra_args: &[String]) -> Resul
     command
         .arg(cli_js)
         .args(extra_args)
+        // Stamp the launch origin for CLI telemetry (see analytics/telemetry-core.ts).
+        .env("MCU_DEBUG_LAUNCH_ORIGIN", "headless")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

@@ -6,7 +6,8 @@ import { CLIConfigLoader } from './cli-config-loader';
 import { CliAdapter } from './cli-adapter';
 import { setHostAdapter } from '../common/host-adapter';
 import { CliSessionDriver } from './cli-driver';
-import { setDevelopmentModeEnvVars } from '../../../shared/lib/src/proxy-starter';
+import { setDevelopmentModeEnvVars } from '@mcu-debug/shared';
+import { CLI_DEV_ENV } from '../analytics/telemetry-core';
 
 /**
  * How much of `.mcu-debug/archive/` to keep. Two caps because either one alone fails: a count
@@ -169,6 +170,7 @@ async function main() {
     if (isDevVersion()) {
         logger.debug("Running in development version");
         setDevelopmentModeEnvVars();
+        process.env[CLI_DEV_ENV] = "1"; // so parked telemetry is tagged `development`
     }
     const { cliArgs } = await import("./cli-options");
     const customTransport = createInitialTransports(cliArgs, cliArgs.debug ? 'debug' : 'info');

@@ -3,30 +3,30 @@
   "version": "0.0.1",
   "private": true,
   "main": "./lib/index.js",
-  "types": "./lib/src/index.d.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./lib/src/index.d.ts",
+      "types": "./src/index.ts",
       "require": "./lib/index.js",
       "import": "./lib/index.mjs"
     },
     "./cockpit-protocol": {
-      "types": "./lib/src/cockpit-protocol.d.ts",
+      "types": "./src/cockpit-protocol.ts",
       "require": "./lib/src/cockpit-protocol.js",
       "import": "./lib/src/cockpit-protocol.js"
     },
     "./dasm-helper/*": {
-      "types": "./lib/dasm-helper/*.d.ts",
+      "types": "./dasm-helper/*.ts",
       "require": "./lib/dasm-helper/*.js",
       "import": "./lib/dasm-helper/*.js"
     },
     "./proxy-protocol/*": {
-      "types": "./lib/proxy-protocol/*.d.ts",
+      "types": "./proxy-protocol/*.ts",
       "require": "./lib/proxy-protocol/*.js",
       "import": "./lib/proxy-protocol/*.js"
     },
     "./serial-helper/*": {
-      "types": "./lib/serial-helper/*.d.ts",
+      "types": "./serial-helper/*.ts",
       "require": "./lib/serial-helper/*.js",
       "import": "./lib/serial-helper/*.js"
     }

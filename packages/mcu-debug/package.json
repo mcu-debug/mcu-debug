@@ -4064,7 +4064,6 @@
     "@types/vscode": "^1.107.0",
     "@vscode/debugadapter": "^1.68.0",
     "@vscode/debugprotocol": "^1.68.0",
-    "@vscode/extension-telemetry": "^1.2.0",
     "binary-parser": "^2.3.0",
     "esbuild": "^0.28.0",
     "esbuild-node-externals": "^1.20.1",
