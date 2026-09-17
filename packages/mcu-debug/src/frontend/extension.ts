@@ -109,6 +109,11 @@ export class MCUDebugExtension {
                 // TODO: show port picker and call this.cockpitPanel.addTab(new UartManagedTab(...))
                 vscode.window.showInformationMessage("Add UART — not yet implemented");
             }),
+            // The webview's right-click menu passes back the data-vscode-context of the
+            // element under the pointer, which carries the tab that was clicked.
+            vscode.commands.registerCommand("mcu-debug.cockpit.clear", (menuContext?: { tabId?: string }) => {
+                this.cockpitPanel.clearTab(menuContext?.tabId);
+            }),
         );
 
         this.liveWatchProvider = new LiveWatchTreeProvider(this.context);

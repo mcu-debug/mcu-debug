@@ -101,7 +101,7 @@
         <span class="config-label">Config</span>
         <select value={state.selectedConfig ?? ""} onchange={handleSelect}>
             {#if state.availableConfigs.length === 0}
-                <option value="">No configurations</option>
+                <option value="">No mcu-debug configurations</option>
             {:else}
                 {#each state.availableConfigs as configName (configName)}
                     <option value={configName}>{configName}</option>

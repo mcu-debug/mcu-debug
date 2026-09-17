@@ -370,6 +370,12 @@
         "icon": "$(add)"
       },
       {
+        "category": "MCU-Debug",
+        "command": "mcu-debug.cockpit.clear",
+        "title": "Clear Terminal",
+        "icon": "$(clear-all)"
+      },
+      {
         "command": "mcu-debug.resetDevice",
         "title": "Reset device",
         "icon": {
@@ -3941,6 +3947,12 @@
           "command": "mcu-debug.liveWatch.removeExpr",
           "when": "view == mcu-debug.liveWatch && viewItem == expression",
           "group": "inline"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "mcu-debug.cockpit.clear",
+          "when": "webviewSection == 'mcu-debug.cockpit.terminal'"
         }
       ],
       "view/title": [

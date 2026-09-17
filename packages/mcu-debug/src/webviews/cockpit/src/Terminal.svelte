@@ -573,7 +573,12 @@
             // scrollbar, the way the editor marks matches. Without a width the ruler
             // is never rendered, and the ruler colours we hand the search addon do
             // nothing at all.
-            overviewRuler: { width: 14 },
+            //
+            // This also sets the scrollbar's width: xterm sizes the vertical scrollbar
+            // as `overviewRuler?.width || 14`. 10 matches the scrollbars VS Code draws
+            // in its own webviews; 14 left ours visibly fatter than the terminal and
+            // debug console.
+            overviewRuler: { width: 10 },
             theme: buildXtermTheme(),
             fontFamily,
             fontSize,
@@ -668,7 +673,19 @@
     });
 </script>
 
-<div class="terminal-wrap">
+<!--
+    data-vscode-context puts our own entries in the right-click menu VS Code shows over
+    a webview. preventDefaultContextMenuItems stays false so Cut/Copy/Paste remain, and
+    the tabId rides along so Clear empties the tab that was actually right-clicked.
+-->
+<div
+    class="terminal-wrap"
+    data-vscode-context={JSON.stringify({
+        webviewSection: "mcu-debug.cockpit.terminal",
+        tabId,
+        preventDefaultContextMenuItems: false,
+    })}
+>
     <div class="xterm-container" bind:this={container}></div>
     {#if findOpen}
         <FindWidget
@@ -712,6 +729,14 @@
      */
     .terminal-wrap :global(.xterm-scrollable-element > .scrollbar > .slider) {
         background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+        /*
+         * xterm draws the slider as a plain rectangle — it sets no radius anywhere.
+         * Round it so it reads like the scrollbars elsewhere in the window. xterm sets
+         * the width inline, so keep the box border-box: anything that adds to the box
+         * widens the slider instead of insetting it.
+         */
+        box-sizing: border-box;
+        border-radius: 10px;
     }
 
     .terminal-wrap :global(.xterm-scrollable-element > .scrollbar > .slider:hover) {

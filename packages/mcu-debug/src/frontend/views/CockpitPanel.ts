@@ -150,6 +150,18 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
         }
     }
 
+    /**
+     * Empty a tab's terminal and its replay buffer. Defaults to the active tab, which
+     * is what a command invoked outside the webview (palette, keybinding) means.
+     */
+    clearTab(tabId?: string): void {
+        const id = tabId ?? this._activeTabId;
+        if (!id) {
+            return;
+        }
+        this._tabs.get(id)?.clear();
+    }
+
     findTabByLabel(label: string): ManagedTab | undefined {
         for (const tab of this._tabs.values()) {
             if (tab.label === label) {

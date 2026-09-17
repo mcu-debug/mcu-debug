@@ -176,10 +176,8 @@ export class AICockpit extends ManagedTab {
             "",
         ].join("\n"));
         /**
-         * TODO: Some of it is testing
-         * Search or Filter
+         * TODO:
          * History
-         * Clear
          */
     }
 

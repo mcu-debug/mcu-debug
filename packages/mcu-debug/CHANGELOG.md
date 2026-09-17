@@ -35,6 +35,10 @@
 
 ### Panel terminals
 
+- **Right-click a tab's output and choose Clear Terminal** to empty it. There was no way to do
+  this from the UI before — a tab that had been collecting output for hours could only be read
+  around. It clears the tab you clicked on, and is also in the Command Palette as
+  **MCU-Debug: Clear Terminal**, where it clears whichever tab is in front
 - **The terminal engine was updated** (xterm.js 5.5 → 6.0, eighteen months of fixes). The change
   you will notice is the scrollbar: it is now the same one the rest of VS Code uses, sized and
   themed to match, in place of a plain browser scrollbar
