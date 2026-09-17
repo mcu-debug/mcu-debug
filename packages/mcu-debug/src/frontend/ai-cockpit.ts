@@ -171,9 +171,17 @@ export class AICockpit extends ManagedTab {
             "  reset/restart            Reset device or restart the session",
             "  !!send text              Send text (including newlines) to RTT/Serial port if there is only one",
             "  !!send [port] text       Send text (including newlines) to the specified RTT/Serial port",
+            "  !!                       Send attached AI a message",
             "  exit                     End the debug session (will do proper cleanup and then forward exit to gdb)",
             "",
         ].join("\n"));
+        /**
+         * TODO: Some of it is testing
+         * Search or Filter
+         * History
+         * Clear
+         * Cop
+         */
     }
 
     public async startDebugSession(configName?: string) {
