@@ -11,6 +11,12 @@ extension's
 
 ## [Unreleased]
 
+## [v0.1.17] - 2026-09-17
+
+- More comprehensive proxy status
+- Fix issue with serving a serial port to multiple clients.
+- Reduce max history of buffered data to 60 seconds. There was no limit before other than a size limit
+
 ## [v0.1.16] - 2026-09-13
 
 - This extension ships the Probe Agent binary, and reinstalling a build over itself used to leave
