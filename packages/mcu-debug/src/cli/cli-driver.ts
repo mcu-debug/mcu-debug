@@ -597,9 +597,9 @@ export class CliSessionDriver {
      */
     private handleSpecialCommands(trimmedInput: string, isTerminal: boolean, rawInput: string): boolean {
         // Match on the lower-cased copy; slice payloads out of `trimmedInput` so their own case
-        // survives. Meta-commands are recognised case-insensitively because a near-miss does not
-        // fail loudly -- it falls through to the catch-all below and is quietly relayed as a
-        // free-text message, which for an agent looks like the command succeeded.
+        // survives. Meta-commands are recognised case-insensitively so that capitalisation alone
+        // cannot turn a command into an error; a genuine misspelling falls through to
+        // unknowMetaCommand() below and is reported rather than acted on.
         const lower = trimmedInput.toLowerCase();
         if (lower === 'pause' || lower === '!!sigint') {
             this.doInterrupt();
@@ -652,13 +652,21 @@ export class CliSessionDriver {
             // command, but anything after it -- trailing spaces included -- is the target's data.
             this.doSendToStream(rawInput.trimStart().substring('!!send'.length).replace(/^\s/, ''));
             return true;
-        } else if (isTerminal && trimmedInput.startsWith('!!')) {
-            // Anything else starting with `!!` typed on stdin is a free-text message to whatever
-            // client is attached. Two events on purpose: the USER-REQUEST line carries the payload
-            // alone, so a reader never has to strip our wording out of it, and the DA line is the
-            // human's confirmation. Socket clients are registered as transport streams, so the
-            // first one reaches them as JSON without anything further being written by hand.
-            const request = trimmedInput.substring(2);
+        } else if (isTerminal && /^!!ai(\s|$)/i.test(trimmedInput)) {
+            // A free-text message to whatever client is attached. This used to be the catch-all for
+            // any unrecognised `!!` typed on stdin, which meant a mistyped command was relayed as
+            // chat instead of being reported, and no line beginning with `!!` could ever reach gdb.
+            // Naming the verb costs three characters and makes both of those go away.
+            //
+            // Two events on purpose: the USER-REQUEST line carries the payload alone, so a reader
+            // never has to strip our wording out of it, and the DA line is the human's
+            // confirmation. Socket clients are registered as transport streams, so the first one
+            // reaches them as JSON without anything further being written by hand.
+            const request = trimmedInput.substring('!!ai'.length).trim();
+            if (!request) {
+                this.stdoutLogger.warn('Usage: !!ai <text> — sends the text to any connected AI');
+                return true;
+            }
             logger.info(request, { skipConsole: true, source: 'USER-REQUEST' });
             this.stdoutLogger.info(`Sent to any connected AI: ${request}`);
             return true;

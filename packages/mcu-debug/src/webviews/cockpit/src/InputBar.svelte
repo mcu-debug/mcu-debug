@@ -16,14 +16,18 @@
 -->
 
 <script lang="ts">
+    import { untrack } from "svelte";
     import type { TabInputMode } from "@mcu-debug/shared";
+    import { loadHistory, saveHistory } from "./history-store";
 
     const {
+        tabId,
         onSubmit,
         onSpecialKey,
         placeholderText,
         inputMode = "cooked",
     }: {
+        tabId: string;
         onSubmit: (text: string) => void;
         onSpecialKey?: (key: string) => void;
         placeholderText: string;
@@ -32,10 +36,90 @@
 
     let value = $state("");
 
+    /**
+     * Submitted lines, oldest first. The rules mirror the Rust TUI (cockpit/tui.rs) so
+     * that the same keys behave the same way in the panel, the TUI and the CLI: the
+     * half-typed line is kept while you browse, and consecutive duplicates are dropped
+     * (bash's HISTCONTROL=ignoredups).
+     */
+    // Read once, deliberately: there is one InputBar per tab and a tab's id never
+    // changes, so this is the history belonging to this bar for its whole life.
+    // untrack() says so, rather than leaving Svelte to warn about a prop read that
+    // looks like it was meant to stay in step with the prop.
+    let history: string[] = untrack(() => loadHistory(tabId));
+    /** Index being viewed, or null while composing a new line. */
+    let historyPos: number | null = null;
+    /** What was being typed before browsing started. */
+    let historyDraft = "";
+
+    // Enough for a long session; the cap only exists to bound what is written back
+    // into the webview's state.
+    const MAX_HISTORY = 1000;
+
+    function historyPush(line: string) {
+        if (history[history.length - 1] !== line) {
+            history.push(line);
+            if (history.length > MAX_HISTORY) {
+                history = history.slice(history.length - MAX_HISTORY);
+            }
+            saveHistory(tabId, history);
+        }
+        historyPos = null;
+        historyDraft = "";
+    }
+
+    function historyUp() {
+        if (history.length === 0) {
+            return;
+        }
+        if (historyPos === null) {
+            historyDraft = value;
+            historyPos = history.length - 1;
+        } else if (historyPos === 0) {
+            return; // already at the oldest entry
+        } else {
+            historyPos -= 1;
+        }
+        value = history[historyPos];
+    }
+
+    function historyDown() {
+        if (historyPos === null) {
+            return; // already composing a new line
+        }
+        if (historyPos + 1 >= history.length) {
+            // Past the newest entry — put the draft back.
+            historyPos = null;
+            value = historyDraft;
+            historyDraft = "";
+            return;
+        }
+        historyPos += 1;
+        value = history[historyPos];
+    }
+
     function handleKeydown(e: KeyboardEvent) {
         if (inputMode === "cooked") {
+            // Raw mode deliberately has no history: every keystroke there belongs to
+            // the device, arrow keys included.
+            if (e.key === "ArrowUp") {
+                e.preventDefault();
+                historyUp();
+                return;
+            }
+            if (e.key === "ArrowDown") {
+                e.preventDefault();
+                historyDown();
+                return;
+            }
             if (e.key === "Enter") {
-                onSubmit(value);
+                const line = value;
+                onSubmit(line);
+                // A bare Enter is meaningful (gdb repeats the last command) but is not
+                // worth recalling, so it is submitted without being recorded.
+                if (line.trim()) {
+                    historyPush(line);
+                }
                 value = "";
             }
             return;

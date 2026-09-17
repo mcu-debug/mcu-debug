@@ -726,7 +726,7 @@ fn render_help(frame: &mut ratatui::Frame) {
         ("                      ", ""),
         ("  !!send text         ", sent_test1),
         ("  !!send [port] text  ", sent_test2),
-        ("  !!                  ", "Send attached AI a message"),
+        ("  !!ai text           ", "Send attached AI a message"),
         ("                      ", ""),
         ("  F1                  ", "Show / hide this help"),
         ("                      ", ""),

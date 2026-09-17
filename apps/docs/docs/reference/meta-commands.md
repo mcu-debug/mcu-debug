@@ -129,20 +129,22 @@ Clear the AI-REQUEST display area. Used after the AI has received and processed 
 
 ---
 
-### !!&lt;anything else&gt; — message the AI
+### !!ai
 
-Anything else beginning with `!!` and typed at the session's own keyboard is relayed to every attached client as a free-text message from the human. It is the mirror image of `!!AI-REQUEST`: that one is the AI asking the human for something, this one is the human asking the AI.
+Send a free-text message from the human to every attached client. It is the mirror image of `!!AI-REQUEST`: that one is the AI asking the human for something, this one is the human asking the AI.
 
 ```
-!!why is the DMA IRQ never firing?
+!!ai why is the DMA IRQ never firing?
 ```
 
-The `!!` is stripped and the remainder is delivered as `source: "USER-REQUEST"`. The human sees a confirmation line; no GDB command is issued and the target is untouched.
+The `!!ai` is stripped and the remainder is delivered as `source: "USER-REQUEST"`. The human sees a confirmation line; no GDB command is issued and the target is untouched. `!!ai` on its own prints the usage line rather than sending an empty message.
 
 This works **only from stdin** — the terminal, TUI, or VS Code panel. The same text arriving over the socket is reported as an unknown meta-command instead, since a client has no need to relay a message to itself.
 
-:::caution
-This is a catch-all: it matches any `!!` string that is not a recognised command. A mistyped meta-command therefore lands here and is relayed as a message rather than reported as an error — `!!sigin` becomes a note to the AI, not an interrupt. The recognised commands are matched case-insensitively so that capitalisation alone cannot trigger this, but a misspelling still can. If a command appears to do nothing, check that the confirmation line does not say it was sent to the AI.
+:::note
+Like every meta-command, `!!ai` is matched case-insensitively — `!!AI` works too — but lower case is the spelling used throughout this documentation.
+
+This used to be a catch-all: any `!!` line that was not a recognised command was relayed as a message, so a mistyped `!!sigin` became a note to the AI rather than an interrupt, and no line beginning with `!!` could be sent onward. Unrecognised meta-commands are now reported as errors instead, wherever they come from.
 :::
 
 ---
@@ -171,4 +173,4 @@ process.stdin.flush()
 | Answer a firmware prompt | `!!send [port] y`   | —                    | stdin goes to GDB; this is the only route to the target's UART/RTT |
 | Update notes             | `!!NOTE: [...]`     | —                    | No GDB equivalent                                                  |
 | Request human input      | `!!AI-REQUEST: ...` | —                    | No GDB equivalent                                                  |
-| Message the AI           | `!!<free text>`     | —                    | Human → AI, stdin only. Catch-all: also swallows mistyped commands |
+| Message the AI           | `!!ai <text>`       | —                    | Human → AI, stdin only                                            |

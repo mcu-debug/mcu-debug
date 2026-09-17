@@ -72,7 +72,7 @@
         <AiRequest text={aiRequestText} />
     {/if}
 
-    <InputBar onSubmit={handleUserInput} onSpecialKey={handleSpecialKey} {placeholderText} {inputMode} />
+    <InputBar {tabId} onSubmit={handleUserInput} onSpecialKey={handleSpecialKey} {placeholderText} {inputMode} />
 </div>
 
 <style>

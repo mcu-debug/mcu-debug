@@ -49,7 +49,7 @@
     </div>
 
     {#if showInput}
-        <InputBar onSubmit={handleUserInput} {placeholderText} {inputMode} />
+        <InputBar {tabId} onSubmit={handleUserInput} {placeholderText} {inputMode} />
     {/if}
 </div>
 

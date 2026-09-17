@@ -11,6 +11,11 @@ extension's
 
 ## [Unreleased]
 
+## [v0.1.18] - 2026-09-??
+
+No changes. The version is kept in step with the main extension so that the two always install
+as a matched pair.
+
 ## [v0.1.17] - 2026-09-16
 
 - More comprehensive proxy status

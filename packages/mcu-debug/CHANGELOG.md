@@ -5,19 +5,7 @@
 
 ## [Unreleased]
 
-## [v0.1.17] - 2026-09-16
-
-### Serial ports
-
-- **Several clients can watch the same port at once.** The serial panel and the CLI attached
-  to one port used to take turns, so one of them showed nothing. Each now gets the full live
-  output and can type into the port
-- **Serial ports open before the debug session starts.** They were opened partway through the
-  launch, so a target that ran its firmware quickly could print its first lines before anyone
-  was listening. Early boot output is now captured
-- **A client that joins late sees the last minute of output, not everything since the port
-  opened.** A new panel or CLI session used to open with a backlog that could be an hour old,
-  with nothing to tell it apart from what the target was printing now
+## [v0.1.18] - 2026-09-??
 
 ### Find in the MCU DEBUG panel
 
@@ -39,9 +27,39 @@
   this from the UI before — a tab that had been collecting output for hours could only be read
   around. It clears the tab you clicked on, and is also in the Command Palette as
   **MCU-Debug: Clear Terminal**, where it clears whichever tab is in front
+- **Up and Down recall what you typed before.** Every tab that has an input line now keeps its
+  own history: the half-typed line is put aside while you browse and comes back when you arrive
+  past the newest entry, and a command repeated twice in a row is only stored once. The history
+  survives the panel being hidden and reopened, and matches the keys the TUI and the CLI already
+  had. Ports in raw mode are unchanged — there, every keystroke belongs to the device
 - **The terminal engine was updated** (xterm.js 5.5 → 6.0, eighteen months of fixes). The change
   you will notice is the scrollbar: it is now the same one the rest of VS Code uses, sized and
   themed to match, in place of a plain browser scrollbar
+
+### Messaging an AI now has its own command
+
+- **Use `!!ai <text>` to send a message to an attached AI.** Any line starting with `!!` used to
+  be treated as one, which had two costs: a mistyped meta-command was quietly relayed as chat
+  instead of being reported — `!!sigin` became a note to the AI rather than an interrupt — and no
+  line beginning with `!!` could ever be sent onward. **If you type `!!` messages today, add
+  `ai`.** `!!send`, `!!SIGINT`, `!!RESET`, `!!NOTE:` and `!!AI-REQUEST:` are unaffected
+- Anything else starting with `!!` is now reported as an unknown meta-command wherever it comes
+  from, rather than being silently accepted. `!!ai` with nothing after it prints how to use it
+  instead of sending an empty message
+
+## [v0.1.17] - 2026-09-16
+
+### Serial ports
+
+- **Several clients can watch the same port at once.** The serial panel and the CLI attached
+  to one port used to take turns, so one of them showed nothing. Each now gets the full live
+  output and can type into the port
+- **Serial ports open before the debug session starts.** They were opened partway through the
+  launch, so a target that ran its firmware quickly could print its first lines before anyone
+  was listening. Early boot output is now captured
+- **A client that joins late sees the last minute of output, not everything since the port
+  opened.** A new panel or CLI session used to open with a backlog that could be an hour old,
+  with nothing to tell it apart from what the target was printing now
 
 ## [v0.1.16] - 2026-09-13
 

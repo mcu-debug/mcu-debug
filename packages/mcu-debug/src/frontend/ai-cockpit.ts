@@ -164,6 +164,7 @@ export class AICockpit extends ManagedTab {
             "AI Cockpit Help",
             "  F1                       Show this help",
             "  Enter                    Send current input to the session driver which forwards to gdb",
+            "  Up/Down                  Recall previously entered lines",
             "  run/start                Start a new debug session with current selected launch/attach configuration",
             "  continue                 Drive session execution (you can also use gdb aliases)",
             "  next/step/finish         Step through code (next/step-over, step-into, step-out/finish)",
@@ -171,14 +172,10 @@ export class AICockpit extends ManagedTab {
             "  reset/restart            Reset device or restart the session",
             "  !!send text              Send text (including newlines) to RTT/Serial port if there is only one",
             "  !!send [port] text       Send text (including newlines) to the specified RTT/Serial port",
-            "  !!                       Send attached AI a message",
+            "  !!ai text                Send attached AI a message",
             "  exit                     End the debug session (will do proper cleanup and then forward exit to gdb)",
             "",
         ].join("\n"));
-        /**
-         * TODO:
-         * History
-         */
     }
 
     public async startDebugSession(configName?: string) {

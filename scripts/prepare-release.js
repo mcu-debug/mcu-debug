@@ -74,9 +74,39 @@ function runCmd(args, extraEnv) {
     }
 }
 
+/** `[1, 2, 3]` style comparison, negative / zero / positive like any other comparator. */
+function compareVersions(a, b) {
+    for (let i = 0; i < 3; i++) {
+        if (a[i] !== b[i]) {
+            return a[i] - b[i];
+        }
+    }
+    return 0;
+}
+
+/**
+ * Work out which versions a bracketed heading covers.
+ *
+ *   [v0.1.18]              a range of one
+ *   [v0.1.18 - v0.1.25]    every version in between, inclusive
+ *
+ * The range form exists for mcu-debug-proxy, which is usually published only to stay in step
+ * with the main extension. Rather than a run of near-identical "no changes" sections, one
+ * heading covers the span -- shorter to read, and still a deliberate edit at release time.
+ *
+ * Returns null for a heading with no version in it at all, such as `[Unreleased]`.
+ */
+function parseHeadingRange(inner) {
+    const found = [...inner.matchAll(/v?-?(\d+)\.(\d+)\.(\d+)/g)].map((m) => [Number(m[1]), Number(m[2]), Number(m[3])]);
+    if (found.length === 0) {
+        return null;
+    }
+    return { lo: found[0], hi: found[found.length - 1] };
+}
+
 /**
  * Pull the section for `version` out of a Keep-a-Changelog style file: everything between the
- * `## [v<version>]` heading and the next `## ` heading. Returning the changelog text means the
+ * heading that covers it and the next `## ` heading. Returning the changelog text means the
  * GitHub release body and the Marketplace changelog tab cannot drift apart.
  */
 function extractChangelogSection(changelogPath, version) {
@@ -84,8 +114,22 @@ function extractChangelogSection(changelogPath, version) {
         return null;
     }
     const lines = fs.readFileSync(changelogPath, "utf8").split("\n");
-    const headingRe = new RegExp(`^##\\s+\\[?v?${version.replace(/\./g, "\\.")}\\]?`);
-    const start = lines.findIndex((l) => headingRe.test(l));
+    const exactRe = new RegExp(`^##\\s+\\[?v?${version.replace(/\./g, "\\.")}\\]?`);
+    const parsed = version.match(/^(\d+)\.(\d+)\.(\d+)/);
+    const target = parsed ? [Number(parsed[1]), Number(parsed[2]), Number(parsed[3])] : null;
+
+    const start = lines.findIndex((line) => {
+        if (!/^##\s/.test(line)) {
+            return false;
+        }
+        const inner = line.match(/^##\s+\[([^\]]+)\]/);
+        const range = inner && target ? parseHeadingRange(inner[1]) : null;
+        if (range) {
+            return compareVersions(target, range.lo) >= 0 && compareVersions(target, range.hi) <= 0;
+        }
+        // Headings without brackets keep the original exact-match behaviour.
+        return exactRe.test(line);
+    });
     if (start < 0) {
         return null;
     }
@@ -425,4 +469,10 @@ function main() {
     }
 }
 
-main();
+if (require.main === module) {
+    main();
+}
+
+// Exported so the changelog matching can be exercised on its own. Requiring this file must
+// never start a release, hence the guard above.
+module.exports = { extractChangelogSection, parseHeadingRange, compareVersions };

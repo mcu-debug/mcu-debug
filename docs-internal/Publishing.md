@@ -65,6 +65,34 @@ be treated that way, tick the pre-release box by hand on the GitHub release page
 Revisit this once there is a stable release to anchor Latest, or once we know how people
 actually consume these.
 
+## Changelog sections, and releases with nothing to say
+
+Both `packages/mcu-debug/CHANGELOG.md` and `packages/mcu-debug-proxy/CHANGELOG.md` must contain a
+section covering the version being released. The main extension's section also becomes the body
+of the GitHub release, so the release notes and the Marketplace changelog tab cannot drift apart.
+
+A missing section is a **warning in a dry run and an error in a real run** — deliberately, so the
+rehearsal still completes while the real thing stops and makes you write the entry.
+
+The proxy is usually published only to stay in step with the main extension, and a run of
+identical "no changes" sections reads worse than one heading that says so. A heading may
+therefore cover a span:
+
+```markdown
+## [v0.1.18 - v0.1.25] - 2026-09-??
+
+No changes. The version is kept in step with the main extension so that the two always install
+as a matched pair.
+```
+
+The version being released has to fall inside the range, inclusive. Both `[v0.1.18]` and
+`[v0.1.18 - v0.1.25]` satisfy the check for 0.1.18; only the second one also satisfies 0.1.19
+through 0.1.25.
+
+Extend the upper bound at release time rather than writing it far ahead: a range that already
+promises "no changes" up to a version that has not shipped is a claim nobody has checked, and
+if that release does carry a change the range has to be split anyway.
+
 ## Order: proxy first, then main
 
 `prepare-release.js` publishes `mcu-debug-proxy` before `mcu-debug`. Two reasons:
@@ -149,5 +177,7 @@ inversion section in [AGENTS.md](../AGENTS.md).
   `version:sync`, so building first catches uncommitted version churn.
 - Working tree clean, local branch in sync with origin.
 - `mcu-debug` and `mcu-debug-proxy` versions match.
+- Both changelogs have a section covering `v<version>` — a single heading or a range that
+  contains it.
 - Tag `v<version>` does not already exist locally or on origin.
 - Both expected VSIX files exist in `dist/` after packaging.
