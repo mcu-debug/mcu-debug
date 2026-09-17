@@ -21,6 +21,10 @@ The AI Cockpit panel uses [xterm.js](https://xtermjs.org/) for terminal renderin
 - **Configuration selector dropdown**: switch configurations without editing `launch.json`
 - **Session status indicator**: shows the current state (running, halted, disconnected)
 - **GDB command input line**: type GDB commands at the bottom of the panel
+- **Find**: `Ctrl+F` (`Cmd+F` on macOS) searches the output of the tab you are on, with match
+  case, whole word, and regular expression options. `Enter` and `Shift+Enter` step through
+  matches, as do `F3` and `Shift+F3`; `Escape` closes the bar. Every tab has its own search,
+  and the bar sits inside the output area so the tabs stay reachable while it is open
 
 ## Accessing the Panel
 
@@ -53,5 +57,6 @@ The panel has a **USER-REQUEST** button that prefixes your message with the `USE
 | Toolbar            | Yes              | No               |
 | Status indicator   | Yes              | No               |
 | Config selector    | Yes              | No               |
+| Find               | Yes              | Yes              |
 | Integrated with AI | Yes              | Manual           |
 | Scrollback         | Unlimited        | Unlimited        |

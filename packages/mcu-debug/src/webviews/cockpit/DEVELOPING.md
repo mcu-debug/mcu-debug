@@ -65,6 +65,9 @@ src/
   GlassCockpit.svelte  Three-region cockpit layout (terminal / AI-REQUEST / input).
   SourceTab.svelte   Single-source layout for UART, RTT, SWO. Input bar gated by direction prop.
   Terminal.svelte    xterm.js wrapper. Filters stream messages by tabId. 500ms/32KB throttle.
+                     Owns the search addon and the find state for its tab.
+  FindWidget.svelte  Find bar, presentation only. Sits inside the terminal region so it
+                     never covers the tab bar. Ctrl/Cmd+F, F3, Escape live in Terminal.svelte.
   AiRequest.svelte   Sticky AI-REQUEST section (cockpit tab only).
   InputBar.svelte    Single input line → user-input message.
 ```

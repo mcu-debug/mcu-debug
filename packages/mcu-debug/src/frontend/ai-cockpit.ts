@@ -180,7 +180,6 @@ export class AICockpit extends ManagedTab {
          * Search or Filter
          * History
          * Clear
-         * Cop
          */
     }
 

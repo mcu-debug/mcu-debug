@@ -19,6 +19,26 @@
   opened.** A new panel or CLI session used to open with a backlog that could be an hour old,
   with nothing to tell it apart from what the target was printing now
 
+### Find in the MCU DEBUG panel
+
+- **`Ctrl+F` searches the output of the tab you are on** (`Cmd+F` on macOS). Until now, finding
+  something in a long serial or RTT log meant scrolling and reading. The bar offers match case,
+  whole word, and regular expression, and keeps a running count of matches
+- `Enter` and `Shift+Enter` step through matches, as do `F3` and `Shift+F3`; `Escape` closes the
+  bar. The shortcut works wherever you are in the tab — the output, the input line, or the
+  search box
+- **Matches are marked beside the scrollbar**, the way the editor marks them, so you can see
+  where they fall in the scrollback rather than stepping through blindly
+- Every tab keeps its own search, output keeps arriving while the bar is open, and the bar sits
+  inside the output area rather than over the tabs, so you can still switch tabs while searching.
+  Searching covers the scrollback the tab is holding, not the full session log
+
+### Panel terminals
+
+- **The terminal engine was updated** (xterm.js 5.5 → 6.0, eighteen months of fixes). The change
+  you will notice is the scrollbar: it is now the same one the rest of VS Code uses, sized and
+  themed to match, in place of a plain browser scrollbar
+
 ## [v0.1.16] - 2026-09-13
 
 ### Seeing what the Probe Agent is doing

@@ -20,7 +20,9 @@
     import { Terminal } from "@xterm/xterm";
     import { FitAddon } from "@xterm/addon-fit";
     import { WebLinksAddon } from "@xterm/addon-web-links";
+    import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
     import type { ToUi } from "@mcu-debug/shared";
+    import FindWidget from "./FindWidget.svelte";
     import { postToExtension } from "./vscode";
     import "@xterm/xterm/css/xterm.css";
 
@@ -50,6 +52,19 @@
     let themeObserver: MutationObserver;
     let dataListener: { dispose(): void } | undefined;
     let terminalTextarea: HTMLTextAreaElement | undefined;
+
+    // Find state. The addon does the searching; everything the bar displays lives here.
+    let searchAddon: SearchAddon | undefined;
+    let resultsListener: { dispose(): void } | undefined;
+    let findWidget: { focusInput: (selectAll?: boolean) => void; ownsFocus: () => boolean } | undefined = $state(undefined);
+    let findOpen = $state(false);
+    let findQuery = $state("");
+    let findCaseSensitive = $state(false);
+    let findWholeWord = $state(false);
+    let findRegex = $state(false);
+    let findInvalidRegex = $state(false);
+    let findResultIndex = $state(-1);
+    let findResultCount = $state(0);
 
     const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
@@ -120,6 +135,13 @@
                 "--vscode-terminal-inactiveSelectionBackground",
                 isLight ? "rgba(0,0,0,0.15)" : "rgba(255,255,255,0.15)",
             ),
+            // The overview ruler draws its border whether or not anything is marked,
+            // and left undefined it comes out white — a hairline down the right edge.
+            overviewRulerBorder:
+                cs.getPropertyValue("--vscode-terminalOverviewRuler-border").trim() ||
+                cs.getPropertyValue("--vscode-editorOverviewRuler-border").trim() ||
+                cs.getPropertyValue("--vscode-panel-border").trim() ||
+                (isLight ? "#d4d4d4" : "#3c3c3c"),
         };
     }
 
@@ -258,6 +280,216 @@
         return true;
     }
 
+    // -------------------------------------------------------------------------
+    // Find
+    // -------------------------------------------------------------------------
+
+    /**
+     * The search addon wants #RRGGBB for its highlight colours, but VS Code theme
+     * variables are frequently rgba() or #RRGGBBAA. Convert what we can and fall
+     * back to something readable in the current light/dark mode otherwise.
+     */
+    function toHexColor(value: string, fallback: string): string {
+        const v = value.trim();
+        if (/^#[0-9a-f]{6}$/i.test(v)) return v;
+        if (/^#[0-9a-f]{8}$/i.test(v)) return v.slice(0, 7);
+        const parts = v
+            .match(/^rgba?\(([^)]+)\)$/i)?.[1]
+            .split(",")
+            .map((p) => parseFloat(p));
+        if (parts && parts.length >= 3 && parts.slice(0, 3).every((n) => Number.isFinite(n))) {
+            return `#${parts
+                .slice(0, 3)
+                .map((n) => Math.min(255, Math.max(0, Math.round(n))).toString(16).padStart(2, "0"))
+                .join("")}`;
+        }
+        return fallback;
+    }
+
+    function buildSearchDecorations() {
+        const isLight = document.body.className.includes("vscode-light");
+        const cs = getComputedStyle(document.body);
+        const match = toHexColor(
+            cs.getPropertyValue("--vscode-terminal-findMatchHighlightBackground") ||
+                cs.getPropertyValue("--vscode-editor-findMatchHighlightBackground"),
+            isLight ? "#f5c396" : "#623315",
+        );
+        const activeMatch = toHexColor(
+            cs.getPropertyValue("--vscode-terminal-findMatchBackground") ||
+                cs.getPropertyValue("--vscode-editor-findMatchBackground"),
+            isLight ? "#a8ac94" : "#515c6a",
+        );
+        // The marks beside the scrollbar have theme colours of their own. They are
+        // foreground marks on the ruler, not the translucent backgrounds painted behind
+        // text in the terminal, and VS Code gives them separate settings. Reusing the
+        // backgrounds here is what made our marks a blue-grey where the editor shows
+        // its find colour.
+        const rulerMatch = toHexColor(
+            cs.getPropertyValue("--vscode-terminalOverviewRuler-findMatchHighlightForeground") ||
+                cs.getPropertyValue("--vscode-terminalOverviewRuler-findMatchForeground") ||
+                cs.getPropertyValue("--vscode-editorOverviewRuler-findMatchForeground"),
+            "#d18616",
+        );
+        const rulerActiveMatch = toHexColor(
+            cs.getPropertyValue("--vscode-terminalOverviewRuler-findMatchForeground") ||
+                cs.getPropertyValue("--vscode-editorOverviewRuler-findMatchForeground"),
+            "#d18616",
+        );
+
+        return {
+            matchBackground: match,
+            matchOverviewRuler: rulerMatch,
+            activeMatchBackground: activeMatch,
+            activeMatchColorOverviewRuler: rulerActiveMatch,
+            activeMatchBorder: toHexColor(
+                cs.getPropertyValue("--vscode-terminal-findMatchBorder"),
+                isLight ? "#3b3b3b" : "#d4d4d4",
+            ),
+        };
+    }
+
+    function searchOptions(incremental: boolean): ISearchOptions {
+        return {
+            regex: findRegex,
+            wholeWord: findWholeWord,
+            caseSensitive: findCaseSensitive,
+            incremental,
+            decorations: buildSearchDecorations(),
+        };
+    }
+
+    /** Drop the counter only. The addon keeps its highlights and its place in the buffer. */
+    function resetResultDisplay() {
+        findResultIndex = -1;
+        findResultCount = 0;
+    }
+
+    /**
+     * Drop the highlights too. Only for an empty or unusable query, or a closed bar:
+     * clearDecorations() also forgets the addon's cached search term, and the addon
+     * uses that to decide whether to carry on from the current match or start over.
+     * Calling it before an ordinary search makes Enter find the same match forever.
+     */
+    function clearSearchResults() {
+        searchAddon?.clearDecorations();
+        resetResultDisplay();
+    }
+
+    function runSearch(direction: "next" | "previous", incremental = false) {
+        if (!searchAddon) return;
+        if (!findQuery) {
+            findInvalidRegex = false;
+            clearSearchResults();
+            return;
+        }
+        if (findRegex) {
+            try {
+                new RegExp(findQuery);
+            } catch {
+                // Half-typed patterns are normal while the engineer is still typing.
+                findInvalidRegex = true;
+                clearSearchResults();
+                return;
+            }
+        }
+        findInvalidRegex = false;
+        // Counts arrive through onDidChangeResults, fired synchronously inside the
+        // call below. Reset first so a search that reports nothing cannot leave the
+        // previous count sitting on screen.
+        resetResultDisplay();
+        const found =
+            direction === "next"
+                ? searchAddon.findNext(findQuery, searchOptions(incremental))
+                : searchAddon.findPrevious(findQuery, searchOptions(false));
+        if (!found) {
+            // Believe the return value over the reported count. The addon reports the
+            // number of highlights it is holding, which can outlive a search that
+            // matched nothing, and an unmatched search has no active result either.
+            resetResultDisplay();
+        }
+    }
+
+    function openFind() {
+        findOpen = true;
+        // The bar is only in the DOM once findOpen has rendered.
+        requestAnimationFrame(() => findWidget?.focusInput());
+        if (findQuery) {
+            runSearch("next");
+        }
+    }
+
+    function closeFind() {
+        if (!findOpen) return;
+        findOpen = false;
+        findInvalidRegex = false;
+        clearSearchResults();
+        term?.focus();
+    }
+
+    function handleFindQueryChange(text: string) {
+        findQuery = text;
+        runSearch("next", true);
+    }
+
+    function handleFindToggle(which: "caseSensitive" | "wholeWord" | "regex") {
+        if (which === "caseSensitive") {
+            findCaseSensitive = !findCaseSensitive;
+        } else if (which === "wholeWord") {
+            findWholeWord = !findWholeWord;
+        } else {
+            findRegex = !findRegex;
+        }
+        // addon 0.16 records the new options before deciding whether its highlights
+        // need recomputing, so it cannot notice a toggle on its own and would keep
+        // showing matches for the old settings. Dropping the decorations forces a
+        // fresh pass. (0.15 compared the options before storing them.)
+        searchAddon?.clearDecorations();
+        runSearch("next");
+    }
+
+    /**
+     * Find shortcuts are handled on window during capture so they work wherever focus
+     * is within the tab — terminal, input bar, or the find box — and never reach
+     * xterm.js as input. Only the active tab responds, so the shortcut always lands
+     * on the terminal the engineer is looking at.
+     */
+    function handleWindowKeydown(event: KeyboardEvent) {
+        if (!active) return;
+        const primaryModifier = isMac ? event.metaKey : event.ctrlKey;
+        const lowerKey = event.key.toLowerCase();
+
+        if (primaryModifier && !event.altKey && !event.shiftKey && lowerKey === "f") {
+            // A raw-mode input bar forwards Ctrl+<letter> to the device — leave it be.
+            if (!isMac && event.target instanceof HTMLInputElement && !findWidget?.ownsFocus()) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            if (findOpen) {
+                findWidget?.focusInput();
+            } else {
+                openFind();
+            }
+            return;
+        }
+
+        if (findOpen && event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            closeFind();
+            return;
+        }
+
+        // F3 everywhere; Cmd+G only on macOS, where Ctrl+G is not a device shortcut.
+        const findAgain = event.key === "F3" || (isMac && primaryModifier && !event.altKey && lowerKey === "g");
+        if (findAgain && findQuery) {
+            event.preventDefault();
+            event.stopPropagation();
+            findOpen = true;
+            runSearch(event.shiftKey ? "previous" : "next");
+        }
+    }
+
     function flush() {
         if (!term) return;
         if (flushTimer !== null) {
@@ -334,6 +566,14 @@
         term = new Terminal({
             scrollback: 10_000,
             convertEol: true,
+            // The search addon highlights matches with terminal decorations, and
+            // registerDecoration is proposed API — without this every search throws.
+            allowProposedApi: true,
+            // Give the overview ruler a width so search hits are marked beside the
+            // scrollbar, the way the editor marks matches. Without a width the ruler
+            // is never rendered, and the ruler colours we hand the search addon do
+            // nothing at all.
+            overviewRuler: { width: 14 },
             theme: buildXtermTheme(),
             fontFamily,
             fontSize,
@@ -342,6 +582,12 @@
         fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
         term.loadAddon(new WebLinksAddon());
+        searchAddon = new SearchAddon();
+        term.loadAddon(searchAddon);
+        resultsListener = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+            findResultIndex = resultIndex;
+            findResultCount = resultCount;
+        });
         term.open(container);
         term.attachCustomKeyEventHandler(handleTerminalKeyEvent);
         if (allowKeyboardInput) {
@@ -384,11 +630,18 @@
             earlyBuffer = "";
         }
 
+        window.addEventListener("keydown", handleWindowKeydown, { capture: true });
+
         // Signal to the extension that this terminal is ready to receive stream data.
         postToExtension({ type: "terminal-ready", tabId });
 
         return () => {
             flush();
+            window.removeEventListener("keydown", handleWindowKeydown, { capture: true });
+            resultsListener?.dispose();
+            resultsListener = undefined;
+            searchAddon?.dispose();
+            searchAddon = undefined;
             dataListener?.dispose();
             dataListener = undefined;
             terminalTextarea?.removeEventListener("copy", handleClipboardCopy);
@@ -417,6 +670,23 @@
 
 <div class="terminal-wrap">
     <div class="xterm-container" bind:this={container}></div>
+    {#if findOpen}
+        <FindWidget
+            bind:this={findWidget}
+            query={findQuery}
+            caseSensitive={findCaseSensitive}
+            wholeWord={findWholeWord}
+            regex={findRegex}
+            invalidRegex={findInvalidRegex}
+            resultIndex={findResultIndex}
+            resultCount={findResultCount}
+            onQueryChange={handleFindQueryChange}
+            onToggle={handleFindToggle}
+            onNext={() => runSearch("next")}
+            onPrevious={() => runSearch("previous")}
+            onClose={closeFind}
+        />
+    {/if}
     {#if bufferLines > 0}
         <div class="buffer-badge">▼ +{bufferLines.toLocaleString()} lines buffered</div>
     {/if}
@@ -433,6 +703,37 @@
         width: 100%;
         height: 100%;
         font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+    }
+
+    /*
+     * xterm 6 draws VS Code's own scrollbar widget, but with its colours baked in —
+     * the only theme variable it reads is --vscode-scrollbar-shadow. Map the slider
+     * onto the theme so it matches every other scrollbar in the window.
+     */
+    .terminal-wrap :global(.xterm-scrollable-element > .scrollbar > .slider) {
+        background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+    }
+
+    .terminal-wrap :global(.xterm-scrollable-element > .scrollbar > .slider:hover) {
+        background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+    }
+
+    .terminal-wrap :global(.xterm-scrollable-element > .scrollbar > .slider.active) {
+        background: var(--vscode-scrollbarSlider-activeBackground, rgba(191, 191, 191, 0.4));
+    }
+
+    /*
+     * The old .xterm-viewport still carries overflow-y: scroll while the scrollable
+     * element above does the actual scrolling. macOS overlay scrollbars keep that
+     * hidden, but Windows and Linux would paint a second bar beside VS Code's.
+     * Hiding a scrollbar does not stop the element scrolling.
+     */
+    .terminal-wrap :global(.xterm-viewport) {
+        scrollbar-width: none;
+    }
+
+    .terminal-wrap :global(.xterm-viewport::-webkit-scrollbar) {
+        display: none;
     }
 
     .buffer-badge {
