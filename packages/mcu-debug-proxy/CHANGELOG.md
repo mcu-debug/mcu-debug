@@ -11,7 +11,7 @@ extension's
 
 ## [Unreleased]
 
-## [v0.1.17] - 2026-09-17
+## [v0.1.17] - 2026-09-16
 
 - More comprehensive proxy status
 - Fix issue with serving a serial port to multiple clients.
