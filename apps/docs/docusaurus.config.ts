@@ -42,7 +42,7 @@ const config: Config = {
   // root, which also lets writing-skills.mdx raw-load it as `/mcu-debug-fw.md`.
   staticDirectories: [
     'static',
-    '../../packages/mcu-debug/support/skills/mcu-debug-fw',
+    '../../packages/mcu-debug/support/skills',
   ],
 
   markdown: {
