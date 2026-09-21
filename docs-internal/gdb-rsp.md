@@ -5,17 +5,33 @@ a memory read in 0.5 ms on a connection that itself has a `c` outstanding (§7, 
 tier is `Full`. **Phase 1 complete; Phase 2 complete bar item 11b** — `mux.rs` (core,
 sans-IO), `chunk.rs` (splitting and reassembly, sans-IO) and `channel.rs` (the threaded shell that
 owns the byte streams) are written and tested: 146 tests in `packages/mdbg/src/gdb_rsp/`.
-**Phase 3 item 13 (Rust half) done** — `StreamKind`/`StreamRole` and the `stream_id → {name, kind}`
+**Phase 3 items 13 and 14 done** — `StreamKind`/`StreamRole` and the `stream_id → {name, kind}`
 map on `ProxyServer`, classified at allocation; `handle_duplicate_stream` marks its stream
-`Secondary`. Item 13's wire fields (`packet_size`, mux listener port on `PortReserved`) are deferred
-until the TypeScript side consumes them — item 14 does not need them.
+`Secondary`; and `rsp_mux.rs` now gives the mux the gdb-server socket for a core's controller
+`gdbPort` stream, in both directions. Item 13's wire fields (`packet_size`, mux listener port on
+`PortReserved`) are deferred until the TypeScript side consumes them — item 14 did not need them.
 
-**Nothing is wired in yet.** The `gdb_rsp` module has no callers outside its own `pub mod` line, and
-nothing reads `stream_meta` except `handle_duplicate_stream` populating it. Runtime behaviour is
-unchanged, and **item 14 is the first change that can alter it** — worth its own branch.
+**The mux is now in the path** (branch `rsp-mux`), with no consumers attached: every byte still goes
+between GDB and the gdb-server and nothing else is injected. Verified end to end against a fake RSP
+server through the real `mdbg proxy` binary — classification, mux ownership, the direct forwarder
+standing down, both directions of traffic, the state model reaching `Stopped`, and the trace file.
+Two switches exist for the hardware pass:
 
-**Next: item 14**, which unlocks the **item 15 real-board pass-through test**. Item 11b is not on
-that path.
+- **`--no-rsp-mux`** restores the old byte-for-byte `read_and_forward` path on the same binary, so a
+  suspected mux regression can be confirmed or cleared in one run instead of a rebuild. That
+  comparison _is_ the item-15 measurement.
+- **`debugFlags.rspTrace: "off" | "packets" | "all"`** writes the §4.7.3 trace to
+  `rsp-trace-<stream>-<pid>-<n>.txt` beside the proxy log, logging the full path at `info`.
+  `debugFlags.rspMux: false` is the per-session form of the escape hatch. Both ride on `initialize`;
+  `--rsp-trace` and `--no-rsp-mux` are that proxy's defaults, which a session overrides (§4.7.3).
+
+**Item 15 is part-done on hardware.** A dual-core PSoC 6 session under OpenOCD classified all ten
+streams correctly, put the mux on the controller `gdbPort1` only, and left the live-watch GDB —
+arriving via `duplicateStream` — as `Secondary` on `read_and_forward`, with no mux and no errors.
+Setup cost measured at **60–80 µs** on the message-loop thread. Real caps read back:
+`PacketSize=16384`, hex read and write. What remains is the steady-state half: a
+`debugFlags.rspTrace: "packets"` run to see OpenOCD's real packet mix, and the A/B against
+`rspMux: false`. Item 11b is not on that path.
 
 _Known unrelated flake:_ `proxy_helper::listeners::tests::two_specific_addresses_can_share_a_port`
 fails intermittently (port-binding race, pre-existing, untouched by this work) — don't read it as a
@@ -352,6 +368,45 @@ Each of these kills an otherwise-reasonable implementation.
     of the core, shared by all consumers and all GDB clients on it** — one state machine per mux,
     not one per attached client (§4.7).
 
+### 3.11 GDB going away is only sometimes visible on the wire
+
+Settled from `gdb/remote.c`, because it decides whether the mux can notice this itself or has to be
+told. GDB has **two** ways to leave, and only one of them says so:
+
+| GDB command  | On the wire                     | Source                                       |
+| ------------ | ------------------------------- | -------------------------------------------- |
+| `detach`     | `D`, answered `OK`              | `remote_detach_1`, `remote.c:6428`           |
+| `disconnect` | **nothing** — socket close only | `remote_target::disconnect`, `remote.c:6626` |
+
+The comment directly above `disconnect` is explicit: _"Same as remote_detach, but don't send the `D`
+packet; just disconnect."_ OpenOCD handles both ends of this — `case 'D'` → `gdb_detach()`, plus a
+`connection_closed_handler` for the silent case (`gdb_server.c:3746`, `:1138`).
+
+Three consequences for the mux:
+
+1. **`D` is a free, reliable signal** for the clean case, and it is the mux's cue to reset the GDB
+   side: drop GDB's pending entries, reset ack mode, re-learn caps on the next `qSupported`. Our own
+   pending requests survive it — they are still legitimate.
+2. **`disconnect` gives the mux nothing at all**, by design. The socket that closes is GDB's, and it
+   terminates on the _client_ side; the Agent's socket to the gdb-server is untouched. So this case
+   cannot be detected in-band at any level of cleverness.
+3. Therefore the backstop is **`qSupported` from the GDB side means a new GDB**, whatever happened
+   before. It is self-synchronising: it needs no notification, no cooperation from a detach the
+   server may mishandle, and no clean shutdown — which matters, because teardown is exactly when the
+   debug adapter is most likely to be killed mid-flight.
+
+**The mux must never delay or swallow a `D`.** Refusing a detach leaves the firmware in whatever
+state the halt left it, which is a real cost to the user and the thing several upstream detach fixes
+(OpenOCD, and a SEGGER fix for J-Link) were about. GDB's frames are forwarded unconditionally in
+`on_gdb_bytes` — never gated by pipelining depth or by the server tier, which apply only to packets
+_we_ inject — so this holds by construction and is worth a test that says so.
+
+A GDB **reconnect** on a connection that already negotiated `QStartNoAckMode` is a separate hazard
+and not one the mux creates: the server stays in no-ack mode on that socket for ever, while a fresh
+GDB expects acks. The mux cannot fix it — it cannot put the server back — but it is the only thing
+positioned to _notice_ it, so it should say so in the log and the trace rather than leave GDB
+retransmitting into silence.
+
 ---
 
 ## 4. The multiplexer
@@ -626,6 +681,7 @@ has grown more attractive in light of §2:
 - It would **remove the need for `CDLiveWatchSetup` entirely** — no `-gdb-max-connections` bump, no
   Tcl helper the user has to load before `init`, and no equivalent to invent for every other
   server.
+- **It would stop a second connection wiping the first one's breakpoints — see §4.7.4.**
 - It would let the mux _give_ a secondary the run/stop state no server can send it (see above: RSP has
   no resume notification, so this is not a server shortcoming to wait out). That is a capability the
   current architecture cannot provide at all.
@@ -635,6 +691,70 @@ half): separate `qSupported` negotiation, separate ack mode, separate `Hg`, sepa
 windows, and an ownership policy for `Z`/`z` — which is per-core state that two GDBs would both
 believe they own. That last one is the hard part and is not a small design. Out of scope here;
 recorded in §12 q4, and the Phase-2 FIFO should be written so as not to preclude it.
+
+### 4.7.4 A second GDB connection wipes breakpoints and watchpoints (OpenOCD)
+
+`gdb_new_connection()` (`src/server/gdb_server.c:1023`) calls, unconditionally:
+
+```c
+breakpoint_remove_all(target);
+watchpoint_remove_all(target);
+```
+
+It is registered as `.new_connection_handler` (`:3934`), so it runs for **every** connection, and
+`gdb_actual_connections++` happens _after_ these lines — there is not even a latent guard. The removal
+reaches the hardware rather than just OpenOCD's bookkeeping: `breakpoint_remove_all` →
+`breakpoint_remove_all_internal` → `breakpoint_free` → `target_remove_breakpoint`
+(`src/target/breakpoints.c:295`). On an SMP group it hits every target in the group.
+
+**It dates from 2008** — `a71ca65c5`, "Clear all dangling breakpoints upon GDB connection". Commit
+`e5888bda3` (Aug 2025) only renamed the calls from `breakpoint_clear_target`; the old function was
+line-for-line the same logic through the same `breakpoint_remove_all_internal`. (Its watchpoint half
+did change behaviour for SMP groups, per that commit's own message.)
+
+The consequence worth planning around: **no OpenOCD version is free of this**, so the decade-old
+builds still shipping in some distributions behave exactly like master. There is nothing to backport
+and nothing to wait for, which means a workaround has to exist on our side regardless — as one has,
+in the debug adapter, for years.
+
+**How much it hurts depends on GDB's insertion mode, and the default mostly saves us.**
+`set breakpoint always-inserted` defaults to **off**: _"breakpoints are inserted only when execution
+continues, and removed when execution stops"_ (`gdb/breakpoint.c`, the setting's own help text). So:
+
+| When the second connection arrives             | Effect                                                                                                                                  |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Target **halted** (our normal live-watch flow) | Near-no-op — GDB had already removed them at the last stop, and re-inserts on the next continue                                         |
+| Target **running**                             | **Breakpoints yanked out of hardware; GDB is never told.** The target runs past them until the next stop→continue cycle re-inserts them |
+| `always-inserted on`                           | Gone until the user deletes and recreates them                                                                                          |
+
+Watchpoints are the larger exposure: they are typically set once and left, so nothing re-inserts them
+on the next resume the way breakpoints get re-inserted.
+
+Two things follow:
+
+1. **The cleanup is in the wrong place, and guarding it on the connection count would not fix it.**
+   The comment justifies the removal as cleaning up after _"a previous GDB session [that] could leave
+   dangling breakpoints if e.g. communication timed out"_ — but that is a **detach** obligation, and
+   `gdb_connection_closed()` (`:1140`) does no breakpoint or watchpoint cleanup at all. Doing it on
+   connect instead breaks the one operation that must never disturb target state: **an attach.** That
+   is why debuggers attach first and only then reset, which is what re-establishes breakpoints for a
+   launch-type session; an attach-type session attaches and goes, and must find the target as it left
+   it. A `gdb_actual_connections == 0` guard would still wipe on the first connection, so it would
+   still break attach — it would only narrow the damage. The fix belongs in the close path.
+2. **It is an argument for the maximal mux (§12 q4) that has nothing to do with performance.** One
+   connection means `gdb_new_connection` runs once, so no arrival of a live-watch or second user GDB
+   can disturb target state at all. Every other server in §7 needs checking for the same pattern.
+
+**Decision recorded:** once §7's matrix is filled, **live watch moves onto the controller session** for
+every server that supports it — no second GDB connection, so none of this applies. A mixed fleet, if
+one turns up, is a bridge to cross then. Note also that OpenOCD's own documentation describes the
+second-GDB-connection method for inspecting memory, which is where our live-watch design came from;
+that makes the wipe-on-connect a documented approach undermined by its own implementation.
+
+**Adapter-side, meanwhile:** the live-watch GDB has to connect **before** we send `InitializedEvent`,
+because VS Code sets its breakpoints immediately after that event, and a connection arriving later
+wipes them. Today it is started lazily, which puts it in a race with exactly those breakpoints. That
+is a debug-adapter sequencing fix, tracked separately from this design.
 
 ### 4.7.1 Chunking belongs in the Agent, not in the clients
 
@@ -812,6 +932,28 @@ ever wanted, are command-line flags.
 
 > **Editing note:** `debugFlags` is declared in `packages/mcu-debug/manifest-src/definitions.js`.
 > `package.json` is **generated** from it — editing the manifest directly is lost on the next build.
+
+**Built, and per session, which is the only thing that can work.** `debugFlags.rspTrace` and
+`debugFlags.rspMux` travel on `initialize` as `SessionDebugFlags` — per connection, therefore per
+session. This is not a preference: **a proxy is a shared daemon serving several sessions and clients
+at once**, so a process-wide switch cannot express "trace _this_ session". Turning tracing on would
+trace everybody's, and turning the mux off would take it out of the path for someone else's session
+mid-debug.
+
+`--rsp-trace` and `--no-rsp-mux` remain as that proxy's **defaults**, for a dev daemon you want set
+one way throughout; a session's own value overrides them. Only the two flags the Agent can act on are
+on the wire — the client maps them across rather than forwarding `debugFlags` wholesale, which keeps
+the protocol in snake_case and out of the launch schema's business.
+
+One consequence worth recording: these flags must **not** count towards the extension's `anyFlags`,
+which means "print my own debug output". Without the exclusion (`AGENT_DEBUG_FLAGS` in
+`servers/common.ts`, applied in `gdb-session.ts` and `cli/main.ts`), `rspMux: true` would silently
+switch on every GDB/MI trace in the Debug Console — and the two would behave differently from each
+other purely because one happens to be a string.
+
+One file per muxed stream, named `rsp-trace-<stream>-<pid>-<n>.txt` in the proxy's log directory. The
+`<n>` is not decoration: one proxy serves many sessions and stream ids restart at 3 in each, so pid
+and name alone would have two concurrent sessions interleaving into one file.
 
 ### 4.8 How mux clients must behave
 
@@ -1343,16 +1485,42 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
       `portsNeeded`.
       _This enum is also what [Stream-Flow-Control.md](./Stream-Flow-Control.md) needs for its own
       throttling policy — one classification serves both._
-- [ ] **14.** Give the mux ownership of the server socket for `StreamKind::GdbRsp` streams,
+- [x] **14.** Give the mux ownership of the server socket for `StreamKind::GdbRsp` streams,
       replacing that stream's `read_and_forward` and the direct `pinfo.stream` write in
       `message_loop`. **One mux, on the core's controller `GdbRsp` stream only** (§4.7) — the
       connection that drives execution, and so the only one with a usable run-state model. Secondary
       streams from `handle_duplicate_stream` (the live-watch GDB) keep `read_and_forward` as today and
       are not the mux's concern.
+      _Done in `proxy_server/rsp_mux.rs`, the only file that names both `gdb_rsp` and the proxy._
+      Three things were not obvious until the wiring was written:
+      **(a)** the decision has to be made on the message-loop thread, where `stream_meta` lives, and
+      _sent_ to the port waiter — which is already holding a read clone and would otherwise read it
+      too. Two readers on one socket do not duplicate traffic, they **split** it, so each thread gets
+      part of every packet. Hence `StreamForward::{Direct, MuxOwned}` returned on the existing
+      readiness handshake, one decision point instead of two.
+      **(b)** the mux gets two fresh `try_clone`s and `message_loop` keeps `pinfo.stream`, because the
+      remaining uses of that field are all `is_some()` liveness checks (`StreamStatus`,
+      `DuplicateStream`, `StartStream`). The single write site is now behind the `rsp_channels`
+      lookup, so the two paths can never both be live for one stream.
+      **(c)** the mux must start _before_ the stream is registered, or GDB's first bytes could be
+      written straight to the socket and the mux would take over mid-packet.
 - [ ] **15.** End-to-end pass-through validation: a real debug session against OpenOCD with the mux
       in the path and **no consumers attached** must be indistinguishable from today — same
       behaviour, no measurable added latency. This is the gate before any consumer work; if it
       does not hold, nothing after it matters.
+      **`--no-rsp-mux` is the control arm**: the same binary, the same session, the old
+      `read_and_forward` path. Run it both ways and compare rather than comparing against memory.
+      `--rsp-trace packets` on the mux arm shows what actually crossed the wire; the round-trip times
+      on it are the latency figure this item asks for.
+      _Already passing against a fake RSP server through the real proxy binary_ — classification, mux
+      ownership, the waiter standing down, both directions byte-for-byte, `TargetState::Stopped`
+      observed from the `?` reply, and the trace file written. That clears the wiring; only hardware
+      can clear the timing and OpenOCD's real packet mix.
+- [ ] **15b.** Act on §3.11: reset the GDB side of `MuxCore` on `D`+`OK` and on a fresh `qSupported`,
+      and log the no-ack-reconnect hazard when it is detectable. Tests: a `D` is forwarded even with
+      our own request in flight, and a second `qSupported` clears the previous GDB's pending entries
+      without touching ours. No wire change and no client cooperation — which is the point, since
+      `disconnect` is invisible to us and teardown is when the adapter is most likely to be killed.
 - [ ] **16.** Publish the mux's observations to interested parties (`TargetState` changes, `RspCaps`,
       GDB disconnect). **No per-core state extraction needed** — §4.7's controller rule means the only
       connection ever muxed is the one that resumes, so `MuxCore`'s own `StateTracker` is correct by
@@ -1364,6 +1532,10 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
 - [x] **17b (OpenOCD).** Run on hardware: both critical cells **YES** — `m` answered in 0.5 ms with a
       `c` outstanding on the same connection, and a resume issued on conn2 answered on conn2. Tier
       **`Full`**. §7's OpenOCD column is complete.
+- [ ] **16b.** Check each server in §7 for the §4.7.4 pattern — target state disturbed by the mere
+      arrival of a second GDB connection. OpenOCD wipes breakpoints and watchpoints; the others are
+      unknown and `rsp-probe` cannot see it, since it is a side effect on the _first_ connection.
+      Worth an upstream one-liner for OpenOCD regardless of what we do here.
 - [ ] **17c.** The other five: J-Link, ST-LINK, pyOCD, probe-rs, QEMU. Closed source or a different
       architecture, so `rsp-probe` is the only way in — there is no chain to trace as there was for
       OpenOCD.

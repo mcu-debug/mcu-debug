@@ -752,6 +752,8 @@ mod tests {
             shutdown: false,
             all: false,
             close_serial: None,
+            no_rsp_mux: false,
+            rsp_trace: "off".to_string(),
             daemonized: true,
         };
         let admin_ctx = Arc::new(AdminContext {

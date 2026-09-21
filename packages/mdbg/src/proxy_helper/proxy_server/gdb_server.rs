@@ -32,6 +32,13 @@ use crate::proxy_helper::port_monitor::wait_for_ports;
 
 use super::*;
 
+/// How long a port waiter will keep trying to connect to the gdb-server.
+///
+/// Short on purpose, and safe to be: the port monitor has already *observed* the
+/// server listening before any of this runs, so this is a loopback connect to a live
+/// listener rather than a wait for one to appear.
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(30);
+
 // ── Free helpers (used only within this module) ───────────────────────────────
 
 /// Read from `reader` in a loop and send each chunk to `tx` as a `StreamData`
@@ -59,11 +66,16 @@ fn read_and_forward<R: Read>(stream_id: u8, mut reader: R, tx: Sender<ProxyEvent
 }
 
 /// Return value from [`ProxyServer::wait_and_connect_sync`].
+///
+/// There was once a third variant for a *probe* connection that reported readiness and
+/// hung up. It is gone, and deliberately: a TCP connect to a gdb RSP port is
+/// indistinguishable from GDB arriving, so probing one makes the server fire its attach
+/// events and then wait for traffic that never comes. Readiness is established by
+/// watching for a listening socket instead (`port_monitor::wait_for_ports`), and the only
+/// connection this proxy ever opens is one it intends to keep.
 pub enum WaitPortResult {
-    /// A live TCP stream (when `keep_open == true`).
+    /// A live TCP stream, to be forwarded.
     Stream(TcpStream),
-    /// Port responded to a probe connection (`keep_open == false`).
-    Ready,
     /// The session was cancelled while still waiting for the port.
     Cancelled,
 }
@@ -98,12 +110,20 @@ impl ProxyServer {
             version,
             workspace_uid,
             session_uid,
+            debug_flags,
         } = &msg.request
         {
             eprintln!(
                 "Received Initialize request with version {} and token {:?} and workspace_uid {:?} and session_uid {:?}",
                 version, token, workspace_uid, session_uid
             );
+            // Stored before the token and version checks below can reject the connection,
+            // which is deliberate: if this session is about to be refused, the reasons are
+            // exactly what someone would want traced.
+            if let Some(flags) = debug_flags {
+                eprintln!("Session debug flags: {:?}", flags);
+                self.debug_flags = flags.clone();
+            }
             // Collected rather than assigned one at a time: these used to overwrite a single
             // `err_msg`, so a client that was both unauthenticated *and* mismatched was told
             // only about the version — and then "fixed" that without ever learning the token
@@ -378,24 +398,17 @@ impl ProxyServer {
         }
     }
 
-    pub(super) fn spawn_port_waiters(&mut self, ports: Vec<(u8, u16)>, keep_open: bool, msg_seq: u64) {
+    /// Connect to a gdb-server port and forward it, one waiter thread per port.
+    ///
+    /// `msg_seq` is the seq of the `StartStream`/`DuplicateStream` request that asked for
+    /// this, and is always a real request seq: those two handlers are the only callers,
+    /// and client seqs begin at 1. Nothing here is reached without a client asking.
+    pub(super) fn spawn_port_waiters(&mut self, ports: Vec<(u8, u16)>, msg_seq: u64) {
         for (stream_id, port) in ports {
             let event_tx = self.event_tx.clone();
             let cancel = self.cancel.clone();
             spawn_session_thread(&self.event_tx, SessionThreadRole::PortWaiter, move || {
-                let duration = if msg_seq != 0 {
-                    Duration::from_millis(30)
-                } else {
-                    Duration::from_secs(10 * 60)
-                };
-                match Self::wait_and_connect_sync(port, duration, keep_open, &cancel) {
-                    Ok(WaitPortResult::Ready) => {
-                        eprintln!(
-                            "Port {} is ready for stream {}, but keep_open is false, not forwarding",
-                            port, stream_id
-                        );
-                        event_tx.send(ProxyEvent::PortReady { stream_id, port }).ok();
-                    }
+                match Self::wait_and_connect_sync(port, CONNECT_TIMEOUT, &cancel) {
                     Ok(WaitPortResult::Stream(tcp_stream)) => {
                         eprintln!(
                             "Connected to stream_id {} port {}, starting forwarding",
@@ -419,12 +432,25 @@ impl ProxyServer {
                             );
                             return;
                         }
-                        if ready_rx.recv_timeout(Duration::from_secs(2)).is_err() {
-                            eprintln!(
-                                "Timed out waiting for stream {} registration; not starting forwarder",
-                                stream_id
-                            );
-                            return;
+                        match ready_rx.recv_timeout(Duration::from_secs(2)) {
+                            Ok(StreamForward::Direct) => {}
+                            Ok(StreamForward::MuxOwned) => {
+                                // The RSP multiplexer owns this socket and runs its own
+                                // reader. Returning here drops our read clone; reading
+                                // it too would not duplicate the traffic, it would
+                                // *split* it -- whichever thread called `read` first
+                                // would take those bytes and the other would never see
+                                // them, leaving both with half of every packet.
+                                eprintln!("Stream {} is multiplexed; no direct forwarder for it", stream_id);
+                                return;
+                            }
+                            Err(_) => {
+                                eprintln!(
+                                    "Timed out waiting for stream {} registration; not starting forwarder",
+                                    stream_id
+                                );
+                                return;
+                            }
                         }
                         // Small delay to ensure the proxy client thread has fully processed
                         // the PortConnected event before we start forwarding data.
@@ -452,9 +478,9 @@ impl ProxyServer {
 
     pub(super) fn handle_start_stream(&mut self, stream_id: u8, msg_seq: u64) {
         if let Some(pinfo) = self.streams.get_mut(&stream_id) {
-            if pinfo.stream.is_none() {
+            if !pinfo.conn.is_connected() {
                 let ports = vec![(stream_id, pinfo.port)];
-                self.spawn_port_waiters(ports, true, msg_seq);
+                self.spawn_port_waiters(ports, msg_seq);
             } else {
                 eprintln!("Stream {} is already connected", stream_id);
             }
@@ -465,7 +491,7 @@ impl ProxyServer {
 
     pub(super) fn handle_duplicate_stream(&mut self, stream_id: u8, msg_seq: u64) {
         if let Some(pinfo) = self.streams.get_mut(&stream_id) {
-            if pinfo.stream.is_some() {
+            if pinfo.conn.is_connected() {
                 let port = pinfo.port;
                 let cur_stream_id = self.next_stream_id;
                 self.next_stream_id += 1;
@@ -505,10 +531,10 @@ impl ProxyServer {
                     PortInfo {
                         port,
                         stream_id: cur_stream_id,
-                        stream: None,
+                        conn: StreamConn::Idle,
                     },
                 );
-                self.spawn_port_waiters(vec![(cur_stream_id, port)], true, msg_seq);
+                self.spawn_port_waiters(vec![(cur_stream_id, port)], msg_seq);
             } else {
                 eprintln!(
                     "Received DuplicateStream for stream_id {} which is not currently connected, ignoring",
@@ -520,12 +546,7 @@ impl ProxyServer {
         }
     }
 
-    pub(super) fn wait_and_connect_sync(
-        port: u16,
-        timeout: Duration,
-        keep_open: bool,
-        cancel: &AtomicBool,
-    ) -> Result<WaitPortResult> {
+    pub(super) fn wait_and_connect_sync(port: u16, timeout: Duration, cancel: &AtomicBool) -> Result<WaitPortResult> {
         eprintln!("Waiting for connection on port {} with timeout {:?}", port, timeout);
         let deadline = Instant::now() + timeout;
         let mut interval = Duration::from_millis(100);
@@ -540,18 +561,8 @@ impl ProxyServer {
                 return Ok(WaitPortResult::Cancelled);
             }
             match TcpStream::connect(("127.0.0.1", port)) {
-                Ok(stream) => {
-                    if keep_open {
-                        return Ok(WaitPortResult::Stream(stream));
-                    } else {
-                        stream.shutdown(std::net::Shutdown::Both).ok();
-                        return Ok(WaitPortResult::Ready);
-                    }
-                }
+                Ok(stream) => return Ok(WaitPortResult::Stream(stream)),
                 Err(_) => {
-                    if !keep_open {
-                        return Ok(WaitPortResult::Ready);
-                    }
                     std::thread::sleep(interval);
                     interval = (interval * 2).min(Duration::from_millis(200));
                 }

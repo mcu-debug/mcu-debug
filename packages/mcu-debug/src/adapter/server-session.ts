@@ -31,6 +31,50 @@ const SERVER_TYPE_MAP: { [key: string]: any } = {
     external: ExternalServerController,
 };
 
+// The proxy connection belonging to the most recent session in this process, until that
+// session cleans it up.
+//
+// It exists because a debug adapter can outlive its debug session. In production each
+// session gets its own adapter process, so a session that fails to clean up is covered by
+// the process exiting -- the socket closes with it and the proxy reaps the gdb-server it
+// launched. **When the adapter runs in server mode, which is how it runs while being
+// debugged itself, one process serves session after session.** There the socket has no
+// reason to close, so an interrupted teardown leaves the proxy holding a live session, and
+// its gdb-server keeps the debug probe. The next launch then fails to claim the probe, with
+// the reason buried in the gdb-server output rather than anywhere obvious.
+//
+// Cleaning up at the *start* of the next session rather than the end of the last one is the
+// point: teardown is exactly when VS Code may stop waiting and kill us, and `finishSession`
+// reaches the proxy only after detaching GDB -- the step that is least reliable. Startup has
+// no such deadline, and by then the previous session's GDB is long gone, so there is nothing
+// left to sequence against.
+let liveProxyClient: ProxyClient | null = null;
+
+/**
+ * End a proxy session that a previous debug session left behind, before starting a new one.
+ *
+ * Waits for the graceful `endSession` rather than just dropping the socket, because the proxy
+ * kills and *reaps* the gdb-server before answering it -- so the acknowledgement is what
+ * proves the probe has been released. Dropping the socket and launching immediately would
+ * race the old gdb-server's death and hit the same probe conflict it is meant to avoid.
+ * `ProxyClient.stop()` destroys the socket regardless of how that goes.
+ */
+async function reapStaleProxyClient(session: GDBDebugSession): Promise<void> {
+    const stale = liveProxyClient;
+    if (!stale) {
+        return;
+    }
+    liveProxyClient = null;
+    // Unconditional, not behind a debug flag: if this fires, a previous session did not shut
+    // down properly, and that is worth saying out loud exactly once.
+    session.handleMsg(Stderr, "A previous debug session's proxy connection was never closed; ending it before starting this one.\n");
+    try {
+        await stale.stop();
+    } catch (e: any) {
+        session.handleMsg(Stderr, `Failed to end the previous proxy session: ${e?.message ?? e}\n`);
+    }
+}
+
 export class GDBServerSession extends EventEmitter {
     public serverController: GDBServerController;
     private process: child_process.ChildProcess | null = null;
@@ -66,12 +110,20 @@ export class GDBServerSession extends EventEmitter {
     }
 
     public async startServer(): Promise<void> {
+        // Before anything else, and regardless of what this session needs: the stale
+        // connection belongs to the *previous* session, so a local or external session
+        // following a proxied one has to clean it up too.
+        await reapStaleProxyClient(this.session);
+
         if (this.session.args.servertype === "external") {
             return;
         }
 
         if (this.session.args.hostConfig) {
             this.proxyClient = new ProxyClient(this.session, this);
+            // Registered before `start()`, so a connection that fails half-way is still
+            // handed to the next session to clean up rather than being forgotten.
+            liveProxyClient = this.proxyClient;
             try {
                 await this.proxyClient.start();
             } catch (e: any) {
@@ -312,6 +364,10 @@ export class GDBServerSession extends EventEmitter {
             try {
                 const tmp = this.proxyClient;
                 this.proxyClient = null;
+                if (liveProxyClient === tmp) {
+                    // Normal teardown: nothing left for the next session to reap.
+                    liveProxyClient = null;
+                }
                 await tmp.stop();
             } catch (e: any) {
                 this.session.handleMsg(Stderr, `Error stopping gdb-server via proxy: ${e.message}\n`);

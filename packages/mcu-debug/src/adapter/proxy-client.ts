@@ -30,6 +30,13 @@ export class PortReservedInfo {
     ) { }
 }
 
+// How long to wait for the proxy to acknowledge `endSession`, instead of the 20-second
+// general request timeout. The wait is worth making at all -- the proxy kills *and reaps*
+// the gdb-server before it answers, so the response is proof the probe has been released --
+// but 20 seconds is the wrong order of magnitude for a local socket, and it is spent at the
+// exact moment VS Code is deciding whether to kill us for taking too long to disconnect.
+const END_SESSION_TIMEOUT_MS = 2000;
+
 export class ProxyClient extends EventEmitter {
     private endingSession: boolean = false;
     private pendingPromises: Map<number, { resolve: (value: any) => void; reject: (reason?: any) => void }> = new Map();
@@ -104,6 +111,14 @@ export class ProxyClient extends EventEmitter {
                     version: pkgJsonVersion,
                     workspace_uid: cdir,
                     session_uid: sdir,
+                    // Mapped across rather than forwarding debugFlags wholesale: the Agent acts on
+                    // these two and nothing else in that object. This is where a session's switches
+                    // have to arrive -- the Agent is shared, so its command line cannot speak for
+                    // one session without speaking for all of them.
+                    debug_flags: {
+                        rsp_trace: this.args.debugFlags?.rspTrace ?? null,
+                        rsp_mux: this.args.debugFlags?.rspMux ?? null,
+                    },
                 },
             };
             await this.sendControlCommand(cmd);
@@ -347,8 +362,10 @@ export class ProxyClient extends EventEmitter {
                 method: "endSession",
             };
             try {
-                await this.sendControlCommand(cmd);
+                await this.sendControlCommand(cmd, END_SESSION_TIMEOUT_MS);
             } catch (err) {
+                // Not fatal: the socket teardown below is what actually matters, and the
+                // proxy reaps the gdb-server on losing the connection as well as on request.
                 this.logError(`Failed to end proxy session: ${err}`);
             }
             // Half-close our write side, then wait for the Rust proxy to close the
@@ -556,12 +573,7 @@ export class ProxyClient extends EventEmitter {
                         this.handleGdbServerExited(msg.params.pid, msg.params.exit_code);
                         break;
                     case "streamReady":
-                        this.handleStreamReady(msg.params.stream_id, msg.params.port, false);
-                        break;
-                    case "streamStarted":
-                        // This is just informational, we will actually start the stream when gdb connects to it or right away for non-gdb streams
-                        this.logDebug(`Stream ${msg.params.stream_id} is ready on remote port ${msg.params.port}`);
-                        this.handleStreamReady(msg.params.stream_id, msg.params.port, true);
+                        this.handleStreamReady(msg.params.stream_id, msg.params.port);
                         break;
                     case "streamClosed":
                         this.handleStreamClosed(msg.params.stream_id);
@@ -621,7 +633,12 @@ export class ProxyClient extends EventEmitter {
         }
     }
 
-    private async handleStreamReady(stream_id: any, port: any, isStarted: boolean) {
+    // Called once per stream, from "streamReady" -- the proxy's only readiness event. A
+    // second call for the same stream would build a second RemoteServer, overwrite the
+    // first in clientStreams and then bind a second listener to a local port already in
+    // use; net.Server has no error handler here, so that EADDRINUSE would be thrown
+    // rather than reported.
+    private async handleStreamReady(stream_id: any, port: any) {
         const portReserved = this.streamIdToPortInfo.get(stream_id);
         if (!portReserved) {
             this.logError(`Received streamReady event for unknown stream_id ${stream_id}`);
@@ -634,7 +651,7 @@ export class ProxyClient extends EventEmitter {
         }
         const stream_name = portReserved.stream_id_str;
         try {
-            portReserved.status = isStarted ? "connected" : "ready";
+            portReserved.status = "ready";
             const remoteStream = new RemoteServer(this, portDef, portReserved);
             await remoteStream.initialize();
             this.clientStreams.set(stream_id, remoteStream);
@@ -755,9 +772,11 @@ export class RemoteServer {
                 let success = false;
                 try {
                     if (this.sockets.length === 1 && this.pInfo.status === "connected") {
-                        // Proxy has already started this stream (e.g. from streamStarted event).
-                        // Avoid an extra control-plane round trip so strict gdb-servers can receive
-                        // the initial ACK path immediately.
+                        // A *re*connect: status only becomes "connected" once an earlier
+                        // startStream succeeded, and sockets was emptied when that client went
+                        // away. The proxy's connection to the gdb-server never closed, so reuse
+                        // the stream id rather than spending a control round trip on it -- which
+                        // also lets a strict gdb-server see the initial ACK path immediately.
                         stream.setStreamId(this.pInfo.stream_id);
                         success = true;
                     } else if (this.sockets.length > 1) {
@@ -889,12 +908,14 @@ export class RemoteStream {
         this.proxyManager.logDebug(`Stream ${this.streamLocalName} is now connected to proxy as ${this.streamRemoteName}`);
         if (this.toServerBuffer.length > 0) {
             this.dataFromClent(this.toServerBuffer);
+            this.toServerBuffer = Buffer.alloc(0);
         }
         if (this.fromServerBuffer.length > 0) {
             // When does this happen? We buffer data from the server when the stream is not connected, but if the stream is not connected,
             // how do we get data from the server? Maybe the stream can be in a state where it is not fully connected but can still
             // receive data?
             this.dataFromServer(this.fromServerBuffer);
+            this.fromServerBuffer = Buffer.alloc(0);
         }
     }
 

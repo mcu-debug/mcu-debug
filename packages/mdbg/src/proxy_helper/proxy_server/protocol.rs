@@ -65,6 +65,27 @@ impl SessionThreadRole {
     }
 }
 
+/// Who reads the gdb-server socket for a stream, decided by the message loop and
+/// sent back to the port waiter on its readiness channel.
+///
+/// The decision has to be made on the message-loop thread, because that is where
+/// `stream_meta` lives — and it has to be *told* to the waiter, because the waiter is
+/// already holding a read clone of the socket and would otherwise start reading it. Two
+/// readers on one socket is not a slow path or a duplicate: each `read` takes whatever
+/// arrived, so the two threads would split every packet between them at random.
+///
+/// Returning it on the existing handshake keeps one decision point instead of
+/// classifying the stream again in the waiter thread from data it would have to be
+/// handed anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamForward {
+    /// The waiter runs `read_and_forward` on its own read clone, as it always has.
+    Direct,
+    /// The RSP multiplexer owns this socket and runs its own reader thread. The
+    /// waiter must drop its clone and exit without reading a single byte.
+    MuxOwned,
+}
+
 /// Unified event type for the main event loop. All background threads
 /// (control-stream reader, port waiters, stdout/stderr forwarders) send events
 /// through one channel so `message_loop` can block on `recv()` instead of
@@ -83,10 +104,12 @@ pub enum ProxyEvent {
         port: u16,
         stream: TcpStream,
         /// One-shot ack from main loop after stream is registered in `self.streams`,
-        /// so forwarding cannot start before the write-end is registered.
-        ready_tx: std::sync::mpsc::Sender<()>,
-        /// Sequence number of the original `StartStream` request; used for sending
-        /// the `StreamStatus` response (0 = unsolicited / auto-connect).
+        /// so forwarding cannot start before the write-end is registered. Its value
+        /// also tells the waiter *whether* to forward — see [`StreamForward`].
+        ready_tx: std::sync::mpsc::Sender<StreamForward>,
+        /// Sequence number of the `StartStream`/`DuplicateStream` request that asked for
+        /// this connection, used to address the `StreamStatus` response. Always a real
+        /// seq — those handlers are the only source of this event.
         msg_seq: u64,
     },
     /// A port is ready; client can now connect to the forwarded port, but we won't
@@ -270,6 +293,33 @@ fn core_suffix(name: &str, base: &str) -> Option<u16> {
     rest.parse().ok()
 }
 
+/// Agent-side debug switches that belong to **one session**, not to the proxy.
+///
+/// This distinction is the whole reason the type exists. A proxy is a shared daemon
+/// serving several sessions and several clients at once, so a process-wide command-line
+/// flag cannot express "trace *this* debug session" — turning tracing on would trace
+/// everybody's, and turning the mux off would turn it off for someone else's session
+/// mid-debug. These arrive on `initialize`, which is per connection and therefore per
+/// session, and they override the corresponding `--rsp-*` defaults on the command line.
+///
+/// Only the flags the Agent can act on are on the wire. The rest of `debugFlags` —
+/// `gdbTraces`, `timestamps` and friends — control the extension's own output and have no
+/// meaning here, so the client maps across the two it needs rather than forwarding the
+/// object wholesale. That also keeps this in the protocol's snake_case rather than
+/// importing launch.json's camelCase into it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
+#[serde(default)]
+pub struct SessionDebugFlags {
+    /// RSP packet trace level for this session's muxed streams: `off`, `packets` or `all`.
+    /// Unrecognised values mean `off` — a typo in a launch configuration must not fail the
+    /// session. `None` defers to `--rsp-trace`.
+    pub rsp_trace: Option<String>,
+    /// Whether the RSP multiplexer owns this session's controller gdb streams. `None`
+    /// defers to the proxy's own default (on, unless it was started `--no-rsp-mux`).
+    pub rsp_mux: Option<bool>,
+}
+
 // ── Port allocator types ──────────────────────────────────────────────────────
 
 /// These ports are allocated as a group, consecutively
@@ -317,6 +367,12 @@ pub enum ControlRequest {
         workspace_uid: String,
         /** Unique identifier for the session */
         session_uid: String,
+        /**
+         * Agent-side debug switches for this session, from `debugFlags` in the launch
+         * configuration. Optional: a client that sends nothing gets the proxy's defaults.
+         */
+        #[serde(default)]
+        debug_flags: Option<SessionDebugFlags>,
     },
 
     #[serde(rename = "allocatePorts")]
@@ -563,9 +619,6 @@ pub enum ProxyServerEvents {
 
     #[serde(rename = "streamReady")]
     StreamReady { stream_id: u8, port: u16 },
-
-    #[serde(rename = "streamStarted")]
-    StreamStarted { stream_id: u8, port: u16 },
 
     #[serde(rename = "streamClosed")]
     StreamClosed { stream_id: u8 },

@@ -382,6 +382,25 @@ module.exports = {
             debugDisassembly: { type: "boolean", default: false, description: "Show debug output from disassembly operations" },
             pathResolution: { type: "boolean", default: false, description: "Show path resolution when reading symbols" },
             disableGdbTimeouts: { type: "boolean", default: false, description: "Disable GDB command timeouts. Helpful for debugging extension" },
+            rspTrace: {
+                type: "string",
+                enum: ["off", "packets", "all"],
+                default: "off",
+                description:
+                    "Trace every GDB Remote Serial Protocol packet on this session's gdb connection, including the ones the " +
+                    "Probe Agent injects itself -- which neither GDB's 'set debug remote' nor the gdb-server's own log can show. " +
+                    "'packets' omits +/- acks; 'all' includes them, which is what an ack-accounting problem needs. Written to its " +
+                    "own file beside the proxy log (one per gdb connection), never to the Debug Console; the full path is logged " +
+                    "when the file is opened. Per session: the Agent is shared, so this cannot be a command-line option on it.",
+            },
+            rspMux: {
+                type: "boolean",
+                default: true,
+                description:
+                    "Let the Probe Agent multiplex this session's gdb connection, which is what lets it read target memory " +
+                    "alongside GDB. Set false to fall back to plain byte-for-byte forwarding for this session only -- the way " +
+                    "to tell whether a problem is the multiplexer's, without restarting the Agent or affecting other sessions.",
+            },
         },
     },
     svdFile: {

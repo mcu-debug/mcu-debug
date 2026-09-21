@@ -12,7 +12,7 @@ import { GdbOutputMsgContainer, GdbOutputStoreage, VariableManager } from "./var
 import { SymbolTable } from "./symbols";
 import { GDBServerSession } from "./server-session";
 import { GdbMiThreadInfoList, MiCommands, parseStoppedThreadInfo } from "./gdb-mi/mi-commands";
-import { SessionMode } from "./servers/common";
+import { SessionMode, AGENT_DEBUG_FLAGS } from "./servers/common";
 import { formatAddress, parseAddrVal } from "../common/utils";
 import { BreakpointManager } from "./breakpoints";
 import { LiveWatchMonitor } from "./live-watch-monitor";
@@ -1210,7 +1210,8 @@ export class GDBDebugSession extends SeqDebugSession {
 
         args.debugFlags = args.debugFlags || {};
         args.debugFlags.gdbTraces = args.debugFlags.gdbTraces || args.debugFlags.gdbTracesParsed;
-        args.debugFlags.anyFlags = Object.values(args.debugFlags).some((v) => v === true);
+        // Agent-side flags excluded: they change what the proxy does, not what we print.
+        args.debugFlags.anyFlags = Object.entries(args.debugFlags).some(([name, v]) => v === true && !(AGENT_DEBUG_FLAGS as readonly string[]).includes(name));
 
         if (args.executable && !path.isAbsolute(args.executable)) {
             args.executable = path.normalize(path.join(args.cwd, args.executable));

@@ -978,6 +978,167 @@ mod tests {
         assert_eq!(forwarded_to_gdb, server_side, "server->client stream altered");
     }
 
+    /// GDB's real opening sequence, transcribed from a captured OpenOCD session on a
+    /// dual-core PSoC 6 (`rsp-trace-gdbPort1`, 2026-09-20). Kept verbatim rather than
+    /// abbreviated, because the abbreviation is what the other tests already cover and it
+    /// misses every interesting shape here:
+    ///
+    /// - GDB's actual `qSupported` is **190 bytes** with twelve features, not the 37-byte
+    ///   one used elsewhere in this file.
+    /// - `vMustReplyEmpty` and `qTStatus` are answered with an **empty packet**, `$#00` —
+    ///   a `$` immediately followed by `#`, which is the one packet shape with no payload
+    ///   at all. Split between the `$` and the `#` it is the likeliest single cause of a
+    ///   handshake desync, and no other test contains one.
+    /// - `qXfer:features:read` returns **kilobytes in one packet**, an order of magnitude
+    ///   larger than anything else tested, and it arrives split across several reads.
+    fn real_handshake() -> (Vec<u8>, Vec<u8>) {
+        // A target description of the real size (~3.4 KB), built rather than pasted.
+        let mut xml = String::from(
+            "l<?xml version=\"1.0\"?>\n<!DOCTYPE target SYSTEM \"gdb-target.dtd\">\n             <target version=\"1.0\">\n<architecture>arm</architecture>\n             <feature name=\"org.gnu.gdb.arm.m-profile\">\n",
+        );
+        for n in 0..16 {
+            xml.push_str(&format!(
+                "<reg name=\"r{n}\" bitsize=\"32\" regnum=\"{n}\" save-restore=\"yes\"                  type=\"int\" group=\"general\"/>\n"
+            ));
+        }
+        xml.push_str("</feature>\n</target>\n");
+
+        let gdb_side: Vec<u8> = [
+            &p(b"qSupported:multiprocess+;swbreak+;hwbreak+;qRelocInsn+;fork-events+;vfork-events+;                 exec-events+;vContSupported+;QThreadEvents+;QThreadOptions+;no-resumed+;memory-tagging+")[..],
+            b"+", // still in ack mode: GDB acks each reply until no-ack engages
+            &p(b"vCont?"),
+            b"+",
+            &p(b"vMustReplyEmpty"),
+            b"+",
+            &p(b"QStartNoAckMode"),
+            b"+", // the stray ack: GDB acks the `OK` and only then stops acking
+            &p(b"!"),
+            &p(b"Hg0"),
+            &p(b"qXfer:features:read:target.xml:0,1000"),
+            &p(b"qTStatus"),
+            &p(b"?"),
+            &p(b"qXfer:threads:read::0,1000"),
+            &p(b"qAttached"),
+        ]
+        .concat();
+
+        let server_side: Vec<u8> = [
+            b"+",
+            &p(b"PacketSize=4000;qXfer:memory-map:read+;qXfer:features:read+;qXfer:threads:read+;                 QStartNoAckMode+;vContSupported+")[..],
+            b"+",
+            &p(b"vCont;c;C;s;S"),
+            b"+",
+            &p(b""), // vMustReplyEmpty -> $#00
+            b"+",
+            &p(b"OK"), // QStartNoAckMode
+            &p(b"OK"), // !
+            &p(b"OK"), // Hg0
+            &p(xml.as_bytes()),
+            &p(b""), // qTStatus -> $#00 again
+            &p(b"T02thread:1;"),
+            &p(b"l<?xml version=\"1.0\"?>\n<threads>\n<thread id=\"1\">Name: Current Execution</thread>\n</threads>\n"),
+            &p(b"1"),
+        ]
+        .concat();
+
+        (gdb_side, server_side)
+    }
+
+    /// Feed a captured session through `chunks` and require both directions to come out
+    /// byte-identical. `label` names the chunking so a failure says which one broke it.
+    fn assert_passthrough(gdb_side: &[u8], server_side: &[u8], chunks: &[usize], label: &str) {
+        let mut m = MuxCore::new(ServerTier::Full);
+        let mut to_srv = Vec::new();
+        let mut to_gdb_out = Vec::new();
+        let (mut gi, mut si, mut ci) = (0usize, 0usize, 0usize);
+        while gi < gdb_side.len() || si < server_side.len() {
+            let n = chunks[ci % chunks.len()].max(1);
+            ci += 1;
+            if gi < gdb_side.len() {
+                let end = (gi + n).min(gdb_side.len());
+                let acts = m.on_gdb_bytes(&gdb_side[gi..end]);
+                for b in to_server(&acts) {
+                    to_srv.extend_from_slice(&b);
+                }
+                for b in to_gdb(&acts) {
+                    to_gdb_out.extend_from_slice(&b);
+                }
+                gi = end;
+            }
+            if si < server_side.len() {
+                let end = (si + n).min(server_side.len());
+                let acts = m.on_server_bytes(&server_side[si..end]);
+                for b in to_server(&acts) {
+                    to_srv.extend_from_slice(&b);
+                }
+                for b in to_gdb(&acts) {
+                    to_gdb_out.extend_from_slice(&b);
+                }
+                si = end;
+            }
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&to_srv),
+            String::from_utf8_lossy(gdb_side),
+            "client->server stream altered ({label})"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&to_gdb_out),
+            String::from_utf8_lossy(server_side),
+            "server->client stream altered ({label})"
+        );
+    }
+
+    #[test]
+    fn a_real_captured_handshake_passes_through_under_any_chunking() {
+        // Motivated by a one-off field failure: GDB rejected the `qSupported` exchange
+        // once and could not be made to do it again. An intermittent fault at the first
+        // packet is what a read-boundary bug looks like, so this pins the boundary
+        // behaviour on the real bytes instead of on a shortened stand-in.
+        let (gdb_side, server_side) = real_handshake();
+        assert_passthrough(&gdb_side, &server_side, &[usize::MAX], "whole");
+        assert_passthrough(&gdb_side, &server_side, &[1], "byte at a time");
+        // Chunk sizes that land mid-trailer, mid-header and mid-payload in turn, plus
+        // sizes near a real TCP segment.
+        for chunks in [
+            &[2usize][..],
+            &[3],
+            &[7],
+            &[64],
+            &[1460],
+            &[1, 2, 3, 5, 8, 13, 21],
+            &[511, 1, 513],
+        ] {
+            assert_passthrough(&gdb_side, &server_side, chunks, &format!("{chunks:?}"));
+        }
+        // And exhaustively, one split point at a time across the whole GDB stream.
+        for split in 0..=gdb_side.len() {
+            assert_passthrough(&gdb_side, &server_side, &[split.max(1)], &format!("split {split}"));
+        }
+    }
+
+    #[test]
+    fn an_empty_packet_survives_a_split_between_the_dollar_and_the_hash() {
+        // `$#00` is what OpenOCD answers `vMustReplyEmpty` and `qTStatus` with, twice
+        // during every handshake. It is the only packet with no payload, so it is the
+        // only one where the codec moves straight from "header" to "trailer" -- and GDB
+        // treats an unexpected reply to `vMustReplyEmpty` as a protocol failure, which is
+        // exactly the class of message a handshake failure would produce.
+        let empty = p(b"");
+        assert_eq!(empty, b"$#00".to_vec(), "an empty packet is $ then # then 00");
+        for split in 0..=empty.len() {
+            let mut m = MuxCore::new(ServerTier::Full);
+            m.on_gdb_bytes(&p(b"vMustReplyEmpty"));
+            let mut got = Vec::new();
+            for acts in [m.on_server_bytes(&empty[..split]), m.on_server_bytes(&empty[split..])] {
+                for b in to_gdb(&acts) {
+                    got.extend_from_slice(&b);
+                }
+            }
+            assert_eq!(got, empty, "empty packet altered when split at {split}");
+        }
+    }
+
     #[test]
     fn run_length_encoded_replies_reach_gdb_unexpanded() {
         // Re-encoding is never correct: RLE and escaping are not uniquely

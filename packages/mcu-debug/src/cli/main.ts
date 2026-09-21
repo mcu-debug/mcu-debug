@@ -8,6 +8,7 @@ import { setHostAdapter } from '../common/host-adapter';
 import { CliSessionDriver } from './cli-driver';
 import { setDevelopmentModeEnvVars } from '@mcu-debug/shared';
 import { CLI_DEV_ENV } from '../analytics/telemetry-core';
+import { AGENT_DEBUG_FLAGS } from '../adapter/servers/common';
 
 /**
  * How much of `.mcu-debug/archive/` to keep. Two caps because either one alone fails: a count
@@ -202,7 +203,8 @@ async function main() {
                 continue;
             }
             const val = (config.debugFlags as any)[flag];
-            if (val === true) {
+            // Agent-side flags do not make us verbose; same rule as `anyFlags` in gdb-session.
+            if (val === true && !(AGENT_DEBUG_FLAGS as readonly string[]).includes(flag)) {
                 debugFlagEnabled = true;
                 logger.level = 'debug';
                 logger.debug(`Debug flag enabled: ${flag}`);

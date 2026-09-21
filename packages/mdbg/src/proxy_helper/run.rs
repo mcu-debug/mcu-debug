@@ -136,6 +136,35 @@ pub struct ProxyArgs {
     #[arg(long = "close-serial", value_name = "PATH|all")]
     pub close_serial: Option<String>,
 
+    /// Default for sessions that do not say: keep the RSP multiplexer out of the path.
+    ///
+    /// The mux normally owns the socket to the gdb-server for a core's controller
+    /// `gdbPort` stream (`docs-internal/gdb-rsp.md` §4.6). With this set, that stream is
+    /// forwarded byte-for-byte by `read_and_forward` exactly as it was before the mux
+    /// existed, so a suspected mux regression can be confirmed or cleared in one run on
+    /// the same binary — which is how design item 15 is measured.
+    ///
+    /// **A default only.** One proxy serves many sessions, so the per-session switch is
+    /// `debugFlags.rspMux` in the launch configuration and it overrides this. Use the
+    /// flag to turn the mux off for a whole dev daemon; use `debugFlags` for one session.
+    #[arg(long = "no-rsp-mux", default_value_t = false)]
+    pub no_rsp_mux: bool,
+
+    /// Default RSP packet-trace level for muxed streams: `off`, `packets` or `all`.
+    ///
+    /// A **server-side default**, which is the only role a command line can play here: a
+    /// proxy serves several sessions at once, so turning tracing on here turns it on for
+    /// every one of them. The per-session switch is `debugFlags.rspTrace` in the launch
+    /// configuration (§4.7.3) and it overrides this. Unrecognised values mean `off` — a
+    /// typo must not fail a debug session.
+    ///
+    /// Output goes to `rsp-trace-<stream>-<pid>-<n>.txt` beside the proxy log, one file
+    /// per muxed stream, never into the shared log: the volume would bury it, and the
+    /// logger's locking has no business in the RSP hot path. The full path is logged at
+    /// `info` when the file is opened, which is the way to find it.
+    #[arg(long = "rsp-trace", value_name = "off|packets|all", default_value = "off")]
+    pub rsp_trace: String,
+
     /// Internal: marks the re-spawned, detached daemon so it runs the proxy
     /// instead of launching another daemon. Not for direct use.
     #[arg(long = "daemonized", hide = true, default_value_t = false)]
@@ -179,12 +208,20 @@ fn resolve_token(supplied: Option<&str>) -> Result<String> {
     Ok(token.to_string())
 }
 
-fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
-    let log_dir = args
-        .log_dir
+/// Where this proxy writes files a human goes looking for afterwards.
+///
+/// Shared by the logger and the RSP packet traces (§4.7.3) so a trace always lands
+/// next to the log of the same run. Anyone hunting a session wants both, and having
+/// them in different directories is how one of them goes unnoticed.
+pub(crate) fn resolve_log_dir(args: &ProxyArgs) -> PathBuf {
+    args.log_dir
         .clone()
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("mcu-debug").join("proxy-logs"));
+        .unwrap_or_else(|| std::env::temp_dir().join("mcu-debug").join("proxy-logs"))
+}
+
+fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
+    let log_dir = resolve_log_dir(args);
 
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -803,6 +840,14 @@ fn run_foreground_launcher(args: &ProxyArgs) -> Result<()> {
     if let Some(dir) = &args.log_dir {
         cmd.arg("--log-dir").arg(dir);
     }
+    // Both are session-behaviour switches, so the daemon that ends up running the
+    // sessions must see them; a launcher-only flag would look like it did nothing.
+    if args.no_rsp_mux {
+        cmd.arg("--no-rsp-mux");
+    }
+    if args.rsp_trace != "off" {
+        cmd.arg("--rsp-trace").arg(&args.rsp_trace);
+    }
     // (Deliberately do NOT forward --heartbeat: the daemon is independent of this
     // transient launcher's stdin.)
 
@@ -1286,6 +1331,8 @@ mod tests {
             shutdown: false,
             all: false,
             close_serial: None,
+            no_rsp_mux: false,
+            rsp_trace: "off".to_string(),
             daemonized: false,
         };
 

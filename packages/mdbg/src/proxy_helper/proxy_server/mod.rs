@@ -41,6 +41,7 @@ pub mod protocol;
 pub use protocol::*;
 
 mod gdb_server;
+mod rsp_mux;
 mod serial;
 pub use serial::{
     force_close_serial, serial_status, FunnelWriter, OpenPort, SerialPortRegistry, SerialStatus, CLOSE_ALL_SERIAL,
@@ -140,11 +141,47 @@ impl FrameWriter {
 
 // ── Stream bookkeeping ────────────────────────────────────────────────────────
 
+/// How a stream's connection to the gdb-server is being carried.
+///
+/// A three-state enum rather than `Option<TcpStream>` so that **a muxed stream holds no
+/// writable socket the message loop could reach**. That was previously true only by
+/// convention — the loop checked `rsp_channels` first — and a convention is not what you
+/// want standing between a future edit and a corrupted RSP stream. Writing GDB's bytes
+/// straight to the socket while the mux is also writing to it interleaves two packet
+/// streams into one connection, which no amount of retrying recovers from.
+enum StreamConn {
+    /// Reserved and listening, nothing connected yet.
+    Idle,
+    /// The message loop owns the socket and writes GDB's bytes to it directly. Every
+    /// stream that is not a muxed RSP stream: stdout, stderr, SWO, tcl, telnet, and RSP
+    /// streams under `--no-rsp-mux` or on a secondary connection.
+    Direct(TcpStream),
+    /// Connected, and an [`crate::gdb_rsp::RspChannel`] in `rsp_channels` owns the socket
+    /// through its own reader and writer clones. Deliberately carries no handle.
+    Muxed,
+}
+
+impl StreamConn {
+    /// Whether the gdb-server end is connected, however it is being carried. This is all
+    /// `Option::is_some` was ever asked for at the three call sites that used it.
+    fn is_connected(&self) -> bool {
+        !matches!(self, StreamConn::Idle)
+    }
+
+    /// The socket, for the one direction that still writes to it here. `None` for a muxed
+    /// stream is not a failure — it is the invariant.
+    fn direct_mut(&mut self) -> Option<&mut TcpStream> {
+        match self {
+            StreamConn::Direct(stream) => Some(stream),
+            StreamConn::Idle | StreamConn::Muxed => None,
+        }
+    }
+}
+
 pub struct PortInfo {
     pub port: u16,
     pub stream_id: u8,
-    /// `Some` when the port is currently connected and data is being forwarded.
-    stream: Option<TcpStream>,
+    conn: StreamConn,
 }
 
 pub struct PortInfoListner {
@@ -188,6 +225,19 @@ pub struct ProxyServer {
     /// downstream re-parses a name; the RSP multiplexer uses it to find the one
     /// controller gdb stream per core (`docs-internal/gdb-rsp.md` §4.7).
     stream_meta: HashMap<u8, StreamMeta>,
+    /// Stream id → the RSP multiplexer that owns that stream's socket to the
+    /// gdb-server. At most one entry per core, on its controller `GdbRsp` stream
+    /// (`docs-internal/gdb-rsp.md` §4.7); empty when `--no-rsp-mux` is set.
+    ///
+    /// Presence here is what decides the GDB → server direction: `message_loop` looks in
+    /// this map before `streams`. The two paths cannot both be live for one stream, and
+    /// that is structural rather than a matter of lookup order — a muxed stream's
+    /// `PortInfo` holds [`StreamConn::Muxed`], which carries no socket at all.
+    rsp_channels: HashMap<u8, crate::gdb_rsp::RspChannel>,
+    /// Agent-side switches this session asked for on `initialize`. Per session because the
+    /// proxy is shared: a command-line flag would apply to everyone's session at once, so
+    /// these override the `--rsp-*` defaults for this one only.
+    debug_flags: SessionDebugFlags,
     exit: bool,
     /// Ports reserved via `AllocatePorts` but not yet handed to the gdb-server process.
     reserved_ports: Vec<PortInfoListner>,
@@ -265,6 +315,8 @@ impl ProxyServer {
             event_tx,
             next_stream_id: 3,
             stream_meta: HashMap::new(),
+            rsp_channels: HashMap::new(),
+            debug_flags: SessionDebugFlags::default(),
             server_cwd: String::new(),
             monitor_stop_tx: None,
             serial_registry,
@@ -300,6 +352,9 @@ impl ProxyServer {
     /// socket alive to send its success response.
     pub(super) fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
+        // The mux threads block on a socket read, which the dying gdb-server would end
+        // on its own -- but only eventually, and only if it dies. Ask them directly.
+        self.stop_all_rsp_muxes();
         // Affects every clone of the underlying socket, so the control reader's
         // blocked `read` on its own clone returns immediately.
         let _ = self.writer.shutdown(std::net::Shutdown::Both);
@@ -517,15 +572,27 @@ impl ProxyServer {
                                             self.serial_funnel_write.remove(&stream_id);
                                         }
                                     }
+                                } else if let Some(channel) = self.rsp_channels.get(&stream_id) {
+                                    // A multiplexed gdb stream: the mux owns that
+                                    // socket, so GDB's bytes go to it instead of
+                                    // straight to `pinfo.stream`. This is an enqueue
+                                    // and cannot block -- a hard requirement, since
+                                    // this is the single-threaded message loop
+                                    // (docs-internal/gdb-rsp.md §4.6).
+                                    channel.feed_from_gdb(&msg);
                                 } else {
                                     // Forward to the appropriate connected stream.
                                     match self.streams.get_mut(&stream_id) {
                                         Some(pinfo) => {
-                                            if let Some(stream) = &mut pinfo.stream {
+                                            if let Some(stream) = pinfo.conn.direct_mut() {
                                                 if let Err(e) = stream.write_all(&msg) {
                                                     eprintln!("Stream {} write failed: {}", stream_id, e);
                                                 }
                                             } else {
+                                                // Idle. A muxed stream never reaches here:
+                                                // `rsp_channels` is consulted above, and
+                                                // `StreamConn::Muxed` holds no socket to
+                                                // write to even if it did.
                                                 eprintln!("Stream {} is not currently connected", stream_id);
                                             }
                                         }
@@ -553,36 +620,46 @@ impl ProxyServer {
                     // Same write-timeout policy as the client socket: bound how
                     // long a stalled gdb-server can hold up the message loop.
                     stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                    // Decide who reads this socket *before* registering the stream, so a
+                    // muxed stream is never connected without its channel in place. The
+                    // answer goes back to the waiter below: it holds a read clone and
+                    // must not touch it if the mux now owns the socket.
+                    let forward = self.maybe_start_rsp_mux(stream_id, &stream);
+                    // When the mux took it, `stream` is dropped at the end of this
+                    // statement. That closes *this* descriptor, not the connection: the
+                    // channel's two `try_clone`s keep the socket open, which is the same
+                    // property `read_and_forward`'s clone has always relied on. Net effect
+                    // is two descriptors per stream either way -- as many as before the mux
+                    // existed -- and no socket left in reach of this loop.
+                    let conn = match forward {
+                        StreamForward::MuxOwned => StreamConn::Muxed,
+                        StreamForward::Direct => StreamConn::Direct(stream),
+                    };
                     if let Some(pinfo) = self.streams.get_mut(&stream_id) {
-                        pinfo.stream = Some(stream);
+                        pinfo.conn = conn;
                     } else {
                         eprintln!(
                             "Internal Error: Received PortConnected for unknown stream_id {}",
                             stream_id
                         );
-                        self.streams.insert(
-                            stream_id,
-                            PortInfo {
-                                port,
-                                stream_id,
-                                stream: Some(stream),
-                            },
-                        );
+                        self.streams.insert(stream_id, PortInfo { port, stream_id, conn });
                     }
                     // Unblock the waiter thread only after stream registration so that
                     // forwarding cannot start before self.streams is updated.
-                    ready_tx.send(()).ok();
-                    if msg_seq != 0 {
-                        let data = ControlResponseData::StreamStatus {
-                            stream_id,
-                            status: StreamStatus::Connected,
-                            msg_seq,
-                        };
-                        send_or_break!(ControlResponse::success(msg_seq, Some(data)).send(&self.writer));
-                    } else {
-                        let event = ProxyServerEvents::StreamStarted { stream_id, port };
-                        send_or_break!(event.send(&self.writer));
-                    }
+                    ready_tx.send(forward).ok();
+                    // Always a response, never an event: this arm is only ever reached from
+                    // a `StartStream`/`DuplicateStream` request, so `msg_seq` always
+                    // identifies a caller waiting for an answer. The `msg_seq == 0` branch
+                    // that used to send a `StreamStarted` event instead had no way to be
+                    // reached, and the client could not have survived it -- it would have
+                    // built a second `RemoteServer` for the same stream and bound a second
+                    // listener to a local port already in use.
+                    let data = ControlResponseData::StreamStatus {
+                        stream_id,
+                        status: StreamStatus::Connected,
+                        msg_seq,
+                    };
+                    send_or_break!(ControlResponse::success(msg_seq, Some(data)).send(&self.writer));
                 }
                 ProxyEvent::PortReady { stream_id, port } => {
                     eprintln!("Port {} (stream {}) is ready for connection!", port, stream_id);
@@ -591,7 +668,7 @@ impl ProxyServer {
                         PortInfo {
                             port,
                             stream_id,
-                            stream: None,
+                            conn: StreamConn::Idle,
                         },
                     );
                     let event = ProxyServerEvents::StreamReady { stream_id, port };
@@ -623,6 +700,9 @@ impl ProxyServer {
                 }
                 ProxyEvent::StreamClosed { stream_id } => {
                     eprintln!("Stream {} closed", stream_id);
+                    // Before anything else: the mux's own teardown sends this same
+                    // event, so the entry has to be gone by the time that one arrives.
+                    self.stop_rsp_mux(stream_id);
                     self.streams.remove(&stream_id);
                     let event = ProxyServerEvents::StreamClosed { stream_id };
                     send_or_break!(event.send(&self.writer));
@@ -755,7 +835,7 @@ impl ProxyServer {
             ControlRequest::StreamStatus { .. } => {
                 let status = if let ControlRequest::StreamStatus { stream_id } = &msg.request {
                     if let Some(pinfo) = self.streams.get(stream_id) {
-                        if pinfo.stream.is_some() {
+                        if pinfo.conn.is_connected() {
                             StreamStatus::Connected
                         } else {
                             StreamStatus::Ready

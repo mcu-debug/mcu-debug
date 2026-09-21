@@ -269,6 +269,14 @@ export interface HWWatchpointInfo {
     limit?: number;
 }
 
+// Flags in `debugFlags` that the Probe Agent acts on rather than this extension. They are
+// carried to it on `initialize` and change nothing about what we print, so they must not
+// count towards `anyFlags` -- which means "show this extension's own debug output".
+// Without this, `rspMux: true` would silently switch on every GDB/MI trace in the Debug
+// Console, and the two Agent flags would behave differently from each other purely because
+// one of them happens to be a string.
+export const AGENT_DEBUG_FLAGS = ["rspTrace", "rspMux"] as const;
+
 export interface DebugFlags {
     gdbTraces?: boolean;
     vscodeRequests?: boolean;
@@ -279,6 +287,12 @@ export interface DebugFlags {
     disableGdbTimeouts?: boolean;
     pathResolution?: boolean;
     debugDisassembly?: boolean;
+    // Agent-side (see AGENT_DEBUG_FLAGS). rspTrace is "off" | "packets" | "all" and writes
+    // its own file beside the proxy log, not to the Debug Console; the path is logged when
+    // it opens. rspMux defaults to on; set it false to take the multiplexer out of the path
+    // for this session only. Both are per session because one Agent serves many.
+    rspTrace?: string;
+    rspMux?: boolean;
     anyFlags?: boolean;
 }
 

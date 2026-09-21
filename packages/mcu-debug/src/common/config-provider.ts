@@ -275,10 +275,13 @@ export class McuDebugConfigurationProviderBase {
                 config.hostConfig = { enabled: true, type: "auto" };
             }
         }
+        if (!config.hostConfig?.enabled) {
+            config.hostConfig = undefined;
+        }
         if (config.hostConfig?.enabled && config.hostConfig?.type === "auto" && !this.hostAdapter.getRemoteName()) {
             config.hostConfig = undefined;
         }
-        if (!config.hostConfig?.pvtResolved) {
+        if (config.hostConfig && !config.hostConfig.pvtResolved) {
             try {
                 await this.hostAdapter.handleHostConfig(config.hostConfig, () => delete (config as any).hostConfig);
                 if (config.hostConfig) {

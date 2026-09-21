@@ -39,6 +39,23 @@ fn ensure_ts_exports() {
     SerialStatus::export(&config).unwrap();
 }
 
+/// `StreamConn` replaced an `Option<TcpStream>` whose `is_some()` meant "connected".
+/// These pin the two things the three former call sites actually needed, and the one that
+/// is new: a muxed stream is connected *and* hands out no socket.
+#[test]
+fn a_muxed_stream_is_connected_but_offers_nothing_to_write_to() {
+    let mut muxed = StreamConn::Muxed;
+    assert!(muxed.is_connected(), "a muxed stream must still report as connected");
+    assert!(
+        muxed.direct_mut().is_none(),
+        "a muxed stream must not expose a writable socket -- the mux owns it"
+    );
+
+    let mut idle = StreamConn::Idle;
+    assert!(!idle.is_connected());
+    assert!(idle.direct_mut().is_none());
+}
+
 static TEST_MUTEX: Mutex<()> = Mutex::new(()); // Don't really need a mutex for this simple test, but is there in case the tests get more complex in the future and need to synchronize access to the stream
 fn send_to_stream(stream_id: u8, stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
     let _lock = TEST_MUTEX.lock_recover(); // Serialize test senders; recovers if a prior test panicked holding it
@@ -157,6 +174,8 @@ fn test_proxy_server() {
             shutdown: false,
             all: false,
             close_serial: None,
+            no_rsp_mux: false,
+            rsp_trace: "off".to_string(),
             daemonized: true, // run the proxy in-process; don't re-spawn a daemon
         };
         let _ = crate::proxy_helper::run::run(args);
@@ -173,6 +192,9 @@ fn test_proxy_server() {
             version: CURRENT_VERSION.to_string(),
             workspace_uid: "test-uid".to_string(),
             session_uid: "test-session-uid".to_string(),
+            // A client that sends nothing gets the proxy's defaults, which is the path
+            // most worth having covered: it is what any client predating these flags does.
+            debug_flags: None,
         },
     };
     seq += 1;
