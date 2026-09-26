@@ -45,6 +45,11 @@ function COMMAND_MAP(c: string): string {
     return c.startsWith("-") ? c : `-interpreter-exec console "${c.replace(/"/g, '\\"')}"`;
 }
 
+// How long the launch sequence waits for the live-watch GDB to attach before giving up on it and
+// carrying on. Generous, because a large executable takes real time to load symbols; finite, because
+// live watch is an optional feature and must never be able to stall a debug session.
+const LIVE_WATCH_ATTACH_TIMEOUT_MS = 5_000;
+
 export class GDBDebugSession extends SeqDebugSession {
     public args = {} as ConfigurationArguments;
     public gdbInstance: GdbInstance;
@@ -1312,7 +1317,12 @@ export class GDBDebugSession extends SeqDebugSession {
                         }
                     })
                     .catch((e) => {
-                        this.handleMsg(Stderr, `ERROR: Live GDB connection failed to start: ${formatThrown(e)}\n`);
+                        // Deliberately not reported. By the time this runs the launch path has already
+                        // awaited the same (idempotent) call, and a failure was reported once by the
+                        // monitor itself. This catch exists to keep the rejection handled.
+                        if (this.args.debugFlags.anyFlags) {
+                            this.handleMsg(Stdout, `Live GDB unavailable (already reported): ${formatThrown(e)}\n`);
+                        }
                     });
             }
             // The disassmbly adapter relies on target info for various things like source mappings,
@@ -1427,12 +1437,23 @@ export class GDBDebugSession extends SeqDebugSession {
             // call still in postInitComplete() costs nothing and continues to serve clients that
             // register lazily.
             if (this.args.liveWatch?.enabled || !!this.args.pvtRttConfig) {
-                try {
-                    await this.liveWatchMonitor.requestLiveCapability();
-                } catch (e) {
-                    // Never fatal: live watch is optional, and it now sits on the session's critical
-                    // path where an unguarded failure would end the session.
-                    this.handleMsg(Stderr, `WARNING: live watch is unavailable: ${formatThrown(e)}\n`);
+                // Bounded, and quiet about a failure. A live watch that cannot attach has already
+                // said so itself, in terms that name the cause -- reporting it again here is how one
+                // root cause turns into three messages. The bound is the backstop for a promise that
+                // never settles at all, which on this path is a session that never starts; that case
+                // is the only one worth a line, because nothing else can report it.
+                const attached = await Promise.race([
+                    this.liveWatchMonitor
+                        .requestLiveCapability()
+                        .then(() => "attached" as const)
+                        .catch(() => "failed" as const),
+                    new Promise<"timeout">((resolve) => {
+                        const t = setTimeout(() => resolve("timeout"), LIVE_WATCH_ATTACH_TIMEOUT_MS);
+                        t.unref?.();
+                    }),
+                ]);
+                if (attached === "timeout") {
+                    this.handleMsg(Stderr, `WARNING: live watch did not attach within ${LIVE_WATCH_ATTACH_TIMEOUT_MS}ms; continuing without it. Please report this.\n`);
                 }
             }
 

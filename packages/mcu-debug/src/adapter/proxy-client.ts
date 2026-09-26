@@ -747,12 +747,61 @@ export class ProxyClient extends EventEmitter {
         }
     }
 
+    /**
+     * The Agent told us a stream's connection to the gdb-server has gone.
+     *
+     * Only that one consumer is closed. It used to call `RemoteServer.close()`, which destroys every
+     * socket on the listener and unbinds the local port -- so a duplicate going away (the live-watch
+     * GDB stopping) tore down the primary GDB with it. The listener belongs to the original stream,
+     * not to whichever id happens to be closing.
+     */
     private handleStreamClosed(stream_id: any) {
-        const stream = this.clientStreams.get(stream_id);
-        if (stream) {
-            this.logDebug(`Closing stream ${stream_id}`);
-            stream.close();
-            this.clientStreams.delete(stream_id);
+        const server = this.clientStreams.get(stream_id);
+        if (!server) {
+            return;
+        }
+        this.logDebug(`Closing stream ${stream_id}`);
+        this.clientStreams.delete(stream_id);
+        if (stream_id === server.pInfo.stream_id) {
+            // The original: its port reservation is the listener's, so the listener goes too.
+            server.close();
+        } else {
+            // A duplicate: close just its consumer and leave the listener serving the others.
+            server.closeStream(stream_id);
+            this.streamIdToPortInfo.delete(stream_id);
+        }
+    }
+
+    /**
+     * Tell the Agent that a local consumer has gone, so it can release its connection to the
+     * gdb-server.
+     *
+     * The Agent cannot see this for itself: the consumer's socket terminates here, and the funnel
+     * carries no signal for it. Without this the Agent kept feeding a stream nobody would read, and a
+     * duplicated gdb stream held a `-gdb-max-connections` slot for the rest of the session.
+     *
+     * Best effort by design. It is called while tearing something down, so a failure is logged and
+     * dropped rather than propagated into a path that has nowhere to report it.
+     */
+    public async closeStream(stream_id: number): Promise<void> {
+        if (this.endingSession || !this.socket) {
+            return; // Session teardown releases everything anyway.
+        }
+        try {
+            await this.sendControlCommand({ seq: this.nextSeq++, method: "closeStream", params: { stream_id } });
+            this.logDebug(`Agent released stream ${stream_id}`);
+            // Prune our own routing rather than waiting for the Agent's StreamClosed echo. The echo
+            // normally does arrive -- shutting the connection down makes that stream's forwarder
+            // report EOF -- but not if the Agent had nothing left to shut down, and the entry would
+            // then linger. Only for a duplicate: the original's listener belongs to the session and
+            // its teardown releases it.
+            const server = this.clientStreams.get(stream_id);
+            if (server && stream_id !== server.pInfo.stream_id) {
+                this.clientStreams.delete(stream_id);
+                this.streamIdToPortInfo.delete(stream_id);
+            }
+        } catch (err) {
+            this.logError(`Failed to release stream ${stream_id} on the agent: ${err}`);
         }
     }
 }
@@ -793,12 +842,24 @@ export class RemoteServer {
             };
         });
         const cleanupSocket = (socket: net.Socket) => {
+            const gone = this.sockets.find((s) => s.socket === socket);
             this.sockets = this.sockets.filter((s) => s.socket !== socket);
             this.socketsByStreamId.forEach((s, stream_id) => {
                 if (s.socket === socket) {
                     this.socketsByStreamId.delete(stream_id);
                 }
             });
+            // Tell the Agent, so it can release its own connection to the gdb-server. This is the
+            // only place that can: the consumer's socket terminates here, and the Agent has no way to
+            // observe it. Skipped for a consumer that never got a stream id, and during session
+            // teardown, which releases everything anyway.
+            //
+            // Not reached when we closed the consumer ourselves -- closeStream() and close() both
+            // remove it from `sockets` before destroying it, so `gone` is undefined and the Agent is
+            // not told about a close it asked for.
+            if (gone && gone.stream_id >= 0 && !this.endingSession) {
+                void this.proxyManager.closeStream(gone.stream_id);
+            }
         };
         this.server = net
             .createServer(async (socket) => {
@@ -920,6 +981,23 @@ export class RemoteServer {
         this.socketsByStreamId.set(new_stream_id, stream);
     }
 
+    /**
+     * Close one consumer's connection, leaving the listener and every other consumer alone.
+     *
+     * The counterpart to `close()`, which is session teardown. Keeping them separate is the whole
+     * point: they were the same method, so closing any stream id closed all of them.
+     */
+    public closeStream(stream_id: number) {
+        const stream = this.socketsByStreamId.get(stream_id);
+        if (!stream) {
+            this.proxyManager.logDebug(`closeStream: no consumer with stream_id ${stream_id}`);
+            return;
+        }
+        this.socketsByStreamId.delete(stream_id);
+        this.sockets = this.sockets.filter((s) => s !== stream);
+        stream.close();
+    }
+
     close() {
         this.endingSession = true;
         if (this.server) {
@@ -1010,6 +1088,11 @@ export class RemoteStream {
             this.socket.write(data);
             this.fromServerBuffer = Buffer.alloc(0);
         }
+    }
+
+    /** Drop this consumer's socket. Its `close` event prunes it from the server's bookkeeping. */
+    public close() {
+        this.socket.destroy();
     }
 
     dataFromClent(data: Buffer) {

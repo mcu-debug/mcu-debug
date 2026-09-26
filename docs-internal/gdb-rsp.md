@@ -16,7 +16,7 @@ Switches, both per session over `initialize` because one Agent serves many sessi
 
 **§8 is settled and Phase 4 is unblocked.** Every session — local and remote — now runs through the
 Agent, and `syncFiles` no longer copies anything for a local one (items 18 and 18a). Verified on
-hardware against **OpenOCD, pyOCD and ST-LINK**; J-Link untested for want of a board.
+hardware against **OpenOCD, pyOCD, ST-LINK and J-Link**.
 
 **Next:** finish item 15, then item 11b, then item 19.
 
@@ -1745,7 +1745,7 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
 
 - [x] **18.** Decide and record how local (non-proxy) sessions reach the Agent. **Done: every session
       goes through the Agent**, which was the preferred outcome in §8 — one data path, one
-      implementation, one set of behaviours to test. Verified against OpenOCD, pyOCD and ST-LINK.
+      implementation, one set of behaviours to test. Verified against OpenOCD, pyOCD, ST-LINK and J-Link.
 - [x] **18a.** Stop syncing files when the "remote" is local. **Done** — `syncFiles` skips a local
       session, so nothing is copied to a directory on the same disk it came from. Local mode had been
       standing in for a remote session without a second machine and did that job well; this retired

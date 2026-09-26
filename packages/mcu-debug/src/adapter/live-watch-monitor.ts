@@ -79,7 +79,10 @@ export class LiveWatchMonitor extends EventEmitter {
         // gdbCommands.push('interpreter-exec console "set debug remote 1"');
         gdbCommands.push('interpreter-exec console "set stack-cache off"');
         gdbCommands.push('interpreter-exec console "set remote interrupt-on-connect off"');
-        gdbCommands.push(...this.mainSession.getServerConnectCommands());
+        // Held apart from the rest: a failing init command may be survivable (an option this GDB build
+        // does not recognise, say), but a failing *connect* means live watch cannot work at all and
+        // everyone waiting on requestLiveCapability() has to be told. See the two loops below.
+        const connectCommands = this.mainSession.getServerConnectCommands();
         this.gdbInstance
             .start(exe, args, process.cwd(), [], false)
             .then(() => {
@@ -94,14 +97,22 @@ export class LiveWatchMonitor extends EventEmitter {
                         this.handleMsg(Stderr, `Error with command '${cmd}': ${err.toString()}\n`);
                     });
                 }
+                for (const cmd of connectCommands) {
+                    this.gdbInstance!.sendCommand(cmd).catch((err) => {
+                        this.handleMsg(Stderr, `Error with command '${cmd}': ${err.toString()}\n`);
+                        // Definitive, and it has to be said out loud. The process started, so the
+                        // `.catch` below never runs, and a refused connection produces no "connected"
+                        // event either -- so without this every waiter on requestLiveCapability()
+                        // stays pending for ever. That is precisely what a gdb-server refusing a
+                        // second GDB connection does, and with that call on the session's launch path
+                        // it hangs the whole session rather than disabling one feature.
+                        this.failConnection(err);
+                    });
+                }
             })
             .catch((err) => {
                 this.handleMsg(Stderr, `Could not start/initialize Live GDB process: ${err.toString()}\n`);
-                this.handleMsg(Stderr, `Live watch expressions will not work.\n`);
-                this.connectionState = "failed";
-                this.connectionError = err;
-                this.mainSession.sendEvent(this.newLiveConnectedEvent(false, err?.toString?.() ?? String(err)));
-                this.resolveConnectionWaiters(err);
+                this.failConnection(err);
             });
     }
 
@@ -269,6 +280,25 @@ export class LiveWatchMonitor extends EventEmitter {
     private connectionError: any;
     private connectionWaiters: Array<{ resolve: () => void; reject: (e: any) => void }> = [];
     private startInvoked = false;
+    /**
+     * Give up on the live connection, and tell everyone who is waiting.
+     *
+     * Every path that makes live watch unusable must come through here. Anything that leaves
+     * `connectionState` at `"pending"` with no `connected` event still to come strands every caller of
+     * `requestLiveCapability()` -- and since that call now sits on the session's launch path, a
+     * stranded promise is a session that never starts rather than a feature that quietly failed.
+     */
+    private failConnection(err: any) {
+        if (this.connectionState !== "pending") {
+            return; // Already settled, one way or the other.
+        }
+        this.connectionState = "failed";
+        this.connectionError = err;
+        this.handleMsg(Stderr, `Live watch expressions will not work.\n`);
+        this.mainSession.sendEvent(this.newLiveConnectedEvent(false, err?.toString?.() ?? String(err)));
+        this.resolveConnectionWaiters(err);
+    }
+
     private resolveConnectionWaiters(err?: any) {
         const waiters = this.connectionWaiters;
         this.connectionWaiters = [];
@@ -324,7 +354,11 @@ export class LiveWatchMonitor extends EventEmitter {
         } catch (e: any) {
             // Registration can routinely fail (gdb-server doesn't support live probes, or the connection
             // hasn't come up/failed yet) - not something the user needs a popup for.
-            this.handleErrResponse(response, `Error registering client: ${e.toString()}, Not connected to target\n`, false);
+            // Terse on purpose: when the live connection failed, the monitor reported the cause once
+            // already, and every client that registers afterwards would otherwise repeat it. The client
+            // needs to know it cannot have live watch, not why, a third time.
+            const why = this.connectionState === "failed" ? "live watch is not available for this session" : e.toString();
+            this.handleErrResponse(response, `Cannot register live-watch client: ${why}\n`, false);
         } finally {
             this.handlingRequest = false;
         }

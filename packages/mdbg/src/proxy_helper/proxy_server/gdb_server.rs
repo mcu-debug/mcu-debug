@@ -253,6 +253,7 @@ impl ProxyServer {
                         StreamMeta {
                             name: id_string.clone(),
                             kind,
+                            duplicate_of: None,
                         },
                     );
                     self.reserved_ports.push(PortInfoListner {
@@ -552,6 +553,59 @@ impl ProxyServer {
         }
     }
 
+    /// Release a stream whose local consumer has gone away.
+    ///
+    /// The Agent has no way to notice this by itself — a consumer terminates on the client side, and
+    /// nothing on the funnel says so — so without this request it kept the gdb-server connection open
+    /// for a reader that had left. For a duplicated gdb stream that also held a
+    /// `-gdb-max-connections` slot indefinitely.
+    ///
+    /// **A duplicate is dismantled; the original is only disconnected.** A duplicate's id is minted on
+    /// demand and never reused, so nothing is lost by forgetting it entirely. The original's id and
+    /// port belong to the session, and leaving its `PortInfo` in place with no connection is exactly
+    /// what `StreamConn::Idle` means — so the stream becomes connectable again through `StartStream`
+    /// instead of being rejected as unknown.
+    ///
+    /// This handler emits no `StreamClosed` event of its own — but one usually follows anyway, and
+    /// that is worth knowing rather than being surprised by. Shutting the socket down makes that
+    /// stream's forwarder (or its mux) report EOF, which raises `StreamClosed` through the ordinary
+    /// path. Harmless, and in practice useful: it is what prunes the client's own routing entry. It
+    /// does **not** arrive when the stream was already `Idle`, so a client must not depend on it.
+    pub(super) fn handle_close_stream(&mut self, stream_id: u8, msg_seq: u64) {
+        if !self.streams.contains_key(&stream_id) {
+            // Not worth failing: a client tidying up after a stream the Agent already dropped (the
+            // gdb-server hung up, say) is doing the right thing with stale information.
+            eprintln!("CloseStream for unknown stream_id {}; nothing to do", stream_id);
+            ControlResponse::success(msg_seq, None).send(&self.writer).ok();
+            return;
+        }
+
+        // The mux first, if this was a muxed controller stream, so its threads stop reading a
+        // descriptor we are about to shut down.
+        self.stop_rsp_mux(stream_id);
+
+        if let Some(pinfo) = self.streams.get_mut(&stream_id) {
+            // Shut down whichever half we still hold, so the gdb-server sees the connection end
+            // rather than waiting on a peer that will never speak again. `Muxed` holds none by
+            // design -- the channel owns both clones, and `stop_rsp_mux` has already told it to go.
+            if let Some(stream) = pinfo.conn.direct_mut() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            pinfo.conn = StreamConn::Idle;
+        }
+
+        if self.stream_meta.get(&stream_id).and_then(|m| m.duplicate_of).is_some() {
+            eprintln!("CloseStream: dismantling duplicated stream {}", stream_id);
+            self.streams.remove(&stream_id);
+            self.stream_meta.remove(&stream_id);
+            self.reserved_ports.retain(|p| p.stream_id != stream_id);
+        } else {
+            eprintln!("CloseStream: stream {} disconnected and left connectable", stream_id);
+        }
+
+        ControlResponse::success(msg_seq, None).send(&self.writer).ok();
+    }
+
     pub(super) fn handle_duplicate_stream(&mut self, stream_id: u8, msg_seq: u64) {
         if let Some(pinfo) = self.streams.get_mut(&stream_id) {
             if pinfo.conn.is_connected() {
@@ -582,6 +636,7 @@ impl ProxyServer {
                     StreamMeta {
                         name: dup_name,
                         kind: dup_kind,
+                        duplicate_of: Some(stream_id),
                     },
                 );
                 self.reserved_ports.push(PortInfoListner {

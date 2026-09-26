@@ -407,6 +407,19 @@ pub enum ControlRequest {
     #[serde(rename = "duplicateStream")]
     DuplicateStream { stream_id: u8 },
 
+    /// The client's local consumer for this stream has gone away.
+    ///
+    /// The Agent cannot see this for itself: a stream's consumer terminates on the *client* side, and
+    /// the funnel carries no signal for it — which is why the Agent used to hold a connection to the
+    /// gdb-server open for a consumer that had left, feeding a stream nobody would read and, for a
+    /// duplicated gdb stream, holding a `-gdb-max-connections` slot for nothing.
+    ///
+    /// A duplicate is dismantled completely; the original stream keeps its port and becomes
+    /// connectable again with `StartStream`. No `StreamClosed` event follows — the client asked for
+    /// this and already knows.
+    #[serde(rename = "closeStream")]
+    CloseStream { stream_id: u8 },
+
     #[serde(rename = "heartbeat")]
     Heartbeat,
 
@@ -456,6 +469,7 @@ impl ControlRequest {
             ControlRequest::StreamStatus { .. } => "streamStatus",
             ControlRequest::StartStream { .. } => "startStream",
             ControlRequest::DuplicateStream { .. } => "duplicateStream",
+            ControlRequest::CloseStream { .. } => "closeStream",
             ControlRequest::Heartbeat => "heartbeat",
             ControlRequest::SyncFile { .. } => "syncFile",
             ControlRequest::SerialOpen(..) => "serial.open",

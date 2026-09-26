@@ -68,6 +68,7 @@ export type ControlRequest =
     | { method: "streamStatus"; params: { stream_id: number } }
     | { method: "startStream"; params: { stream_id: number } }
     | { method: "duplicateStream"; params: { stream_id: number } }
+    | { method: "closeStream"; params: { stream_id: number } }
     | { method: "heartbeat" }
     | { method: "syncFile"; params: { relative_path: string; content: Array<number> } }
     | { method: "serial.open"; params: SerialParams }

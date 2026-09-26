@@ -201,6 +201,15 @@ pub struct StreamMeta {
     /// The `port_ids` string the client supplied (`gdbPort`, `swoPort1`, …).
     pub name: String,
     pub kind: StreamKind,
+    /// `Some(original)` when `DuplicateStream` created this stream, naming the stream it was
+    /// duplicated from; `None` for one the client reserved through `AllocatePorts`.
+    ///
+    /// Recorded rather than inferred. The obvious test — `StreamRole::Secondary` — only exists for
+    /// `GdbRsp` kinds, since duplicating any other kind copies its classification unchanged; and the
+    /// other obvious test, the `#dup` in the generated name, is a string that happens to be there.
+    /// The distinction decides whether closing a stream dismantles it or merely disconnects it, so it
+    /// is worth a field.
+    pub duplicate_of: Option<u8>,
 }
 
 // ── ProxyServer ───────────────────────────────────────────────────────────────
@@ -808,6 +817,10 @@ impl ProxyServer {
             ControlRequest::DuplicateStream { stream_id } => {
                 eprintln!("Received DuplicateStream request for stream_id {}", stream_id);
                 self.handle_duplicate_stream(stream_id, msg.seq);
+            }
+            ControlRequest::CloseStream { stream_id } => {
+                eprintln!("Received CloseStream request for stream_id {}", stream_id);
+                self.handle_close_stream(stream_id, msg.seq);
             }
             ControlRequest::EndSession => {
                 eprintln!("Received EndSession request, closing connection");
