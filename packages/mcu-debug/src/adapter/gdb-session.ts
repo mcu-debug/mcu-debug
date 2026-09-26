@@ -1393,9 +1393,49 @@ export class GDBDebugSession extends SeqDebugSession {
 
             // Let gdb connect to the server
             await this.sendCommandsWithWait(this.getConnectCommandsPre()); // Can throw
+            this.sendEvent(new GenericCustomEvent("post-connect-server", this.args)); // if SWO launch was requested by the server controller, we wait for it to connect before starting actual debug
             // Once connected, we can initialize arch details, this is as early as possible to ensure that any architecture-specific settings are correctly applied
             const tInfo = new TargetInfo(this.gdbInstance, this);
             await tInfo.initialize();
+
+            // Attach the live-watch GDB here, and nowhere else. This is the earliest point at which
+            // both hazards of a second GDB connection are absent, and the only one where we can
+            // prove it rather than hope:
+            //
+            //  * The target is halted, because *we* just halted it. The last target-touching
+            //    command in getConnectCommandsPre() is our own `-target-select`, which cannot
+            //    succeed unless the core is halted -- GDB reads registers on connect, and registers
+            //    are unreadable while the core runs. Everything after it in that set is symbol
+            //    loading, which never touches the target, and a user cannot pre-empt us with a
+            //    connect of their own because the port number is allocated at random.
+            //    preLaunch/preAttach commands run *before* the connect, so they cannot have
+            //    resumed anything either.
+            //  * No breakpoints exist yet, so the wipe that OpenOCD performs on every new GDB
+            //    connection discards nothing. Attaching later would not be safe on this count:
+            //    postLaunch/postAttach commands legitimately run past a bootloader using a
+            //    temporary breakpoint, and our connect would wipe whatever is still installed.
+            //    Later still -- after InitializedEvent -- it would wipe the user's own breakpoints.
+            //
+            // Flashing and `monitor reset halt` happen after this, with the live GDB attached, and
+            // that is fine: OpenOCD forwards only GDB_HALT and HALTED to a connection's event
+            // handler, and GDB_HALT is filtered by that connection's own frontend_state, so a
+            // secondary that has never resumed is sent nothing at all.
+            //
+            // Awaited on purpose: this used to start inside postInitComplete() without being waited
+            // for, which left it racing VS Code's breakpoints. requestLiveCapability() is
+            // idempotent -- it guards on startInvoked and returns at once once connected -- so the
+            // call still in postInitComplete() costs nothing and continues to serve clients that
+            // register lazily.
+            if (this.args.liveWatch?.enabled || !!this.args.pvtRttConfig) {
+                try {
+                    await this.liveWatchMonitor.requestLiveCapability();
+                } catch (e) {
+                    // Never fatal: live watch is optional, and it now sits on the session's critical
+                    // path where an unguarded failure would end the session.
+                    this.handleMsg(Stderr, `WARNING: live watch is unavailable: ${formatThrown(e)}\n`);
+                }
+            }
+
             // Get the disassembly adapter initialized, wait for it to finish asynchronously
             await this.sendCommandsWithWait(this.getConnectCommandsPost()); // Can throw
 

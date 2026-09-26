@@ -7,6 +7,9 @@
 
 ## [v0.1.18] - 2026-09-??
 
+### Live Watch
+- In certain cases, live-watch did not automatically start and showed variables as "not available"
+
 ### Find in the MCU DEBUG panel
 
 - **`Ctrl+F` searches the output of the tab you are on** (`Cmd+F` on macOS). Until now, finding

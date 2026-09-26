@@ -76,7 +76,7 @@ export class LiveWatchMonitor extends EventEmitter {
         this.gdbInstance.debugFlags = this.debugFlags ?? this.gdbInstance.debugFlags ?? {};
         const exe = this.mainSession.gdbInstance.gdbPath;
         const args = this.mainSession.gdbInstance.gdbArgs;
-        gdbCommands.push('interpreter-exec console "set debug remote 1"');
+        // gdbCommands.push('interpreter-exec console "set debug remote 1"');
         gdbCommands.push('interpreter-exec console "set stack-cache off"');
         gdbCommands.push('interpreter-exec console "set remote interrupt-on-connect off"');
         gdbCommands.push(...this.mainSession.getServerConnectCommands());

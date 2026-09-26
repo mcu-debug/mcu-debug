@@ -465,18 +465,21 @@ export class MCUDebugExtension {
             case "rtt-configure":
                 this.receivedRTTConfigureEvent(e);
                 break;
+
             case "post-initialized":
                 this.receivedPostInitializedEvent(e);
                 break;
             case "record-event":
                 this.receivedEvent(e);
                 break;
+            case "custom-event-post-connect-server":
+                this.receivedPostConnectServerEvent(e);
+                break;
             case "custom-event-post-start-server":
                 this.startChainedConfigs(e, ChainedEvents.POSTSTART);
                 break;
             case "custom-event-post-start-gdb":
                 this.startChainedConfigs(e, ChainedEvents.POSTINIT);
-                this.liveWatchProvider?.debugSessionStarted(session);
                 break;
             case "custom-event-session-terminating":
                 ServerConsoleLog(`Got event for sessions terminating PID=${process.pid}`);
@@ -517,9 +520,12 @@ export class MCUDebugExtension {
         }
     }
 
+    private receivedPostConnectServerEvent(e: vscode.DebugSessionCustomEvent) {
+        // Handle the post-connect-server event here
+        this.liveWatchProvider?.debugSessionStarted(e);
+    }
+
     private receivedPostInitializedEvent(e: vscode.DebugSessionCustomEvent) {
-        // Handle the post-initialized event here
-        this.liveWatchProvider.postInitializeNotification(e);
     }
 
     private signalPortsAllocated(e: vscode.DebugSessionCustomEvent) {

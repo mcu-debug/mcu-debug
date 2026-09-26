@@ -22,25 +22,34 @@ module.exports = {
         default: [],
         type: "array",
         items: { type: "string" },
-        description: "Additional GDB Commands to be executed at the start of the main launch sequence (immediately after attaching to target).",
+        description:
+            "Additional GDB commands to be executed at the start of the launch sequence, before GDB connects to the " +
+            "gdb-server. There is no connection to the target yet, so these cannot read or write target memory or " +
+            "registers and 'monitor' commands are not available — use postLaunchCommands for anything target-related.",
     },
     postLaunchCommands: {
         default: [],
         type: "array",
         items: { type: "string" },
-        description: "Additional GDB Commands to be executed after the main launch sequence has finished.",
+        description:
+            "Additional GDB commands to be executed after the launch sequence (flash download and reset) has " +
+            "finished. These must leave the target halted. Resuming and halting again is fine — running past a bootloader is a normal use — but everything after this point assumes a halted target, so finishing while the target runs will break the rest of the session.",
     },
     preAttachCommands: {
         default: [],
         type: "array",
         items: { type: "string" },
-        description: "Additional GDB Commands to be executed at the start of the main attach sequence (immediately after attaching to target).",
+        description:
+            "Additional GDB commands to be executed at the start of the attach sequence, before GDB connects to the " +
+            "gdb-server. There is no connection to the target yet, so these cannot read or write target memory or " +
+            "registers and 'monitor' commands are not available — use postAttachCommands for anything target-related.",
     },
     postAttachCommands: {
         default: [],
         type: "array",
         items: { type: "string" },
-        description: "Additional GDB Commands to be executed after the main attach sequence has finished.",
+        description:
+            "Additional GDB commands to be executed after the attach sequence has finished. These must leave the target halted. Resuming and halting again is fine — running past a bootloader is a normal use — but everything after this point assumes a halted target, so finishing while the target runs will break the rest of the session.",
     },
     preResetCommands: {
         default: [],
@@ -52,7 +61,8 @@ module.exports = {
         default: [],
         type: "array",
         items: { type: "string" },
-        description: "Commands to be executed after a Reset operation, after the reset is sent to the target.",
+        description:
+            "Commands to be executed after a Reset operation, after the reset is sent to the target. These must leave the target halted. Resuming and halting again is fine — running past a bootloader is a normal use — but everything after this point assumes a halted target, so finishing while the target runs will break the rest of the session.",
     },
     postRestartCommands: {
         default: [],
@@ -65,13 +75,17 @@ module.exports = {
         default: null,
         type: "array",
         items: { type: "string" },
-        description: "Override the commands that are normally executed as part of flashing and launching the target.",
+        description:
+            "Override the commands that are normally executed as part of flashing and launching the target. Your " +
+            "replacement must leave the target halted, since everything after the launch sequence assumes that.",
     },
     overrideAttachCommands: {
         default: null,
         type: "array",
         items: { type: "string" },
-        description: "Override the commands that are normally executed as part of attaching to a running target.",
+        description:
+            "Override the commands that are normally executed as part of attaching to a running target. Your " +
+            "replacement must leave the target halted, since everything after the attach sequence assumes that.",
     },
     overrideRestartCommands: {
         default: null,
@@ -84,7 +98,9 @@ module.exports = {
         default: null,
         type: "array",
         items: { type: "string" },
-        description: "Override the commands that are normally executed as part of reset-ing the target.",
+        description:
+            "Override the commands that are normally executed as part of resetting the target. Your replacement must " +
+            "leave the target halted, since everything after the reset sequence assumes that.",
     },
     postStartSessionCommands: {
         default: [],

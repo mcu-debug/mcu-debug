@@ -1070,20 +1070,30 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
         return this.registerClientPromise;
     }
 
-    public debugSessionStarted(session: vscode.DebugSession) {
+    private _debugSessionStarted(session: vscode.DebugSession): boolean {
         const liveWatch = session.configuration.liveWatch as LiveWatchConfig;
         if (!liveWatch?.enabled) {
             if (!LiveWatchTreeProvider.session && !this.haveRealChildren()) {
                 // Force a child node to be created to provide a Hint
                 this.fire();
             }
-            return;
+            return false;
         }
         if (LiveWatchTreeProvider.session) {
             vscode.window.showErrorMessage("Error: You can have live-watch enabled to only one debug session at a time. Live Watch is already enabled for " + LiveWatchTreeProvider.session.name);
-            return;
+            return false;
         }
         this.resetSession(session);
+        return true;
+    }
+
+    public debugSessionStarted(e: vscode.DebugSessionCustomEvent): boolean {
+        const session = e.session;
+        if (!this._debugSessionStarted(session)) {
+            return false;
+        }
+        this.postInitializeNotification(e);
+        return true;
     }
 
     private resetSession(session: vscode.DebugSession) {
