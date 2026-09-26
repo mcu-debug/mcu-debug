@@ -300,6 +300,56 @@ impl ProxyServer {
         });
     }
 
+    /// Decide the gdb-server's working directory, or say why we will not.
+    ///
+    /// Pure, and returning the reason rather than reporting it, for two reasons: every failure here
+    /// is something the client needs told, and keeping the decision out of the handler makes it
+    /// testable without a session, a socket or a spawned process.
+    ///
+    /// **A client may choose the directory only if it can create a file we can see.** Note what that
+    /// actually establishes: a *shared filesystem*, not locality — a container or WSL client with a
+    /// bind-mounted temp directory passes too. Whether that is the right bar is a policy question;
+    /// this function only implements it faithfully. It is worth knowing that the same request already
+    /// accepts an arbitrary `server_path` and `server_args` and runs them, so choosing the working
+    /// directory is a strictly smaller capability than one already granted alongside it.
+    fn resolve_server_cwd(
+        requested: Option<&str>,
+        security_file: Option<&str>,
+        session_cwd: &str,
+    ) -> Result<String, String> {
+        let dir = match requested {
+            None => session_cwd.to_string(),
+            Some(requested) => {
+                // Two distinct refusals, and neither may unwrap: an earlier version reported the
+                // missing-file case by unwrapping the very `Option` it had just found to be `None`,
+                // so the one diagnostic a client most needed was a panic instead.
+                let Some(security_file) = security_file else {
+                    return Err(
+                        "a server_cwd was requested without a security_file, so this client cannot be \
+                         shown to share our filesystem"
+                            .to_string(),
+                    );
+                };
+                if !Path::new(security_file).exists() {
+                    return Err(format!(
+                        "security_file '{security_file}' does not exist, so this client cannot be \
+                         shown to share our filesystem"
+                    ));
+                }
+                requested.to_string()
+            }
+        };
+        // Checked here rather than left to `spawn`, whose `ENOENT` names the *executable*: a bad
+        // working directory would otherwise be reported as a missing gdb-server and send whoever
+        // reads it hunting for the wrong thing.
+        if !Path::new(&dir).is_dir() {
+            return Err(format!(
+                "working directory '{dir}' does not exist or is not a directory"
+            ));
+        }
+        Ok(dir)
+    }
+
     pub(super) fn handle_start_gdb_server(&mut self, msg: &ControlMessage) {
         if let ControlRequest::StartGdbServer {
             server_path,
@@ -311,23 +361,17 @@ impl ProxyServer {
         {
             self.stop_port_monitor();
             let ports: Vec<(u8, u16)> = self.reserved_ports.drain(..).map(|p| (p.stream_id, p.port)).collect();
-            let dir = match server_cwd.clone() {
-                Some(d) => {
-                    if security_file.is_none() || !std::path::Path::new(&security_file.as_ref().unwrap()).exists() {
-                        // This is our security file to ensure this a local client, we don't allow remote clients to specify arbitrary directories.
-                        let err_mg = format!(
-                            "Failed to launch gdb-server: security check failed: {} does not exist or tmp_file is not specified",
-                            security_file.as_ref().unwrap()
-                        );
-
-                        eprintln!("{}", err_mg);
-                        ControlResponse::error(msg.seq, err_mg).send(&self.writer).ok();
-                        self.exit = true;
-                        return;
-                    }
-                    d
+            let requested_cwd = server_cwd.as_deref();
+            let sec = security_file.as_deref();
+            let dir = match Self::resolve_server_cwd(requested_cwd, sec, &self.server_cwd) {
+                Ok(dir) => dir,
+                Err(why) => {
+                    let err_msg = format!("Failed to launch gdb-server: {why}");
+                    eprintln!("{}", err_msg);
+                    ControlResponse::error(msg.seq, err_msg).send(&self.writer).ok();
+                    self.exit = true;
+                    return;
                 }
-                None => self.server_cwd.to_string(),
             };
             let mut command = Command::new(server_path);
             command
@@ -736,6 +780,60 @@ fn reap_gdb_server(
         eprintln!("gdb-server pid {pid} exited on its own with code {exit_code}");
         let _ = event_tx.send(ProxyEvent::GdbServerExited { pid, exit_code });
         return;
+    }
+}
+
+#[cfg(test)]
+mod server_cwd_tests {
+    use super::*;
+
+    /// The case that used to panic: a `server_cwd` with no `security_file`. The old code reported it
+    /// by unwrapping the `None` it had just detected, so the client got a dead session instead of the
+    /// message. This asserts a *reason*, which is the thing that was unreachable.
+    #[test]
+    fn a_requested_cwd_without_a_security_file_is_refused_not_panicked() {
+        let err = ProxyServer::resolve_server_cwd(Some("/tmp"), None, "/tmp").unwrap_err();
+        assert!(err.contains("without a security_file"), "unexpected reason: {err}");
+    }
+
+    #[test]
+    fn a_security_file_that_does_not_exist_is_refused_and_named() {
+        let missing = "/definitely/not/here/mcu-debug-nope";
+        let err = ProxyServer::resolve_server_cwd(Some("/tmp"), Some(missing), "/tmp").unwrap_err();
+        assert!(err.contains(missing), "the reason must name the file: {err}");
+        assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn a_requested_cwd_is_honoured_when_the_security_file_is_there() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let token = dir.path().join("mcu-debug-token");
+        std::fs::write(&token, b"").expect("write token");
+        let requested = dir.path().to_str().unwrap();
+        let got = ProxyServer::resolve_server_cwd(Some(requested), token.to_str(), "/tmp").unwrap();
+        assert_eq!(got, requested);
+    }
+
+    #[test]
+    fn no_requested_cwd_uses_the_sessions_own_directory_and_needs_no_security_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = dir.path().to_str().unwrap();
+        assert_eq!(ProxyServer::resolve_server_cwd(None, None, session).unwrap(), session);
+    }
+
+    /// Both branches are checked, so a bad directory is reported as a bad directory rather than
+    /// surfacing later as a missing gdb-server executable.
+    #[test]
+    fn a_directory_that_does_not_exist_is_refused_whichever_branch_chose_it() {
+        let gone = "/definitely/not/here/either";
+        let err = ProxyServer::resolve_server_cwd(None, None, gone).unwrap_err();
+        assert!(err.contains("working directory"), "unexpected reason: {err}");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let token = dir.path().join("tok");
+        std::fs::write(&token, b"").expect("write token");
+        let err = ProxyServer::resolve_server_cwd(Some(gone), token.to_str(), "/tmp").unwrap_err();
+        assert!(err.contains("working directory"), "unexpected reason: {err}");
     }
 }
 
