@@ -1,4 +1,4 @@
-import fs from 'fs';
+import fs from "fs";
 import { BinaryFormatter } from "../common/binary-encoding";
 import { HrTimer, RTTConsoleDecoderOpts, TextEncoding } from "../adapter/servers/common";
 import { AnsiHelpers } from "../common/ansi-helpers";
@@ -14,7 +14,11 @@ export class CLIRTTTerminal {
     private logFd: number = -1;
     private static existingPrefixes = new Set<string>();
 
-    constructor(public options: RTTConsoleDecoderOpts, private source: SocketIOSource, private readonly kind: string = "RTT") {
+    constructor(
+        public options: RTTConsoleDecoderOpts,
+        private source: SocketIOSource,
+        private readonly kind: string = "RTT",
+    ) {
         this.prefix = trimBrackets(this.options.label || `RTT#${options.port}`);
         let counter = 1;
         const basePrefix = this.prefix;
@@ -26,7 +30,7 @@ export class CLIRTTTerminal {
         this.prefix = `[${this.prefix}]`;
         if (this.options.iencoding !== TextEncoding.UTF8 && this.options.iencoding !== TextEncoding.ASCII && this.options.type !== "binary") {
             if (this.options.iencoding) {
-                logger.warn(`RTT Console ${this.options.label}: Ignoring text encoding ${this.options.iencoding} for CLI mode. Setting to UTF-8.`, { source: 'DA', isConsole: true, color: 'yellow' });
+                logger.warn(`RTT Console ${this.options.label}: Ignoring text encoding ${this.options.iencoding} for CLI mode. Setting to UTF-8.`, { source: "DA", isConsole: true, color: "yellow" });
             }
             this.options.iencoding = TextEncoding.UTF8;
         }
@@ -35,7 +39,7 @@ export class CLIRTTTerminal {
             // has already removed the CRLF terminator, so anything left here the firmware sent.
             const clean = AnsiHelpers.stripTerminalControl(line);
             if (line && !clean) {
-                return;     // pure cursor control: not blank spacing the firmware asked for
+                return; // pure cursor control: not blank spacing the firmware asked for
             }
             const ts = options.timestamp ? HrTimer.createDateTimestamp() + " " : "";
             logger.info(clean || ts ? `${source} ${ts}${clean}` : source, { source: this.kind, isConsole: true });
@@ -54,16 +58,16 @@ export class CLIRTTTerminal {
 
     private connectToSource() {
         const doConnected = () => {
-            logger.info(`${this.prefix} type=${this.options.type} connected to RTT source.`, { source: 'DA', isConsole: true, color: 'green' });
+            logger.info(`${this.prefix} type=${this.options.type} connected to RTT source.`, { source: "DA", isConsole: true, color: "green" });
             this.openLogFile();
-        }
+        };
         this.hrTimer = new HrTimer();
         if (this.source.connected) {
             doConnected();
             return;
         }
         this.source.once("disconnected", () => {
-            logger.info(`${this.prefix} disconnected from RTT source.`, { source: 'DA', isConsole: true, color: 'yellow.bold' });
+            logger.info(`${this.prefix} disconnected from RTT source.`, { source: "DA", isConsole: true, color: "yellow.bold" });
             this.dispose();
         });
         this.source.on("error", (e) => {
@@ -72,9 +76,9 @@ export class CLIRTTTerminal {
                 // Server closed the connection. We are done with this session
             } else if (code === "ECONNREFUSED") {
                 // We expect 'ECONNREFUSED' if the server has not yet started after all the retries
-                logger.error(`${e} for ${this.prefix}, will retry...`, { source: 'DA', isConsole: true, color: 'red' });
+                logger.error(`${e} for ${this.prefix}, will retry...`, { source: "DA", isConsole: true, color: "red" });
             } else {
-                logger.error(`${e} for ${this.prefix}`, { source: 'DA', isConsole: true, color: 'red' });
+                logger.error(`${e} for ${this.prefix}`, { source: "DA", isConsole: true, color: "red" });
             }
             this.dispose();
         });
@@ -83,7 +87,7 @@ export class CLIRTTTerminal {
         });
 
         if (this.source.connError) {
-            logger.error(`${this.source.connError.message} for ${this.prefix}`, { source: 'DA', isConsole: true, color: 'red' });
+            logger.error(`${this.source.connError.message} for ${this.prefix}`, { source: "DA", isConsole: true, color: "red" });
         } else if (this.source.connected) {
             this.openLogFile();
         } else {
@@ -101,7 +105,7 @@ export class CLIRTTTerminal {
                 this.lineBuffer.push(data.toString(this.options.iencoding));
             }
         } catch (e) {
-            logger.error(`Error writing data for ${this.prefix}: ${e}`, { source: 'DA', isConsole: true, color: 'red' });
+            logger.error(`Error writing data for ${this.prefix}: ${e}`, { source: "DA", isConsole: true, color: "red" });
         }
     }
 
@@ -117,7 +121,7 @@ export class CLIRTTTerminal {
      * the firmware use sendToTarget() below.
      */
     send(data: string) {
-        let str = `${this.prefix} ${data}`
+        let str = `${this.prefix} ${data}`;
         this.writeLogFile(str);
         str = str.trimEnd();
         logger.info(str, { source: this.kind, isConsole: true });
@@ -139,7 +143,7 @@ export class CLIRTTTerminal {
             } catch (e: any) {
                 const msg = `Could not open file ${this.options.logfile} for writing. ${e.toString()}`;
                 console.error(msg);
-                logger.error(msg, { source: 'DA', isConsole: true, color: 'red' });
+                logger.error(msg, { source: "DA", isConsole: true, color: "red" });
             }
         } else if (this.logFd >= 0 && !this.options.logfile) {
             // It is already open but new connection does not want logging anymore
@@ -152,7 +156,7 @@ export class CLIRTTTerminal {
             try {
                 fs.closeSync(this.logFd);
             } catch (e) {
-                logger.error(`Error: closing file ${this.options.logfile} for ${this.prefix}: ${e}`, { source: 'DA', isConsole: true, color: 'red' });
+                logger.error(`Error: closing file ${this.options.logfile} for ${this.prefix}: ${e}`, { source: "DA", isConsole: true, color: "red" });
             }
             this.logFd = -1;
         }
@@ -164,7 +168,7 @@ export class CLIRTTTerminal {
             return;
         }
         this.disposing = true;
-        this.source.dispose();      // This will cause a disconnected event 
+        this.source.dispose(); // This will cause a disconnected event
         this.lineBuffer.flush();
         this.closeLogFd();
         CLIRTTTerminal.existingPrefixes.delete(this.prefix);

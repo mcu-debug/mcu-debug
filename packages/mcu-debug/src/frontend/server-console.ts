@@ -16,8 +16,7 @@ export class GDBServerConsoleInstance {
     public terminal: ManagedTabConsole | null = null;
     protected toBackend: net.Socket | null = null;
 
-    constructor() {
-    }
+    constructor() {}
 
     public static disposeAll() {
         const saved = GDBServerConsoleInstance.allConsoles;

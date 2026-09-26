@@ -28,7 +28,7 @@ export class PortReservedInfo {
         public stream_id: number,
         public stream_id_str: string,
         public status: StreamStatus = "starting",
-    ) { }
+    ) {}
 }
 
 // How long to wait for the proxy to acknowledge `endSession`, instead of the 20-second
@@ -817,7 +817,7 @@ export class RemoteServer {
         private proxyManager: ProxyClient,
         public portDef: TcpPortDef,
         public pInfo: PortReservedInfo,
-    ) { }
+    ) {}
 
     /**
      * Bind the local listener that a consumer (GDB, an SWO viewer, ...) connects to.

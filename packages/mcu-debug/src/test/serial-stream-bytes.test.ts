@@ -12,7 +12,7 @@ import * as net from "net";
 import { ProxySerialTcpServer } from "../common/serial-manager";
 
 // ProxySerialTcpServer only uses the connection for logging on this path.
-const stubConn = { logInfo() { }, logError() { } } as any;
+const stubConn = { logInfo() {}, logError() {} } as any;
 
 function collect(port: number, want: number): Promise<Buffer> {
     return new Promise((resolve, reject) => {
@@ -25,7 +25,10 @@ function collect(port: number, want: number): Promise<Buffer> {
             const d = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "binary");
             got.push(d);
             n += d.length;
-            if (n >= want) { s.end(); resolve(Buffer.concat(got)); }
+            if (n >= want) {
+                s.end();
+                resolve(Buffer.concat(got));
+            }
         });
         s.on("error", reject);
     });

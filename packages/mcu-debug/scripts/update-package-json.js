@@ -247,9 +247,27 @@ function generateMarkdownReference() {
         if (!node || typeof node !== "object") return false;
         if (node.properties && typeof node.properties === "object") return false;
         if (node.type && node.type !== "object") return true;
-        
-        const hasNestedKeys = Object.keys(node).some(key => {
-            if (["type", "description", "default", "enum", "properties", "items", "required", "anyOf", "oneOf", "deprecationMessage", "minimum", "maximum", "multipleOf", "pattern", "additionalProperties"].includes(key)) {
+
+        const hasNestedKeys = Object.keys(node).some((key) => {
+            if (
+                [
+                    "type",
+                    "description",
+                    "default",
+                    "enum",
+                    "properties",
+                    "items",
+                    "required",
+                    "anyOf",
+                    "oneOf",
+                    "deprecationMessage",
+                    "minimum",
+                    "maximum",
+                    "multipleOf",
+                    "pattern",
+                    "additionalProperties",
+                ].includes(key)
+            ) {
                 return false;
             }
             const val = node[key];
@@ -264,13 +282,35 @@ function generateMarkdownReference() {
     function recurse(node, pathStr) {
         if (!node || typeof node !== "object") return;
 
-        const hasNestedItems = node.type === "array" && node.items && typeof node.items === "object" && 
-            (node.items.properties || Object.keys(node.items).some(k => {
-                if (["type", "description", "default", "enum", "properties", "items", "required", "anyOf", "oneOf", "deprecationMessage", "minimum", "maximum", "multipleOf", "pattern", "additionalProperties"].includes(k)) {
-                    return false;
-                }
-                return node.items[k] && typeof node.items[k] === "object";
-            }));
+        const hasNestedItems =
+            node.type === "array" &&
+            node.items &&
+            typeof node.items === "object" &&
+            (node.items.properties ||
+                Object.keys(node.items).some((k) => {
+                    if (
+                        [
+                            "type",
+                            "description",
+                            "default",
+                            "enum",
+                            "properties",
+                            "items",
+                            "required",
+                            "anyOf",
+                            "oneOf",
+                            "deprecationMessage",
+                            "minimum",
+                            "maximum",
+                            "multipleOf",
+                            "pattern",
+                            "additionalProperties",
+                        ].includes(k)
+                    ) {
+                        return false;
+                    }
+                    return node.items[k] && typeof node.items[k] === "object";
+                }));
 
         if (hasNestedItems) {
             if (node.description) {
@@ -279,7 +319,7 @@ function generateMarkdownReference() {
                     type: "array",
                     description: node.description,
                     default: node.default,
-                    raw: node
+                    raw: node,
                 });
             }
             recurse(node.items, `${pathStr}[]`);
@@ -289,10 +329,10 @@ function generateMarkdownReference() {
         if (isLeaf(node)) {
             leaves.push({
                 name: pathStr,
-                type: Array.isArray(node.type) ? node.type.join(" | ") : (node.type || "any"),
+                type: Array.isArray(node.type) ? node.type.join(" | ") : node.type || "any",
                 description: node.description || "",
                 default: node.default,
-                raw: node
+                raw: node,
             });
             return;
         }
@@ -304,7 +344,7 @@ function generateMarkdownReference() {
                     type: node.type.join(" | "),
                     description: node.description,
                     default: node.default,
-                    raw: node
+                    raw: node,
                 });
             }
             for (const [key, val] of Object.entries(node.properties)) {
@@ -314,7 +354,25 @@ function generateMarkdownReference() {
         }
 
         const entries = Object.entries(node).filter(([key, val]) => {
-            if (["type", "description", "default", "enum", "properties", "items", "required", "anyOf", "oneOf", "deprecationMessage", "minimum", "maximum", "multipleOf", "pattern", "additionalProperties"].includes(key)) {
+            if (
+                [
+                    "type",
+                    "description",
+                    "default",
+                    "enum",
+                    "properties",
+                    "items",
+                    "required",
+                    "anyOf",
+                    "oneOf",
+                    "deprecationMessage",
+                    "minimum",
+                    "maximum",
+                    "multipleOf",
+                    "pattern",
+                    "additionalProperties",
+                ].includes(key)
+            ) {
                 return false;
             }
             return val && typeof val === "object";
@@ -393,28 +451,18 @@ This document provides a complete, flattened list of all properties supported in
         const nameCol = formatPath(leaf.name);
         const typeCol = `\`${leaf.type}\``;
         const modeCol = getLaunchAttachBoth(leaf.name, leaf.raw);
-        
+
         let descParts = [];
         if (!isEmptyDefault(leaf.default)) {
             const defaultStr = typeof leaf.default === "object" ? JSON.stringify(leaf.default) : String(leaf.default);
-            const escapedDefaultStr = defaultStr
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/\{/g, "\\{")
-                .replace(/\}/g, "\\}");
+            const escapedDefaultStr = defaultStr.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\{/g, "\\{").replace(/\}/g, "\\}");
             descParts.push(`**Default:** \`${escapedDefaultStr}\``);
         }
         if (leaf.description) {
-            const escapedDesc = leaf.description.trim()
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/\{/g, "\\{")
-                .replace(/\}/g, "\\}");
+            const escapedDesc = leaf.description.trim().replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\{/g, "\\{").replace(/\}/g, "\\}");
             descParts.push(escapedDesc);
         }
-        const descCol = descParts.join("<br/>")
-            .replace(/\|/g, "\\|")
-            .replace(/\n/g, " ");
+        const descCol = descParts.join("<br/>").replace(/\|/g, "\\|").replace(/\n/g, " ");
 
         mdContent += `| ${nameCol} | ${typeCol} | ${modeCol} | ${descCol} |\n`;
     }

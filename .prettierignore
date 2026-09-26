@@ -1,0 +1,29 @@
+# Build output and vendored trees. Prettier skips node_modules on its own; the rest it would
+# happily reformat, so they are listed here to keep `npm run format` safe to run from the root.
+node_modules/
+dist/
+build/
+out/
+lib/
+target/
+target-cross/
+coverage/
+mylfs/
+tmp/
+*.vsix
+apps/docs/.docusaurus/
+apps/docs/build/
+packages/*/bin/
+
+# NOTE: packages/shared/{dasm-helper,proxy-protocol,serial-helper} are deliberately NOT ignored.
+# They are ts-rs output, and `npm run test:rust` reformats them at a narrower width (120, see
+# scripts/test-rust.js). Listing them here does not merely skip them in a repo-wide run -- prettier
+# honours this file for explicitly named paths too, so it silently disables that script's formatting
+# step and leaves the raw generator output committed. Both widths produce identical files today; if
+# they ever diverge the symptom is churn in `git diff`, which is visible and fixable. Being ignored
+# was neither.
+
+# Generated from manifest-src/definitions.js and from the launch-property schema. Their generators
+# write them directly, so formatting them here would be undone on the next build.
+packages/mcu-debug/package.json
+apps/docs/docs/reference/launch-properties.md

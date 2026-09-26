@@ -28,6 +28,8 @@
     "lint:rust:all": "npm run lint:rust && npm run lint:rust:win && npm run lint:rust:linux",
     "fmt:rust": "cargo fmt --manifest-path packages/mdbg/Cargo.toml",
     "fmt:rust:check": "cargo fmt --manifest-path packages/mdbg/Cargo.toml -- --check",
+    "fmt:ts": "prettier --write \"**/*.{ts,tsx,js,mjs,cjs}\"",
+    "fmt:ts:check": "prettier --check \"**/*.{ts,tsx,js,mjs,cjs}\"",
     "publish": "node scripts/prepare-release.js --publish",
     "publish:dryrun": "node scripts/prepare-release.js --publish --dryrun",
     "push-artifacts": "node scripts/sync-artifacts.mjs --push",

@@ -308,7 +308,7 @@ export enum SessionMode {
  * If type is local we don't sync files unless `pvtForceSync` is true to emulate a remote debug
  * Plan is to always use the proxy server. But for the type is local, we only sync if `pvtForceSync` is true.
  * So, avoid syncing if the host is local and `pvtForceSync` is not true. Every other case requires syncing.
- * 
+ *
  * We are expecting the hostConfig to already have gone through resolveDebugConfiguration or a similar resolution step.
  * @returns True if synchronization is needed, false otherwise.
  */
@@ -378,7 +378,7 @@ export class TcpPortDef {
         public name: string,
         public localPort: number,
         public remotePort: number,
-    ) { }
+    ) {}
 }
 
 export interface SerialConfig {
@@ -499,7 +499,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     windows: any;
 
     pvtIsCli?: boolean; // Whether this configuration is being used in the CLI (as opposed to the DA); set by the CLI session driver
-    pvtCliOptions?: CliLaunchJasonOptions; // CLI-specific options; set by the CLI session driver   
+    pvtCliOptions?: CliLaunchJasonOptions; // CLI-specific options; set by the CLI session driver
 }
 
 export interface DisassemblyInstruction {
@@ -511,9 +511,9 @@ export interface DisassemblyInstruction {
 }
 
 export enum CTIAction {
-    "init",
-    "pause",
-    "resume",
+    init,
+    pause,
+    resume,
 }
 
 export enum GDBInterruptMode {
@@ -924,17 +924,25 @@ export class HrTimer {
     }
 
     public static toLocalISOString(date: Date): string {
-        const pad = (num: number, len: number = 2) => String(num).padStart(len, '0');
+        const pad = (num: number, len: number = 2) => String(num).padStart(len, "0");
         // const tzo = -date.getTimezoneOffset();
         // const dif = tzo >= 0 ? '+' : '-';
 
-        return date.getFullYear() +
-            '-' + pad(date.getMonth() + 1) +
-            '-' + pad(date.getDate()) +
-            'T' + pad(date.getHours()) +
-            ':' + pad(date.getMinutes()) +
-            ':' + pad(date.getSeconds()) +
-            '.' + pad(date.getMilliseconds(), 3);
+        return (
+            date.getFullYear() +
+            "-" +
+            pad(date.getMonth() + 1) +
+            "-" +
+            pad(date.getDate()) +
+            "T" +
+            pad(date.getHours()) +
+            ":" +
+            pad(date.getMinutes()) +
+            ":" +
+            pad(date.getSeconds()) +
+            "." +
+            pad(date.getMilliseconds(), 3)
+        );
         //    dif + pad(Math.floor(Math.abs(tzo) / 60)) +
         // ':' + pad(Math.abs(tzo) % 60);
     }
@@ -1344,10 +1352,10 @@ export function binaryMatchesPlatform(filePath: string, platform: NodeJS.Platfor
 
 /**
  * Returns the path to the mcu-debug executable for the current platform and architecture. Will throw if not found.
- * 
+ *
  * @param extPath - VSCode extension path
  * @returns path to the exeutable (can be a debug version if it matches current platform and architecture)
- * 
+ *
  * env.PROD_MCU_DEBUG_HELPER can be set to "1" to disable the check for a dev build and always use the
  * unqualified bin/mcu-debug (if it exists)
  */
@@ -1402,17 +1410,25 @@ export function getHelperExecutable(extPath: string): string {
 //   ${<prefix>VAR}   → vars[VAR] if defined, otherwise the original match is kept and errFn is called.
 //   \\${<prefix>VAR} → literal \ followed by the substituted value (the escape only covers the backslash).
 export function processVarSubstitution(str: string, vars: { [key: string]: string }, prefix: string, errFn?: (msg: string) => void): string {
-    const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // When prefix is empty, exclude ':' from variable names so that ${env:FOO} and ${config:BAR}
     // are not matched as bare variables named "env:FOO" / "config:BAR".
-    const varNamePat = prefix === '' ? '[^}:]+' : '[^}]+';
-    const re = new RegExp(`\\\\(\\\\|\\$\\{${esc}${varNamePat}\\}|[\\s\\S])|(\\$\\{${esc}(${varNamePat})\\})`, 'g');
+    const varNamePat = prefix === "" ? "[^}:]+" : "[^}]+";
+    const re = new RegExp(`\\\\(\\\\|\\$\\{${esc}${varNamePat}\\}|[\\s\\S])|(\\$\\{${esc}(${varNamePat})\\})`, "g");
     return str.replace(re, (match, escaped, _varRef, varName) => {
         if (escaped !== undefined) {
-            if (escaped === '\\') { return '\\'; }
-            if (escaped === 'n') { return '\n'; }
-            if (escaped === 'r') { return '\r'; }
-            if (escaped === 't') { return '\t'; }
+            if (escaped === "\\") {
+                return "\\";
+            }
+            if (escaped === "n") {
+                return "\n";
+            }
+            if (escaped === "r") {
+                return "\r";
+            }
+            if (escaped === "t") {
+                return "\t";
+            }
             return escaped; // \${<prefix>VAR} → ${<prefix>VAR}, \g → g, etc.
         }
         if (vars[varName] !== undefined) {
@@ -1425,15 +1441,15 @@ export function processVarSubstitution(str: string, vars: { [key: string]: strin
 
 export function escapeStringLiteral(str: string): string {
     const escapeMap: { [key: string]: string } = {
-        '\n': '\\n',
-        '\r': '\\r',
-        '\t': '\\t',
+        "\n": "\\n",
+        "\r": "\\r",
+        "\t": "\\t",
         '"': '\\"',
         "'": "\\'",
-        '\\': '\\\\'
+        "\\": "\\\\",
     };
 
-    return str.replace(/[\n\r\t"'\\]/g, match => escapeMap[match]);
+    return str.replace(/[\n\r\t"'\\]/g, (match) => escapeMap[match]);
 }
 
 // Parses one line from an envFile.  Returns { key, value } or null for blank/comment lines.
@@ -1453,25 +1469,37 @@ export function escapeStringLiteral(str: string): string {
 // configuration for dynamic values.
 function parseEnvFileLine(raw: string): { key: string; value: string } | null {
     const line = raw.trim();
-    if (!line || line.startsWith('#')) { return null; }
+    if (!line || line.startsWith("#")) {
+        return null;
+    }
 
-    const ix = line.indexOf('=');
-    if (ix <= 0) { return null; }
+    const ix = line.indexOf("=");
+    if (ix <= 0) {
+        return null;
+    }
 
     const key = line.substring(0, ix).trim();
-    if (!key) { return null; }
+    if (!key) {
+        return null;
+    }
 
     let value = line.substring(ix + 1).trim();
 
     if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
         value = value.slice(1, -1).replace(/\\([\s\S])/g, (_, ch) => {
             switch (ch) {
-                case '\\': return '\\';
-                case '"': return '"';
-                case 'n': return '\n';
-                case 'r': return '\r';
-                case 't': return '\t';
-                default: return ch;
+                case "\\":
+                    return "\\";
+                case '"':
+                    return '"';
+                case "n":
+                    return "\n";
+                case "r":
+                    return "\r";
+                case "t":
+                    return "\t";
+                default:
+                    return ch;
             }
         });
     } else if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
@@ -1499,7 +1527,7 @@ export function processEnvForConfig(args: ConfigurationArguments, errFn?: (msg: 
     if (args.env) {
         for (const key in args.env) {
             if (Object.prototype.hasOwnProperty.call(args.env, key)) {
-                env[key] = processVarSubstitution(args.env[key], envMap, 'env:', errFn);
+                env[key] = processVarSubstitution(args.env[key], envMap, "env:", errFn);
             }
         }
     }
@@ -1534,7 +1562,7 @@ export function substituteEnvVarsInConfig(args: any, errFn?: (msg: string) => vo
 
     const env = args.env || {};
     const jsonStr = JSON.stringify(args); // envFile is absent here, preventing it from being mangled by substitution
-    const substitutedStr = processVarSubstitution(jsonStr, env, 'env:', errFn);
+    const substitutedStr = processVarSubstitution(jsonStr, env, "env:", errFn);
     let substitutedArgs: any;
     try {
         substitutedArgs = JSON.parse(substitutedStr);

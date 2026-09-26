@@ -7,7 +7,7 @@ import { GraphConfiguration, GrapherMessage } from "./swo/common";
 import { EventEmitter } from "stream";
 
 export const CLI_SESSION_TYPES = ["not-started", "starting", "initialized", "running", "paused", "terminated"] as const;
-export type CLISessionType = typeof CLI_SESSION_TYPES[number];
+export type CLISessionType = (typeof CLI_SESSION_TYPES)[number];
 
 /**
  * Platform-agnostic debug configuration — mirrors vscode.DebugConfiguration.
@@ -51,7 +51,6 @@ export interface ISWORTTView {
 }
 
 export interface IOutputChannel {
-
     /**
      * The human-readable name of this output channel.
      */
@@ -159,7 +158,6 @@ export interface IHostAdapter {
     /** Write a message to the debug output channel (VS Code) or stderr (CLI). */
     debugMessage(msg: string): void;
 
-
     /** Print a message to the debug console (VS Code) or stdout (CLI). */
     debugConsoleMessage(msg: string): void;
 
@@ -210,10 +208,7 @@ export interface IHostAdapter {
      * or undefined if the user dismissed. CLI adapter may print the list and
      * return undefined.
      */
-    showQuickPick(
-        items: { label: string; description?: string; detail?: string }[],
-        opts?: { title?: string; placeHolder?: string }
-    ): Promise<string | undefined>;
+    showQuickPick(items: { label: string; description?: string; detail?: string }[], opts?: { title?: string; placeHolder?: string }): Promise<string | undefined>;
 }
 
 // ── Global singleton ─────────────────────────────────────────────────────────

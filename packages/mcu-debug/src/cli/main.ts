@@ -1,14 +1,14 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { createConsoleTransport, createCustomTransport, createGitIgnore, CustomTransport, logger } from '../common/logger';
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { createConsoleTransport, createCustomTransport, createGitIgnore, CustomTransport, logger } from "../common/logger";
 import { CliArgs } from "./cli-options";
-import { CLIConfigLoader } from './cli-config-loader';
-import { CliAdapter } from './cli-adapter';
-import { setHostAdapter } from '../common/host-adapter';
-import { CliSessionDriver } from './cli-driver';
-import { setDevelopmentModeEnvVars } from '@mcu-debug/shared';
-import { CLI_DEV_ENV } from '../analytics/telemetry-core';
-import { AGENT_DEBUG_FLAGS } from '../adapter/servers/common';
+import { CLIConfigLoader } from "./cli-config-loader";
+import { CliAdapter } from "./cli-adapter";
+import { setHostAdapter } from "../common/host-adapter";
+import { CliSessionDriver } from "./cli-driver";
+import { setDevelopmentModeEnvVars } from "@mcu-debug/shared";
+import { CLI_DEV_ENV } from "../analytics/telemetry-core";
+import { AGENT_DEBUG_FLAGS } from "../adapter/servers/common";
 
 /**
  * How much of `.mcu-debug/archive/` to keep. Two caps because either one alone fails: a count
@@ -29,8 +29,8 @@ function archivePathFor(transport: CustomTransport): string {
 
 /** Everything the CLI keeps under the workspace, in one place. */
 function cliPaths() {
-    const base = path.join(process.cwd(), '.mcu-debug');
-    return { base, defaultLog: path.join(base, 'cli.log'), archiveDir: path.join(base, 'archive') };
+    const base = path.join(process.cwd(), ".mcu-debug");
+    return { base, defaultLog: path.join(base, "cli.log"), archiveDir: path.join(base, "archive") };
 }
 
 /**
@@ -54,9 +54,9 @@ function createInitialTransports(cliArgs: CliArgs, consoleLogLevel: string): Cus
         cliArgs.logFile = paths.defaultLog;
         customTransport.usingDefaultLogFile = cliArgs.logFile;
     }
-    customTransport.replaceStream('', cliArgs.logFile);
+    customTransport.replaceStream("", cliArgs.logFile);
 
-    customTransport.replaceStream('', archivePathFor(customTransport));
+    customTransport.replaceStream("", archivePathFor(customTransport));
 
     // Write the .gitignore here rather than from the pruning pass below. Pruning is deferred and
     // never runs for a short invocation -- `--dump-config`, a bad argument -- but those still
@@ -77,11 +77,11 @@ function createInitialTransports(cliArgs: CliArgs, consoleLogLevel: string): Cus
  * the logger, and `<ts>-notes.json` written by NotesManager when the session records anything.
  */
 function archiveSessionOf(name: string): string | undefined {
-    if (name.endsWith('-notes.json')) {
-        return name.slice(0, -'-notes.json'.length);
+    if (name.endsWith("-notes.json")) {
+        return name.slice(0, -"-notes.json".length);
     }
-    if (name.endsWith('.log')) {
-        return name.slice(0, -'.log'.length);
+    if (name.endsWith(".log")) {
+        return name.slice(0, -".log".length);
     }
     return undefined;
 }
@@ -106,14 +106,14 @@ async function pruneArchive(archiveDir: string, currentSession: string): Promise
     try {
         entries = await fs.promises.readdir(archiveDir);
     } catch {
-        return;     // no archive yet, or not readable
+        return; // no archive yet, or not readable
     }
 
     const bySession = new Map<string, string[]>();
     for (const name of entries) {
         const key = archiveSessionOf(name);
         if (!key) {
-            continue;   // not ours -- never delete something we did not write
+            continue; // not ours -- never delete something we did not write
         }
         const group = bySession.get(key);
         if (group) {
@@ -128,7 +128,7 @@ async function pruneArchive(archiveDir: string, currentSession: string): Promise
     for (const key of [...bySession.keys()].sort().reverse()) {
         const names = bySession.get(key)!;
         sessions++;
-        for (const name of names.filter((n) => n.endsWith('.log'))) {
+        for (const name of names.filter((n) => n.endsWith(".log"))) {
             try {
                 bytes += (await fs.promises.stat(path.join(archiveDir, name))).size;
             } catch {
@@ -136,7 +136,7 @@ async function pruneArchive(archiveDir: string, currentSession: string): Promise
             }
         }
         if (key === currentSession) {
-            continue;   // the session still writing
+            continue; // the session still writing
         }
         if (sessions <= ARCHIVE_KEEP_SESSIONS && bytes <= ARCHIVE_KEEP_BYTES) {
             continue;
@@ -161,7 +161,7 @@ export function validateCliArgs(args: CliArgs): boolean {
 
 function isDevVersion(): boolean {
     const dir = __dirname;
-    if (fs.existsSync(path.join(dir, '..', '..', '..', 'packages', 'mcu-debug'))) {
+    if (fs.existsSync(path.join(dir, "..", "..", "..", "packages", "mcu-debug"))) {
         return true;
     }
     return false;
@@ -174,19 +174,20 @@ async function main() {
         process.env[CLI_DEV_ENV] = "1"; // so parked telemetry is tagged `development`
     }
     const { cliArgs } = await import("./cli-options");
-    const customTransport = createInitialTransports(cliArgs, cliArgs.debug ? 'debug' : 'info');
+    const customTransport = createInitialTransports(cliArgs, cliArgs.debug ? "debug" : "info");
 
     // Housekeeping, out of the way of starting a session. unref() so a short-lived invocation is
     // never held open waiting for it -- skipping a prune costs nothing, delaying an exit does.
     setTimeout(() => {
-        void pruneArchive(cliPaths().archiveDir, customTransport.timeCreated)
-            .catch(() => { /* housekeeping is never worth an error */ });
+        void pruneArchive(cliPaths().archiveDir, customTransport.timeCreated).catch(() => {
+            /* housekeeping is never worth an error */
+        });
     }, 5000).unref();
 
     if (!validateCliArgs(cliArgs)) {
         process.exit(1);
     }
-    logger.debug("Args: " + process.argv.join(' '));
+    logger.debug("Args: " + process.argv.join(" "));
     const adapter = new CliAdapter(cliArgs);
     setHostAdapter(adapter);
     const configLoader = new CLIConfigLoader(cliArgs, logger, false);
@@ -206,15 +207,15 @@ async function main() {
             // Agent-side flags do not make us verbose; same rule as `anyFlags` in gdb-session.
             if (val === true && !(AGENT_DEBUG_FLAGS as readonly string[]).includes(flag)) {
                 debugFlagEnabled = true;
-                logger.level = 'debug';
+                logger.level = "debug";
                 logger.debug(`Debug flag enabled: ${flag}`);
             }
         }
     }
 
     if (cliArgs.dumpConfig || debugFlagEnabled) {
-        logger.info("Dumping resolved configuration:", { source: 'DA' });
-        logger.info(JSON.stringify(config, null, 2), { source: 'DA' });
+        logger.info("Dumping resolved configuration:", { source: "DA" });
+        logger.info(JSON.stringify(config, null, 2), { source: "DA" });
         if (cliArgs.dumpConfig) {
             process.exit(0);
         }
@@ -231,7 +232,7 @@ process.on("uncaughtException", (err) => {
 });
 
 process.on("unhandledRejection", (reason: any, promise: Promise<any>) => {
-    const detail = reason instanceof Error && reason.stack ? reason.stack : reason?.toString() ?? String(reason);
+    const detail = reason instanceof Error && reason.stack ? reason.stack : (reason?.toString() ?? String(reason));
     logger.error("Unhandled Rejection: " + detail + " promise: " + promise.toString());
 });
 
@@ -241,4 +242,3 @@ try {
     logger.error("An unexpected error occurred: " + (error instanceof Error ? error.message : String(error)));
     process.exit(1);
 }
-

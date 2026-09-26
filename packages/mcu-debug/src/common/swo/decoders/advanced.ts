@@ -68,7 +68,7 @@ export class SWORTTAdvancedProcessor extends EventEmitter implements SWORTTDecod
         }
     }
 
-    public hardwareEvent(event: Packet) { }
+    public hardwareEvent(event: Packet) {}
 
     public synchronized() {
         try {

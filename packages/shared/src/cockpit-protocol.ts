@@ -12,9 +12,9 @@
 // Tab model
 // ---------------------------------------------------------------------------
 
-export type TabKind = 'uart' | 'rtt' | 'swo' | 'console' | 'cockpit';
-export type TabInputMode = 'raw' | 'cooked' | 'none';
-export type CockpitToolbarAction = 'continue' | 'pause' | 'step-over' | 'step-into' | 'step-out' | 'restart' | 'reset' | 'stop';
+export type TabKind = "uart" | "rtt" | "swo" | "console" | "cockpit";
+export type TabInputMode = "raw" | "cooked" | "none";
+export type CockpitToolbarAction = "continue" | "pause" | "step-over" | "step-into" | "step-out" | "restart" | "reset" | "stop";
 
 export interface CockpitUiState {
     availableConfigs: string[];
@@ -28,10 +28,10 @@ export interface CockpitUiState {
  * The webview reflects state but never self-transitions.
  */
 export type TabState =
-    | { kind: 'active' }                       // normal operation
-    | { kind: 'inactive' }                     // session ended; tab stays, dimmed (RTT/SWO/Cockpit)
-    | { kind: 'disconnected'; message: string } // UART physically gone; waiting for reconnect, tab persists
-    | { kind: 'error'; message: string };       // unrecoverable error; tab persists, user decides
+    | { kind: "active" } // normal operation
+    | { kind: "inactive" } // session ended; tab stays, dimmed (RTT/SWO/Cockpit)
+    | { kind: "disconnected"; message: string } // UART physically gone; waiting for reconnect, tab persists
+    | { kind: "error"; message: string }; // unrecoverable error; tab persists, user decides
 
 /** Sent once when a tab is first created. tabId is the stable opaque identity. */
 export interface TabDescriptor {
@@ -39,13 +39,13 @@ export interface TabDescriptor {
     kind: TabKind;
     label: string;
     /** For uart/rtt: whether the input bar is shown. Absent for swo/cockpit (cockpit always has input). */
-    direction?: 'rx' | 'tx' | 'both';
+    direction?: "rx" | "tx" | "both";
     state: TabState;
     placeholderText: string;
     inputMode?: TabInputMode;
 }
 
-export type TabDescriptorPatch = Partial<Pick<TabDescriptor, 'direction' | 'placeholderText' | 'inputMode'>>;
+export type TabDescriptorPatch = Partial<Pick<TabDescriptor, "direction" | "placeholderText" | "inputMode">>;
 
 // ---------------------------------------------------------------------------
 // Orchestrator → UI
@@ -53,24 +53,24 @@ export type TabDescriptorPatch = Partial<Pick<TabDescriptor, 'direction' | 'plac
 
 export type ToUi =
     // --- Tab lifecycle (extension-driven) ---
-    | { type: 'tab-add'; tab: TabDescriptor }
-    | { type: 'tab-activate'; tabId: string }
-    | { type: 'tab-set-state'; tabId: string; state: TabState }
-    | { type: 'tab-set-label'; tabId: string; label: string }
-    | { type: 'tab-update'; tabId: string; patch: TabDescriptorPatch }
+    | { type: "tab-add"; tab: TabDescriptor }
+    | { type: "tab-activate"; tabId: string }
+    | { type: "tab-set-state"; tabId: string; state: TabState }
+    | { type: "tab-set-label"; tabId: string; label: string }
+    | { type: "tab-update"; tabId: string; patch: TabDescriptorPatch }
 
     // --- Content: terminal output, routed to a specific tab's terminal ---
-    | { type: 'restore'; tabId: string; text: string }
-    | { type: 'stream'; tabId: string; text: string }
-    | { type: 'clear'; tabId: string }
+    | { type: "restore"; tabId: string; text: string }
+    | { type: "stream"; tabId: string; text: string }
+    | { type: "clear"; tabId: string }
 
     // --- Content: Glass Cockpit tab only ---
-    | { type: 'ai-request'; tabId: string; text: string }
-    | { type: 'ai-request-clear'; tabId: string }
-    | { type: 'cockpit-ui-state'; tabId: string; state: CockpitUiState }
+    | { type: "ai-request"; tabId: string; text: string }
+    | { type: "ai-request-clear"; tabId: string }
+    | { type: "cockpit-ui-state"; tabId: string; state: CockpitUiState }
 
     // --- Display throttle lag indicator on a tab's terminal ---
-    | { type: 'buffer-status'; tabId: string; lines: number };
+    | { type: "buffer-status"; tabId: string; lines: number };
 
 // ---------------------------------------------------------------------------
 // UI → Orchestrator
@@ -78,18 +78,18 @@ export type ToUi =
 
 export type FromUi =
     /** Webview JS has mounted and is ready to receive messages. Extension replays all tabs. */
-    | { type: 'ready' }
+    | { type: "ready" }
     /** UI selected a different tab; only the active tab's terminal is mounted. */
-    | { type: 'active-tab-changed'; tabId: string | null }
+    | { type: "active-tab-changed"; tabId: string | null }
     /** xterm.js for a specific tab has mounted and is ready to receive stream data. */
-    | { type: 'terminal-ready'; tabId: string }
+    | { type: "terminal-ready"; tabId: string }
     /** Engineer typed a line in any tab's input bar. */
-    | { type: 'user-input'; tabId: string; text: string }
+    | { type: "user-input"; tabId: string; text: string }
     /** Engineer pressed a special key in the input bar. */
-    | { type: 'special-key'; tabId: string; key: string }
+    | { type: "special-key"; tabId: string; key: string }
     /** Engineer clicked a cockpit toolbar control. */
-    | { type: 'cockpit-toolbar-action'; tabId: string; action: CockpitToolbarAction }
+    | { type: "cockpit-toolbar-action"; tabId: string; action: CockpitToolbarAction }
     /** Engineer selected a launch configuration in the cockpit toolbar. */
-    | { type: 'cockpit-config-select'; tabId: string; configName: string }
+    | { type: "cockpit-config-select"; tabId: string; configName: string }
     /** User clicked × on a tab. Extension handles actual teardown. */
-    | { type: 'tab-close'; tabId: string };
+    | { type: "tab-close"; tabId: string };

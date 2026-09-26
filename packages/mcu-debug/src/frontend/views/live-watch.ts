@@ -587,11 +587,11 @@ class LiveVariableNodeMsg extends LiveVariableNode {
         private empty = true,
     ) {
         const dummy: GdbMapUpdater = {
-            addToMap: (gdbName: string, node: LiveVariableNode) => { },
+            addToMap: (gdbName: string, node: LiveVariableNode) => {},
             getFromMap: (gdbName: string): LiveVariableNode | undefined => {
                 return undefined;
             },
-            removeFromMap: (gdbName: string) => { },
+            removeFromMap: (gdbName: string) => {},
             getLiveSessionId: () => undefined,
         };
         super(dummy, parent, "dummy", "dummy");
@@ -643,7 +643,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
     private liveSessionVersion = LatestLiveSessionVersion;
     private liveSessionId: string | undefined;
     private refreshCallback?: () => void;
-    private updateComposite: (items: WebviewTreeItem[]) => void = () => { };
+    private updateComposite: (items: WebviewTreeItem[]) => void = () => {};
 
     protected oldState = new Map<string, vscode.TreeItemCollapsibleState>();
     constructor(private context: vscode.ExtensionContext) {
@@ -947,7 +947,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
             LiveWatchTreeProvider.session = undefined;
             this.fire();
             this.saveState();
-            this.registerClientPromise = undefined
+            this.registerClientPromise = undefined;
             this.liveSessionId = undefined;
         }
     }
@@ -1015,7 +1015,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
      * 4. User added the first variable to an empty liveWatch window and there was no active connection
      * THis gets called wheter the connection succeeds or not. We also need to remember a failed connection
      * so we don't attempt again for this debug session.
-     * 
+     *
      * Here, we assume if someone already registered, we get a connected message as well.
      */
     private disabledSessionIds: Set<string> = new Set();
@@ -1064,7 +1064,7 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
                 (e) => {
                     vscode.window.showErrorMessage("Unable to register Live Watch client with debug adapter. Live Watch will be disabled. $(e)");
                     reject(e);
-                }
+                },
             );
         });
         return this.registerClientPromise;
@@ -1123,9 +1123,11 @@ export class LiveWatchTreeProvider implements TreeViewProviderDelegate, GdbMapUp
             const session = LiveWatchTreeProvider.session ?? vscode.debug.activeDebugSession;
             if (session && !hadChildren && this.haveRealChildren() && !this.liveSessionId && !this.disabledSessionIds.has(session.id)) {
                 vscode.window.showInformationMessage(
-                    "Auto registering Live Watch client with debug session '" + session.name +
-                    "'. Consider adding liveWatch configuration to your launch.json. " +
-                    "Auto registering may not work in the future.");
+                    "Auto registering Live Watch client with debug session '" +
+                        session.name +
+                        "'. Consider adding liveWatch configuration to your launch.json. " +
+                        "Auto registering may not work in the future.",
+                );
                 this.resetSession(session);
                 await this.registerAsClient(session);
             }

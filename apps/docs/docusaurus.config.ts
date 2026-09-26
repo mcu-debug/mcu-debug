@@ -1,172 +1,167 @@
-import { themes as prismThemes } from 'prism-react-renderer';
-import type { Config } from '@docusaurus/types';
-import type * as Preset from '@docusaurus/preset-classic';
+import { themes as prismThemes } from "prism-react-renderer";
+import type { Config } from "@docusaurus/types";
+import type * as Preset from "@docusaurus/preset-classic";
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
 const config: Config = {
-  title: 'MCU Debug',
-  tagline: 'MCU Debugger for VS Code',
-  favicon: 'img/favicon.ico',
+    title: "MCU Debug",
+    tagline: "MCU Debugger for VS Code",
+    favicon: "img/favicon.ico",
 
-  // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
-  future: {
-    v4: true, // Improve compatibility with the upcoming Docusaurus v4
-  },
+    // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
+    future: {
+        v4: true, // Improve compatibility with the upcoming Docusaurus v4
+    },
 
-  // Set the production url of your site here
-  url: 'https://mcu-debug.github.io',
-  // Set the /<baseUrl>/ pathname under which your site is served
-  // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/mcu-debug/',
+    // Set the production url of your site here
+    url: "https://mcu-debug.github.io",
+    // Set the /<baseUrl>/ pathname under which your site is served
+    // For GitHub pages deployment, it is often '/<projectName>/'
+    baseUrl: "/mcu-debug/",
 
-  // GitHub pages deployment config.
-  organizationName: 'mcu-debug', // GitHub org/user name.
-  projectName: 'mcu-debug', // Repo name.
-  deploymentBranch: 'gh-pages',
-  trailingSlash: false,
+    // GitHub pages deployment config.
+    organizationName: "mcu-debug", // GitHub org/user name.
+    projectName: "mcu-debug", // Repo name.
+    deploymentBranch: "gh-pages",
+    trailingSlash: false,
 
-  onBrokenLinks: 'throw',
+    onBrokenLinks: "throw",
 
-  // Even if you don't use internationalization, you can use this field to set
-  // useful metadata like html lang. For example, if your site is Chinese, you
-  // may want to replace "en" with "zh-Hans".
-  i18n: {
-    defaultLocale: 'en',
-    locales: ['en'],
-  },
+    // Even if you don't use internationalization, you can use this field to set
+    // useful metadata like html lang. For example, if your site is Chinese, you
+    // may want to replace "en" with "zh-Hans".
+    i18n: {
+        defaultLocale: "en",
+        locales: ["en"],
+    },
 
-  // The AI skill template is owned by the extension package (it ships with the
-  // product); the docs site publishes it verbatim rather than keeping a copy.
-  // Listing the directory here makes Docusaurus serve its contents from the site
-  // root, which also lets writing-skills.mdx raw-load it as `/mcu-debug-fw.md`.
-  staticDirectories: [
-    'static',
-    '../../packages/mcu-debug/support/skills',
-  ],
+    // The AI skill template is owned by the extension package (it ships with the
+    // product); the docs site publishes it verbatim rather than keeping a copy.
+    // Listing the directory here makes Docusaurus serve its contents from the site
+    // root, which also lets writing-skills.mdx raw-load it as `/mcu-debug-fw.md`.
+    staticDirectories: ["static", "../../packages/mcu-debug/support/skills"],
 
-  markdown: {
-    mermaid: true,
-  },
+    markdown: {
+        mermaid: true,
+    },
 
-  themes: [
-    '@docusaurus/theme-mermaid',
-    [
-      '@easyops-cn/docusaurus-search-local',
-      {
-        hashed: true,
-        highlightSearchTermsOnTargetPage: true,
-        explicitSearchResultPath: true,
-      },
+    themes: [
+        "@docusaurus/theme-mermaid",
+        [
+            "@easyops-cn/docusaurus-search-local",
+            {
+                hashed: true,
+                highlightSearchTermsOnTargetPage: true,
+                explicitSearchResultPath: true,
+            },
+        ],
     ],
-  ],
 
-  presets: [
-    [
-      'classic',
-      {
-        docs: {
-          sidebarPath: './sidebars.ts',
-          // Please change this to your repo.
-          // Remove this to remove the "edit this page" links.
-          editUrl:
-            'https://github.com/mcu-debug/mcu-debug/tree/main/apps/docs/',
-        },
-        blog: {
-          showReadingTime: true,
-          feedOptions: {
-            type: ['rss', 'atom'],
-            xslt: true,
-          },
-          // Please change this to your repo.
-          // Remove this to remove the "edit this page" links.
-          editUrl:
-            'https://github.com/mcu-debug/mcu-debug/tree/main/apps/docs/',
-          // Useful options to enforce blogging best practices
-          onInlineTags: 'warn',
-          onInlineAuthors: 'warn',
-          onUntruncatedBlogPosts: 'warn',
-        },
-        theme: {
-          customCss: './src/css/custom.css',
-        },
-      } satisfies Preset.Options,
+    presets: [
+        [
+            "classic",
+            {
+                docs: {
+                    sidebarPath: "./sidebars.ts",
+                    // Please change this to your repo.
+                    // Remove this to remove the "edit this page" links.
+                    editUrl: "https://github.com/mcu-debug/mcu-debug/tree/main/apps/docs/",
+                },
+                blog: {
+                    showReadingTime: true,
+                    feedOptions: {
+                        type: ["rss", "atom"],
+                        xslt: true,
+                    },
+                    // Please change this to your repo.
+                    // Remove this to remove the "edit this page" links.
+                    editUrl: "https://github.com/mcu-debug/mcu-debug/tree/main/apps/docs/",
+                    // Useful options to enforce blogging best practices
+                    onInlineTags: "warn",
+                    onInlineAuthors: "warn",
+                    onUntruncatedBlogPosts: "warn",
+                },
+                theme: {
+                    customCss: "./src/css/custom.css",
+                },
+            } satisfies Preset.Options,
+        ],
     ],
-  ],
 
-  themeConfig: {
-    // Replace with your project's social card
-    image: 'img/docusaurus-social-card.jpg',
-    colorMode: {
-      defaultMode: 'dark',
-      respectPrefersColorScheme: true,
-    },
-    navbar: {
-      title: 'MCU Debug',
-      logo: {
-        alt: 'MCU Debug Logo',
-        src: 'img/logo.svg',
-      },
-      items: [
-        {
-          type: 'docSidebar',
-          sidebarId: 'tutorialSidebar',
-          position: 'left',
-          label: 'Documentation',
+    themeConfig: {
+        // Replace with your project's social card
+        image: "img/docusaurus-social-card.jpg",
+        colorMode: {
+            defaultMode: "dark",
+            respectPrefersColorScheme: true,
         },
-        {
-          href: 'https://github.com/mcu-debug/mcu-debug',
-          label: 'GitHub',
-          position: 'right',
+        navbar: {
+            title: "MCU Debug",
+            logo: {
+                alt: "MCU Debug Logo",
+                src: "img/logo.svg",
+            },
+            items: [
+                {
+                    type: "docSidebar",
+                    sidebarId: "tutorialSidebar",
+                    position: "left",
+                    label: "Documentation",
+                },
+                {
+                    href: "https://github.com/mcu-debug/mcu-debug",
+                    label: "GitHub",
+                    position: "right",
+                },
+            ],
         },
-      ],
-    },
-    footer: {
-      style: 'dark',
-      links: [
-        {
-          title: 'Docs',
-          items: [
-            {
-              label: 'Getting Started',
-              to: '/docs/getting-started',
-            },
-          ],
+        footer: {
+            style: "dark",
+            links: [
+                {
+                    title: "Docs",
+                    items: [
+                        {
+                            label: "Getting Started",
+                            to: "/docs/getting-started",
+                        },
+                    ],
+                },
+                {
+                    title: "Community",
+                    items: [
+                        {
+                            label: "GitHub Issues",
+                            href: "https://github.com/mcu-debug/mcu-debug/issues",
+                        },
+                        {
+                            label: "GitHub Discussions",
+                            href: "https://github.com/mcu-debug/mcu-debug/discussions",
+                        },
+                    ],
+                },
+                {
+                    title: "More",
+                    items: [
+                        {
+                            label: "Blog",
+                            to: "/blog",
+                        },
+                        {
+                            label: "GitHub",
+                            href: "https://github.com/mcu-debug/mcu-debug",
+                        },
+                    ],
+                },
+            ],
+            copyright: `Copyright © ${new Date().getFullYear()} MCU Debug, Built with Docusaurus.`,
         },
-        {
-          title: 'Community',
-          items: [
-            {
-              label: 'GitHub Issues',
-              href: 'https://github.com/mcu-debug/mcu-debug/issues',
-            },
-            {
-              label: 'GitHub Discussions',
-              href: 'https://github.com/mcu-debug/mcu-debug/discussions',
-            },
-          ],
+        prism: {
+            theme: prismThemes.github,
+            darkTheme: prismThemes.dracula,
         },
-        {
-          title: 'More',
-          items: [
-            {
-              label: 'Blog',
-              to: '/blog',
-            },
-            {
-              label: 'GitHub',
-              href: 'https://github.com/mcu-debug/mcu-debug',
-            },
-          ],
-        },
-      ],
-      copyright: `Copyright © ${new Date().getFullYear()} MCU Debug, Built with Docusaurus.`,
-    },
-    prism: {
-      theme: prismThemes.github,
-      darkTheme: prismThemes.dracula,
-    },
-  } satisfies Preset.ThemeConfig,
+    } satisfies Preset.ThemeConfig,
 };
 
 export default config;

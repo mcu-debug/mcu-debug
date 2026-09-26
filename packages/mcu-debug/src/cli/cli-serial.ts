@@ -1,13 +1,13 @@
-import { TabState } from '@mcu-debug/shared';
-import { SerialParams } from '@mcu-debug/shared/serial-helper/SerialParams';
-import * as fs from 'fs';
-import * as net from 'net';
-import { EventEmitter } from 'node:events';
-import * as path from 'node:path';
-import { AnsiHelpers } from '../common/ansi-helpers';
-import { logger } from '../common/logger';
-import { ISerialPortView, getHostAdapter } from '../common/host-adapter';
-import { LineBuffer, trimBrackets } from '../common/utils';
+import { TabState } from "@mcu-debug/shared";
+import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
+import * as fs from "fs";
+import * as net from "net";
+import { EventEmitter } from "node:events";
+import * as path from "node:path";
+import { AnsiHelpers } from "../common/ansi-helpers";
+import { logger } from "../common/logger";
+import { ISerialPortView, getHostAdapter } from "../common/host-adapter";
+import { LineBuffer, trimBrackets } from "../common/utils";
 
 export class CLISerialPortView implements ISerialPortView {
     public readonly emitter = new EventEmitter();
@@ -17,7 +17,12 @@ export class CLISerialPortView implements ISerialPortView {
     private lineBuffer: LineBuffer;
     private static existingPrefixes = new Set<string>();
 
-    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number = 0) {
+    constructor(
+        private device: string,
+        public serialConfig: SerialParams,
+        doClear: boolean = false,
+        private tcpPort: number = 0,
+    ) {
         let label = serialConfig.label ? trimBrackets(serialConfig.label) : path.basename(device);
         let counter = 1;
         const baseLabel = label;
@@ -38,7 +43,7 @@ export class CLISerialPortView implements ISerialPortView {
             // has already removed the CRLF terminator, so anything left here the firmware sent.
             const clean = AnsiHelpers.stripTerminalControl(line);
             if (line && !clean) {
-                return;     // pure cursor control: not blank spacing the firmware asked for
+                return; // pure cursor control: not blank spacing the firmware asked for
             }
             const str = clean ? `${source} ${clean}` : source;
             if (this.logFileStream) {
@@ -151,8 +156,7 @@ export class CLISerialPortView implements ISerialPortView {
         }
     }
 
-    public setInputMode(input_mode: string | undefined) {
-    }
+    public setInputMode(input_mode: string | undefined) {}
 
     restartSocket() {
         this.destroySocket();

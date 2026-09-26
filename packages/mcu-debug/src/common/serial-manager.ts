@@ -128,10 +128,18 @@ function resolvedPath(info: OpenPortEntry): string | undefined {
 
 /** Human-readable description of a port selector for log messages. */
 function portSel(p: SerialParams): string {
-    if (p.path) { return p.path; }
-    if (p.serial) { return `serial=${p.serial}`; }
-    if (p.match) { return `match=${p.match}`; }
-    if (p.vid || p.pid) { return `vid=${p.vid} pid=${p.pid}`; }
+    if (p.path) {
+        return p.path;
+    }
+    if (p.serial) {
+        return `serial=${p.serial}`;
+    }
+    if (p.match) {
+        return `match=${p.match}`;
+    }
+    if (p.vid || p.pid) {
+        return `vid=${p.vid} pid=${p.pid}`;
+    }
     return "<no selector>";
 }
 
@@ -185,7 +193,11 @@ export class ProxyConnection {
      */
     private earlyStreamData: Map<number, { chunks: Buffer[]; bytes: number }> = new Map();
 
-    constructor(public readonly key: ProxyKey, private delegate: ProxyConnectionDelegate, public label: string = key) { }
+    constructor(
+        public readonly key: ProxyKey,
+        private delegate: ProxyConnectionDelegate,
+        public label: string = key,
+    ) {}
 
     public logInfo(message: string) {
         serialLogInfo(message);
@@ -572,7 +584,7 @@ export class ProxyConnection {
 
     public async openSerialPort(serialParams: SerialParams, silent: boolean = false): Promise<SerialOpenInfo | null> {
         try {
-            serialParams.transport = this.isFunnelTransport ? "funnel" : "direct";   // Default to proxy transport for remote workspaces and direct transport for local workspaces. The proxy will handle the transport details on its side.
+            serialParams.transport = this.isFunnelTransport ? "funnel" : "direct"; // Default to proxy transport for remote workspaces and direct transport for local workspaces. The proxy will handle the transport details on its side.
             const controlMsg: ControlMessage = {
                 seq: this.nextSeq++,
                 method: "serial.open",
@@ -691,7 +703,7 @@ export class ProxyConnection {
         this.openPorts = this.openPorts.filter((p) => resolvedPath(p) !== path);
         for (const [stream_id, server] of this.clientStreams.entries()) {
             if (server.getPort() === portInfo.tcp_port) {
-                server.dataFromServer(Buffer.from(""), stream_id);   // Send an empty message to trigger any cleanup on the server side
+                server.dataFromServer(Buffer.from(""), stream_id); // Send an empty message to trigger any cleanup on the server side
                 this.clientStreams.delete(stream_id);
                 break;
             }
@@ -848,13 +860,13 @@ export class SerialPortManager implements ProxyConnectionDelegate {
             const result = await conn.openSerialPort({ ...reconnectConfig }, true);
             if (result) {
                 const configPath = reconnectConfig.path;
-                const actualPath: string = resolvedPath(result) || configPath || '';
+                const actualPath: string = resolvedPath(result) || configPath || "";
                 const reconnectViewConfig: SerialParams = {
                     ...reconnectConfig,
                     path: actualPath,
                 };
                 if (actualPath !== configPath) {
-                    this.serialPortConfigs.delete(this.ckey(conn, configPath ?? ''));
+                    this.serialPortConfigs.delete(this.ckey(conn, configPath ?? ""));
                 }
                 await this.createOrUpdateViewWithSerialInfo(conn, result, reconnectViewConfig, false);
                 return;
@@ -873,7 +885,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         const tmpHostConfig: HostConfig = {
             type: getHostAdapter().getRemoteName() ? "auto" : "local",
             enabled: true,
-        }
+        };
         const resolvedHostConfig = await this.resolveProxy(tmpHostConfig);
         if (resolvedHostConfig && resolvedHostConfig.pvtProxyPort && resolvedHostConfig.pvtProxyPort > 0) {
             const conn = this.getOrCreateConnection(resolvedHostConfig);
@@ -899,12 +911,12 @@ export class SerialPortManager implements ProxyConnectionDelegate {
             return {
                 label: p.path,
                 description: desc,
-                detail: `VID: ${p.vid !== null ? p.vid.toString(16).padStart(4, '0') : 'N/A'} PID: ${p.pid !== null ? p.pid.toString(16).padStart(4, '0') : 'N/A'}`,
+                detail: `VID: ${p.vid !== null ? p.vid.toString(16).padStart(4, "0") : "N/A"} PID: ${p.pid !== null ? p.pid.toString(16).padStart(4, "0") : "N/A"}`,
             };
         });
         getHostAdapter().showQuickPick(items, {
-            title: 'Available Serial Ports',
-            placeHolder: 'Serial ports found across connected probe hosts',
+            title: "Available Serial Ports",
+            placeHolder: "Serial ports found across connected probe hosts",
         });
 
         return sourced.map((s) => s.port);
@@ -916,7 +928,9 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         if (serialConfig?.enabled && ports && ports.length > 0) {
             for (const portConfig of ports) {
                 if (!portConfig.path && !portConfig.serial && !portConfig.vid && !portConfig.pid && !portConfig.match) {
-                    this.logError(`Invalid serial port configuration: ${JSON.stringify(portConfig)}. Each port must have at least one of path/serial/vid/pid/match. This port configuration will be ignored.`);
+                    this.logError(
+                        `Invalid serial port configuration: ${JSON.stringify(portConfig)}. Each port must have at least one of path/serial/vid/pid/match. This port configuration will be ignored.`,
+                    );
                 } else {
                     ports.push(portConfig);
                 }
@@ -942,9 +956,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         // hostConfig. The manager keeps that connection in its registry, so a
         // second session pointing at a different remote gets its own connection
         // instead of tearing this one down.
-        const rawHostConfig = typeof args?.hostConfig === "boolean"
-            ? (args.hostConfig ? { enabled: true, type: "auto" as const } : undefined)
-            : args?.hostConfig;
+        const rawHostConfig = typeof args?.hostConfig === "boolean" ? (args.hostConfig ? { enabled: true, type: "auto" as const } : undefined) : args?.hostConfig;
         const tmpHostConfig: HostConfig = rawHostConfig || {
             type: getHostAdapter().getRemoteName() ? "auto" : "local",
             enabled: true,
@@ -990,7 +1002,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
     private async createOrUpdateViewWithSerialInfo(conn: ProxyConnection, pInfo: SerialOpenInfo, portConfig: SerialParams, isNew: boolean = false): Promise<void> {
         const log_file = portConfig.log_file;
         const input_mode = portConfig.input_mode;
-        const actualPath: string = resolvedPath(pInfo) || portConfig.path || '';
+        const actualPath: string = resolvedPath(pInfo) || portConfig.path || "";
         const key = this.ckey(conn, actualPath);
         this.serialPortConfigs.set(key, { ...portConfig, path: actualPath });
         let tcpPort = pInfo.tcp_port || 0;
@@ -1113,7 +1125,12 @@ export class ProxySerialTcpServer {
     /** Resolves with the bound port. `listen()` is async: getPort() reads 0 until it fires. */
     private readonly ready: Promise<number>;
     private markReady!: (port: number) => void;
-    constructor(private host: string, private portPath: string, private stream_id: number, private conn: ProxyConnection) {
+    constructor(
+        private host: string,
+        private portPath: string,
+        private stream_id: number,
+        private conn: ProxyConnection,
+    ) {
         this.ready = new Promise<number>((resolve) => {
             this.markReady = resolve;
         });

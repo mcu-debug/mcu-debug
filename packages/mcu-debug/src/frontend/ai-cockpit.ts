@@ -32,7 +32,7 @@ import { LAUNCH_ORIGIN_ENV } from "../analytics/telemetry-core";
 
 /**
  * TODO: Task list for AI Cockpit:
- * 
+ *
  * Button bar with debug controls:
  * 1. Create a button bar that has the same debug buttons as the VS Code debug toolbar (continue, step over, step into, step out, pause,
  *    stop, restart, reset). The reset button is an extra button for us. These buttons are for humans. AI will not use them but can send
@@ -46,18 +46,18 @@ import { LAUNCH_ORIGIN_ENV } from "../analytics/telemetry-core";
  * 3b. Need a way to determine currently selected launch/attach configuration for the session.
  * 4. All button actions are determined by this tab's logic. The UI just sends the user interactions (button clicks, dropdown selection) to this tab, and this tab decides what to do with them.
  * 5. We are currently displaying session status in the tab label. We want to move that to the end after the dropdown.
- * 
+ *
  * History of commands and program state:
  * 1. The tab will maintain a history of all commands sent to the debug adapter.
  * 2. Users should be able to use the up/down buttons to select items in history and/or edit them.
  * 3. The history will also be visible to the user in the UI, allowing them to see the sequence of interactions and the resulting program state changes.
  * 4. The tab can provide a way for the user to export this history for further analysis or sharing with others.
- * 
+ *
  * Cockpit <-> AI interaction:
  * There is none. AI interacts directly with the debug adapter via the socket connection. The cockpit panel is just a UI for
  * humans to interact with the AI and see the history of commands and program state changes. The cockpit panel can also provide
  * some additional context or information to the user based on the AI's analysis, but it does not mediate the interaction between the AI and the debug adapter.
- * 
+ *
  * The debug adapter how ever, echoes back all commands AI sends and there are two special notices we get from the debug adapter
  * 1. !!AI-COMMAND: <command> - This is what AI sent to the debug adapter. We just display it
  *     when the debug adapter receives a command from the AI. This allows us to identify which commands in the history were sent by the AI.
@@ -69,7 +69,7 @@ import { LAUNCH_ORIGIN_ENV } from "../analytics/telemetry-core";
  * 4. We need a way for user to report back to the AI after performing the instructed action. We can do this by allowing the user to enter a
  *    response in the input box and then sending that response back to the debug adapter with a special prefix (e.g. !!AI-RESPONSE: <string>).
  *    The debug adapter can then relay that response back to the AI for further analysis.
- * 
+ *
  * I am worried about #4 above. It was not in the `docs-internal/AI-Angle.md` design doc but I think it is necessary for the AI to be able
  * to interact with the physical world and get feedback from the user. Otherwise, the AI would be operating in a vacuum and would not be able
  * to effectively debug hardware issues. My problem is when to allow this. If it is like a chat session, you can't send a command until you
@@ -86,7 +86,7 @@ import { LAUNCH_ORIGIN_ENV } from "../analytics/telemetry-core";
 
 /**
  * Architectural overview:
- * 
+ *
  * - The AI Cockpit is implemented as a singleton class that manages the AI assistant and its interactions with the user and the debugger.
  * - The user of the AI can start a debug session (via Command Palette or a button in the UI) which will initialize the AI
  *   assistant and open the cockpit panel if it's not already open.
@@ -96,12 +96,12 @@ import { LAUNCH_ORIGIN_ENV } from "../analytics/telemetry-core";
  *   all muxed into one stream. The AI Cockpit can parse this stream to understand the program state and the results of commands.
  *
  * Step1: Determine the launch/attach configuration for the debug session
- * 
+ *
  * Step2: Run it though the config resolver in this extension to get a post-resolve configuration. This will also start/setup any
  * remote proxy servers that may be needed for the session (e.g. WSL NAT proxy, remote-ssh port forwarding, etc.) and update the
  * config with the connection details. One details: we remove the the console server port from the config since the cockpit will
  * connect to that directly and we don't want the debug adapter to also connect to it.
- * 
+ *
  * Step3: Start the debug session with the resolved config using the cli driver. This will launch the mcu-debug-cli process and
  * establish the communication channels. The CLI driver will additionally refine the configuration and start the debug session. We now
  * perform the same role as the Rust debug subcommand does as a TUI. Exvcept, here we render in our own cockpit panel and we have an
@@ -131,7 +131,7 @@ export class AICockpit extends ManagedTab {
         // Private constructor to enforce singleton pattern
         super("ai-cockpit", "AI Cockpit", "Enter GDB command or press F1 for help", "cooked");
         this.logger = this.createLogger();
-        this.enumerateLaunchConfigurations().then(configs => {
+        this.enumerateLaunchConfigurations().then((configs) => {
             this.launchConfigCache = configs;
         });
         this.setInactive();
@@ -161,22 +161,24 @@ export class AICockpit extends ManagedTab {
     }
 
     private printHelp() {
-        this.send([
-            "AI Cockpit Help",
-            "  F1                       Show this help",
-            "  Enter                    Send current input to the session driver which forwards to gdb",
-            "  Up/Down                  Recall previously entered lines",
-            "  run/start                Start a new debug session with current selected launch/attach configuration",
-            "  continue                 Drive session execution (you can also use gdb aliases)",
-            "  next/step/finish         Step through code (next/step-over, step-into, step-out/finish)",
-            "  pause / Ctrl+C           Pause execution",
-            "  reset/restart            Reset device or restart the session",
-            "  !!send text              Send text (including newlines) to RTT/Serial port if there is only one",
-            "  !!send [port] text       Send text (including newlines) to the specified RTT/Serial port",
-            "  !!ai text                Send attached AI a message",
-            "  exit                     End the debug session (will do proper cleanup and then forward exit to gdb)",
-            "",
-        ].join("\n"));
+        this.send(
+            [
+                "AI Cockpit Help",
+                "  F1                       Show this help",
+                "  Enter                    Send current input to the session driver which forwards to gdb",
+                "  Up/Down                  Recall previously entered lines",
+                "  run/start                Start a new debug session with current selected launch/attach configuration",
+                "  continue                 Drive session execution (you can also use gdb aliases)",
+                "  next/step/finish         Step through code (next/step-over, step-into, step-out/finish)",
+                "  pause / Ctrl+C           Pause execution",
+                "  reset/restart            Reset device or restart the session",
+                "  !!send text              Send text (including newlines) to RTT/Serial port if there is only one",
+                "  !!send [port] text       Send text (including newlines) to the specified RTT/Serial port",
+                "  !!ai text                Send attached AI a message",
+                "  exit                     End the debug session (will do proper cleanup and then forward exit to gdb)",
+                "",
+            ].join("\n"),
+        );
     }
 
     public async startDebugSession(configName?: string) {
@@ -211,7 +213,7 @@ export class AICockpit extends ManagedTab {
              * (e.g. ${workspaceFolder}, ${env:VAR}, etc.) will be resolved based on the extension's context. This means that if there
              * are any variables that need to be resolved based on the debug adapter's environment, we may need to add support for that
              * in the future. For now, we assume that all necessary variables can be resolved in the extension's context.
-             * 
+             *
              * As a bonus, the host config will also be resolved and a proxy server started if needed, so the config returned from the loader
              * will be marked as resolved and ready to use by the CLI driver without any additional setup.
              */
@@ -232,7 +234,7 @@ export class AICockpit extends ManagedTab {
         const jsonFile = path.join(os.tmpdir(), `mcu-debug-ai-cockpit-${process.pid}.json`).replace(/\\/g, "/");
         try {
             const launchJson: any = {
-                configurations: [config]
+                configurations: [config],
             };
             fs.writeFileSync(jsonFile, JSON.stringify(launchJson, null, 2));
         } catch (error) {
@@ -260,17 +262,17 @@ export class AICockpit extends ManagedTab {
         if (config.cliOptions?.logFile) {
             args.push("--log-file", config.cliOptions.logFile);
         }
-        this.logger?.info(`Starting AI Cockpit debug session with command: ${cmd} ${args.join(" ")}`, { color: 'green.bold' });
+        this.logger?.info(`Starting AI Cockpit debug session with command: ${cmd} ${args.join(" ")}`, { color: "green.bold" });
         this.process = ChildProcess.spawn(cmd, args, {
             cwd: root.uri.fsPath,
             // Stamp the launch origin so CLI telemetry can tell a cockpit-panel session apart
             // from a terminal/TUI one. See LAUNCH_ORIGIN_ENV in analytics/telemetry-core.ts.
             env: { ...process.env, [LAUNCH_ORIGIN_ENV]: "vscode-panel" },
             stdio: "pipe",
-            windowsHide: true
+            windowsHide: true,
         });
         this.process.on("spawn", () => {
-            this.setState({ kind: 'active' });
+            this.setState({ kind: "active" });
             this.postCockpitUiState();
         });
         this.process.stdout?.on("data", (data) => {
@@ -298,7 +300,7 @@ export class AICockpit extends ManagedTab {
     }
 
     setInactive() {
-        this.setState({ kind: 'inactive' });
+        this.setState({ kind: "inactive" });
         this.setLabel(`AI Cockpit`);
         this.postCockpitUiState();
     }
@@ -329,7 +331,7 @@ export class AICockpit extends ManagedTab {
 
     onUserInput(text: string): void {
         const trimmed = text.trim();
-        if (!this.process && ((trimmed === "run" || trimmed === "start"))) {
+        if (!this.process && (trimmed === "run" || trimmed === "start")) {
             this.startDebugSession(this.selectedConfigName ?? undefined);
             return;
         }
@@ -350,7 +352,7 @@ export class AICockpit extends ManagedTab {
             }
             const version = result.stdout.trim();
             // We need version 22 or higher
-            const majorVersion = parseInt(version.replace(/^v/, '').split('.')[0], 10);
+            const majorVersion = parseInt(version.replace(/^v/, "").split(".")[0], 10);
             if (isNaN(majorVersion) || majorVersion < 22) {
                 this.logger?.error(`Node.js version 22 or higher is required to run the AI Cockpit. Detected version: ${version}`);
                 return false;
@@ -376,18 +378,16 @@ export class AICockpit extends ManagedTab {
                 getHostAdapter().debugMessage(str);
                 this.send(str);
                 callback();
-            }
+            },
         });
         this.logger = winston.createLogger({
-            level: 'info',
+            level: "info",
             format: winston.format.combine(
                 winston.format.colorize(),
                 winston.format.timestamp(),
-                winston.format.printf(({ timestamp, level, message }) => `${timestamp} ${level}: [ai-cockpit] ${message}`)
+                winston.format.printf(({ timestamp, level, message }) => `${timestamp} ${level}: [ai-cockpit] ${message}`),
             ),
-            transports: [
-                new winston.transports.Stream({ stream: this.loggerWriter })
-            ]
+            transports: [new winston.transports.Stream({ stream: this.loggerWriter })],
         });
         return this.logger;
     }
@@ -488,46 +488,46 @@ export class AICockpit extends ManagedTab {
         switch (this.sessionState) {
             case "paused":
                 return {
-                    "continue": hasProcess,
-                    "pause": false,
+                    continue: hasProcess,
+                    pause: false,
                     "step-over": hasProcess,
                     "step-into": hasProcess,
                     "step-out": hasProcess,
-                    "restart": hasProcess,
-                    "reset": hasProcess,
-                    "stop": hasProcess,
+                    restart: hasProcess,
+                    reset: hasProcess,
+                    stop: hasProcess,
                 };
             case "running":
             case "starting":
             case "initialized":
                 return {
-                    "continue": false,
-                    "pause": hasProcess,
+                    continue: false,
+                    pause: hasProcess,
                     "step-over": false,
                     "step-into": false,
                     "step-out": false,
-                    "restart": hasProcess,
-                    "reset": hasProcess,
-                    "stop": hasProcess,
+                    restart: hasProcess,
+                    reset: hasProcess,
+                    stop: hasProcess,
                 };
             case "terminated":
             case "not-started":
             default:
                 return {
-                    "continue": true,  // This is a run/continue button
-                    "pause": false,
+                    continue: true, // This is a run/continue button
+                    pause: false,
                     "step-over": false,
                     "step-into": false,
                     "step-out": false,
-                    "restart": false,
-                    "reset": false,
-                    "stop": false,
+                    restart: false,
+                    reset: false,
+                    stop: false,
                 };
         }
     }
 
     private postCockpitUiState(): void {
-        const capitalize = (s: string) => s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+        const capitalize = (s: string) => (s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s);
         const reason = capitalize(this.reasonText);
         const state = capitalize(this.sessionState);
         const statusText = state + (reason ? `: ${reason}` : "");
@@ -578,12 +578,11 @@ export class AICockpit extends ManagedTab {
             } else if (configNames.length === 1) {
                 config = configs[configNames[0]];
             } else {
-                vscode.window.showQuickPick(configNames, { placeHolder: "Select a launch configuration for the AI Cockpit debug session" })
-                    .then((selected) => {
-                        if (selected) {
-                            this.startDebugSession(selected);
-                        }
-                    });
+                vscode.window.showQuickPick(configNames, { placeHolder: "Select a launch configuration for the AI Cockpit debug session" }).then((selected) => {
+                    if (selected) {
+                        this.startDebugSession(selected);
+                    }
+                });
                 return undefined;
             }
         }
@@ -591,7 +590,7 @@ export class AICockpit extends ManagedTab {
         return config;
     }
 
-    private async enumerateLaunchConfigurations(): Promise<{ [key: string]: any; }> {
+    private async enumerateLaunchConfigurations(): Promise<{ [key: string]: any }> {
         if (!vscode.workspace.workspaceFolders) {
             return {};
         }
@@ -608,7 +607,7 @@ export class AICockpit extends ManagedTab {
                     if (config.type === "mcu-debug") {
                         const key = config.name?.trim() || "";
                         if (key) {
-                            launchConfigs[key] = config; // Also add without folder prefix for convenience, but this means if there are duplicate config names across folders the last one wins. We can improve this later if needed.   
+                            launchConfigs[key] = config; // Also add without folder prefix for convenience, but this means if there are duplicate config names across folders the last one wins. We can improve this later if needed.
                         }
                     }
                 }
@@ -621,9 +620,8 @@ export class AICockpit extends ManagedTab {
         // configs in the cockpit panel needs to be updated.
         const oldConfigNames = Object.keys(this.launchConfigCache);
         const newConfigNames = Object.keys(launchConfigs);
-        const areConfigsDifferent = oldConfigNames.length !== newConfigNames.length ||
-            oldConfigNames.some(name => !launchConfigs[name]) ||
-            newConfigNames.some(name => !this.launchConfigCache[name]);
+        const areConfigsDifferent =
+            oldConfigNames.length !== newConfigNames.length || oldConfigNames.some((name) => !launchConfigs[name]) || newConfigNames.some((name) => !this.launchConfigCache[name]);
         if (!this.selectedConfigName || !launchConfigs[this.selectedConfigName]) {
             this.selectedConfigName = newConfigNames[0] ?? null;
         }
@@ -659,7 +657,7 @@ export class AICockpit extends ManagedTab {
             clearTimeout(this.timer);
         }
         this.timer = setTimeout(() => {
-            this.enumerateLaunchConfigurations()
+            this.enumerateLaunchConfigurations();
             // If the changed file is the one we are currently using for the debug session, we may want to reload it and update the session. For now, we just log it.
         }, 1000); // Debounce to avoid multiple events in quick succession
     }

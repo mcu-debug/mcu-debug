@@ -136,7 +136,7 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
                     this.sizeof = size;
                 }
             }
-        } catch (e) { }
+        } catch (e) {}
         return this.sizeof || null;
     }
 
@@ -158,7 +158,7 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
                     }
                 }
             }
-        } catch (e) { }
+        } catch (e) {}
         return this.editable;
     }
 
@@ -183,7 +183,7 @@ export class VariableObject extends VariableKeys implements GdbProtocolVariable 
                     }
                 }
             }
-        } catch (e) { }
+        } catch (e) {}
         return this.addressOf || null;
     }
 
@@ -363,7 +363,7 @@ export class VariableContainer {
                     ret.value = `${variable.addressOf} ${match[3]} "${vStr}"`;
                     ret.memoryReference = variable.addressOf;
                 }
-            } catch (e) { }
+            } catch (e) {}
         }
     }
 
@@ -1836,7 +1836,7 @@ async function queryGdbVarInfo(gdbInstance: GdbInstance, varObj: VariableObject)
                 }
             }
         }
-    } catch (e) { }
+    } catch (e) {}
     try {
         const cmd = `-data-evaluate-expression "sizeof(${varObj.evaluateName})"`;
         const miOutput = await gdbInstance.sendCommand(cmd, 100);
@@ -1844,7 +1844,7 @@ async function queryGdbVarInfo(gdbInstance: GdbInstance, varObj: VariableObject)
         if (record && record["value"]) {
             obj.size = parseInt(record["value"]);
         }
-    } catch (e) { }
+    } catch (e) {}
     try {
         const cmd = `-data-evaluate-expression "&(${varObj.evaluateName})"`;
         const miOutput = await gdbInstance.sendCommand(cmd, 100);
@@ -1852,7 +1852,7 @@ async function queryGdbVarInfo(gdbInstance: GdbInstance, varObj: VariableObject)
         if (record && record["value"]) {
             obj.memoryReference = record["value"];
         }
-    } catch (e) { }
+    } catch (e) {}
     return obj;
 }
 
@@ -2017,7 +2017,7 @@ export class GdbOutputMsgContainer {
     private readonly splitBits = 20;
     private readonly splitMask = (1 << this.splitBits) - 1;
 
-    constructor() { }
+    constructor() {}
 
     encodeRef(ix: number): number {
         const lower = ix & this.splitMask;

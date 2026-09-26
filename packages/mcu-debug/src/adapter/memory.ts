@@ -9,7 +9,7 @@ export class MemoryRequests {
     constructor(
         private mainSession: GDBDebugSession,
         private gdbInstance: GdbInstance,
-    ) { }
+    ) {}
     private sendResponse(response: DebugProtocol.Response) {
         this.mainSession.sendResponse(response);
     }

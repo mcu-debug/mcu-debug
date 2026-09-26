@@ -17,7 +17,6 @@ import * as net from "net";
  */
 export const PROXY_KEEPALIVE_MS = 60_000;
 
-
 export function hexFormat(value: number, padding: number = 8, includePrefix: boolean = true): string {
     let base = (value >>> 0).toString(16);
     base = base.padStart(padding, "0");
@@ -66,8 +65,12 @@ export function parseBigint(value: string): bigint {
 
 // Convert any address representation (number, hex/decimal string, or already-bigint) to bigint.
 export function parseAddrVal(val: number | string | bigint): bigint {
-    if (typeof val === "bigint") { return val; }
-    if (typeof val === "number") { return BigInt(val); }
+    if (typeof val === "bigint") {
+        return val;
+    }
+    if (typeof val === "number") {
+        return BigInt(val);
+    }
     return parseAddress(val);
 }
 
@@ -193,21 +196,21 @@ export function tcpReachable(host: string, port: number, timeoutMs: number): Pro
 }
 
 export class LineBuffer {
-    private buf = '';
+    private buf = "";
     private timer: NodeJS.Timeout | null = null;
 
     constructor(
         private source: string,
         private emit: (source: string, line: string) => void,
-        private readonly TIMEOUT_MS = 20
-    ) { }
+        private readonly TIMEOUT_MS = 20,
+    ) {}
 
     push(chunk: string): void {
         this.buf += chunk;
         // Flush on every complete line
         let nl: number;
-        while ((nl = this.buf.indexOf('\n')) !== -1) {
-            const line = this.buf.slice(0, nl).replace(/\r$/, ''); // strip \r from \r\n
+        while ((nl = this.buf.indexOf("\n")) !== -1) {
+            const line = this.buf.slice(0, nl).replace(/\r$/, ""); // strip \r from \r\n
             this.buf = this.buf.slice(nl + 1);
             // Emit empty lines too. Splitting on \n never invents one -- an empty line here
             // means the device really sent a bare newline, which is deliberate spacing by the
@@ -228,18 +231,24 @@ export class LineBuffer {
                 this.timer = null;
                 if (this.buf.length > 0) {
                     this.emit(this.source, this.buf);
-                    this.buf = '';
+                    this.buf = "";
                 }
             }, this.TIMEOUT_MS);
         }
     }
 
     flush(): void {
-        if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-        if (this.buf.length > 0) { this.emit(this.source, this.buf); this.buf = ''; }
+        if (this.timer) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+        if (this.buf.length > 0) {
+            this.emit(this.source, this.buf);
+            this.buf = "";
+        }
     }
 }
 
 export function trimBrackets(str: string): string {
-    return str.replace(/^\s*[\[\{(]+/, '').replace(/[\]\}\)]+\s*$/, '');
+    return str.replace(/^\s*[\[\{(]+/, "").replace(/[\]\}\)]+\s*$/, "");
 }

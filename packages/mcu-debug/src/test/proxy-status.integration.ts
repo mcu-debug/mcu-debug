@@ -29,7 +29,9 @@ function startInstance(name: string) {
 function shutdownInstance(name: string) {
     try {
         execFileSync(BIN, ["proxy", "--shutdown", "--instance", name], { env, timeout: 8000, stdio: "ignore" });
-    } catch { /* best effort */ }
+    } catch {
+        /* best effort */
+    }
 }
 function status(): { count: number; instances: Array<{ instance: string; pid: number; port: number; state: string }> } {
     return JSON.parse(execFileSync(BIN, ["proxy", "--status"], { env, timeout: 8000, encoding: "utf-8" }));
@@ -40,7 +42,9 @@ function shutdownAll(): { count: number; results: Array<{ instance: string; ok: 
 async function waitForStatusCount(n: number, ms = 5000): Promise<void> {
     const start = Date.now();
     while (status().count !== n) {
-        if (Date.now() - start > ms) { throw new Error(`status count did not reach ${n} (still ${status().count})`); }
+        if (Date.now() - start > ms) {
+            throw new Error(`status count did not reach ${n} (still ${status().count})`);
+        }
         await new Promise((r) => setTimeout(r, 100));
     }
 }
@@ -48,7 +52,11 @@ async function waitForStatusCount(n: number, ms = 5000): Promise<void> {
 after(() => {
     shutdownInstance("alpha");
     shutdownInstance("beta");
-    try { fs.rmSync(STATE_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+        fs.rmSync(STATE_DIR, { recursive: true, force: true });
+    } catch {
+        /* ignore */
+    }
 });
 
 test("proxy --status surveys all running instances", { skip: HAVE_BIN ? false : "mdbg binary not built" }, async () => {
@@ -73,7 +81,10 @@ test("proxy --shutdown --all drains every running instance", { skip: HAVE_BIN ? 
     const report = shutdownAll();
     assert.equal(report.count, 2, `expected to drain 2 instances, got ${JSON.stringify(report)}`);
     assert.deepEqual(report.results.map((r) => r.instance).sort(), ["alpha", "beta"]);
-    assert.ok(report.results.every((r) => r.ok), "every drain request was accepted");
+    assert.ok(
+        report.results.every((r) => r.ok),
+        "every drain request was accepted",
+    );
 
     // Idle proxies drain immediately; the survey should empty out.
     await waitForStatusCount(0);
@@ -85,10 +96,19 @@ test("proxy --status skips a stale endpoint from a dead proxy", { skip: HAVE_BIN
     // pid/port. The survey must query it, get a refusal, and omit it.
     const ghostDir = path.join(STATE_DIR, "ghost");
     fs.mkdirSync(ghostDir, { recursive: true });
-    fs.writeFileSync(path.join(ghostDir, "endpoint.json"), JSON.stringify({
-        v: 1, instance: "ghost", pid: 999999, version: "0.1.9",
-        port: 1, token: "x", state: "active", started_at_unix: 1,
-    }));
+    fs.writeFileSync(
+        path.join(ghostDir, "endpoint.json"),
+        JSON.stringify({
+            v: 1,
+            instance: "ghost",
+            pid: 999999,
+            version: "0.1.9",
+            port: 1,
+            token: "x",
+            state: "active",
+            started_at_unix: 1,
+        }),
+    );
 
     const report = status();
     const names = report.instances.map((i) => i.instance);

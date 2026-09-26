@@ -1,13 +1,6 @@
 import * as vscode from "vscode";
 import type { ConfigurationArguments } from "../adapter/servers/common";
-import {
-    buildSessionProps,
-    discardQueue,
-    drainQueue,
-    postEventsToPostHog,
-    resolvePostHogKey,
-    TelemetryEvent,
-} from "./telemetry-core";
+import { buildSessionProps, discardQueue, drainQueue, postEventsToPostHog, resolvePostHogKey, TelemetryEvent } from "./telemetry-core";
 
 // A vscode.TelemetrySender that ships events to PostHog. We route everything through
 // vscode.env.createTelemetryLogger so we inherit two things for free:
@@ -19,7 +12,10 @@ class PostHogSender implements vscode.TelemetrySender {
     private buffer: TelemetryEvent[] = [];
     private timer: ReturnType<typeof setTimeout> | undefined;
 
-    constructor(private readonly distinctId: () => string, private readonly apiKey: string) {}
+    constructor(
+        private readonly distinctId: () => string,
+        private readonly apiKey: string,
+    ) {}
 
     sendEventData(eventName: string, data?: Record<string, any>): void {
         // createTelemetryLogger prefixes the extension id: "publisher.name/eventName".
@@ -99,8 +95,7 @@ export class Reporting {
     }
 
     private static readonly NOTICE_SHOWN_KEY = "mcu-debug.telemetryNoticeShown";
-    private static readonly TELEMETRY_DOC_URL =
-        "https://github.com/mcu-debug/mcu-debug/blob/main/packages/mcu-debug/TELEMETRY.md";
+    private static readonly TELEMETRY_DOC_URL = "https://github.com/mcu-debug/mcu-debug/blob/main/packages/mcu-debug/TELEMETRY.md";
 
     /** One-time, non-modal heads-up that telemetry is active, with quick links to details/opt-out. */
     private static async maybeShowFirstRunNotice(context: vscode.ExtensionContext): Promise<void> {
@@ -120,18 +115,13 @@ export class Reporting {
         if (choice === details) {
             void vscode.env.openExternal(vscode.Uri.parse(Reporting.TELEMETRY_DOC_URL));
         } else if (choice === disable) {
-            await vscode.workspace
-                .getConfiguration("mcu-debug")
-                .update("enableTelemetry", false, vscode.ConfigurationTarget.Global);
+            await vscode.workspace.getConfiguration("mcu-debug").update("enableTelemetry", false, vscode.ConfigurationTarget.Global);
         }
     }
 
     /** Our extension-specific opt-out, on top of the global setting the logger already honors. */
     private static enabled(): boolean {
-        return (
-            vscode.env.isTelemetryEnabled &&
-            vscode.workspace.getConfiguration("mcu-debug").get<boolean>("enableTelemetry", true)
-        );
+        return vscode.env.isTelemetryEnabled && vscode.workspace.getConfiguration("mcu-debug").get<boolean>("enableTelemetry", true);
     }
 
     private static async flushCliQueue(machineId: string): Promise<void> {

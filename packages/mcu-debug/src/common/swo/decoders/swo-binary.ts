@@ -69,9 +69,9 @@ export class SWOBinaryProcessor implements SWORTTDecoder {
         }
     }
 
-    public hardwareEvent(event: Packet) { }
-    public synchronized() { }
-    public lostSynchronization() { }
+    public hardwareEvent(event: Packet) {}
+    public synchronized() {}
+    public lostSynchronization() {}
 
     public dispose() {
         this.close();

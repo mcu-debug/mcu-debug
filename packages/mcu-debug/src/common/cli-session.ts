@@ -125,9 +125,7 @@ export class CDebugSession {
         if (session.parentSession && session.parentSession.type === "mcu-debug") {
             const parent = CDebugSession.FindSession(session.parentSession);
             if (!parent) {
-                getHostAdapter().showError(
-                    `Internal Error: Have parent for new session, Parent = ${session.parentSession.name} but can't find it`,
-                );
+                getHostAdapter().showError(`Internal Error: Have parent for new session, Parent = ${session.parentSession.name} but can't find it`);
             } else {
                 parent.add(newSession); // Insert into tree
             }

@@ -157,7 +157,7 @@ const escapedChars: { [key: string]: string } = {
 function simpleUnescape(line: string): string {
     if (line.indexOf("\\") === -1) return line;
     let ret = "";
-    for (let i = 0; i < line.length; ) {
+    for (let i = 0; i < line.length;) {
         if (line[i] === "\\") {
             if (i + 1 < line.length) {
                 const nextChar = line[i + 1];

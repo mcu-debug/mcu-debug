@@ -47,7 +47,7 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
     public static createTerminal(config: SWOConsoleDecoderConfig | SWOBinaryDecoderConfig, closeCallback: () => void): ManagedTabConsole {
         const baseName = SWOConsoleProcessor.createName(config);
         let [name, terminal, isNew] = createTerminalUniqueName<ManagedTabConsole>(baseName, (nm: string) => {
-            const uuid = getUUidPrefixed('SWO');
+            const uuid = getUUidPrefixed("SWO");
             const ret = new ManagedTabConsole(uuid, nm, "swo", "tx");
             return ret;
         });
@@ -136,9 +136,9 @@ export class SWOConsoleProcessor implements SWORTTDecoder {
         this.logFileWrite(text);
     }
 
-    public hardwareEvent(event: Packet) { }
-    public synchronized() { }
-    public lostSynchronization() { }
+    public hardwareEvent(event: Packet) {}
+    public synchronized() {}
+    public lostSynchronization() {}
 
     public dispose() {
         this.close();

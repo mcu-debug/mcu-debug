@@ -1,5 +1,5 @@
-import TransportStream, { TransportStreamOptions } from 'winston-transport';
-import { IOutputChannel } from '../common/host-adapter';
+import TransportStream, { TransportStreamOptions } from "winston-transport";
+import { IOutputChannel } from "../common/host-adapter";
 
 export interface VscodeTransportOptions extends TransportStreamOptions {
     /** Prefix each line, e.g. '[mcu-debug]'. Defaults to none. */
@@ -18,16 +18,16 @@ export class VscodeOutputChannelTransport extends TransportStream {
     constructor(channel: IOutputChannel, opts: VscodeTransportOptions = {}) {
         super(opts);
         this.channel = channel;
-        this.prefix = opts.prefix ? opts.prefix + ' ' : '';
+        this.prefix = opts.prefix ? opts.prefix + " " : "";
     }
 
-    log(info: { level: string; message: string;[key: string]: unknown }, callback: () => void): void {
-        setImmediate(() => this.emit('logged', info));
+    log(info: { level: string; message: string; [key: string]: unknown }, callback: () => void): void {
+        setImmediate(() => this.emit("logged", info));
         const extras = Object.entries(info)
-            .filter(([k]) => k !== 'level' && k !== 'message')
+            .filter(([k]) => k !== "level" && k !== "message")
             .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-            .join(' ');
-        const line = `${this.prefix}[${info.level}] ${info.message}${extras ? '  ' + extras : ''}`;
+            .join(" ");
+        const line = `${this.prefix}[${info.level}] ${info.message}${extras ? "  " + extras : ""}`;
         this.channel.appendLine(line);
         callback();
     }

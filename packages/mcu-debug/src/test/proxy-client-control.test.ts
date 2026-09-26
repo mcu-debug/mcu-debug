@@ -32,18 +32,20 @@ class FakeProxy {
                 buf = Buffer.concat([buf, Buffer.from(data)]);
                 while (buf.length >= 5) {
                     const len = buf.readUInt32LE(1);
-                    if (buf.length < 5 + len) { break; }
+                    if (buf.length < 5 + len) {
+                        break;
+                    }
                     const msg = JSON.parse(buf.subarray(5, 5 + len).toString("utf-8"));
                     buf = buf.subarray(5 + len);
-                    if (this.opts.silent?.includes(msg.method)) { continue; }
+                    if (this.opts.silent?.includes(msg.method)) {
+                        continue;
+                    }
                     const errMsg = this.opts.errors?.[msg.method];
-                    const reply = errMsg !== undefined
-                        ? { seq: msg.seq, success: false, message: errMsg }
-                        : { seq: msg.seq, success: true, data: {} };
+                    const reply = errMsg !== undefined ? { seq: msg.seq, success: false, message: errMsg } : { seq: msg.seq, success: true, data: {} };
                     socket.write(frame(0, Buffer.from(JSON.stringify(reply))));
                 }
             });
-            socket.on("error", () => { });
+            socket.on("error", () => {});
         });
     }
 
@@ -58,7 +60,9 @@ class FakeProxy {
 
     /** Drop every client connection without answering — simulates the proxy dying. */
     dropClients() {
-        for (const s of this.sockets) { s.destroy(); }
+        for (const s of this.sockets) {
+            s.destroy();
+        }
     }
 
     close() {
@@ -71,7 +75,7 @@ class FakeProxy {
 function makeClient(): any {
     const session: any = {
         args: { debugFlags: { anyFlags: false }, name: "test", cwd: process.cwd() },
-        handleMsg: () => { },
+        handleMsg: () => {},
     };
     return new ProxyClient(session, {} as any);
 }
@@ -80,7 +84,9 @@ function makeClient(): any {
 async function waitFor(pred: () => boolean, what: string, ms = 5000): Promise<void> {
     const deadline = Date.now() + ms;
     while (!pred()) {
-        if (Date.now() > deadline) { throw new Error(`timed out waiting for: ${what}`); }
+        if (Date.now() > deadline) {
+            throw new Error(`timed out waiting for: ${what}`);
+        }
         await new Promise((r) => setTimeout(r, 5));
     }
 }
@@ -103,7 +109,10 @@ test("a control command that is never answered times out, names itself, and leak
     const before = client.pendingPromises.size;
 
     const cmd = { seq: client.nextSeq++, method: "neverAnswered" };
-    const err = await client.sendControlCommand(cmd, 60).then(() => null, (e: Error) => e);
+    const err = await client.sendControlCommand(cmd, 60).then(
+        () => null,
+        (e: Error) => e,
+    );
 
     assert.ok(err, "must reject");
     assert.match(err.message, /timed out after 60ms/, "reports a timeout");
@@ -119,9 +128,10 @@ test("an error reply is reported as the proxy's error, not as a timeout", async 
     t.after(() => fake.close());
 
     await connect(client, fake);
-    const err = await client
-        .sendControlCommand({ seq: client.nextSeq++, method: "startGdbServer" }, 2000)
-        .then(() => null, (e: Error) => e);
+    const err = await client.sendControlCommand({ seq: client.nextSeq++, method: "startGdbServer" }, 2000).then(
+        () => null,
+        (e: Error) => e,
+    );
 
     assert.ok(err, "must reject");
     assert.equal(err.message, "no such device", "surfaces the proxy's own message");
@@ -154,7 +164,10 @@ test("a dropped socket fails in-flight commands instead of hanging them", async 
     assert.equal(client.pendingPromises.size, 1, "command is in flight");
 
     fake.dropClients();
-    const err = await inFlight.then(() => null, (e: Error) => e);
+    const err = await inFlight.then(
+        () => null,
+        (e: Error) => e,
+    );
 
     assert.ok(err, "must reject rather than hang forever");
     assert.match(err.message, /Proxy connection closed/);
@@ -173,9 +186,10 @@ test("commands sent after the socket is gone reject immediately and name themsel
     // fixed interval here is a race, and made this test fail roughly two runs in five.
     await waitFor(() => client.socket === null, "client to notice the socket closed");
 
-    const err = await client
-        .sendControlCommand({ seq: client.nextSeq++, method: "endSession" }, 2000)
-        .then(() => null, (e: Error) => e);
+    const err = await client.sendControlCommand({ seq: client.nextSeq++, method: "endSession" }, 2000).then(
+        () => null,
+        (e: Error) => e,
+    );
 
     assert.ok(err, "must reject");
     assert.match(err.message, /not connected/);

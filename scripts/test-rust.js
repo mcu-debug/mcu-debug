@@ -12,13 +12,13 @@
 //
 // Formatting runs whether or not the tests passed: the files were regenerated either
 // way, and leaving them dirty on failure is exactly when it is most confusing.
-const { spawnSync } = require('child_process');
-const path = require('path');
+const { spawnSync } = require("child_process");
+const path = require("path");
 
-const ROOT = path.resolve(__dirname, '..');
-const SHARED = path.join(ROOT, 'packages', 'shared');
-const GENERATED = ['dasm-helper', 'proxy-protocol', 'serial-helper'].map((d) => path.join(SHARED, d));
-const PRINT_WIDTH = '120'; // keep in sync with scripts/build-binaries.sh
+const ROOT = path.resolve(__dirname, "..");
+const SHARED = path.join(ROOT, "packages", "shared");
+const GENERATED = ["dasm-helper", "proxy-protocol", "serial-helper"].map((d) => path.join(SHARED, d));
+const PRINT_WIDTH = "120"; // keep in sync with scripts/build-binaries.sh
 
 // Run from the crate directory, NOT the repo root with --manifest-path. Cargo
 // discovers .cargo/config.toml by walking up from the *current directory*; the manifest
@@ -27,21 +27,21 @@ const PRINT_WIDTH = '120'; // keep in sync with scripts/build-binaries.sh
 // instead of packages/shared/ — tests pass, nothing looks wrong, and the shared types
 // are simply never regenerated.
 const args = process.argv.slice(2);
-const test = spawnSync('cargo', ['test', '--lib', ...args], {
-    cwd: path.join(ROOT, 'packages', 'mdbg'),
-    stdio: 'inherit',
+const test = spawnSync("cargo", ["test", "--lib", ...args], {
+    cwd: path.join(ROOT, "packages", "mdbg"),
+    stdio: "inherit",
     shell: false,
 });
 
-const prettier = path.join(ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'prettier.cmd' : 'prettier');
-const fmt = spawnSync(prettier, ['--write', '--print-width', PRINT_WIDTH, '--log-level', 'warn', ...GENERATED], {
-    stdio: 'inherit',
+const prettier = path.join(ROOT, "node_modules", ".bin", process.platform === "win32" ? "prettier.cmd" : "prettier");
+const fmt = spawnSync(prettier, ["--write", "--print-width", PRINT_WIDTH, "--log-level", "warn", ...GENERATED], {
+    stdio: "inherit",
     shell: false,
 });
 if (fmt.status !== 0) {
     // Never mask a test result behind a formatting problem — say so and move on.
-    console.error(`\nWarning: could not format generated TypeScript (prettier exited ${fmt.status ?? 'null'}).`);
-    console.error(`Run: ${prettier} --write --print-width ${PRINT_WIDTH} ${GENERATED.join(' ')}`);
+    console.error(`\nWarning: could not format generated TypeScript (prettier exited ${fmt.status ?? "null"}).`);
+    console.error(`Run: ${prettier} --write --print-width ${PRINT_WIDTH} ${GENERATED.join(" ")}`);
 }
 
 process.exit(test.status ?? 1);

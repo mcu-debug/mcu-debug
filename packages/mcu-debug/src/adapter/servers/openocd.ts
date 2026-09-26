@@ -280,7 +280,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
         return /Info\s:[^\n]*Listening on port \d+ for gdb connection/i;
     }
 
-    public serverLaunchStarted(): void { }
+    public serverLaunchStarted(): void {}
 
     public serverLaunchCompleted(): void {
         if (this.args.swoConfig.enabled) {

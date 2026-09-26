@@ -46,23 +46,36 @@ class StubHostAdapter {
     quickPickItems: any[] = [];
     errors: string[] = [];
     debugConsoleMessage(_m: string) {}
-    debugConsoleError(m: string) { this.errors.push(m); }
+    debugConsoleError(m: string) {
+        this.errors.push(m);
+    }
     debugMessage(_m: string) {}
     showError(_m: string) {}
     showWarning(_m: string) {}
     showInfo(_m: string) {}
-    getRemoteName(): string | undefined { return undefined; }
-    getExtensionPath(): string { return EXT_ROOT; }
+    getRemoteName(): string | undefined {
+        return undefined;
+    }
+    getExtensionPath(): string {
+        return EXT_ROOT;
+    }
     createSerialPortView(device: string, _cfg: any, _isNew: boolean, _tcpPort: number) {
         this.createdViews.push(device);
         const emitter = new EventEmitter();
         return {
             emitter,
-            setTcpPort() {}, setLogFile() {}, setInputMode() {},
-            notifyConnected() {}, notifyReconnected() {}, notifyDisconnected() {},
+            setTcpPort() {},
+            setLogFile() {},
+            setInputMode() {},
+            notifyConnected() {},
+            notifyReconnected() {},
+            notifyDisconnected() {},
         } as any;
     }
-    showQuickPick(items: any[], _opts: any) { this.quickPickItems = items; return Promise.resolve(undefined); }
+    showQuickPick(items: any[], _opts: any) {
+        this.quickPickItems = items;
+        return Promise.resolve(undefined);
+    }
 }
 
 const stub = new StubHostAdapter();
@@ -80,10 +93,14 @@ function launchArgs(hostConfig: HostConfig, ports: string[]): ConfigurationArgum
 
 /** Gracefully stop the isolated daemon (best effort). */
 function shutdownProxy() {
-    if (!HAVE_BIN) { return; }
+    if (!HAVE_BIN) {
+        return;
+    }
     try {
         execFileSync(BIN, ["proxy", "--shutdown", "--instance", INSTANCE], { env: process.env, timeout: 8000, stdio: "ignore" });
-    } catch { /* best effort — idle-timeout will reap it anyway */ }
+    } catch {
+        /* best effort — idle-timeout will reap it anyway */
+    }
 }
 
 /** True if passwordless ssh-to-localhost is available (Remote Login + key auth). */
@@ -95,7 +112,11 @@ function sshLocalhostAvailable(): boolean {
 /** All device paths from `mdbg serial list --all`, straight from the CLI enumerator. */
 function cliListPaths(): string[] {
     const out = execFileSync(BIN, ["serial", "list", "--all"], { encoding: "utf-8", timeout: 8000 });
-    return out.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("/dev/")).map((l) => l.split(/\s+/)[0]);
+    return out
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("/dev/"))
+        .map((l) => l.split(/\s+/)[0]);
 }
 
 /** First callout (cu.*) device path from `mdbg serial list`, discovered locally. */
@@ -105,7 +126,11 @@ function firstCuDevice(): string | undefined {
 
 after(() => {
     shutdownProxy();
-    try { fs.rmSync(STATE_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+        fs.rmSync(STATE_DIR, { recursive: true, force: true });
+    } catch {
+        /* ignore */
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -155,10 +180,7 @@ test("local loopback opens the debug-console and creates a view", { skip: HAVE_B
 
     stub.createdViews = [];
     await mgr.createSerialPorts(launchArgs({ enabled: true, type: "local" } as any, [target!]));
-    assert.ok(
-        stub.createdViews.includes(target!),
-        `expected a view for ${target}; created: ${JSON.stringify(stub.createdViews)}`,
-    );
+    assert.ok(stub.createdViews.includes(target!), `expected a view for ${target}; created: ${JSON.stringify(stub.createdViews)}`);
 });
 
 test("malformed control request fails fast with an error (no client timeout)", { skip: HAVE_BIN ? false : "mdbg binary not built" }, async (t) => {

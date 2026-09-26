@@ -1,9 +1,9 @@
-import { SWODecoderConfig } from './common';
+import { SWODecoderConfig } from "./common";
 
 export interface SWOAdvancedDecoderConfig extends SWODecoderConfig {
-    decoder: string;        // Path to decoder JS file
+    decoder: string; // Path to decoder JS file
     config: any;
-    ports: number[];        // List of ITM/RTT ports
+    ports: number[]; // List of ITM/RTT ports
 }
 
 export interface AdvancedDecoder {
@@ -19,14 +19,10 @@ export interface AdvancedDecoder {
      * Note that typeName() and outputLabel() are used to create a name for the OUTPUT panel. So, you
      * can't use outputData/graphData in those methods either.
      */
-    init(
-        config: SWOAdvancedDecoderConfig,
-        outputData: (output: string, timestamp?: boolean) => void,
-        graphData: (data: number, id: string) => void
-    ): void;
+    init(config: SWOAdvancedDecoderConfig, outputData: (output: string, timestamp?: boolean) => void, graphData: (data: number, id: string) => void): void;
 
-    typeName(): string;     // Used to create the OUTPUT Panel name
-    outputLabel(): string;  // Used to create the OUTPUT Panel name
+    typeName(): string; // Used to create the OUTPUT Panel name
+    outputLabel(): string; // Used to create the OUTPUT Panel name
 
     /**
      *

@@ -33,7 +33,18 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { ChildProcess, spawn } from "node:child_process";
-import { SSH_BATCH_OPTS, computeProxyLaunchPolicy, ProxyHostType, resolveProxyNetworkMode, ProxyLaunchPolicy, ProxyLaunchResults, ProvisioningResults, ProxyProvisionRequest, startProxyServerWithPolicy, setDevelopmentModeEnvVars } from "@mcu-debug/shared";
+import {
+    SSH_BATCH_OPTS,
+    computeProxyLaunchPolicy,
+    ProxyHostType,
+    resolveProxyNetworkMode,
+    ProxyLaunchPolicy,
+    ProxyLaunchResults,
+    ProvisioningResults,
+    ProxyProvisionRequest,
+    startProxyServerWithPolicy,
+    setDevelopmentModeEnvVars,
+} from "@mcu-debug/shared";
 
 /**
  * Returns true if the binary at filePath is a native executable for the
@@ -366,23 +377,27 @@ function proxyStatus(): Promise<unknown> {
 
         child.stdout?.on("data", (d) => (stdout += d.toString()));
         child.stderr?.on("data", (d) => (stderr += d.toString()));
-        child.on("error", (err) => finish(() => {
-            traceWarn("status.spawn-failed", { error: `${err}` });
-            reject(new Error(`could not run '${proxyPath} proxy --status': ${err}`));
-        }));
+        child.on("error", (err) =>
+            finish(() => {
+                traceWarn("status.spawn-failed", { error: `${err}` });
+                reject(new Error(`could not run '${proxyPath} proxy --status': ${err}`));
+            }),
+        );
         // Wait for exit rather than parsing the first chunk: unlike a launch, there is no
         // single discovery line to watch for — the report is one JSON document that may
         // arrive in pieces, and the process is short-lived by design.
-        child.on("close", (code) => finish(() => {
-            try {
-                const report = JSON.parse(stdout);
-                trace("status.ok", { count: (report as { count?: number })?.count, exit: code });
-                resolve(report);
-            } catch (e) {
-                traceWarn("status.unparseable", { exit: code, stdout, stderr, error: `${e}` });
-                reject(new Error(`'mdbg proxy --status' returned no JSON (exit ${code}): ${stderr || stdout}`));
-            }
-        }));
+        child.on("close", (code) =>
+            finish(() => {
+                try {
+                    const report = JSON.parse(stdout);
+                    trace("status.ok", { count: (report as { count?: number })?.count, exit: code });
+                    resolve(report);
+                } catch (e) {
+                    traceWarn("status.unparseable", { exit: code, stdout, stderr, error: `${e}` });
+                    reject(new Error(`'mdbg proxy --status' returned no JSON (exit ${code}): ${stderr || stdout}`));
+                }
+            }),
+        );
     });
 }
 

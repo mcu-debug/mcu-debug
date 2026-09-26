@@ -32,12 +32,12 @@ export class UsbSWOSource extends EventEmitter implements SWORTTSource {
 
     private async findDevice(): Promise<
         | {
-            dev: UsbDevice;
-            config: UsbConfigDescriptor;
-            iface: UsbInterfaceDescriptor;
-            endpoint: UsbEndpointDescriptor;
-            productName: string;
-        }
+              dev: UsbDevice;
+              config: UsbConfigDescriptor;
+              iface: UsbInterfaceDescriptor;
+              endpoint: UsbEndpointDescriptor;
+              productName: string;
+          }
         | undefined
     > {
         // eslint-disable-next-line @typescript-eslint/no-require-imports

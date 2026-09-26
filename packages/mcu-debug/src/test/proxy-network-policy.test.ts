@@ -92,15 +92,7 @@ test("no mode ever yields a placeholder or wildcard bind address", () => {
     // caller to substitute; one that trusted the field would hand it straight to
     // connect(). And `0.0.0.0` is a bind wildcard that is meaningless as a connect
     // target, so it must never appear in proxyHostForDA either.
-    const modes: ProxyNetworkMode[] = [
-        "local",
-        "ssh",
-        "auto-local",
-        "auto-wsl",
-        "auto-wsl-container",
-        "auto-dev-container",
-        "auto-ssh-remote",
-    ];
+    const modes: ProxyNetworkMode[] = ["local", "ssh", "auto-local", "auto-wsl", "auto-wsl-container", "auto-dev-container", "auto-ssh-remote"];
 
     for (const mode of modes) {
         for (const p of [probes("nat", "172.28.240.1"), probes("nat", null), probes("mirrored", null)]) {

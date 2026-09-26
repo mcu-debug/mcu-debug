@@ -64,9 +64,9 @@ export class SWORTTGraphProcessor extends EventEmitter implements SWORTTDecoder 
         }
     }
 
-    public hardwareEvent(event: Packet) { }
-    public synchronized() { }
-    public lostSynchronization() { }
+    public hardwareEvent(event: Packet) {}
+    public synchronized() {}
+    public lostSynchronization() {}
     public dispose() {
         this.close();
     }

@@ -47,7 +47,7 @@ export class LiveClientSession {
         public sessionId: string,
         public container: VariableContainer,
         public notifyMode: "always" | "onReady" = "always",
-    ) { }
+    ) {}
 }
 
 // Events emitted by LiveWatchMonitor: "started", "connected", "quit"
@@ -61,7 +61,7 @@ export class LiveWatchMonitor extends EventEmitter {
     protected memoryRequests: MemoryRequests;
     protected liveMonitorEnabled: boolean = false;
     protected handlingRequest: boolean = false;
-    protected disableConsoleMessages: boolean = true;      // We start out with Console as they are init. chatter with gdb
+    protected disableConsoleMessages: boolean = true; // We start out with Console as they are init. chatter with gdb
     constructor(public mainSession: GDBDebugSession) {
         super();
         this.gdbInstance = new GdbInstance();
@@ -118,7 +118,7 @@ export class LiveWatchMonitor extends EventEmitter {
 
     public async stop(): Promise<void> {
         this.stopTimer();
-        await this.quit().catch(() => { });
+        await this.quit().catch(() => {});
     }
 
     public enabled(): boolean {
@@ -129,7 +129,7 @@ export class LiveWatchMonitor extends EventEmitter {
         if (this.disableConsoleMessages && !this.debugFlags.anyFlags && type === Console) {
             return;
         }
-        const doPrint = (type !== Stdout || this.debugFlags.gdbTraces);
+        const doPrint = type !== Stdout || this.debugFlags.gdbTraces;
         if (doPrint) {
             this.mainSession.handleMsg(type, "LiveGDB: " + msg);
         }
@@ -403,7 +403,8 @@ export class LiveWatchMonitor extends EventEmitter {
     // Calling this will also enable caching for the future of the session
     private isUpdatingVariables: boolean = false;
     public updatePromise = Promise.resolve();
-    private pvrWriteUpdates: VarUpdateRecord[] = []; public async updateVariables(): Promise<void> {
+    private pvrWriteUpdates: VarUpdateRecord[] = [];
+    public async updateVariables(): Promise<void> {
         this.updatePromise = new Promise<void>(async (resolve) => {
             try {
                 this.isUpdatingVariables = true;
@@ -518,7 +519,7 @@ export class LiveWatchMonitor extends EventEmitter {
                 for (const [_clientId, session] of this.sessionsByClientId) {
                     if (session.container.numberOfGdbVariables() > 0) {
                         if (!this.isUpdatingVariables && !this.handlingRequest) {
-                            this.updateVariables().catch(() => { });
+                            this.updateVariables().catch(() => {});
                         }
                         break;
                     }
@@ -531,7 +532,7 @@ export class LiveWatchMonitor extends EventEmitter {
         const serverType = this.mainSession.args.servertype;
         if (!varObj.addressOf) {
             // Children may not have addressOf info yet, try to get it
-            await varObj.queryGdbVarInfo(this.gdbInstance).catch(() => { });
+            await varObj.queryGdbVarInfo(this.gdbInstance).catch(() => {});
         }
         const size = varObj.sizeof || 0;
         const isOk = varObj.addressOf && size > 0 && size <= 8 && varObj.editable;

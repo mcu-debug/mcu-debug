@@ -13,7 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 
-const EventEmitter = require('events');
+const EventEmitter = require("events");
 
 import type { CockpitToolbarAction, TabDescriptor, TabInputMode, TabKind, TabState, ToUi, FromUi } from "@mcu-debug/shared";
 import { CockpitPanel } from "./CockpitPanel";
@@ -106,10 +106,18 @@ export abstract class ManagedTab {
     private _inputMode: TabInputMode;
     private _savedPlaceholderText: string | null = null;
 
-    get label(): string { return this._label; }
-    get state(): TabState { return this._state; }
-    get placeholderText(): string { return this._placeholderText; }
-    get inputMode(): TabInputMode { return this._inputMode; }
+    get label(): string {
+        return this._label;
+    }
+    get state(): TabState {
+        return this._state;
+    }
+    get placeholderText(): string {
+        return this._placeholderText;
+    }
+    get inputMode(): TabInputMode {
+        return this._inputMode;
+    }
 
     get descriptor(): TabDescriptor {
         return {
@@ -231,8 +239,7 @@ export abstract class ManagedTab {
     }
 
     private _canPostLiveData(): boolean {
-        return this._terminalReady
-            && (this._panel?.isParentPanelVisible() ?? false);
+        return this._terminalReady && (this._panel?.isParentPanelVisible() ?? false);
     }
 
     // -------------------------------------------------------------------------
@@ -329,7 +336,7 @@ export class ManagedTabConsole extends ManagedTab {
         readonly kind: TabKind,
         readonly direction: TabDescriptor["direction"] = "both",
         placeholderText = "Enter input for console",
-        readonly mode: "raw" | "cooked" = "cooked"
+        readonly mode: "raw" | "cooked" = "cooked",
     ) {
         super(tabId, label, placeholderText, mode);
     }

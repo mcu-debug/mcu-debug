@@ -1,4 +1,3 @@
-
 // VscodeAdapter implements IHostAdapter using VS Code extension APIs.
 import * as vscode from "vscode";
 import * as fs from "fs";
@@ -16,7 +15,7 @@ import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 
 // It lives here (frontend/) so that common/ stays free of vscode imports.
 export class VscodeAdapter implements IHostAdapter {
-    constructor(private readonly context: vscode.ExtensionContext) { }
+    constructor(private readonly context: vscode.ExtensionContext) {}
 
     showError(msg: string): void {
         vscode.window.showErrorMessage(msg);
@@ -141,10 +140,7 @@ export class VscodeAdapter implements IHostAdapter {
         return symbols;
     }
 
-    async showQuickPick(
-        items: { label: string; description?: string; detail?: string }[],
-        opts?: { title?: string; placeHolder?: string }
-    ): Promise<string | undefined> {
+    async showQuickPick(items: { label: string; description?: string; detail?: string }[], opts?: { title?: string; placeHolder?: string }): Promise<string | undefined> {
         const result = await vscode.window.showQuickPick(items, {
             title: opts?.title,
             placeHolder: opts?.placeHolder,

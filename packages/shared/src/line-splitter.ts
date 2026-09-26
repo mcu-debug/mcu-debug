@@ -1,23 +1,23 @@
-
-
 export class LineSplitter {
-    private buffer: string = '';
+    private buffer: string = "";
     private timer: NodeJS.Timeout | null = null;
 
     constructor(
         private callback: (line: string, prefix: string, partial: boolean) => void,
-        private prefix: string = '',
-        private flushTimerMs: number = 500) {       // Use 0 to disable the flush timer
+        private prefix: string = "",
+        private flushTimerMs: number = 500,
+    ) {
+        // Use 0 to disable the flush timer
     }
 
     public write(data: string): void {
         this.clearTimer();
-        this.buffer += data.replace(/\r\n/g, '\n'); // Normalize line endings to LF
+        this.buffer += data.replace(/\r\n/g, "\n"); // Normalize line endings to LF
         let indexLF: number;
         let indexCR: number;
         while (this.buffer.length > 0) {
-            indexLF = this.buffer.indexOf('\n');
-            indexCR = this.buffer.indexOf('\r');
+            indexLF = this.buffer.indexOf("\n");
+            indexCR = this.buffer.indexOf("\r");
             if (indexLF < 0 && indexCR < 0) {
                 break;
             }
@@ -45,7 +45,7 @@ export class LineSplitter {
         this.clearTimer();
         if (this.buffer.length > 0) {
             this.callback(this.buffer, this.prefix, false);
-            this.buffer = '';
+            this.buffer = "";
         }
     }
 

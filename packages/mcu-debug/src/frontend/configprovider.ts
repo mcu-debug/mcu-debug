@@ -39,11 +39,7 @@ export class McuDebugConfigurationProvider implements vscode.DebugConfigurationP
         // Only the remote-probe modes route through the proxy extension, and only a remote
         // window needs it -- a local window starts its own probe agent. Cancel the launch if it
         // is needed and unavailable: the user has been told why and offered the install.
-        if (
-            vscode.env.remoteName !== undefined &&
-            needsProxyExtension(config.hostConfig) &&
-            !(await ensureProxyForLaunch(this.ourVersion))
-        ) {
+        if (vscode.env.remoteName !== undefined && needsProxyExtension(config.hostConfig) && !(await ensureProxyForLaunch(this.ourVersion))) {
             return undefined;
         }
         const resolved = await this.base.resolveDebugConfigurationWithSubstitutedVariables(folder?.uri.fsPath, config as unknown as ConfigurationArguments & { [key: string]: any });

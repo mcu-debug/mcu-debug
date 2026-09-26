@@ -186,7 +186,7 @@ export class TargetInfo {
         this.initPromise = new Promise<void>(async (resolve) => {
             try {
                 const obj = (await GdbMiOrCliCommandForOob(this.gdbInstance, "show endian")) as Object;
-                const output = (typeof obj === "string" ? obj : (Array.isArray(obj) ? obj.join(" ") : ((obj as any)["value"] as string)));
+                const output = typeof obj === "string" ? obj : Array.isArray(obj) ? obj.join(" ") : ((obj as any)["value"] as string);
                 if (typeof output !== "string") {
                     throw new Error("Invalid endian output");
                 } else if (output.toLowerCase().includes("little")) {

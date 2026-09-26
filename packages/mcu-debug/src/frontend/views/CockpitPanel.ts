@@ -44,11 +44,7 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
     // vscode.WebviewViewProvider
     // -------------------------------------------------------------------------
 
-    resolveWebviewView(
-        webviewView: vscode.WebviewView,
-        _context: vscode.WebviewViewResolveContext,
-        _token: vscode.CancellationToken,
-    ): void {
+    resolveWebviewView(webviewView: vscode.WebviewView, _context: vscode.WebviewViewResolveContext, _token: vscode.CancellationToken): void {
         this._view = webviewView;
         this._webviewReady = false;
 
@@ -225,18 +221,10 @@ export class CockpitPanel implements vscode.WebviewViewProvider, CockpitPanelSin
     }
 
     private _buildHtml(webview: vscode.Webview): string {
-        const scriptUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, "resources", "cockpit", "cockpit.js"),
-        );
-        const styleUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, "resources", "cockpit", "cockpit.css"),
-        );
-        const codiconsUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, "resources", "codicons", "codicon.css"),
-        );
-        const resetIconUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, "images", "reset.svg"),
-        );
+        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "resources", "cockpit", "cockpit.js"));
+        const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "resources", "cockpit", "cockpit.css"));
+        const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "resources", "codicons", "codicon.css"));
+        const resetIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "images", "reset.svg"));
         const nonce = generateNonce();
 
         return /* html */ `<!DOCTYPE html>

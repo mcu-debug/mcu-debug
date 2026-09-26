@@ -2,7 +2,7 @@ import { GdbInstance } from "./gdb-instance";
 import { GdbMiFrameIF, GdbMiOutput, GdbMiRecord, GdbMiThreadIF } from "./mi-types";
 
 export class MiCommands {
-    constructor(public readonly gdbInstance: GdbInstance) { }
+    constructor(public readonly gdbInstance: GdbInstance) {}
 
     sendContinue(threadGroup: number | undefined): Promise<GdbMiOutput> {
         const cmd = "-exec-continue" + (threadGroup !== undefined ? ` --thread-group ${threadGroup}` : "");
@@ -299,7 +299,7 @@ export async function DataEvaluateExpression(gdbInstance: GdbInstance, expr: str
         if (record && record["value"]) {
             return record["value"];
         }
-    } catch (e) { }
+    } catch (e) {}
     return null;
 }
 

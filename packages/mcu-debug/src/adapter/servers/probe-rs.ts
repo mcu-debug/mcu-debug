@@ -33,10 +33,7 @@ export class ProbeRsServerController extends EventEmitter implements GDBServerCo
     }
 
     public launchCommands(): string[] {
-        const commands = [
-            ...genDownloadCommands(this.args, ['interpreter-exec console "monitor reset halt"']),
-            'interpreter-exec console "monitor reset halt"',
-        ];
+        const commands = [...genDownloadCommands(this.args, ['interpreter-exec console "monitor reset halt"']), 'interpreter-exec console "monitor reset halt"'];
         return commands;
     }
 
@@ -105,10 +102,9 @@ export class ProbeRsServerController extends EventEmitter implements GDBServerCo
         return /Firing up GDB/;
     }
 
-    public serverLaunchStarted(): void { }
-    public serverLaunchCompleted(): void { }
+    public serverLaunchStarted(): void {}
+    public serverLaunchCompleted(): void {}
 
-    public debuggerLaunchStarted(): void { }
-    public debuggerLaunchCompleted(): void { }
+    public debuggerLaunchStarted(): void {}
+    public debuggerLaunchCompleted(): void {}
 }
-

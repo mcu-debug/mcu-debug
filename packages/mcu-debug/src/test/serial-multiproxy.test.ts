@@ -11,11 +11,7 @@ import assert from "node:assert/strict";
 import * as net from "net";
 import { EventEmitter } from "events";
 
-import {
-    ProxyConnection,
-    SerialPortManager,
-    ProxyResolver,
-} from "../common/serial-manager";
+import { ProxyConnection, SerialPortManager, ProxyResolver } from "../common/serial-manager";
 import { setHostAdapter } from "../common/host-adapter";
 import { HostConfig, ConfigurationArguments } from "../adapter/servers/common";
 
@@ -33,25 +29,29 @@ interface CreatedView {
 class StubHostAdapter {
     createdViews: CreatedView[] = [];
     quickPickItems: any[] = [];
-    debugConsoleMessage(_m: string) { }
-    debugConsoleError(_m: string) { }
-    debugMessage(_m: string) { }
-    showError(_m: string) { }
-    showWarning(_m: string) { }
-    showInfo(_m: string) { }
-    getRemoteName(): string | undefined { return undefined; }
-    getExtensionPath(): string { return "/tmp/ext"; }
+    debugConsoleMessage(_m: string) {}
+    debugConsoleError(_m: string) {}
+    debugMessage(_m: string) {}
+    showError(_m: string) {}
+    showWarning(_m: string) {}
+    showInfo(_m: string) {}
+    getRemoteName(): string | undefined {
+        return undefined;
+    }
+    getExtensionPath(): string {
+        return "/tmp/ext";
+    }
     createSerialPortView(device: string, _cfg: any, _isNew: boolean, tcpPort: number) {
         this.createdViews.push({ device, tcpPort });
         const emitter = new EventEmitter();
         return {
             emitter,
-            setTcpPort() { },
-            setLogFile() { },
-            setInputMode() { },
-            notifyConnected() { },
-            notifyReconnected() { },
-            notifyDisconnected() { },
+            setTcpPort() {},
+            setLogFile() {},
+            setInputMode() {},
+            notifyConnected() {},
+            notifyReconnected() {},
+            notifyDisconnected() {},
         } as any;
     }
     showQuickPick(items: any[], _opts: any) {
@@ -114,7 +114,9 @@ class FakeProxy {
                 while (buf.length >= 5) {
                     const streamId = buf.readUInt8(0);
                     const len = buf.readUInt32LE(1);
-                    if (buf.length < 5 + len) { break; }
+                    if (buf.length < 5 + len) {
+                        break;
+                    }
                     const payload = buf.subarray(5, 5 + len);
                     buf = buf.subarray(5 + len);
                     if (streamId === 0) {
@@ -122,7 +124,7 @@ class FakeProxy {
                     }
                 }
             });
-            socket.on("error", () => { });
+            socket.on("error", () => {});
         });
     }
 
@@ -136,14 +138,18 @@ class FakeProxy {
     }
 
     close() {
-        for (const s of this.sockets) { s.destroy(); }
+        for (const s of this.sockets) {
+            s.destroy();
+        }
         this.server.close();
     }
 
     /** Push an unsolicited event (availableChanged / portError) to every client. */
     emitEvent(obj: any) {
         for (const s of this.sockets) {
-            if (!s.destroyed) { this.enqueue(s, frame(0, Buffer.from(JSON.stringify(obj)))); }
+            if (!s.destroyed) {
+                this.enqueue(s, frame(0, Buffer.from(JSON.stringify(obj))));
+            }
         }
     }
 
@@ -153,7 +159,10 @@ class FakeProxy {
 
     private enqueue(socket: net.Socket, fullFrame: Buffer) {
         let q = this.queues.get(socket);
-        if (!q) { q = { chunks: [], draining: false }; this.queues.set(socket, q); }
+        if (!q) {
+            q = { chunks: [], draining: false };
+            this.queues.set(socket, q);
+        }
         if (this.opts.splitWrites && fullFrame.length > 6) {
             q.chunks.push(fullFrame.subarray(0, 3), fullFrame.subarray(3));
         } else {
@@ -163,11 +172,16 @@ class FakeProxy {
     }
 
     private drain(socket: net.Socket, q: { chunks: Buffer[]; draining: boolean }) {
-        if (q.draining) { return; }
+        if (q.draining) {
+            return;
+        }
         q.draining = true;
         const step = () => {
             const chunk = q.chunks.shift();
-            if (!chunk || socket.destroyed) { q.draining = false; return; }
+            if (!chunk || socket.destroyed) {
+                q.draining = false;
+                return;
+            }
             socket.write(chunk);
             setTimeout(step, this.opts.splitWrites ? 3 : 0);
         };
@@ -216,7 +230,9 @@ class FakeProxy {
 async function waitFor(pred: () => boolean, ms = 2000): Promise<void> {
     const start = Date.now();
     while (!pred()) {
-        if (Date.now() - start > ms) { throw new Error("waitFor timed out"); }
+        if (Date.now() - start > ms) {
+            throw new Error("waitFor timed out");
+        }
         await new Promise((r) => setTimeout(r, 10));
     }
 }
@@ -252,7 +268,11 @@ test("two proxies coexist: no sibling teardown, composite keys, per-proxy transp
     const resolver: ProxyResolver = async (hc) => (hc?.ssh?.host ? sshCfg(fakeB.port, hc.ssh.host) : localCfg(fakeA.port));
 
     const mgr = new SerialPortManager(resolver);
-    t.after(() => { mgr.dispose(); fakeA.close(); fakeB.close(); });
+    t.after(() => {
+        mgr.dispose();
+        fakeA.close();
+        fakeB.close();
+    });
 
     // Open /dev/ttyACM0 on the local proxy, then the SAME path on the ssh proxy.
     await mgr.createSerialPorts(launchArgs(fakeA.port, localCfg(fakeA.port)));
@@ -284,7 +304,11 @@ test("available ports aggregate across connections, each tagged with its source"
 
     const resolver: ProxyResolver = async (hc) => (hc?.ssh?.host ? sshCfg(fakeB.port, hc.ssh.host) : localCfg(fakeA.port));
     const mgr = new SerialPortManager(resolver);
-    t.after(() => { mgr.dispose(); fakeA.close(); fakeB.close(); });
+    t.after(() => {
+        mgr.dispose();
+        fakeA.close();
+        fakeB.close();
+    });
 
     await mgr.createSerialPorts(launchArgs(fakeA.port, localCfg(fakeA.port)));
     await mgr.createSerialPorts(launchArgs(fakeB.port, sshCfg(fakeB.port)));
@@ -297,26 +321,36 @@ test("available ports aggregate across connections, each tagged with its source"
     const remote = all.filter((s) => s.label === "ssh:pi@lab");
     assert.equal(local.length, 1, "one port from local");
     assert.equal(remote.length, 2, "two ports from ssh remote");
-    assert.deepEqual(local.map((s) => s.port.path), ["/dev/ttyACM0"]);
+    assert.deepEqual(
+        local.map((s) => s.port.path),
+        ["/dev/ttyACM0"],
+    );
     assert.deepEqual(remote.map((s) => s.port.path).sort(), ["/dev/ttyACM0", "/dev/ttyUSB0"]);
 
     // The picker shows all three, tagged by source, with duplicate paths disambiguated.
     await mgr.listAvailablePortsCmd();
     assert.equal(stub.quickPickItems.length, 3, "picker aggregates all sources");
-    const acmDescriptions = stub.quickPickItems
-        .filter((i) => i.label === "/dev/ttyACM0")
-        .map((i) => i.description);
+    const acmDescriptions = stub.quickPickItems.filter((i) => i.label === "/dev/ttyACM0").map((i) => i.description);
     assert.equal(acmDescriptions.length, 2, "both ttyACM0s are shown");
-    assert.ok(acmDescriptions.some((d: string) => d.startsWith("local")), "one tagged local");
-    assert.ok(acmDescriptions.some((d: string) => d.startsWith("ssh:pi@lab")), "one tagged ssh");
+    assert.ok(
+        acmDescriptions.some((d: string) => d.startsWith("local")),
+        "one tagged local",
+    );
+    assert.ok(
+        acmDescriptions.some((d: string) => d.startsWith("ssh:pi@lab")),
+        "one tagged ssh",
+    );
 });
 
 test("control frames split across TCP writes are reassembled", async (t) => {
     const fake = new FakeProxy([avail("/dev/ttyACM0")], { splitWrites: true });
     await fake.listen();
 
-    const conn = new ProxyConnection("split", { onPortError() { } }, "local");
-    t.after(() => { conn.dispose(); fake.close(); });
+    const conn = new ProxyConnection("split", { onPortError() {} }, "local");
+    t.after(() => {
+        conn.dispose();
+        fake.close();
+    });
 
     const ok = await conn.connect(localCfg(fake.port));
     assert.equal(ok, true, "connect succeeds even though every reply is split mid-frame");
@@ -332,8 +366,11 @@ test("a control command that is never answered times out, names itself, and leak
     const fake = new FakeProxy([avail("/dev/ttyACM0")], { silent: ["serial.listOpen"] });
     await fake.listen();
 
-    const conn = new ProxyConnection("timeout", { onPortError() { } }, "local");
-    t.after(() => { conn.dispose(); fake.close(); });
+    const conn = new ProxyConnection("timeout", { onPortError() {} }, "local");
+    t.after(() => {
+        conn.dispose();
+        fake.close();
+    });
     assert.equal(await conn.connect(localCfg(fake.port)), true);
 
     const priv = conn as any;
@@ -357,8 +394,11 @@ test("an error reply is reported as the proxy's error, not as a timeout", async 
     const fake = new FakeProxy([avail("/dev/ttyACM0")], { errors: { "serial.listOpen": "device is busy" } });
     await fake.listen();
 
-    const conn = new ProxyConnection("errreply", { onPortError() { } }, "local");
-    t.after(() => { conn.dispose(); fake.close(); });
+    const conn = new ProxyConnection("errreply", { onPortError() {} }, "local");
+    t.after(() => {
+        conn.dispose();
+        fake.close();
+    });
     assert.equal(await conn.connect(localCfg(fake.port)), true);
 
     const priv = conn as any;
@@ -377,8 +417,11 @@ test("a successful command settles and removes its pending entry", async (t) => 
     const fake = new FakeProxy([avail("/dev/ttyACM0")]);
     await fake.listen();
 
-    const conn = new ProxyConnection("okreply", { onPortError() { } }, "local");
-    t.after(() => { conn.dispose(); fake.close(); });
+    const conn = new ProxyConnection("okreply", { onPortError() {} }, "local");
+    t.after(() => {
+        conn.dispose();
+        fake.close();
+    });
     assert.equal(await conn.connect(localCfg(fake.port)), true);
 
     const priv = conn as any;
@@ -391,10 +434,19 @@ test("portError is delegated with the originating connection", async (t) => {
     await fake.listen();
 
     const errors: Array<{ conn: ProxyConnection; path: string; kind: string; msg: string }> = [];
-    const conn = new ProxyConnection("errconn", {
-        onPortError(c, path, kind, msg) { errors.push({ conn: c, path, kind, msg }); },
-    }, "local");
-    t.after(() => { conn.dispose(); fake.close(); });
+    const conn = new ProxyConnection(
+        "errconn",
+        {
+            onPortError(c, path, kind, msg) {
+                errors.push({ conn: c, path, kind, msg });
+            },
+        },
+        "local",
+    );
+    t.after(() => {
+        conn.dispose();
+        fake.close();
+    });
 
     await conn.connect(localCfg(fake.port));
     fake.emitEvent({ event: "serial.portError", params: { path: "/dev/ttyACM0", kind: "disconnected", msg: "unplugged" } });
@@ -412,9 +464,14 @@ test("funnel stream-id space is per-connection (channel 100 on A ≠ channel 100
     await fakeA.listen();
     await fakeB.listen();
 
-    const connA = new ProxyConnection("A", { onPortError() { } }, "local");
-    const connB = new ProxyConnection("B", { onPortError() { } }, "ssh:host");
-    t.after(() => { connA.dispose(); connB.dispose(); fakeA.close(); fakeB.close(); });
+    const connA = new ProxyConnection("A", { onPortError() {} }, "local");
+    const connB = new ProxyConnection("B", { onPortError() {} }, "ssh:host");
+    t.after(() => {
+        connA.dispose();
+        connB.dispose();
+        fakeA.close();
+        fakeB.close();
+    });
 
     await connA.connect(sshCfg(fakeA.port));
     await connB.connect(sshCfg(fakeB.port));

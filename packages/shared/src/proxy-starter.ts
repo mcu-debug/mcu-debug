@@ -158,7 +158,7 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
  * that since we cannot use the vscode apis directly from the CLI, we can use the extension to do it for us.
  * This is useful when the client file system is not visible to the UI extension. The round trip can be slow,
  * but there is no other way to do it. The command is executed in the extension and the result is returned in a temporary file.
- * 
+ *
  * @param command a normal vscode command of the form "mcu-debug-proxy.*" that is implemented by the proxy server
  * @param logger an object with an error method for logging errors
  * @param args arguments to pass to the proxy server command
@@ -236,13 +236,13 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
         };
 
         const cmd = command.replace(prefix, "");
-        const nonce = (Math.random() + Math.random()).toString(36).substring(2, 15).padEnd(16, '0');
+        const nonce = (Math.random() + Math.random()).toString(36).substring(2, 15).padEnd(16, "0");
         const params: ProxyProvisionRequest = {
             v: 1,
             api: cmd,
             authority: createAuthority(),
             args: args_,
-            resultsFile: os.tmpdir() + `/mcu-debug-${nonce}.json`,      // nonce embedded in filename to avoid collisions
+            resultsFile: os.tmpdir() + `/mcu-debug-${nonce}.json`, // nonce embedded in filename to avoid collisions
         };
         const url = new URL(`vscode://mcu-debug.mcu-debug/provision`);
         // Serialize the whole request as ONE JSON param. Handing the typed object
@@ -250,7 +250,9 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
         // `v: 1` into "1" and, worse, the `args` array into "[object Object]".
         // JSON round-trips every field with its real type.
         url.search = new URLSearchParams({ req: JSON.stringify(params) }).toString();
-        try { fs.unlinkSync(params.resultsFile); } catch { }
+        try {
+            fs.unlinkSync(params.resultsFile);
+        } catch {}
 
         if (!useExternalUriMethod) {
             // --open-url does not work in WSL or Docker containers, so we spawn the VS Code CLI
@@ -294,8 +296,8 @@ export function proxyServerCommand<T>(command: string, logger: ProxyCommandLogge
         (async () => {
             while (!resolved) {
                 if (!fs.existsSync(params.resultsFile)) {
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    continue
+                    await new Promise((resolve) => setTimeout(resolve, 500));
+                    continue;
                 }
                 if (resolved) {
                     return;
@@ -334,13 +336,11 @@ export function createAuthority(): string {
     return `cli-proxy-${osType}-${user}-${host}`;
 }
 
-
 // Launch (or reuse) the singleton proxy and read its discovery line. `mdbg proxy`
 // self-daemonizes: the process we spawn is a short-lived foreground launcher that
 // re-spawns a detached daemon, forwards its discovery line to stdout, and exits.
 // The daemon (owner) survives on its own; we never own or manage it.
-export function startProxyServerWithPolicy(
-    proxyPolicy: ProxyLaunchPolicy, proxyPath: string, STARTUP_TIMEOUT_MS: number): Promise<ProxyLaunchResults> {
+export function startProxyServerWithPolicy(proxyPolicy: ProxyLaunchPolicy, proxyPath: string, STARTUP_TIMEOUT_MS: number): Promise<ProxyLaunchResults> {
     return new Promise<ProxyLaunchResults>((resolve, reject) => {
         const messages: string[] = [];
         const errors: string[] = [];

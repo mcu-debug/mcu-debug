@@ -1,7 +1,17 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { SeqDebugSession } from "./seq-debug-session";
 import { ErrorDestination, InitializedEvent, Logger, logger, OutputEvent, Variable, TerminatedEvent } from "@vscode/debugadapter";
-import { ConfigurationArguments, RTTCommonDecoderOpts, CustomStoppedEvent, GenericCustomEvent, SymbolFile, defSymbolFile, canonicalizePath, SWOConfigureEvent, PostInitializedEvent } from "./servers/common";
+import {
+    ConfigurationArguments,
+    RTTCommonDecoderOpts,
+    CustomStoppedEvent,
+    GenericCustomEvent,
+    SymbolFile,
+    defSymbolFile,
+    canonicalizePath,
+    SWOConfigureEvent,
+    PostInitializedEvent,
+} from "./servers/common";
 import os from "os";
 import fs from "fs";
 import path from "path";
@@ -145,10 +155,7 @@ export class GDBDebugSession extends SeqDebugSession {
     }
     public busyError(response: DebugProtocol.Response, reqOrArgs: any, noLog: boolean) {
         response.message = "notStopped";
-        this.handleErrResponse(
-            response, "Target is running. Request rejected: " + JSON.stringify(reqOrArgs),
-            { id: 2, format: response.message },
-            noLog);
+        this.handleErrResponse(response, "Target is running. Request rejected: " + JSON.stringify(reqOrArgs), { id: 2, format: response.message }, noLog);
     }
     protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
         response.body = response.body || {};
@@ -229,7 +236,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.suppressStoppedEvents = true;
             if (this.liveWatchMonitor.enabled()) {
                 await this.liveWatchMonitor.stop();
-                await new Promise((resolve) => setTimeout(resolve, 50)); // Just to ensure all pending events from the live watch monitor are processed before we stop the GDB instance   
+                await new Promise((resolve) => setTimeout(resolve, 50)); // Just to ensure all pending events from the live watch monitor are processed before we stop the GDB instance
             }
             if (this.gdbInstance) {
                 if (this.isRunning()) {
@@ -440,7 +447,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.handleErrResponse(response, `StepOut request failed: ${e}`);
             });
     }
-    protected stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments, request?: DebugProtocol.Request): void { }
+    protected stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments, request?: DebugProtocol.Request): void {}
     protected reverseContinueRequest(response: DebugProtocol.ReverseContinueResponse, args: DebugProtocol.ReverseContinueArguments, request?: DebugProtocol.Request): void {
         this.sendResponse(response);
     }
@@ -1373,7 +1380,7 @@ export class GDBDebugSession extends SeqDebugSession {
             // startServerPromise may reject while we're still awaiting startGdb() below (e.g. gdb-server exits
             // quickly). Attach a no-op handler immediately so Node.js doesn't fire unhandledRejection during that
             // window. The actual error is still caught by the try/catch around `await startServerPromise` below.
-            void startServerPromise.catch(() => { });
+            void startServerPromise.catch(() => {});
 
             // Question? Should we supress all running/stopped events until we are fully started? VSCode can
             // easily get confused if we send stopped/running events too early

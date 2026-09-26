@@ -1,18 +1,22 @@
-import colors from 'ansi-colors';
+import colors from "ansi-colors";
 export namespace AnsiHelpers {
-    const invalidKeys = ['enabled', 'visible', 'strip', 'supportsColor', 'hasColor', 'has256', 'has16m', 'unstyle', 'ok'];
-    const colorNames = Object.keys(colors).filter(key => typeof (colors as any)[key] === 'function' && !invalidKeys.includes(key));
-    export type ColorName = typeof colorNames[number];
+    const invalidKeys = ["enabled", "visible", "strip", "supportsColor", "hasColor", "has256", "has16m", "unstyle", "ok"];
+    const colorNames = Object.keys(colors).filter((key) => typeof (colors as any)[key] === "function" && !invalidKeys.includes(key));
+    export type ColorName = (typeof colorNames)[number];
     const colorMap: Record<string, (text: string) => string> = {};
     for (const color of colorNames) {
         colorMap[color] = (colors as any)[color];
     }
 
     export function colorize(text: string, colors: string): string {
-        for (const color of colors.split('.').map(c => c.trim())) {
+        for (const color of colors.split(".").map((c) => c.trim())) {
             const colorFunc = colorMap[color];
             if (colorFunc) {
-                try { text = colorFunc(text); } catch (err) {/* ignore errors from color functions */ }
+                try {
+                    text = colorFunc(text);
+                } catch (err) {
+                    /* ignore errors from color functions */
+                }
             }
         }
         return text;
@@ -70,15 +74,15 @@ export namespace AnsiHelpers {
      */
     export function stripTerminalControl(text: string): string {
         return text
-            .replace(csiRe, (seq) => (seq.endsWith('m') ? seq : ''))
-            .replace(oscRe, '')
-            .replace(charsetRe, '')
-            .replace(escPairRe, '');
+            .replace(csiRe, (seq) => (seq.endsWith("m") ? seq : ""))
+            .replace(oscRe, "")
+            .replace(charsetRe, "")
+            .replace(escPairRe, "");
     }
     export function hasAnsiCodes(text: string): boolean {
         return colors.ansiRegex.test(text);
     }
     export function reset(): string {
-        return colors.reset('');
+        return colors.reset("");
     }
 }

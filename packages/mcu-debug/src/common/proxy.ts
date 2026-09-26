@@ -18,7 +18,21 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { spawn } from "child_process";
-import { DefaultPortBase, SSH_BATCH_OPTS, computeProxyLaunchPolicy, ProxyHostType, ProxyLaunchPolicy, ProxyLaunchResults, ProxyNetworkMode, resolveProxyNetworkMode, startOrReuseProxyServerOnWslHost, startProxyServerWithPolicy, fmtBindErrors, formatThrown, generateNonce } from "@mcu-debug/shared";
+import {
+    DefaultPortBase,
+    SSH_BATCH_OPTS,
+    computeProxyLaunchPolicy,
+    ProxyHostType,
+    ProxyLaunchPolicy,
+    ProxyLaunchResults,
+    ProxyNetworkMode,
+    resolveProxyNetworkMode,
+    startOrReuseProxyServerOnWslHost,
+    startProxyServerWithPolicy,
+    fmtBindErrors,
+    formatThrown,
+    generateNonce,
+} from "@mcu-debug/shared";
 import { HostConfig, awaitWithTimeout, getAnyFreePort, getHelperExecutable } from "../adapter/servers/common";
 import { getHostAdapter } from "./host-adapter";
 import { pkgJsonVersion } from "../commit-hash";
@@ -241,10 +255,7 @@ interface RemoteProxyOutput {
  */
 function checkAgentVersion(agentVersion: string | undefined, where: string): void {
     if (!agentVersion) {
-        getHostAdapter().debugMessage(
-            `Proxy Agent on ${where} did not report a version — it predates that field. ` +
-            "Compatibility will be decided at initialize.",
-        );
+        getHostAdapter().debugMessage(`Proxy Agent on ${where} did not report a version — it predates that field. ` + "Compatibility will be decided at initialize.");
         return;
     }
     if (agentVersion === pkgJsonVersion) {
@@ -252,9 +263,9 @@ function checkAgentVersion(agentVersion: string | undefined, where: string): voi
     }
     throw new Error(
         `Proxy Agent version mismatch on ${where}: the agent is ${agentVersion}, this extension is ${pkgJsonVersion}. ` +
-        "They must match exactly — neither side accepts an older or newer peer. " +
-        `Replace the agent with the mdbg shipped inside the matching extension (see the "Getting the mdbg binary" ` +
-        "section of the SSH documentation).",
+            "They must match exactly — neither side accepts an older or newer peer. " +
+            `Replace the agent with the mdbg shipped inside the matching extension (see the "Getting the mdbg binary" ` +
+            "section of the SSH documentation).",
     );
 }
 // Starts the proxy server on the remote host via SSH by running the deployed helper binary with appropriate arguments.
@@ -492,7 +503,9 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     if (!sshPort) {
         // Clear any existing token if port is not defined, to avoid confusion with stale tunnels. If we are going to be starting a
         // tunnel, any existing token would be invalid anyway, so better to require a clean slate.
-        if (hostConfig.ssh) { hostConfig.ssh.token = undefined; }
+        if (hostConfig.ssh) {
+            hostConfig.ssh.token = undefined;
+        }
     }
     const fingerprint = sshCacheFingerprint(hostConfig);
     if (sshTunnelProcess) {
@@ -643,7 +656,6 @@ async function startSshTunnel(hostConfig: HostConfig): Promise<void> {
     });
 }
 
-
 // Resolved hostConfigs cached per proxy request, keyed by the fields that
 // determine WHICH proxy a request resolves to (type, ssh host/port/token,
 // proxy override, remote name). This replaces the single `currentHostConfig`
@@ -690,7 +702,7 @@ export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy):
             const bindErrors = fmtBindErrors(result);
             if (bindErrors && bindErrors.length > 0) {
                 getHostAdapter().showError(`Proxy server reported bind errors: ${bindErrors.join("\t\n")}`);
-                return null
+                return null;
             }
             return result;
         } catch (error) {
@@ -704,7 +716,7 @@ export async function launchProxyServerFromExtension(policy: ProxyLaunchPolicy):
         const bindErrors = fmtBindErrors(value);
         if (bindErrors && bindErrors.length > 0) {
             getHostAdapter().showError(`Proxy server reported bind errors: ${bindErrors.join("\t\n")}`);
-            return null
+            return null;
         }
         return value;
     } catch (error) {
@@ -721,22 +733,23 @@ function resolveNetworkMode(hostConfig: HostConfig): ProxyNetworkMode | undefine
     return resolveProxyNetworkMode(hostType, getHostAdapter().getRemoteName());
 }
 
-
 async function handleLocalHostConfig(hostConfig: HostConfig): Promise<void> {
     const promise = new Promise<void>((resolve, reject) => {
         // We need to spawn the proxy server on the local machine, but the DA will connect to it via the loopback interface,
         // so no network setup is needed. We can set the mode and return immediately.
         const helperPath = getHelperExecutable(getHostAdapter().getExtensionPath());
         const policy = computeProxyLaunchPolicy("local");
-        startProxyServerWithPolicy(policy, helperPath, 10000).then((launchResults) => {
-            hostConfig.pvtNetworkMode = "local";
-            hostConfig.pvtProxyHost = "127.0.0.1";
-            hostConfig.pvtProxyPort = launchResults.serverPort!;
-            hostConfig.pvtProxyToken = launchResults.token;
-            resolve();
-        }).catch((err) => {
-            reject(err);
-        });
+        startProxyServerWithPolicy(policy, helperPath, 10000)
+            .then((launchResults) => {
+                hostConfig.pvtNetworkMode = "local";
+                hostConfig.pvtProxyHost = "127.0.0.1";
+                hostConfig.pvtProxyPort = launchResults.serverPort!;
+                hostConfig.pvtProxyToken = launchResults.token;
+                resolve();
+            })
+            .catch((err) => {
+                reject(err);
+            });
     });
     return promise;
 }
@@ -792,9 +805,9 @@ export function resolveProxyOverride(
     if (missing.length > 0) {
         throw new Error(
             `hostConfig.proxy is incomplete: missing ${missing.join(", ")}. ` +
-            "All of host, port and token are required — they describe a Probe Agent you started yourself, " +
-            "so there is nothing to fall back on. Run `mcu-debug proxy --status` on the machine with the probe " +
-            "to read its port and its bound addresses.",
+                "All of host, port and token are required — they describe a Probe Agent you started yourself, " +
+                "so there is nothing to fall back on. Run `mcu-debug proxy --status` on the machine with the probe " +
+                "to read its port and its bound addresses.",
         );
     }
     return { host: host as string, port: port as number, token: token as string };
@@ -803,7 +816,7 @@ export function resolveProxyOverride(
 /**
  * Apply `hostConfig.proxy` to the `pvtProxy*` fields, short-circuiting all detection.
  * Returns false when no override is configured.
- * 
+ *
  * Prints error message besides throwing if the override is present but invalid, so the caller doesn't have to worry about it.
  */
 function applyProxyOverride(hostConfig: HostConfig): boolean {
@@ -846,7 +859,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
         }
         const resolvedMode = resolveNetworkMode(hostConfig);
         if (resolvedMode === "auto-local") {
-            // There is no remote name and no ssh was specified. So, nothing for us to do, run it as if it were 
+            // There is no remote name and no ssh was specified. So, nothing for us to do, run it as if it were
             // totall local.
             hostConfig.enabled = false;
             delConfig();
@@ -983,8 +996,8 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                 if (!reachable) {
                     const choice = await getHostAdapter().showErrorWithChoice(
                         `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${current.serverPort}. ` +
-                        "A Windows Security Alert may have appeared — switch to Windows, click \"Allow access\", " +
-                        "then click Retry.",
+                            'A Windows Security Alert may have appeared — switch to Windows, click "Allow access", ' +
+                            "then click Retry.",
                         true,
                         "Retry",
                     );
@@ -1006,9 +1019,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             hostConfig.pvtProxyPort = current.serverPort as number;
             hostConfig.pvtProxyToken = current.token as string;
         } else {
-            getHostAdapter().showWarning(
-                `Unknown hostConfig.type "${hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`,
-            );
+            getHostAdapter().showWarning(`Unknown hostConfig.type "${hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`);
             delConfig;
         }
     } else {
@@ -1052,9 +1063,7 @@ export async function getProxyForSerialPorts(hostConfig: HostConfig | undefined)
         if (await probeProxyAlive(cached.pvtProxyHost || "127.0.0.1", cached.pvtProxyPort as number)) {
             return cached;
         }
-        getHostAdapter().debugMessage(
-            `Cached proxy ${cached.pvtProxyHost}:${cached.pvtProxyPort} no longer answers — discarding and re-resolving.`,
-        );
+        getHostAdapter().debugMessage(`Cached proxy ${cached.pvtProxyHost}:${cached.pvtProxyPort} no longer answers — discarding and re-resolving.`);
         resolvedHostConfigs.delete(key);
     }
     // Start from a clean slate. handleHostConfig and startSshTunnel both read pvtProxyPort
@@ -1065,7 +1074,7 @@ export async function getProxyForSerialPorts(hostConfig: HostConfig | undefined)
     try {
         // handleHostConfig resolves the proxy (reusing an already-running tunnel
         // / proxy where it can) and mutates hostConfig in place with pvtProxy*.
-        await handleHostConfig(hostConfig, () => { });
+        await handleHostConfig(hostConfig, () => {});
     } catch (error) {
         return null;
     }

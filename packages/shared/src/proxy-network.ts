@@ -291,7 +291,7 @@ export function getWslGatewayIp(): string | null {
 export function openRemoteUri(targetUri: string) {
     // const isWsl = process.platform === 'linux' && fs.readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft');
     const isWsl = !!process.env.WSL_DISTRO_NAME;
-    const isDocker = fs.existsSync('/.dockerenv');
+    const isDocker = fs.existsSync("/.dockerenv");
 
     // 1. Handle WSL (Direct host interop via cmd.exe)
     if (isWsl) {
@@ -311,9 +311,9 @@ export function openRemoteUri(targetUri: string) {
     }
     // 3. Handle Native Environments (Non-remote Mac/Windows/Linux)
     else {
-        if (process.platform === 'win32') {
+        if (process.platform === "win32") {
             exec(`start "" "${targetUri}"`);
-        } else if (process.platform === 'darwin') {
+        } else if (process.platform === "darwin") {
             exec(`open "${targetUri}"`);
         } else {
             exec(`xdg-open "${targetUri}"`);

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import find from 'find-process';
+import find from "find-process";
 import { ConfigurationArguments, RTTConsoleDecoderOpts } from "../adapter/servers/common";
 import { CLISessionType, IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
 import { CustomTransport, logger } from "../common/logger";
@@ -81,16 +81,21 @@ export class CliSessionDriver {
     private socketPath: string | null = null;
     private rtts: CLIRTTTerminal[] = [];
 
-    constructor(private cliArgs: any, private customTransport: CustomTransport, private adapter: IHostAdapter, private config: ConfigurationArguments) {
+    constructor(
+        private cliArgs: any,
+        private customTransport: CustomTransport,
+        private adapter: IHostAdapter,
+        private config: ConfigurationArguments,
+    ) {
         // Initialize session driver
-        this.gdbLogger = logger.child({ source: 'GDB', isConsole: true });
-        this.stdoutLogger = logger.child({ source: 'DA', isConsole: true });
-        this.stderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
-        this.mcuStderrLogger = logger.child({ source: 'DA', color: 'red', isConsole: true });
-        this.mcuStdoutLogger = logger.child({ source: 'DA', color: 'yellow', isConsole: true });
-        this.gdbMiLogger = logger.child({ source: 'GDB-MI', isConsole: true, color: 'blue.dim' });
-        this.gdbServerLogger = logger.child({ source: 'GDB-SERVER', isConsole: true, color: 'cyan' });
-        this.optionalInfo = logger.child({ source: 'DA', skipConsole: cliArgs.debug ? false : true });
+        this.gdbLogger = logger.child({ source: "GDB", isConsole: true });
+        this.stdoutLogger = logger.child({ source: "DA", isConsole: true });
+        this.stderrLogger = logger.child({ source: "DA", color: "red", isConsole: true });
+        this.mcuStderrLogger = logger.child({ source: "DA", color: "red", isConsole: true });
+        this.mcuStdoutLogger = logger.child({ source: "DA", color: "yellow", isConsole: true });
+        this.gdbMiLogger = logger.child({ source: "GDB-MI", isConsole: true, color: "blue.dim" });
+        this.gdbServerLogger = logger.child({ source: "GDB-SERVER", isConsole: true, color: "cyan" });
+        this.optionalInfo = logger.child({ source: "DA", skipConsole: cliArgs.debug ? false : true });
         config.pvtIsCli = true; // inform the DA that we are running in CLI mode
         config.pvtCliOptions = { ...cliArgs }; // pass along CLI options to the DA via the config
         this.notesManager = new NotesManager(this.customTransport.timeCreated);
@@ -98,7 +103,7 @@ export class CliSessionDriver {
         // This is already routed to the CLI, no need to also route it terminal again
         this.config.routeGdbServerOutputToDebugConsole = false;
 
-        process.on('exit', () => {
+        process.on("exit", () => {
             this.dispose();
         });
 
@@ -115,7 +120,7 @@ export class CliSessionDriver {
             type: "mcu-debug",
             name: this.config.name,
             configuration: this.config,
-            customRequest: async (command: string, args?: any) => { }
+            customRequest: async (command: string, args?: any) => {},
         };
         this.debugSession = CDebugSession.GetSession(dbgSession, this.config);
     }
@@ -132,7 +137,7 @@ export class CliSessionDriver {
             return;
         }
         this.status = state;
-        const infoMsg = `status: ${state}` + (reason ? `: Reason — ${reason}` : '');
+        const infoMsg = `status: ${state}` + (reason ? `: Reason — ${reason}` : "");
         if (!this.isTTY) {
             process.stderr.write(infoMsg + os.EOL);
         }
@@ -140,7 +145,7 @@ export class CliSessionDriver {
         // JSON stream) never have to regex `infoMsg`. Only isConsole/color/skipConsole are
         // stripped before format.json(), so these survive as top-level fields on the log line.
         // `infoMsg` stays as-is for humans reading stderr/TUI — do not make it the contract.
-        logger.info(infoMsg, { source: 'DA', status: state, reason: reason ?? '', skipConsole: true });
+        logger.info(infoMsg, { source: "DA", status: state, reason: reason ?? "", skipConsole: true });
     }
 
     async startSession(cliArgs: any) {
@@ -148,10 +153,10 @@ export class CliSessionDriver {
         // Refuse now, before the gdb-server is launched and has to be torn down again.
         if (!this.restarting && !this.stdinIsPilot && !this.cliArgs.waitForClient) {
             const msg =
-                'stdin is closed and no client can connect, so nothing would be able to control this session.\n' +
-                'Use --wait-for-client (and --nostdin if you are backgrounding this process) to drive it over the socket.';
+                "stdin is closed and no client can connect, so nothing would be able to control this session.\n" +
+                "Use --wait-for-client (and --nostdin if you are backgrounding this process) to drive it over the socket.";
             process.stderr.write(msg + os.EOL);
-            logger.error(msg.replace(/\n/g, ' '), { source: 'DA' });
+            logger.error(msg.replace(/\n/g, " "), { source: "DA" });
             process.exit(1);
         }
 
@@ -173,10 +178,10 @@ export class CliSessionDriver {
             this.stderrLogger.error("Failed to start socket reader: " + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
         }
-        if (this.config.servertype !== 'external') {
+        if (this.config.servertype !== "external") {
             try {
                 await this.startGDBServerConsole("Starting GDB Server console...");
-            } catch (error) { }
+            } catch (error) {}
         }
 
         this.setupBreakpointsFile(this.getBreakpointsFileName());
@@ -208,38 +213,42 @@ export class CliSessionDriver {
          * setBreakpoints / setFunctionBreakpoints / setExceptionBreakpoints are no-ops
          * for the CLI and can be skipped.
          */
-        this.doInitializeRequest().then(() => {
-            logger.debug("Initialization complete. Sending launch request...");
-            this.config.request = this.config.request === 'attach' ? 'attach' : 'launch'; // guard against invalid request types
-            return this.sendRequest<DebugProtocol.LaunchResponse | DebugProtocol.AttachResponse>({
-                seq: 0,          // overwritten by sendRequest
-                type: 'request', // overwritten by sendRequest
-                command: this.config.request,
-                arguments: {
-                    noDebug: cliArgs.noDebug,
-                    ...this.config,
-                } satisfies DebugProtocol.LaunchRequestArguments,
+        this.doInitializeRequest()
+            .then(() => {
+                logger.debug("Initialization complete. Sending launch request...");
+                this.config.request = this.config.request === "attach" ? "attach" : "launch"; // guard against invalid request types
+                return this.sendRequest<DebugProtocol.LaunchResponse | DebugProtocol.AttachResponse>({
+                    seq: 0, // overwritten by sendRequest
+                    type: "request", // overwritten by sendRequest
+                    command: this.config.request,
+                    arguments: {
+                        noDebug: cliArgs.noDebug,
+                        ...this.config,
+                    } satisfies DebugProtocol.LaunchRequestArguments,
+                });
+            })
+            .then((launchResponse: DebugProtocol.LaunchResponse | DebugProtocol.AttachResponse) => {
+                if (!launchResponse.success) {
+                    throw new Error(`Launch failed: ${launchResponse.message}`);
+                }
+                logger.debug("Launch successful. Sending configurationDone...");
+                return this.sendRequest<DebugProtocol.ConfigurationDoneResponse>({
+                    seq: 0, // overwritten by sendRequest
+                    type: "request", // overwritten by sendRequest
+                    command: "configurationDone",
+                });
+            })
+            .then((configDoneResponse: DebugProtocol.ConfigurationDoneResponse) => {
+                if (!configDoneResponse.success) {
+                    throw new Error(`configurationDone failed: ${configDoneResponse.message}`);
+                }
+                logger.debug("Debug session started successfully.");
+                this.runScript(cliArgs.script);
+            })
+            .catch((error: Error | unknown) => {
+                logger.error("Failed to start debug session: " + (error instanceof Error ? error.message : String(error)));
+                process.exit(1);
             });
-        }).then((launchResponse: DebugProtocol.LaunchResponse | DebugProtocol.AttachResponse) => {
-            if (!launchResponse.success) {
-                throw new Error(`Launch failed: ${launchResponse.message}`);
-            }
-            logger.debug("Launch successful. Sending configurationDone...");
-            return this.sendRequest<DebugProtocol.ConfigurationDoneResponse>({
-                seq: 0,          // overwritten by sendRequest
-                type: 'request', // overwritten by sendRequest
-                command: 'configurationDone',
-            });
-        }).then((configDoneResponse: DebugProtocol.ConfigurationDoneResponse) => {
-            if (!configDoneResponse.success) {
-                throw new Error(`configurationDone failed: ${configDoneResponse.message}`);
-            }
-            logger.debug("Debug session started successfully.");
-            this.runScript(cliArgs.script);
-        }).catch((error: Error | unknown) => {
-            logger.error("Failed to start debug session: " + (error instanceof Error ? error.message : String(error)));
-            process.exit(1);
-        });
     }
 
     private async runScript(script?: string) {
@@ -249,7 +258,7 @@ export class CliSessionDriver {
         // Implement the logic to run the GDB script here
         let scriptContent = "";
         try {
-            scriptContent = fs.readFileSync(script, 'utf-8');
+            scriptContent = fs.readFileSync(script, "utf-8");
             // Execute the GDB script content here
         } catch (error) {
             logger.error("Failed to run script: " + (error instanceof Error ? error.message : String(error)));
@@ -276,14 +285,18 @@ export class CliSessionDriver {
         return new Promise<void>(async (resolve, reject) => {
             const port = await this.adapter.getGdbServerConsolePort();
             const server = net.createServer((socket) => {
-                const prefix = this.config?.servertype ?? 'gdb-server';
-                const splitter = new LineSplitter((line: string, prefix: string, partial: boolean) => {
-                    this.gdbServerLogger.info(`[${prefix}] ${line}`);
-                }, prefix, 500);
-                socket.on('data', (data) => {
+                const prefix = this.config?.servertype ?? "gdb-server";
+                const splitter = new LineSplitter(
+                    (line: string, prefix: string, partial: boolean) => {
+                        this.gdbServerLogger.info(`[${prefix}] ${line}`);
+                    },
+                    prefix,
+                    500,
+                );
+                socket.on("data", (data) => {
                     splitter.write(data.toString());
                 });
-                socket.on('end', () => {
+                socket.on("end", () => {
                     splitter.end();
                 });
             });
@@ -294,7 +307,7 @@ export class CliSessionDriver {
                 this.serverConsole = server;
                 resolve();
             });
-            server.on('error', (err) => {
+            server.on("error", (err) => {
                 this.mcuStderrLogger.error(`GDB Server console error: ${err.message}`);
                 reject(err);
             });
@@ -322,13 +335,13 @@ export class CliSessionDriver {
             input: process.stdin,
             output: process.stdout,
             terminal: !!process.stdin.isTTY,
-            prompt: 'gdb> ',
+            prompt: "gdb> ",
             historySize: 1000,
             history: this.history || [],
         });
 
         // Single line handler — dispatches based on current session state.
-        this.rl.on('line', (input: string) => {
+        this.rl.on("line", (input: string) => {
             if (!input.trim()) {
                 if (this.isPaused) this.rl?.prompt();
                 return;
@@ -340,21 +353,21 @@ export class CliSessionDriver {
             }
         });
 
-        this.rl.on('history', (history) => {
+        this.rl.on("history", (history) => {
             this.history = history;
         });
 
         // Single SIGINT handler — behaviour depends on current session state.
-        this.rl.on('SIGINT', () => {
+        this.rl.on("SIGINT", () => {
             if (this.isPaused) {
                 logger.info('SIGINT ignored while paused. Type "continue" to resume or "exit" to terminate the session.');
             } else {
-                logger.info('SIGINT received, sending interrupt to debug session...');
+                logger.info("SIGINT received, sending interrupt to debug session...");
                 this.doInterrupt();
             }
         });
 
-        this.rl.on('close', () => {
+        this.rl.on("close", () => {
             // We only ever open a reader when stdin is the pilot, so its EOF ends the session --
             // even if an AI is attached over the socket. The AI is the copilot; it does not
             // inherit the controls when the human walks away. A deliberate handoff is expressed
@@ -379,15 +392,17 @@ export class CliSessionDriver {
      * so the feature degrades gracefully if Node ever removes the private method.
      */
     private refreshLine(): void {
-        if (!this.rl) { return; }
-        if (typeof (this.rl as any)._refreshLine === 'function') {
+        if (!this.rl) {
+            return;
+        }
+        if (typeof (this.rl as any)._refreshLine === "function") {
             (this.rl as any)._refreshLine();
         } else {
             // Public-API fallback: replicate what _refreshLine does.
             // This does not handle multi-line prompts or inputs or escape sequences, but it's better than
             // leaving the prompt blank with no input after every async log.
             const prompt: string = this.rl.getPrompt();
-            const line: string = this.rl.line ?? '';
+            const line: string = this.rl.line ?? "";
             const cursor: number = this.rl.cursor ?? 0;
             readline.clearLine(process.stdout, 0);
             readline.cursorTo(process.stdout, 0);
@@ -426,12 +441,12 @@ export class CliSessionDriver {
         if (!st.isCharacterDevice()) {
             return false; // FIFO or regular file: real stdin, never probe it.
         }
-        if (process.platform !== 'win32') {
+        if (process.platform !== "win32") {
             // Compare device ids rather than reading. /dev/zero and /dev/urandom are also non-TTY
             // character devices, and a read would consume a byte from them; /dev/null has a
             // distinct rdev, so this answers the question without touching the stream at all.
             try {
-                return st.rdev === fs.statSync('/dev/null').rdev;
+                return st.rdev === fs.statSync("/dev/null").rdev;
             } catch (e) {
                 // Fall through to the read below.
             }
@@ -483,7 +498,7 @@ export class CliSessionDriver {
         if (!this.isTTY) {
             return; // TUI / VS Code panel — no prompt, no redraw needed
         }
-        this.rl!.setPrompt(paused ? 'gdb> ' : '');
+        this.rl!.setPrompt(paused ? "gdb> " : "");
         if (paused) {
             // Redraws prompt + any partial input already in the buffer.
             this.rl!.prompt(true);
@@ -549,15 +564,15 @@ export class CliSessionDriver {
         if (!trimmedInput) {
             return Promise.resolve();
         }
-        const src = isTerminal ? 'user-input' : 'socket-input';
+        const src = isTerminal ? "user-input" : "socket-input";
         logger.info(input, { source: src, skipConsole: true }); // log user input, but not to console to avoid confusion with DA output
         // Handle user input and send it to the debug session
-        const continueCommands = ['continue', 'c', 'cont', 'run'];
+        const continueCommands = ["continue", "c", "cont", "run"];
         if (continueCommands.includes(trimmedInput.toLowerCase())) {
             this.sendRequest<DebugProtocol.ContinueResponse>({
-                seq: 0,          // overwritten by sendRequest
-                type: 'request', // overwritten by sendRequest
-                command: 'continue',
+                seq: 0, // overwritten by sendRequest
+                type: "request", // overwritten by sendRequest
+                command: "continue",
                 arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
             }).then((response) => {
                 if (!response.success) {
@@ -570,22 +585,24 @@ export class CliSessionDriver {
             return Promise.resolve();
         } else {
             // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest"
-            this.doReplCommand(trimmedInput).then((response) => {
-                if (!response.success) {
-                    logger.warn(`Evaluate request failed: ${response.message}`);
-                }
-            }).finally(() => {
-                if (isTerminal) {
-                    setTimeout(() => {
-                        // Only re-prompt if still paused — a continued/stopped event
-                        // may have changed state while the command was in-flight.
-                        if (this.isPaused) {
-                            this.rl?.prompt();
-                        }
-                    }, 250);
-                }
-                return Promise.resolve();
-            });
+            this.doReplCommand(trimmedInput)
+                .then((response) => {
+                    if (!response.success) {
+                        logger.warn(`Evaluate request failed: ${response.message}`);
+                    }
+                })
+                .finally(() => {
+                    if (isTerminal) {
+                        setTimeout(() => {
+                            // Only re-prompt if still paused — a continued/stopped event
+                            // may have changed state while the command was in-flight.
+                            if (this.isPaused) {
+                                this.rl?.prompt();
+                            }
+                        }, 250);
+                    }
+                    return Promise.resolve();
+                });
         }
         return Promise.resolve();
     }
@@ -606,47 +623,48 @@ export class CliSessionDriver {
         // cannot turn a command into an error; a genuine misspelling falls through to
         // unknowMetaCommand() below and is reported rather than acted on.
         const lower = trimmedInput.toLowerCase();
-        if (lower === 'pause' || lower === '!!sigint') {
+        if (lower === "pause" || lower === "!!sigint") {
             this.doInterrupt();
             return true;
-        } if (lower === 'reset' || lower === '!!reset') {
+        }
+        if (lower === "reset" || lower === "!!reset") {
             this.sendRequest<DebugProtocol.RestartResponse>({
-                seq: 0,          // overwritten by sendRequest
-                type: 'request', // overwritten by sendRequest
-                command: 'reset-device',
+                seq: 0, // overwritten by sendRequest
+                type: "request", // overwritten by sendRequest
+                command: "reset-device",
             }).then((response) => {
                 if (!response.success) {
                     logger.warn(`Reset request failed: ${response.message}`);
                 }
             });
             return true;
-        } else if (lower === 'status' || lower === '!!status') {
+        } else if (lower === "status" || lower === "!!status") {
             this.doStatus();
             return true;
-        } else if (lower === 'restart' || lower === '!!restart') {
+        } else if (lower === "restart" || lower === "!!restart") {
             this.doRestart(isTerminal);
             return true;
-        } else if (lower === 'exit') {
+        } else if (lower === "exit") {
             this.doExit(isTerminal);
             return true;
-        } else if (lower.startsWith('!!ai-request-clear')) {
+        } else if (lower.startsWith("!!ai-request-clear")) {
             // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
             // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
             // to the UI to clear/display something
-            logger.info('!!AI-REQUEST-CLEAR', { isConsole: true, source: 'AI' });
+            logger.info("!!AI-REQUEST-CLEAR", { isConsole: true, source: "AI" });
             return true;
-        } else if (lower.startsWith('!!ai-request:')) {
+        } else if (lower.startsWith("!!ai-request:")) {
             // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
             // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
             // to the UI to clear/display something
             // Re-emit the canonical spelling rather than what was typed: the TUI matches this
             // prefix exactly (cockpit/tui.rs), so a lower-case variant would pass through here
             // and then fail to be intercepted downstream.
-            logger.info(`!!AI-REQUEST:${trimmedInput.substring('!!AI-REQUEST:'.length)}`, { isConsole: true, source: 'AI' });
+            logger.info(`!!AI-REQUEST:${trimmedInput.substring("!!AI-REQUEST:".length)}`, { isConsole: true, source: "AI" });
             return true;
-        } else if (lower.startsWith('!!note:')) {
+        } else if (lower.startsWith("!!note:")) {
             // This is a command from the DA to the CLI to update the notes. The payload is in the format of !!NOTE:{"doc":[{...json-patch...}]}
-            const jsonStr = trimmedInput.substring('!!NOTE:'.length);
+            const jsonStr = trimmedInput.substring("!!NOTE:".length);
             this.handleNotes(jsonStr);
             return true;
         } else if (/^!!send(\s|$)/i.test(trimmedInput)) {
@@ -655,7 +673,7 @@ export class CliSessionDriver {
             // with `!!` to the AI -- so a tab silently turned a target write into a chat message.
             // Take the arguments from the raw line: trimStart() drops indentation before the
             // command, but anything after it -- trailing spaces included -- is the target's data.
-            this.doSendToStream(rawInput.trimStart().substring('!!send'.length).replace(/^\s/, ''));
+            this.doSendToStream(rawInput.trimStart().substring("!!send".length).replace(/^\s/, ""));
             return true;
         } else if (isTerminal && /^!!ai(\s|$)/i.test(trimmedInput)) {
             // A free-text message to whatever client is attached. This used to be the catch-all for
@@ -667,15 +685,15 @@ export class CliSessionDriver {
             // never has to strip our wording out of it, and the DA line is the human's
             // confirmation. Socket clients are registered as transport streams, so the first one
             // reaches them as JSON without anything further being written by hand.
-            const request = trimmedInput.substring('!!ai'.length).trim();
+            const request = trimmedInput.substring("!!ai".length).trim();
             if (!request) {
-                this.stdoutLogger.warn('Usage: !!ai <text> — sends the text to any connected AI');
+                this.stdoutLogger.warn("Usage: !!ai <text> — sends the text to any connected AI");
                 return true;
             }
-            logger.info(request, { skipConsole: true, source: 'USER-REQUEST' });
+            logger.info(request, { skipConsole: true, source: "USER-REQUEST" });
             this.stdoutLogger.info(`Sent to any connected AI: ${request}`);
             return true;
-        } else if (lower.startsWith('!!')) {
+        } else if (lower.startsWith("!!")) {
             // An unrecognised meta-command from a socket client. This is the agent's only signal
             // that it got the spelling wrong, so it is reported rather than dropped.
             this.unknowMetaCommand(trimmedInput);
@@ -702,13 +720,13 @@ export class CliSessionDriver {
 
     private async doReplCommand(command: string) {
         return this.sendRequest<DebugProtocol.EvaluateResponse>({
-            seq: 0,          // overwritten by sendRequest
-            type: 'request',
-            command: 'evaluate',
+            seq: 0, // overwritten by sendRequest
+            type: "request",
+            command: "evaluate",
             arguments: {
                 expression: command,
-                context: 'repl',
-            }
+                context: "repl",
+            },
         });
     }
 
@@ -724,7 +742,7 @@ export class CliSessionDriver {
     private savedPostStartCommands: string[] | undefined;
     private savedPreStartCommands: string[] | undefined;
     private setupBreakpointsFile(file: string) {
-        if ((!fs.existsSync(file) || fs.statSync(file).size === 0)) {
+        if (!fs.existsSync(file) || fs.statSync(file).size === 0) {
             return;
         }
         if (this.config.runToEntryPoint) {
@@ -734,9 +752,9 @@ export class CliSessionDriver {
             this.config.postStartSessionCommands = [...existingCommands, `source ${file}`];
         } else {
             // No runToEntryPoint, set breakpoints at the beginning of the session
-            this.savedPreStartCommands = this.config.request === 'attach' ? this.config.preAttachCommands : this.config.preLaunchCommands;
+            this.savedPreStartCommands = this.config.request === "attach" ? this.config.preAttachCommands : this.config.preLaunchCommands;
             const existingCommands = this.savedPreStartCommands || [];
-            if (this.config.request === 'attach') {
+            if (this.config.request === "attach") {
                 this.config.preAttachCommands = [...existingCommands, `source ${file}`];
             } else {
                 this.config.preLaunchCommands = [...existingCommands, `source ${file}`];
@@ -750,7 +768,7 @@ export class CliSessionDriver {
             this.savedPostStartCommands = undefined;
         }
         if (this.savedPreStartCommands) {
-            if (this.config.request === 'attach') {
+            if (this.config.request === "attach") {
                 this.config.preAttachCommands = this.savedPreStartCommands;
             } else {
                 this.config.preLaunchCommands = this.savedPreStartCommands;
@@ -763,7 +781,7 @@ export class CliSessionDriver {
         if (this.cliArgs.breakpointsFile) {
             return this.cliArgs.breakpointsFile;
         }
-        const configNameSafe = this.config.name.replace(/[^a-zA-Z0-9-_]/g, '_');
+        const configNameSafe = this.config.name.replace(/[^a-zA-Z0-9-_]/g, "_");
         return `${process.cwd()}/.mcu-debug/${configNameSafe}.bkpts`;
     }
 
@@ -775,7 +793,9 @@ export class CliSessionDriver {
         const bkptFile = this.getBreakpointsFileName();
         await this.doReplCommand(`save breakpoints ${bkptFile}`);
         for (const rtt of this.rtts) {
-            try { rtt.dispose(); } catch (e) { }
+            try {
+                rtt.dispose();
+            } catch (e) {}
         }
         // We don't close the uarts, logfile or socket server because they are shared across sessions are not
         // part of the DA. Actually not doing so provides continuity across the restart and also avoids potential
@@ -788,21 +808,23 @@ export class CliSessionDriver {
         // approximate what a VSCode like client would do for a restart.
         try {
             await this.sendRequest<DebugProtocol.TerminateResponse>({
-                seq: 0,          // overwritten by sendRequest
-                type: 'request', // overwritten by sendRequest
-                command: 'restart'
+                seq: 0, // overwritten by sendRequest
+                type: "request", // overwritten by sendRequest
+                command: "restart",
             });
         } catch (error) {
             logger.error("Failed to restart session. Terminate failed: " + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
         }
         this.removeCDebugSession();
-        this.startSession(this.cliArgs).then(() => {
-            this.undoSetupBreakpointsFile();
-            this.restarting = false;
-        }).catch((error) => {
-            throw error;
-        });
+        this.startSession(this.cliArgs)
+            .then(() => {
+                this.undoSetupBreakpointsFile();
+                this.restarting = false;
+            })
+            .catch((error) => {
+                throw error;
+            });
     }
 
     /**
@@ -839,7 +861,7 @@ export class CliSessionDriver {
                 prefix: p.getPrefix(),
                 // onUserInput() appends the terminator itself; the RTT path above adds its own.
                 write: (text: string) => {
-                    if (p.getStatus() !== 'connected') {
+                    if (p.getStatus() !== "connected") {
                         return false;
                     }
                     p.onUserInput(text);
@@ -849,7 +871,7 @@ export class CliSessionDriver {
         ];
         const names = () => sinks.map((s) => s.prefix);
         const fail = (msg: string, error: string, extra: object = {}) => {
-            logger.error(`!!send: ${msg}`, { source: 'DA', isConsole: true, command: 'send', error, ...extra });
+            logger.error(`!!send: ${msg}`, { source: "DA", isConsole: true, command: "send", error, ...extra });
         };
 
         // Look for the address past any extra spacing: `!!send   [port]` means the port, not the
@@ -858,42 +880,42 @@ export class CliSessionDriver {
         const addressPart = args.trimStart();
         let addressed: string | undefined;
         let text: string;
-        if (addressPart.startsWith('[')) {
-            const end = addressPart.indexOf(']');
+        if (addressPart.startsWith("[")) {
+            const end = addressPart.indexOf("]");
             if (end < 0) {
-                fail(`unterminated stream name in '${addressPart}'`, 'bad-prefix');
+                fail(`unterminated stream name in '${addressPart}'`, "bad-prefix");
                 return;
             }
             const prefix = addressPart.substring(0, end + 1);
-            addressed = prefix === '[]' ? undefined : prefix;         // '[]' is "the only one", stated explicitly
-            text = addressPart.substring(end + 1).replace(/^\s/, ''); // drop the separator, keep the rest
+            addressed = prefix === "[]" ? undefined : prefix; // '[]' is "the only one", stated explicitly
+            text = addressPart.substring(end + 1).replace(/^\s/, ""); // drop the separator, keep the rest
         } else {
-            text = args;                                              // unbracketed: all of it is payload
+            text = args; // unbracketed: all of it is payload
         }
 
         let target: Sink | undefined;
         if (addressed) {
             target = sinks.find((s) => s.prefix === addressed);
             if (!target) {
-                fail(`no stream named ${addressed}. Known streams: ${names().join(', ') || '(none)'}`, 'unknown-stream', { target: addressed, available: names() });
+                fail(`no stream named ${addressed}. Known streams: ${names().join(", ") || "(none)"}`, "unknown-stream", { target: addressed, available: names() });
                 return;
             }
         } else if (sinks.length > 1) {
-            fail(`more than one stream, name the one you mean: ${names().join(', ')}`, 'ambiguous', { available: names() });
+            fail(`more than one stream, name the one you mean: ${names().join(", ")}`, "ambiguous", { available: names() });
             return;
         } else {
-            target = sinks[0];      // undefined when the session has no streams at all
+            target = sinks[0]; // undefined when the session has no streams at all
         }
         if (!target) {
-            fail('this session has no serial or RTT streams to send to', 'no-streams', { available: [] });
+            fail("this session has no serial or RTT streams to send to", "no-streams", { available: [] });
             return;
         }
 
         if (!target.write(text)) {
-            fail(`${target.prefix} is not connected`, 'not-connected', { target: target.prefix });
+            fail(`${target.prefix} is not connected`, "not-connected", { target: target.prefix });
             return;
         }
-        logger.info(`${target.prefix} <= ${text}`, { source: 'DA', skipConsole: true, command: 'send', target: target.prefix, text });
+        logger.info(`${target.prefix} <= ${text}`, { source: "DA", skipConsole: true, command: "send", target: target.prefix, text });
     }
 
     private doStatus() {
@@ -902,34 +924,37 @@ export class CliSessionDriver {
             const params: any = {
                 status: port.getStatus(),
                 prefix: port.getPrefix(),
-                ...port.serialConfig
+                ...port.serialConfig,
             };
             return params;
         });
         const obj: any = {
-            'status': this.status,
-            'cwd': process.cwd(),
-            'pid': process.pid,
-            'targetCwd': this.config.cwd,
-            'configName': this.config.name,
-            'serverType': this.config.servertype,
-            'configType': this.config.request,
-            'rtts': this.rtts.map(rtt => ({
-                status: rtt.getStatus(), prefix: rtt.getPrefix(),
-                tcpPort: rtt.options.tcpPort, channel: rtt.options.port, type: rtt.options.type,
+            status: this.status,
+            cwd: process.cwd(),
+            pid: process.pid,
+            targetCwd: this.config.cwd,
+            configName: this.config.name,
+            serverType: this.config.servertype,
+            configType: this.config.request,
+            rtts: this.rtts.map((rtt) => ({
+                status: rtt.getStatus(),
+                prefix: rtt.getPrefix(),
+                tcpPort: rtt.options.tcpPort,
+                channel: rtt.options.port,
+                type: rtt.options.type,
             })),
-            'serialPorts': serialPorts,
-            'socketPath': this.socketPath,
-            'logFile': this.cliArgs.logFile,
+            serialPorts: serialPorts,
+            socketPath: this.socketPath,
+            logFile: this.cliArgs.logFile,
         };
         logger.info(`Session summary: ${JSON.stringify(obj, null, 2)}`);
     }
 
     private doExit(isTerminal: boolean) {
         this.sendRequest<DebugProtocol.TerminateResponse>({
-            seq: 0,          // overwritten by sendRequest
-            type: 'request', // overwritten by sendRequest
-            command: 'terminate',
+            seq: 0, // overwritten by sendRequest
+            type: "request", // overwritten by sendRequest
+            command: "terminate",
         }).then((response) => {
             if (!response.success) {
                 logger.warn(`Terminate request failed: ${response.message}`);
@@ -944,9 +969,9 @@ export class CliSessionDriver {
 
     private doInterrupt() {
         this.sendRequest<DebugProtocol.PauseResponse>({
-            seq: 0,          // overwritten by sendRequest
-            type: 'request', // overwritten by sendRequest
-            command: 'pause',
+            seq: 0, // overwritten by sendRequest
+            type: "request", // overwritten by sendRequest
+            command: "pause",
             arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
         }).then((response) => {
             if (!response.success) {
@@ -964,14 +989,13 @@ export class CliSessionDriver {
         if (!trimmedInput) {
             return Promise.resolve();
         }
-        const src = isTerminal ? 'user-input' : 'socket-input';
+        const src = isTerminal ? "user-input" : "socket-input";
         logger.info(input, { source: src, skipConsole: true });
         try {
             if (this.handleSpecialCommands(trimmedInput, isTerminal, input)) {
                 return Promise.resolve();
             }
-        } catch {
-        }
+        } catch {}
         // Everything else goes to GDB, exactly as it does when paused. We used to drop these
         // silently, which was a self-inflicted limitation: because we drive GDB through the MI
         // interface (not a terminal REPL), GDB accepts plenty of commands while the target is
@@ -1007,7 +1031,7 @@ export class CliSessionDriver {
     private sendRequest<T extends DebugProtocol.Response>(req: DebugProtocol.Request): Promise<T> {
         const seq = this.nextSeq++;
         req.seq = seq;
-        req.type = 'request';
+        req.type = "request";
         // TODO(Ctrl-C): No timeout is applied here. Some operations (e.g. flash write) take 30+ seconds
         // on real hardware, so a fixed timeout would produce false positives. Hung gdb-servers are
         // handled via a future SIGINT handler that calls gdbMiCommands.sendInterrupt(), and escalates
@@ -1021,14 +1045,14 @@ export class CliSessionDriver {
 
     /** Routes every outgoing message (responses + events) from the DA to the right handler. */
     private handleOutgoingMessage(msg: DebugProtocol.ProtocolMessage): void {
-        if (msg.type === 'response') {
+        if (msg.type === "response") {
             const response = msg as DebugProtocol.Response;
             const resolve = this.pendingRequests.get(response.request_seq);
             if (resolve) {
                 this.pendingRequests.delete(response.request_seq);
                 resolve(response);
             }
-        } else if (msg.type === 'event') {
+        } else if (msg.type === "event") {
             this.handleEvent(msg as DebugProtocol.Event);
         }
     }
@@ -1036,37 +1060,37 @@ export class CliSessionDriver {
     /** Handle events emitted by the DA (stopped, output, terminated, etc.). */
     private handleEvent(event: DebugProtocol.Event): void {
         switch (event.event) {
-            case 'stopped': {
-                const reason = `${event.body?.reason}` + (event.body?.description ? ` — ${event.body.description}` : '');
+            case "stopped": {
+                const reason = `${event.body?.reason}` + (event.body?.description ? ` — ${event.body.description}` : "");
                 this.isPaused = true;
                 this.setState("paused", reason);
                 this.setReadlineState(true);
                 break;
             }
-            case 'continued':
+            case "continued":
                 this.isPaused = false;
                 this.setState("running");
                 this.setReadlineState(false);
                 break;
-            case 'terminated':
+            case "terminated":
                 if (!this.restarting) {
                     this.setState("terminated");
                     this.closeLineReaders();
                     process.exit(0);
                 }
                 break;
-            case 'thread':
+            case "thread":
                 // threadId, reason ('started'|'exited') — mostly noise, log at debug
-                this.optionalInfo.debug('thread', { threadId: event.body?.threadId, reason: event.body?.reason });
+                this.optionalInfo.debug("thread", { threadId: event.body?.threadId, reason: event.body?.reason });
                 break;
-            case 'output': {
-                const body = event.body as DebugProtocol.OutputEvent['body'];
-                const output = body?.output ?? '';
-                const category = body?.category ?? 'console';
+            case "output": {
+                const body = event.body as DebugProtocol.OutputEvent["body"];
+                const output = body?.output ?? "";
+                const category = body?.category ?? "console";
                 this.routeOutput(category, output);
                 break;
             }
-            case 'initialized':
+            case "initialized":
                 if (this.status === "starting") {
                     this.setState("initialized");
                     if (this.session) {
@@ -1092,13 +1116,12 @@ export class CliSessionDriver {
                 break;
             default:
                 // Custom events (custom-event-ports-done, SWOConfigure, etc.)
-                if (event.event.startsWith('custom-event-')) {
+                if (event.event.startsWith("custom-event-")) {
                     this.optionalInfo.debug(`custom event:${event.event} `, { body: event.body });
                 } else {
                     this.optionalInfo.debug(`event:${event.event} `, { body: event.body });
                 }
                 break;
-
         }
         // TODO: route stopped/output/terminated events to the TUI / headless stream
     }
@@ -1115,8 +1138,8 @@ export class CliSessionDriver {
         }
     }
 
-    private previousParialLine = ""
-    private previousParitalCategory = ""
+    private previousParialLine = "";
+    private previousParitalCategory = "";
     private previousPartialTimer: NodeJS.Timeout | null = null;
     private routeOutput(category: string, output: string): void {
         const doOutput = (category: string, output: string) => {
@@ -1125,30 +1148,30 @@ export class CliSessionDriver {
                 return;
             }
 
-            if (category === 'stdout' && /^\d+[-~&@^]/.test(output)) {
+            if (category === "stdout" && /^\d+[-~&@^]/.test(output)) {
                 // GDB MI command sent by DA (gdbTraces mode) — log structured, never raw to terminal
                 this.gdbMiLogger.debug(`mi: tx[MI >] ${text} `);
                 return;
             }
 
-            if (category === 'console' && output.startsWith('-> ')) {
+            if (category === "console" && output.startsWith("-> ")) {
                 // GDB MI response received — strip the '-> ' the DA added
                 const mi = text.slice(3);
                 this.gdbMiLogger.debug(`mi: rx[MI <] ${mi} `);
                 return;
             }
 
-            if ((category === 'stderr') || (category === 'stdout')) {
+            if (category === "stderr" || category === "stdout") {
                 // DA internal messages — strip the well-known prefixes
-                const prefix1 = 'mcu-debug stderr: ';
-                const prefix2 = 'mcu-debug: ';
+                const prefix1 = "mcu-debug stderr: ";
+                const prefix2 = "mcu-debug: ";
                 if (output.startsWith(prefix1)) {
                     const logLine = output.slice(prefix1.length).trimEnd();
                     this.mcuStderrLogger.info(logLine);
                 } else if (output.startsWith(prefix2)) {
                     const logLine = output.slice(prefix2.length).trimEnd();
                     this.mcuStdoutLogger.info(logLine);
-                } else if (category === 'stderr') {
+                } else if (category === "stderr") {
                     this.stderrLogger.info(text);
                 } else {
                     // A leading '\r' is the gdb-server overwriting its own line -- erase/program
@@ -1157,7 +1180,7 @@ export class CliSessionDriver {
                     // noise, and returning early would drop the progress from the log file too.
                     // During a 30-second flash it is the only evidence the session is alive, so
                     // off a terminal it becomes an ordinary log event.
-                    if (text.startsWith('\r') && !text.startsWith('\r[100')) {
+                    if (text.startsWith("\r") && !text.startsWith("\r[100")) {
                         if (this.isTTY) {
                             this.terminalWrite(text); // overwrite current line -- no need to log
                             return;
@@ -1165,7 +1188,7 @@ export class CliSessionDriver {
                         // Several updates may have coalesced into one flush, each separated by
                         // its own '\r'. Only the last one is the current state -- that is what
                         // overwriting in place would have left on screen.
-                        this.stdoutLogger.info(text.split('\r').pop() ?? text);
+                        this.stdoutLogger.info(text.split("\r").pop() ?? text);
                         return;
                     }
                     this.stdoutLogger.info(text);
@@ -1174,7 +1197,7 @@ export class CliSessionDriver {
                 // category === 'console' without '-> ': real GDB console output the user should see
                 this.gdbLogger.info(text);
             }
-        }
+        };
 
         const flushPartial = () => {
             if (this.previousParialLine) {
@@ -1188,7 +1211,7 @@ export class CliSessionDriver {
             }
         };
 
-        const isPartial = !output.endsWith('\n');
+        const isPartial = !output.endsWith("\n");
         if (isPartial && output) {
             if (this.previousParialLine) {
                 if (category !== this.previousParitalCategory) {
@@ -1236,13 +1259,13 @@ export class CliSessionDriver {
     async doInitializeRequest(): Promise<DebugProtocol.InitializeResponse> {
         logger.info("Sending initialize request...");
         const response = await this.sendRequest<DebugProtocol.InitializeResponse>({
-            seq: 0,          // overwritten by sendRequest
-            type: 'request', // overwritten by sendRequest
-            command: 'initialize',
+            seq: 0, // overwritten by sendRequest
+            type: "request", // overwritten by sendRequest
+            command: "initialize",
             arguments: {
-                clientID: 'mcu-debug-cli',
-                adapterID: 'mcu-debug',
-                pathFormat: 'path',
+                clientID: "mcu-debug-cli",
+                adapterID: "mcu-debug",
+                pathFormat: "path",
                 linesStartAt1: true,
                 columnsStartAt1: true,
                 supportsVariableType: true,
@@ -1266,10 +1289,10 @@ export class CliSessionDriver {
         let count = 0;
         const getName = (): string => {
             return `${os.tmpdir()}/mcu-debug-${process.pid}-${count++}.sock`;
-        }
+        };
         let sockPath: string;
         switch (process.platform) {
-            case 'win32':
+            case "win32":
                 // Windows named pipe path format \\.\pipe\pipename
                 return `\\\\.\\pipe\\mcu-debug-${process.pid}`;
             default:
@@ -1281,7 +1304,10 @@ export class CliSessionDriver {
         }
         if (sockPath.length > 100) {
             // Unix socket path length limit is usually around 108 chars, but can be as low as 88 on some distros with long temp dir paths. Check to avoid hard-to-diagnose errors from net.createServer.
-            logger.error(`Generated socket path is too long (${sockPath.length} chars): ${sockPath}. This may cause the socket server to fail. Consider setting TMPDIR to a shorter path and/or using a RAM disk for /tmp.`, { source: 'DA', isConsole: true });
+            logger.error(
+                `Generated socket path is too long (${sockPath.length} chars): ${sockPath}. This may cause the socket server to fail. Consider setting TMPDIR to a shorter path and/or using a RAM disk for /tmp.`,
+                { source: "DA", isConsole: true },
+            );
         }
         return sockPath;
     }
@@ -1290,34 +1316,38 @@ export class CliSessionDriver {
         const socketJsonPath = this.createSocketJsonPath();
         if (fs.existsSync(socketJsonPath)) {
             try {
-                const existing = JSON.parse(fs.readFileSync(socketJsonPath, 'utf-8'));
+                const existing = JSON.parse(fs.readFileSync(socketJsonPath, "utf-8"));
                 if (existing && existing.pid) {
                     // Check if the process is still running
                     try {
-                        const list = await find('pid', existing.pid);
+                        const list = await find("pid", existing.pid);
                         if (list.length > 0) {
-                            logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running. Is another instance running ? `, { source: 'DA', isConsole: true, ...existing });
+                            logger.error(`Socket file ${socketJsonPath} already exists and process ${existing.pid} is still running. Is another instance running ? `, {
+                                source: "DA",
+                                isConsole: true,
+                                ...existing,
+                            });
                         }
                     } catch (err) {
-                        logger.warn(`Socket file ${socketJsonPath} already exists but process ${existing.pid} is not running.It will be overwritten.`, { source: 'DA', isConsole: true, ...existing });
+                        logger.warn(`Socket file ${socketJsonPath} already exists but process ${existing.pid} is not running.It will be overwritten.`, { source: "DA", isConsole: true, ...existing });
                     }
                 } else {
-                    logger.warn(`Socket file ${socketJsonPath} already exists but has unexpected content.It will be overwritten.`, { source: 'DA', isConsole: true, content: existing });
+                    logger.warn(`Socket file ${socketJsonPath} already exists but has unexpected content.It will be overwritten.`, { source: "DA", isConsole: true, content: existing });
                 }
             } catch (err) {
-                logger.error(`Socket file ${socketJsonPath} already exists and could not be read.Is another instance running ? `, { source: 'DA', isConsole: true });
+                logger.error(`Socket file ${socketJsonPath} already exists and could not be read.Is another instance running ? `, { source: "DA", isConsole: true });
             }
         }
     }
 
     private async startSocketReader(): Promise<void> {
         await this.checkSocketFree();
-        const socketPath = this.createSocketPath();     // Will have backslashes and .sock suffix on Windows, normal .sock file on Unix
+        const socketPath = this.createSocketPath(); // Will have backslashes and .sock suffix on Windows, normal .sock file on Unix
         let timeout: NodeJS.Timeout | null = null;
         this.socketPromise = new Promise((resolve, reject) => {
             this.server = net.createServer((conn) => {
                 const rl = readline.createInterface({ input: conn });
-                rl.on('line', (line) => {
+                rl.on("line", (line) => {
                     if (this.isPaused) {
                         this.handleInputLinePaused(line, false);
                     } else {
@@ -1342,7 +1372,7 @@ export class CliSessionDriver {
                 this.serverClients.add(conn);
                 this.hasEverHadClient = true;
                 this.customTransport.addStream(conn, socketPath);
-                conn.on('close', () => {
+                conn.on("close", () => {
                     this.serverClients.delete(conn);
                     // In socket-pilot mode the last client leaving means nobody is flying. Exit
                     // cleanly rather than lingering: a debug session holds the probe exclusively,
@@ -1351,15 +1381,15 @@ export class CliSessionDriver {
                     // never reach us. Waiting around for a possible re-attach would trade a
                     // recoverable inconvenience for a resource nobody else can use.
                     if (!this.stdinIsPilot && this.hasEverHadClient && this.serverClients.size === 0) {
-                        logger.info('Last client disconnected and there is no stdin to fall back on; ending the session and releasing the probe.', { source: 'DA' });
+                        logger.info("Last client disconnected and there is no stdin to fall back on; ending the session and releasing the probe.", { source: "DA" });
                         this.doExit(false);
                     }
                 });
             });
             this.server.listen(socketPath, () => {
                 this.socketPath = socketPath;
-                this.writeSockFile(socketPath);  // triggers Rust's wait_for_sock_file()
-                logger.info(`Socket server listening on ${socketPath}`, { source: 'DA', isConsole: true });
+                this.writeSockFile(socketPath); // triggers Rust's wait_for_sock_file()
+                logger.info(`Socket server listening on ${socketPath}`, { source: "DA", isConsole: true });
                 if (!this.cliArgs.waitForClient) {
                     resolve();
                 } else {
@@ -1367,26 +1397,33 @@ export class CliSessionDriver {
                     // unbounded wait and stdout carries the mux stream, so without a word here an
                     // operator just sees a process that appears hung.
                     process.stderr.write(
-                        `Waiting for a client to connect before starting the debug session.` + os.EOL +
-                        `  socket: ${socketPath}` + os.EOL +
-                        `  connect with: mcu-debug attach` + os.EOL +
-                        `This waits indefinitely; press Ctrl-C to abort.` + os.EOL);
+                        `Waiting for a client to connect before starting the debug session.` +
+                            os.EOL +
+                            `  socket: ${socketPath}` +
+                            os.EOL +
+                            `  connect with: mcu-debug attach` +
+                            os.EOL +
+                            `This waits indefinitely; press Ctrl-C to abort.` +
+                            os.EOL,
+                    );
                     timeout = setTimeout(() => {
                         if (timeout && this.serverClients.size === 0) {
-                            logger.error('waitForClient is true but no client connected within timeout. Is the client side running and configured correctly?', { source: 'DA', isConsole: true });
+                            logger.error("waitForClient is true but no client connected within timeout. Is the client side running and configured correctly?", { source: "DA", isConsole: true });
                         }
                         timeout = null;
                     }, 5000); // arbitrary timeout to catch listen() failures in waitForClient mode
                 }
-                process.on('exit', () => {
+                process.on("exit", () => {
                     if (this.server) {
                         this.server.close();
                     }
-                    try { fs.unlinkSync(socketPath); } catch (err) { }
+                    try {
+                        fs.unlinkSync(socketPath);
+                    } catch (err) {}
                 });
             });
-            this.server.on('error', (err) => {
-                logger.error(`Socket server error: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
+            this.server.on("error", (err) => {
+                logger.error(`Socket server error: ${err instanceof Error ? err.message : String(err)}`, { source: "DA", isConsole: true });
                 reject(err);
             });
         });
@@ -1396,7 +1433,7 @@ export class CliSessionDriver {
     private unknowMetaCommand(cmd: string) {
         // warn, not info: this is the only indication a client gets that its command was not
         // understood, and an agent filtering on level would read an info line as normal traffic.
-        logger.warn(`Unhandled meta-command from clients: ${cmd}`, { source: 'DA', isConsole: true, command: cmd, error: 'unknown-meta-command' });
+        logger.warn(`Unhandled meta-command from clients: ${cmd}`, { source: "DA", isConsole: true, command: cmd, error: "unknown-meta-command" });
     }
 
     private writeSockFile(socketPath: string) {
@@ -1405,12 +1442,12 @@ export class CliSessionDriver {
         // path goes under `pipe`, everything else (Unix domain socket) goes under `socket`.
         const sockInfo = {
             pid: process.pid,
-            socket: process.platform === 'win32' ? undefined : socketPath,
-            pipe: process.platform === 'win32' ? socketPath : undefined,
+            socket: process.platform === "win32" ? undefined : socketPath,
+            pipe: process.platform === "win32" ? socketPath : undefined,
             cwd: process.cwd(),
             config: this.config.name,
             started: new Date().toISOString(),
-            logFile: this.cliArgs.logFile
+            logFile: this.cliArgs.logFile,
         };
         const socketPathJson = this.createSocketJsonPath();
         try {
@@ -1418,21 +1455,23 @@ export class CliSessionDriver {
             fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(socketPathJson, JSON.stringify(sockInfo, null, 2) + "\n");
         } catch (err) {
-            logger.error(`Failed to write socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
+            logger.error(`Failed to write socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: "DA", isConsole: true });
             if (this.cliArgs.waitForClient) {
                 process.exit(1); // Rust side will detect absence of socket file and wait, so we can exit cleanly here and let Rust restart us when ready
             }
             return;
         }
-        logger.debug(`Socket path written to ${socketPathJson}`, { source: 'DA', isConsole: true });
-        process.on('exit', () => {
+        logger.debug(`Socket path written to ${socketPathJson}`, { source: "DA", isConsole: true });
+        process.on("exit", () => {
             try {
                 this.server?.close();
                 fs.unlinkSync(socketPathJson);
-                try { fs.unlinkSync(socketPath); } catch (err) { } // also clean up the socket file itself
-                logger.debug(`Cleaned up socket file ${socketPathJson}`, { source: 'DA', isConsole: true });
+                try {
+                    fs.unlinkSync(socketPath);
+                } catch (err) {} // also clean up the socket file itself
+                logger.debug(`Cleaned up socket file ${socketPathJson}`, { source: "DA", isConsole: true });
             } catch (err) {
-                logger.warn(`Failed to clean up socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: 'DA', isConsole: true });
+                logger.warn(`Failed to clean up socket file ${socketPathJson}: ${err instanceof Error ? err.message : String(err)}`, { source: "DA", isConsole: true });
             }
         });
     }

@@ -4,15 +4,7 @@
 // queue — after re-checking opt-out. A CLI-only user's events therefore never leave the machine.
 
 import type { ConfigurationArguments } from "../adapter/servers/common";
-import {
-    buildSessionProps,
-    cliAnonId,
-    cliIsDev,
-    cliTelemetryDisabled,
-    enqueueEvent,
-    resolveLaunchOrigin,
-    TelemetryEvent,
-} from "./telemetry-core";
+import { buildSessionProps, cliAnonId, cliIsDev, cliTelemetryDisabled, enqueueEvent, resolveLaunchOrigin, TelemetryEvent } from "./telemetry-core";
 
 const sessionStarts: Record<string, number> = {};
 

@@ -13,9 +13,9 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 
-import * as fs from "fs"
+import * as fs from "fs";
 import { RTTConsoleDecoderOpts, TerminalInputMode, HrTimer } from "../adapter/servers/common";
-import { AnsiHelpers } from "../common/ansi-helpers"
+import { AnsiHelpers } from "../common/ansi-helpers";
 import { SocketIOSource } from "../common/swo/sources/socket";
 import { createTerminalUniqueName, getUUidPrefixed, ManagedTabConsole } from "./views/ManagedTab";
 import { TabKind } from "@mcu-debug/shared";
@@ -203,7 +203,7 @@ export class IOTerminal extends EventEmitter {
     protected createTerminal() {
         const baseName = this.createTermName(this.source, this.options, null);
         const uuid = getUUidPrefixed(this.kind.toUpperCase());
-        const mode = (this.options.inputmode === TerminalInputMode.RAW) ? "raw" : "cooked";
+        const mode = this.options.inputmode === TerminalInputMode.RAW ? "raw" : "cooked";
 
         const [name, terminal, isNew] = createTerminalUniqueName<ManagedTabConsole>(baseName, (nm: string) => {
             const term = new ManagedTabConsole(uuid, nm, this.kind, "both", `Enter input for ${this.kind}`, mode);

@@ -631,7 +631,7 @@ export class ThroughputMonitor {
     private startTime = Date.now();
     private lastReportTime = Date.now();
 
-    constructor(private mainSession: GDBDebugSession) { }
+    constructor(private mainSession: GDBDebugSession) {}
 
     /** Call this inside your RTT poll logic when data arrives */
     public record(buffer: Buffer, msgCount: number = 1) {

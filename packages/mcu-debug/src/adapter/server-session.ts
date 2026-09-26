@@ -84,7 +84,7 @@ export class GDBServerSession extends EventEmitter {
     private clientRequestedStop: boolean = false;
     private proxyClient: ProxyClient | null = null;
     private serverResolve: (() => void) | null = null;
-    private resolved: boolean = false;  // Could be resolved or rejected, but we just want to know if it's resolved in any way to stop timers and avoid multiple resolve/reject calls
+    private resolved: boolean = false; // Could be resolved or rejected, but we just want to know if it's resolved in any way to stop timers and avoid multiple resolve/reject calls
 
     constructor(private session: GDBDebugSession) {
         super();
@@ -198,7 +198,7 @@ export class GDBServerSession extends EventEmitter {
                     cwd: serverCwd,
                     env: env,
                     stdio: "pipe",
-                    windowsHide: true
+                    windowsHide: true,
                 });
             }
 
@@ -249,21 +249,24 @@ export class GDBServerSession extends EventEmitter {
                     }
                 }, 5000);
 
-                timeout = setTimeout(() => {
-                    timeout = null;
-                    killTimers();
-                    if (this.process) {
-                        if (this.session.args.debugFlags.anyFlags) {
-                            this.session.handleMsg(Stderr, "Stopping gdb-server process...\n");
+                timeout = setTimeout(
+                    () => {
+                        timeout = null;
+                        killTimers();
+                        if (this.process) {
+                            if (this.session.args.debugFlags.anyFlags) {
+                                this.session.handleMsg(Stderr, "Stopping gdb-server process...\n");
+                            }
+                            this.process.kill();
+                            this.process = null;
                         }
-                        this.process.kill();
-                        this.process = null;
-                    }
-                    if (!this.resolved) {
-                        this.resolved = true;
-                        reject(new Error("Timeout waiting for gdb-server to start"));
-                    }
-                }, 5 * 60 * 1000);
+                        if (!this.resolved) {
+                            this.resolved = true;
+                            reject(new Error("Timeout waiting for gdb-server to start"));
+                        }
+                    },
+                    5 * 60 * 1000,
+                );
             }
 
             if (this.process) {

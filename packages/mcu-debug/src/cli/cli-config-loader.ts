@@ -1,9 +1,8 @@
-
 import * as fs from "fs";
 import * as os from "os";
 import path from "path";
 import * as winston from "winston";
-import JSONC from 'jsonc-simple-parser';
+import JSONC from "jsonc-simple-parser";
 import { ConfigurationArguments, substituteEnvVarsInConfig } from "../adapter/servers/common";
 import { McuDebugConfigurationProviderBase } from "../common/config-provider";
 import { processVarSubstitution } from "../adapter/servers/common";
@@ -11,8 +10,8 @@ import { getHostAdapter } from "../common/host-adapter";
 import { CustomTransport } from "../common/logger";
 
 export interface ConfigLoaderArgs {
-    json?: string;           // JSON file if any
-    config: string;         // Name of the launch configuration
+    json?: string; // JSON file if any
+    config: string; // Name of the launch configuration
     configParsed?: any;
     builtins?: { [key: string]: string };
     logFile?: string;
@@ -22,7 +21,11 @@ export interface ConfigLoaderArgs {
 // processing variable substitutions, and providing the final configuration object to be used for starting the
 // debug session.
 export class CLIConfigLoader {
-    constructor(private cliArgs: ConfigLoaderArgs, private logger: winston.Logger, private forVscode: boolean) { }
+    constructor(
+        private cliArgs: ConfigLoaderArgs,
+        private logger: winston.Logger,
+        private forVscode: boolean,
+    ) {}
 
     public async loadConfiguration(args: ConfigLoaderArgs): Promise<ConfigurationArguments | undefined> {
         try {
@@ -50,12 +53,16 @@ export class CLIConfigLoader {
             const customTransport = CustomTransport.getInstance();
             if (!this.forVscode && selectedConfig.cliOptions?.logFile && customTransport?.usingDefaultLogFile) {
                 CustomTransport.getInstance()?.replaceStream(customTransport.usingDefaultLogFile, selectedConfig.cliOptions.logFile);
-                try { fs.unlinkSync(customTransport.usingDefaultLogFile!); } catch (err) { /* ignore */ }
+                try {
+                    fs.unlinkSync(customTransport.usingDefaultLogFile!);
+                } catch (err) {
+                    /* ignore */
+                }
                 this.cliArgs.logFile = selectedConfig.cliOptions.logFile;
             }
 
             const configMsg = `Loaded configuration "${selectedConfig.name}"` + (args.json ? ` from ${args.json}` : "") + (this.forVscode ? " for VSCode" : " for CLI");
-            this.logger.info(configMsg, { source: 'DA' });
+            this.logger.info(configMsg, { source: "DA" });
             // selectedConfig.debugFlags = undefined as any; // TODO: Remove this line after testing normal flow
             this.logger.warn("Testing warning: This is a test warning message to demonstrate the warning display in CLI mode.");
 
@@ -189,13 +196,13 @@ export class CLIConfigLoader {
     // references. For now, we'll keep it as two passes since it's simpler and meets our current needs, but we
     // can consider changing it in the future if we find that users want more flexibility in variable referencing.
     private processVarSubstitutions(args: ConfigLoaderArgs, config: any): any {
-        const builtins = Object.assign({}, args.builtins || CLIConfigLoader.gatherBuiltins());  // Make a copy.
+        const builtins = Object.assign({}, args.builtins || CLIConfigLoader.gatherBuiltins()); // Make a copy.
         // This is a special built-in variable that we want to make available for substitution because we allow that in rttConfig
         builtins.executable = config.executable ?? "";
         const fileName = args.json;
         const jsonContent = JSON.stringify(config);
         // built-ins go first as they may be referenced by envFile or other values we need
-        let substitutedContent = processVarSubstitution(jsonContent, builtins, '', (msg) => {
+        let substitutedContent = processVarSubstitution(jsonContent, builtins, "", (msg) => {
             this.logger.warn(`In built-in variable substitution for ${fileName}: ${msg}`);
         });
         // If we have a settings file, we allow its values to be used in launch.json with ${config:VAR_NAME}
@@ -215,7 +222,9 @@ export class CLIConfigLoader {
             const unsubstitutedVars = substitutedContent.match(varRegex);
             if (unsubstitutedVars) {
                 const uniqueVars = Array.from(new Set(unsubstitutedVars));
-                this.logger.warn(`The following variables in configuration '${config.name}' from '${fileName}' were not substituted. This may indicate a mistake in the launch.json if these variables were intended to be substituted at this stage. If these variables are intended to be substituted later by the debug adapter or by the user during the debug session, then you can ignore this warning. Unsubstituted variables: ${uniqueVars.join(", ")}`);
+                this.logger.warn(
+                    `The following variables in configuration '${config.name}' from '${fileName}' were not substituted. This may indicate a mistake in the launch.json if these variables were intended to be substituted at this stage. If these variables are intended to be substituted later by the debug adapter or by the user during the debug session, then you can ignore this warning. Unsubstituted variables: ${uniqueVars.join(", ")}`,
+                );
             }
             return config;
         } catch (error) {
@@ -228,12 +237,12 @@ export class CLIConfigLoader {
         const builtins: { [key: string]: any } = {};
         // Populate built-in variables that can be used in launch.json. Only those that make sense
         // when no VSCode is involved. For example, ${workspaceFolder} is supported but ${file} is not since there is no file context.
-        builtins.userHome = (os.homedir() || "").replace(/\\/g, '/');
-        builtins.workspaceFolder = (rootDir || process.cwd()).replace(/\\/g, '/');
+        builtins.userHome = (os.homedir() || "").replace(/\\/g, "/");
+        builtins.workspaceFolder = (rootDir || process.cwd()).replace(/\\/g, "/");
         builtins.workspaceFolderBasename = path.basename(builtins.workspaceFolder);
-        builtins.cwd = (rootDir || process.cwd()).replace(/\\/g, '/');
-        builtins.pathSeparator = '/'; // path.sep; We always use '/' as most gnu tools don't work with backslashes even on Windows.
-        builtins["/"] = '/'; // Allow using ${/} as a platform-independent path separator in launch.json   
+        builtins.cwd = (rootDir || process.cwd()).replace(/\\/g, "/");
+        builtins.pathSeparator = "/"; // path.sep; We always use '/' as most gnu tools don't work with backslashes even on Windows.
+        builtins["/"] = "/"; // Allow using ${/} as a platform-independent path separator in launch.json
         return builtins;
     }
 }
@@ -251,7 +260,7 @@ export class CliConfigProvider extends McuDebugConfigurationProviderBase {
     override async resolveDebugConfiguration(folder: string, _config: any): Promise<any> {
         let config = _config as ConfigurationArguments;
         // We already processed env vars and config vars in loadConfiguration, so we can skip that here.
-        const saveEnv = config.env
+        const saveEnv = config.env;
         const saveEnvFile = config.envFile;
         config.env = undefined;
         config.envFile = undefined;

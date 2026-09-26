@@ -35,6 +35,6 @@ export class MCUDebugChannel {
         const ts = HrTimer.createDateTimestamp();
         const line = ts + " " + msg;
         MCUDebugChannel.logStream?.write(line + "\n");
-        MCUDebugChannel.vscodeDebugChannel?.appendLine(line/*.replace(/\n/g, ' ')*/);
+        MCUDebugChannel.vscodeDebugChannel?.appendLine(line /*.replace(/\n/g, ' ')*/);
     }
 }

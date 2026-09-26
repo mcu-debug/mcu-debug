@@ -13,7 +13,7 @@ class PendingCmdPromise {
         public readonly cmd: string,
         public readonly resolve: (value: GdbMiOutput) => void,
         public readonly reject: (reason?: any) => void,
-    ) { }
+    ) {}
 }
 
 export class GdbInstance extends EventEmitter {
@@ -61,7 +61,7 @@ export class GdbInstance extends EventEmitter {
     }
 
     private startupTimer: NodeJS.Timeout | undefined = undefined;
-    private setupStartupTimer(gdbPath: string, reject: (any)) {
+    private setupStartupTimer(gdbPath: string, reject: any) {
         // Why such a long timeout? Because some GDB versions are really slow to start up, especially if they have to
         // load a lot of pretty-printers. We want to give them enough time, but also provide feedback to the user that
         // something is happening and we're not just hanging indefinitely. Another reason on Windows is that antivirus
@@ -73,20 +73,25 @@ export class GdbInstance extends EventEmitter {
         let msgTime = start;
         this.startupTimer = setInterval(() => {
             const now = Date.now();
-            if ((now - msgTime) > 5000) {
+            if (now - msgTime > 5000) {
                 ServerConsoleLog(`Waiting for GDB process to start... (${Math.floor((now - start) / 1000)}s)`);
                 msgTime = now;
             }
             const elapsed = now - start;
-            if (elapsed > (maxSeconds * 1000)) {
-                if (this.process) try {
-                    this.process.kill();
-                    this.process = null;
-                } catch { }
+            if (elapsed > maxSeconds * 1000) {
+                if (this.process)
+                    try {
+                        this.process.kill();
+                        this.process = null;
+                    } catch {}
                 clearInterval(this.startupTimer);
                 this.startupTimer = undefined;
-                reject(new Error(`GDB process failed to start within ${maxSeconds} seconds. Check your gdb installation by running '${gdbPath} --version' `
-                    + "in a terminal. If your gdb is very slow to start, you can try disabling antivirus software or switching to a faster gdb version."));
+                reject(
+                    new Error(
+                        `GDB process failed to start within ${maxSeconds} seconds. Check your gdb installation by running '${gdbPath} --version' ` +
+                            "in a terminal. If your gdb is very slow to start, you can try disabling antivirus software or switching to a faster gdb version.",
+                    ),
+                );
             }
         }, 250);
     }
@@ -132,7 +137,7 @@ export class GdbInstance extends EventEmitter {
                     this.debugFlags.disableGdbTimeouts = save;
                     this.gdbMajorVersion = parseInt(await majorPromise);
                     if (this.startupTimer) {
-                        clearInterval(this.startupTimer);       // First command succeeded, so we know GDB is up and responsive, stop the startup timer
+                        clearInterval(this.startupTimer); // First command succeeded, so we know GDB is up and responsive, stop the startup timer
                         this.startupTimer = undefined;
                     }
 
@@ -271,7 +276,7 @@ export class GdbInstance extends EventEmitter {
                         const result = miOutput.resultRecord.result as { [key: string]: any };
                         const obj = {
                             command: pendingCmd.cmd,
-                            message: result["msg"] || "Unknown error"
+                            message: result["msg"] || "Unknown error",
                         };
                         pendingCmd.reject(new Error(`GDB: ${JSON.stringify(obj)}`));
                     } else {

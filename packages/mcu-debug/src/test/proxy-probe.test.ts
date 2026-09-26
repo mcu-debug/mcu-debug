@@ -28,10 +28,7 @@ function frame(obj: unknown, streamId = 0): Buffer {
 }
 
 /** Listens on loopback and hands each connection to `onConn`. Resolves with the bound port. */
-async function withServer(
-    onConn: (socket: net.Socket) => void,
-    body: (port: number) => Promise<void>,
-): Promise<void> {
+async function withServer(onConn: (socket: net.Socket) => void, body: (port: number) => Promise<void>): Promise<void> {
     const server = net.createServer(onConn);
     const port = await new Promise<number>((resolve) => {
         server.listen(0, "127.0.0.1", () => resolve((server.address() as net.AddressInfo).port));

@@ -1,16 +1,16 @@
-import * as path from 'path';
-import * as fs from 'fs';
-import * as os from 'os';
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
 import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
 import { HostConfig, ChainedConfig, ConfigurationArguments, processVarSubstitution, getAnyFreePort } from "../adapter/servers/common";
 import { SymbolInformation } from "../adapter/symbols";
 import { IDebugSession, IHostAdapter, IOutputChannel, ISerialPortView, ISWORTTView } from "../common/host-adapter";
 import { logger } from "../common/logger";
 import { GraphConfiguration } from "../common/swo/common";
-import JSONC from 'jsonc-simple-parser';
-import { CLISerialPortView } from './cli-serial';
-import { DefaultPortBase, ProxyLaunchPolicy, proxyServerCommand, startProxyServerFromWsl } from '@mcu-debug/shared';
-import { handleHostConfig } from '../common/proxy';
+import JSONC from "jsonc-simple-parser";
+import { CLISerialPortView } from "./cli-serial";
+import { DefaultPortBase, ProxyLaunchPolicy, proxyServerCommand, startProxyServerFromWsl } from "@mcu-debug/shared";
+import { handleHostConfig } from "../common/proxy";
 
 // Detect the equivalent of vscode.env.remoteName from OS-level signals.
 // Return values match VS Code's remoteName strings so resolveProxyNetworkMode() works unchanged.
@@ -26,16 +26,20 @@ import { handleHostConfig } from '../common/proxy';
 //   5. SSH server    — SSH_CLIENT env var (process was started via SSH)
 //   6. Local         — none of the above → return undefined
 function calculateRemoteName(): string | undefined {
-    if (process.platform === 'linux' && process.env.WSL_DISTRO_NAME !== undefined) {
+    if (process.platform === "linux" && process.env.WSL_DISTRO_NAME !== undefined) {
         // WSL Container: WSL runtime present AND we're inside an OCI container layer.
         // Heuristic until Microsoft exposes a dedicated env var for this case.
-        const inContainer = fs.existsSync('/.dockerenv') || (() => {
-            try {
-                const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
-                return cgroup.includes('docker') || cgroup.includes('containerd');
-            } catch { return false; }
-        })();
-        return inContainer ? 'wsl-container' : 'wsl';
+        const inContainer =
+            fs.existsSync("/.dockerenv") ||
+            (() => {
+                try {
+                    const cgroup = fs.readFileSync("/proc/1/cgroup", "utf8");
+                    return cgroup.includes("docker") || cgroup.includes("containerd");
+                } catch {
+                    return false;
+                }
+            })();
+        return inContainer ? "wsl-container" : "wsl";
     }
 
     // Kubernetes: host address must come from explicit launch.json config; skip auto-detection
@@ -44,14 +48,14 @@ function calculateRemoteName(): string | undefined {
     }
 
     // Docker / Apple Container (OCI): /.dockerenv (primary) or cgroup (secondary)
-    if (process.platform === 'linux') {
-        if (fs.existsSync('/.dockerenv')) {
-            return 'dev-container';
+    if (process.platform === "linux") {
+        if (fs.existsSync("/.dockerenv")) {
+            return "dev-container";
         }
         try {
-            const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
-            if (cgroup.includes('docker') || cgroup.includes('containerd')) {
-                return 'dev-container';
+            const cgroup = fs.readFileSync("/proc/1/cgroup", "utf8");
+            if (cgroup.includes("docker") || cgroup.includes("containerd")) {
+                return "dev-container";
             }
         } catch {
             // /proc/1/cgroup unavailable — not a container
@@ -60,7 +64,7 @@ function calculateRemoteName(): string | undefined {
 
     // SSH: SSH_CLIENT is set when the process was launched over an SSH connection
     if (process.env.SSH_CLIENT !== undefined) {
-        return 'ssh-remote';
+        return "ssh-remote";
     }
 
     return undefined;
@@ -71,7 +75,7 @@ export class CliAdapter implements IHostAdapter {
     private settings: { [key: string]: any } = {};
     private serialPortViews: CLISerialPortView[] = [];
     private consolePort: number = 0;
-    constructor(private cliArgs: { json: string; config: string; settings?: string; }) {
+    constructor(private cliArgs: { json: string; config: string; settings?: string }) {
         logger.debug("CLI adapter initialized with args: " + JSON.stringify(cliArgs));
         this.remoteName = calculateRemoteName();
         this.initSettings();
@@ -92,11 +96,11 @@ export class CliAdapter implements IHostAdapter {
     }
     getExtensionPath(): string {
         // The CLI bundle is emitted to dist/cli.js; __dirname is <extensionRoot>/dist at runtime.
-        return path.resolve(__dirname, '..').replace(/\\/g, '/');
+        return path.resolve(__dirname, "..").replace(/\\/g, "/");
     }
     getGdbServerConsolePort(): Promise<number> {
         if (this.consolePort === 0) {
-            return getAnyFreePort(DefaultPortBase.cliConsole).then(port => {
+            return getAnyFreePort(DefaultPortBase.cliConsole).then((port) => {
                 this.consolePort = port;
                 return port;
             });
@@ -115,7 +119,7 @@ export class CliAdapter implements IHostAdapter {
     getWorkspaceFilePath(): string | undefined {
         return undefined;
     }
-    findChainedSession(name: string): { parent: { config: any; }; config: ChainedConfig; } | undefined {
+    findChainedSession(name: string): { parent: { config: any }; config: ChainedConfig } | undefined {
         return undefined;
     }
     debugMessage(msg: string): void {
@@ -165,14 +169,14 @@ export class CliAdapter implements IHostAdapter {
         return this.serialPortViews;
     }
 
-    showQuickPick(items: { label: string; description?: string; detail?: string; }[], opts?: { title?: string; placeHolder?: string; }): Promise<string | undefined> {
+    showQuickPick(items: { label: string; description?: string; detail?: string }[], opts?: { title?: string; placeHolder?: string }): Promise<string | undefined> {
         return Promise.resolve(undefined);
     }
     createOutputChannel(name: string): IOutputChannel {
         return new CliOutputChannel(name);
     }
 
-    private platforms = { "win32": ".win32", "darwin": ".osx", "linux": ".linux" };
+    private platforms = { win32: ".win32", darwin: ".osx", linux: ".linux" };
     private replacePlatformSpecificSettings(settings: { [key: string]: any }): boolean {
         let ret = false;
         const curPlatform = this.platforms[os.platform() as keyof typeof this.platforms] || "unknown";
@@ -192,7 +196,7 @@ export class CliAdapter implements IHostAdapter {
 
     private initSettings() {
         const settingsFile = this.cliArgs.settings;
-        const settingsFiles = [os.homedir() + '/.mcu-debug/settings.json', settingsFile].filter(f => f !== undefined) as string[];
+        const settingsFiles = [os.homedir() + "/.mcu-debug/settings.json", settingsFile].filter((f) => f !== undefined) as string[];
         for (const file of settingsFiles) {
             if (fs.existsSync(file)) {
                 let content: string;
@@ -208,7 +212,7 @@ export class CliAdapter implements IHostAdapter {
                     process.exit(1);
                 }
                 // Replace any variable that is referenced in the configuration with a value from the previous settings
-                const substitutedContent = processVarSubstitution(content, this.settings, 'config:', (msg) => {
+                const substitutedContent = processVarSubstitution(content, this.settings, "config:", (msg) => {
                     logger.warn(`In config: variable substitution for ${file}: ${msg}`);
                 });
                 if (substitutedContent !== content) {
@@ -221,7 +225,8 @@ export class CliAdapter implements IHostAdapter {
                 }
                 // Merge the old and new settings
                 this.settings = { ...this.settings, ...newSettings };
-            } else if (file !== settingsFiles[0]) { // Don't warn about the default settings file if it doesn't exist
+            } else if (file !== settingsFiles[0]) {
+                // Don't warn about the default settings file if it doesn't exist
                 logger.warn(`Settings file ${file} does not exist.`);
             }
         }

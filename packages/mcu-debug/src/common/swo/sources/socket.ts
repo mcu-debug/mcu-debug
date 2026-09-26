@@ -210,10 +210,7 @@ export class SocketSWOSource extends EventEmitter implements SWORTTSource {
 }
 
 export class SocketIOSource extends SocketSWOSource {
-    constructor(
-        tcpPort: string,
-        decoderSpec?: DecoderSpec,
-    ) {
+    constructor(tcpPort: string, decoderSpec?: DecoderSpec) {
         super(tcpPort, decoderSpec);
     }
 
@@ -267,11 +264,7 @@ export class SocketUARTSource extends SocketIOSource {
 }
 
 export class JLinkSocketRTTSource extends SocketRTTSource {
-    constructor(
-        channel: number,
-        tcpPort: string,
-        decoderSpec: DecoderSpec,
-    ) {
+    constructor(channel: number, tcpPort: string, decoderSpec: DecoderSpec) {
         super(channel, tcpPort, decoderSpec);
 
         // When the TCP connection to the RTT port is established, send config commands

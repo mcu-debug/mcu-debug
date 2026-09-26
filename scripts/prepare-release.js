@@ -385,7 +385,10 @@ function main() {
 
     if (opts.doPublish) {
         // Proxy first. See the ordering rules in this file's header comment.
-        for (const [name, vsix] of [["mcu-debug-proxy", proxyVsix], ["mcu-debug", mainVsix]]) {
+        for (const [name, vsix] of [
+            ["mcu-debug-proxy", proxyVsix],
+            ["mcu-debug", mainVsix],
+        ]) {
             log(`Publishing ${name} to the VS Code Marketplace...`);
             // --skip-duplicate makes this loop resumable. Publishing two extensions is not
             // atomic: if the first succeeds and the second fails (a network timeout is enough),
@@ -400,7 +403,10 @@ function main() {
         }
 
         if (opts.vsxAlso) {
-            for (const [name, vsix] of [["mcu-debug-proxy", proxyVsix], ["mcu-debug", mainVsix]]) {
+            for (const [name, vsix] of [
+                ["mcu-debug-proxy", proxyVsix],
+                ["mcu-debug", mainVsix],
+            ]) {
                 log(`Publishing ${name} to Open VSX...`);
                 runCmd(["npx", "ovsx", "publish", vsix], { OVSX_PAT: ovsxPat });
             }

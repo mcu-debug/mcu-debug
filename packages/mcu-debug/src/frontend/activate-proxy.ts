@@ -48,7 +48,6 @@ function trace(step: string, meta: Record<string, unknown> = {}) {
     logger.info(`[proxy-ext] ${step}`, { source: "DA", ...meta });
 }
 
-
 /**
  * Ask the proxy extension to identify itself; `undefined` means it is not reachable.
  *
@@ -232,7 +231,7 @@ async function reportVersionMismatch(proxyVersion: string, ourVersion: string): 
         trace("mismatch.we-are-behind", { proxy: proxyVersion, ours: ourVersion, remote: vscode.env.remoteName ?? "local" });
         const choice = await vscode.window.showWarningMessage(
             `${pair}. The copy of MCU-Debug installed${where} is the one that is out of date — ` +
-            `the proxy runs on your local machine and has already updated. Update MCU-Debug there; reloading alone will not help.`,
+                `the proxy runs on your local machine and has already updated. Update MCU-Debug there; reloading alone will not help.`,
             "Update MCU-Debug",
         );
         trace("mismatch.choice", { choice: choice ?? "dismissed" });
@@ -273,7 +272,7 @@ export async function ensureProxyForLaunch(ourVersion: string): Promise<boolean>
             void offerReload(
                 "version-mismatch",
                 `The ${PROXY_NAME} extension is version ${pong.version} but MCU-Debug is ${ourVersion}. ` +
-                `They are published as a matched pair. If debugging misbehaves, reloading the window picks up the updated extension.`,
+                    `They are published as a matched pair. If debugging misbehaves, reloading the window picks up the updated extension.`,
             );
         }
         trace("launch.ok", { proxyVersion: pong.version });
@@ -283,7 +282,7 @@ export async function ensureProxyForLaunch(ourVersion: string): Promise<boolean>
     trace("launch.prompt", {});
     const choice = await vscode.window.showErrorMessage(
         `The '${PROXY_NAME}' extension is required to reach a debug probe from this window, and it is not installed. ` +
-        `It runs on your local machine and is what lets MCU-Debug talk to a probe that is not attached to the machine your workspace lives on.`,
+            `It runs on your local machine and is what lets MCU-Debug talk to a probe that is not attached to the machine your workspace lives on.`,
         "Install",
         "Show Extension",
     );
@@ -297,10 +296,7 @@ export async function ensureProxyForLaunch(ourVersion: string): Promise<boolean>
         }
         if (outcome === "installed-not-answering") {
             // Installed but not yet live in this host. Nothing is wrong except the window.
-            await offerReload(
-                "installed-needs-reload",
-                `'${PROXY_NAME}' was installed but is not active in this window yet. Reload to finish, then start debugging again.`,
-            );
+            await offerReload("installed-needs-reload", `'${PROXY_NAME}' was installed but is not active in this window yet. Reload to finish, then start debugging again.`);
             trace("launch.failed", { reason: "installed-needs-reload" });
             return false;
         }
@@ -308,10 +304,7 @@ export async function ensureProxyForLaunch(ourVersion: string): Promise<boolean>
     if (choice) {
         // The install could not be done for us; let them drive it from the page.
         await showProxyExtensionPage();
-        void offerReload(
-            "after-manual-install",
-            `Install '${PROXY_NAME}' from the page that just opened, then reload the window so MCU-Debug can see it.`,
-        );
+        void offerReload("after-manual-install", `Install '${PROXY_NAME}' from the page that just opened, then reload the window so MCU-Debug can see it.`);
     }
     trace("launch.failed", { choice: choice ?? "dismissed" });
     return false;
@@ -351,7 +344,7 @@ export async function promptProxyInstallOnce(context: vscode.ExtensionContext): 
     }
     const choice = await vscode.window.showInformationMessage(
         `MCU-Debug can debug a probe attached to a different machine than your workspace (WSL, a dev container, or a remote host). ` +
-        `That needs the '${PROXY_NAME}' companion extension, which is not installed.`,
+            `That needs the '${PROXY_NAME}' companion extension, which is not installed.`,
         "Install",
         "Show Extension",
         "Don't Ask Again",
@@ -372,10 +365,7 @@ export async function promptProxyInstallOnce(context: vscode.ExtensionContext): 
         if (outcome === "installed-not-answering") {
             // Do not open the extension page here: it *is* installed, and sending the user to a
             // page showing an Install button they have already pressed reads as a failure.
-            void offerReload(
-                "installed-needs-reload",
-                `'${PROXY_NAME}' was installed. Reload the window when convenient so MCU-Debug can use it.`,
-            );
+            void offerReload("installed-needs-reload", `'${PROXY_NAME}' was installed. Reload the window when convenient so MCU-Debug can use it.`);
             trace("nag.end", { installed: true, needsReload: true });
             return;
         }
@@ -437,10 +427,7 @@ export async function probeAgentStatusCommand(context: vscode.ExtensionContext):
     const pong = await pingProxy();
     if (!pong) {
         trace("agentStatus.proxy-unreachable");
-        const choice = await vscode.window.showWarningMessage(
-            `The '${PROXY_NAME}' extension is not reachable, so there is no Probe Agent to report on.`,
-            "Check Proxy Extension",
-        );
+        const choice = await vscode.window.showWarningMessage(`The '${PROXY_NAME}' extension is not reachable, so there is no Probe Agent to report on.`, "Check Proxy Extension");
         if (choice) {
             await vscode.commands.executeCommand("mcu-debug.checkProxyExtension");
         }
@@ -462,9 +449,7 @@ export async function probeAgentStatusCommand(context: vscode.ExtensionContext):
     if (instances.length === 0) {
         // Not a problem. The agent is started on demand and exits when idle, so "none" is
         // the normal state between debug sessions.
-        void vscode.window.showInformationMessage(
-            `No Probe Agent is running. One starts automatically when a debug session needs it. (${PROXY_NAME} ${pong.version})`,
-        );
+        void vscode.window.showInformationMessage(`No Probe Agent is running. One starts automatically when a debug session needs it. (${PROXY_NAME} ${pong.version})`);
         return;
     }
 
@@ -501,15 +486,12 @@ export async function probeAgentStatusCommand(context: vscode.ExtensionContext):
 
     // The full JSON is in the log either way; what a person needs is whether to care.
     if (stale.length > 0) {
-        void vscode.window.showWarningMessage(
-            `${headline} — executable replaced since start`,
-            {
-                modal: true,
-                detail:
-                    `${detail}\n\nThe executable has been replaced since ${stale.length === 1 ? "this agent" : "these agents"} started, ` +
-                    `so it is still serving the previous build. The next debug session hands over to the new one automatically.`,
-            },
-        );
+        void vscode.window.showWarningMessage(`${headline} — executable replaced since start`, {
+            modal: true,
+            detail:
+                `${detail}\n\nThe executable has been replaced since ${stale.length === 1 ? "this agent" : "these agents"} started, ` +
+                `so it is still serving the previous build. The next debug session hands over to the new one automatically.`,
+        });
         return;
     }
     if (versionMismatch.length > 0) {
@@ -530,11 +512,7 @@ export async function checkProxyCommand(context: vscode.ExtensionContext): Promi
     trace("check.begin", { ourVersion, remote });
     const pong = await pingProxy();
 
-    const lines = [
-        `MCU-Debug: ${ourVersion}`,
-        `${PROXY_NAME}: ${pong ? pong.version : "not reachable"}`,
-        `Remote: ${remote}`,
-    ];
+    const lines = [`MCU-Debug: ${ourVersion}`, `${PROXY_NAME}: ${pong ? pong.version : "not reachable"}`, `Remote: ${remote}`];
     if (!pong) {
         lines.push("", `The proxy is needed only to reach a probe attached to a different machine than your workspace.`);
         const choice = await vscode.window.showWarningMessage(lines.join("  •  "), "Install", "Show Extension");

@@ -40,7 +40,10 @@ const OPENOCD_VALID_RTOS: string[] = [
 const JLINK_VALID_RTOS: string[] = ["Azure", "ChibiOS", "embOS", "FreeRTOS", "NuttX", "Zephyr"];
 
 export class McuDebugConfigurationProviderBase {
-    constructor(protected readonly hostAdapter: IHostAdapter, private isCli: boolean = false) { }
+    constructor(
+        protected readonly hostAdapter: IHostAdapter,
+        private isCli: boolean = false,
+    ) {}
 
     public provideDebugConfigurations(): { [key: string]: any }[] {
         return [
@@ -276,8 +279,9 @@ export class McuDebugConfigurationProviderBase {
             const isSsh = hc && typeof hc === "object" && hc?.type === "ssh" && hc?.enabled;
             if (!isSsh && (hc === undefined || hc === null || typeof hc === "boolean")) {
                 config.hostConfig = { type: "local", enabled: true };
-            } else if (!isSsh) {            // If ssh then can't assume local
-                hc.type = "local";          // auto becomes local by default
+            } else if (!isSsh) {
+                // If ssh then can't assume local
+                hc.type = "local"; // auto becomes local by default
                 hc.enabled = true;
             }
         }
@@ -326,9 +330,9 @@ export class McuDebugConfigurationProviderBase {
                 const str = supportedList.join(", ");
                 this.hostAdapter.showInfo(
                     `Live watch is not officially supported for servertype '${config.servertype}'. ` +
-                    `Only ${str} are supported and tested. ` +
-                    `Report back to us if it works with your servertype '${config.servertype}'.\n \n` +
-                    'If you are using an "external" servertype and it is working for you, then you can safely ignore this message. ',
+                        `Only ${str} are supported and tested. ` +
+                        `Report back to us if it works with your servertype '${config.servertype}'.\n \n` +
+                        'If you are using an "external" servertype and it is working for you, then you can safely ignore this message. ',
                 );
             }
         }

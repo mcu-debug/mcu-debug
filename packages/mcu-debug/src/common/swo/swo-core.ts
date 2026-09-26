@@ -348,7 +348,7 @@ export class SWOCore extends SWORTTCoreBase {
         }
     }
 
-    private overflow() { }
+    private overflow() {}
 
     private lostSynchronization() {
         this.processors.forEach((p) => p.lostSynchronization());
@@ -439,7 +439,7 @@ class RTTDecoder extends EventEmitter {
         }
     }
 
-    public dispose() { }
+    public dispose() {}
 }
 
 export class RTTCore extends SWORTTCoreBase {

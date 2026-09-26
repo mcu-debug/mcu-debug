@@ -51,14 +51,14 @@ export class SerialPortView extends ManagedTab implements ISerialPortView {
         }
     }
 
-    constructor(private device: string, public serialConfig: SerialParams, doClear: boolean = false, private tcpPort: number) {
+    constructor(
+        private device: string,
+        public serialConfig: SerialParams,
+        doClear: boolean = false,
+        private tcpPort: number,
+    ) {
         const baseName = serialConfig.label || path.basename(device);
-        super(
-            `serial-${getUUidPrefixed('serial')}`,
-            baseName,
-            "Enter input for serial port " + device,
-            serialConfig.input_mode === "raw" ? "raw" : "cooked",
-        );
+        super(`serial-${getUUidPrefixed("serial")}`, baseName, "Enter input for serial port " + device, serialConfig.input_mode === "raw" ? "raw" : "cooked");
         if (this.tcpPort > 0) {
             this.restartSocket();
         }

@@ -57,7 +57,7 @@ export class NotesManager {
         }
         try {
             const mtime = fs.statSync(this.notesFile).mtimeMs;
-            const stuff = JSON.parse(fs.readFileSync(this.notesFile, 'utf-8'));
+            const stuff = JSON.parse(fs.readFileSync(this.notesFile, "utf-8"));
             if (!Array.isArray(stuff)) {
                 // Wrong shape: treat as empty, but still record the mtime so we do not decide the
                 // file has changed on every single patch from here on.
@@ -112,7 +112,7 @@ export class NotesManager {
             this.flushTimer = null;
             this.flushNow();
         }, NOTES_FLUSH_MS);
-        this.flushTimer.unref();    // never hold the process open for housekeeping
+        this.flushTimer.unref(); // never hold the process open for housekeeping
     }
 
     /**
@@ -151,7 +151,9 @@ export class NotesManager {
         } catch (err) {
             try {
                 fs.unlinkSync(tmp);
-            } catch { /* best effort */ }
+            } catch {
+                /* best effort */
+            }
             throw err;
         }
     }
