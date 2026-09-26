@@ -517,7 +517,7 @@ export class ProxyClient extends EventEmitter {
             const rand = Math.random().toString(36).substring(2, 15);
             const fName = path.join(os.tmpdir(), `mcu-debug-${rand}`).replace(/\\/g, "/");
             fs.writeFileSync(fName, "");
-            this.securityFile = fName
+            this.securityFile = fName;
         }
 
         const params = {
@@ -685,9 +685,14 @@ export class ProxyClient extends EventEmitter {
         try {
             portReserved.status = "ready";
             const remoteStream = new RemoteServer(this, portDef, portReserved);
-            await remoteStream.initialize();
+            // Registered *before* awaiting the bind. `initialize()` now resolves only once the
+            // listener is up, and binding emits "streamStarted" -- which unblocks the launch sequence
+            // and can lead to startStream() looking this stream_id up. Registering first keeps that
+            // lookup valid; it used to be in order only because initialize() returned early.
             this.clientStreams.set(stream_id, remoteStream);
+            await remoteStream.initialize();
         } catch (err) {
+            this.clientStreams.delete(stream_id);
             this.logError(`Failed to create remote stream for stream_id ${stream_id}, stream_name ${stream_name}: ${err}`);
         }
     }
@@ -755,6 +760,8 @@ export class ProxyClient extends EventEmitter {
 export class RemoteServer {
     private endingSession: boolean = false;
     private server: net.Server | null = null;
+    /** Settles the promise `initialize()` returns, from the listener's `listening`/`error` events. */
+    private settleListen: (e: Error | null) => void = () => undefined;
     private sockets: Array<RemoteStream> = [];
     private socketsByStreamId: Map<number, RemoteStream> = new Map();
     constructor(
@@ -763,7 +770,28 @@ export class RemoteServer {
         public pInfo: PortReservedInfo,
     ) { }
 
-    public async initialize() {
+    /**
+     * Bind the local listener that a consumer (GDB, an SWO viewer, ...) connects to.
+     *
+     * Resolves once the port is actually bound, and rejects if it cannot be. It used to resolve as
+     * soon as `listen()` returned, so a bind failure was unobservable to the caller -- and with no
+     * `error` handler on the server, `EADDRINUSE` was *thrown* rather than reported, ending the debug
+     * adapter instead of naming the local port that was in use.
+     */
+    public async initialize(): Promise<void> {
+        // Created before the listener, settled by whichever of listening/error arrives, and awaited
+        // at the end of this method -- so callers learn the outcome of the bind rather than only that
+        // `listen()` was called.
+        const bound = new Promise<void>((resolve, reject) => {
+            this.settleListen = (e: Error | null) => {
+                this.settleListen = () => undefined; // once only; a listener can error after binding
+                if (e) {
+                    reject(e);
+                } else {
+                    resolve();
+                }
+            };
+        });
         const cleanupSocket = (socket: net.Socket) => {
             this.sockets = this.sockets.filter((s) => s.socket !== socket);
             this.socketsByStreamId.forEach((s, stream_id) => {
@@ -781,8 +809,10 @@ export class RemoteServer {
                 socket.on("error", (e) => {
                     cleanupSocket(socket);
                     if (!this.endingSession) {
+                        // Reported, never thrown. A throw from inside an event handler is an uncaught
+                        // exception that reaches the process-level catchall, and an ECONNRESET from a
+                        // GDB that was killed is ordinary -- it must not be able to end the adapter.
                         this.proxyManager.logError(`Error on client socket for ${this.pInfo.stream_id_str}: ${e.message}`);
-                        // throw new Error(`Error on client socket for ${this.pInfo.stream_id_str}, ${e}`);
                     }
                 });
 
@@ -828,6 +858,14 @@ export class RemoteServer {
                 this.portDef.remotePort = this.pInfo.port;
                 this.proxyManager.logDebug(`Local server for stream ${this.pInfo.stream_id_str} is listening on port ${this.portDef.localPort}, forwarding to remote port ${this.pInfo.port}`);
                 this.proxyManager.emit("streamStarted", this.portDef);
+                this.settleListen(null);
+            })
+            .on("error", (e: Error) => {
+                // An unhandled 'error' event on an EventEmitter is rethrown by Node, so without this
+                // a port already in use ended the adapter rather than being reported.
+                this.proxyManager.logError(`Local listener for stream ${this.pInfo.stream_id_str} failed on port ${this.portDef.localPort}: ${e.message}`);
+                this.server = null;
+                this.settleListen(e);
             })
             // Loopback, explicitly. `listen(port)` with no host binds 0.0.0.0, which put the
             // gdb-server's RSP, tcl and telnet endpoints on every interface -- tcl and telnet
@@ -836,6 +874,7 @@ export class RemoteServer {
             // this machine by construction, and the far side is reached through the proxy's
             // control socket, never through this listener.
             .listen(this.portDef.localPort, "127.0.0.1");
+        return bound;
     }
 
     private startStream(stream: RemoteStream, method: "startStream" | "duplicateStream" = "startStream"): Promise<boolean> {

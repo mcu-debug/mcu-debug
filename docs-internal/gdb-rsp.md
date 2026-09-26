@@ -14,8 +14,11 @@ Switches, both per session over `initialize` because one Agent serves many sessi
 `debugFlags.rspTrace: "off" | "packets" | "all"` and `debugFlags.rspMux: false` (§4.7.3).
 `--rsp-trace` and `--no-rsp-mux` are that proxy's defaults, which a session overrides.
 
-**Next:** finish item 15, then item 11b. Phase 4 is blocked on the §8 decision (item 18), and item
-19 now has a prerequisite of its own: stop syncing files when the "remote" is local (item 18a).
+**§8 is settled and Phase 4 is unblocked.** Every session — local and remote — now runs through the
+Agent, and `syncFiles` no longer copies anything for a local one (items 18 and 18a). Verified on
+hardware against **OpenOCD, pyOCD and ST-LINK**; J-Link untested for want of a board.
+
+**Next:** finish item 15, then item 11b, then item 19.
 
 _Known unrelated flake:_ `proxy_helper::listeners::tests::two_specific_addresses_can_share_a_port`
 fails intermittently (port-binding race, pre-existing, untouched by this work) — don't read it as a
@@ -1740,14 +1743,13 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
 
 ### Phase 4 — Consumers _(blocked on §8)_
 
-- [ ] **18.** Decide and record how local (non-proxy) sessions reach the Agent. Preferred:
-      `hostConfig.type = "local"` for all sessions.
-- [ ] **18a.** _(prerequisite for 19, and for 18 becoming the default path.)_ Stop syncing files
-      when the "remote" is local. Today a
-      session with `hostConfig` set copies files from the extension's install directory to a remote
-      working directory; with every session local that is a copy to the same disk. Local mode was
-      built to simulate a remote session without a second machine and did that job well — this is
-      retiring the simulation, not the feature, and real remote sessions keep syncing.
+- [x] **18.** Decide and record how local (non-proxy) sessions reach the Agent. **Done: every session
+      goes through the Agent**, which was the preferred outcome in §8 — one data path, one
+      implementation, one set of behaviours to test. Verified against OpenOCD, pyOCD and ST-LINK.
+- [x] **18a.** Stop syncing files when the "remote" is local. **Done** — `syncFiles` skips a local
+      session, so nothing is copied to a directory on the same disk it came from. Local mode had been
+      standing in for a remote session without a second machine and did that job well; this retired
+      the simulation, not the feature, and real remote sessions still sync.
 - [ ] **19.** Expose the primitive to TypeScript: control requests/events for memory read/write and
       state subscription, authored in Rust with `ts_rs` and exported in `ensure_ts_exports`
       (AGENTS.md — never hand-write the generated TS).
