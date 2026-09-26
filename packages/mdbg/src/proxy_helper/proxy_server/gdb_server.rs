@@ -305,11 +305,30 @@ impl ProxyServer {
             server_path,
             server_args,
             server_env,
+            server_cwd,
+            security_file,
         } = &msg.request
         {
             self.stop_port_monitor();
             let ports: Vec<(u8, u16)> = self.reserved_ports.drain(..).map(|p| (p.stream_id, p.port)).collect();
-            let dir = self.server_cwd.clone();
+            let dir = match server_cwd.clone() {
+                Some(d) => {
+                    if security_file.is_none() || !std::path::Path::new(&security_file.as_ref().unwrap()).exists() {
+                        // This is our security file to ensure this a local client, we don't allow remote clients to specify arbitrary directories.
+                        let err_mg = format!(
+                            "Failed to launch gdb-server: security check failed: {} does not exist or tmp_file is not specified",
+                            security_file.as_ref().unwrap()
+                        );
+
+                        eprintln!("{}", err_mg);
+                        ControlResponse::error(msg.seq, err_mg).send(&self.writer).ok();
+                        self.exit = true;
+                        return;
+                    }
+                    d
+                }
+                None => self.server_cwd.to_string(),
+            };
             let mut command = Command::new(server_path);
             command
                 .args(server_args)

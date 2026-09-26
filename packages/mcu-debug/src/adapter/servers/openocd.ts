@@ -11,6 +11,8 @@ import {
     SessionMode,
     TcpPortDef,
     TcpPortDefMap,
+    addSyncFileIfNeeded,
+    needsProxySync,
 } from "./common";
 import * as os from "os";
 import * as fs from "fs";
@@ -204,12 +206,11 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
     public serverArguments(): string[] {
         let serverargs: string[] = [];
         let helpers = `${this.args.extensionPath}/support/openocd-helpers.tcl`;
-        if (typeof this.args.hostConfig === "object" && this.args.hostConfig?.enabled) {
-            const remoteHelpers = "./mcu-debug/support/openocd-helpers.tcl";
-            this.args.hostConfig.syncFiles = this.args.hostConfig.syncFiles || [];
-            this.args.hostConfig.syncFiles.push({ local: helpers, remote: remoteHelpers });
+        const remoteHelpers = "./mcu-debug/support/openocd-helpers.tcl";
+        addSyncFileIfNeeded(this.args, helpers, remoteHelpers);
+        if (needsProxySync(this.args.hostConfig)) {
             helpers = remoteHelpers;
-            if (this.args.searchDir.length === 0) {
+            if (!Array.isArray(this.args.searchDir) || this.args.searchDir.length === 0) {
                 this.args.searchDir = ["."];
             } else if (!this.args.searchDir.includes(".")) {
                 this.args.searchDir.unshift(".");

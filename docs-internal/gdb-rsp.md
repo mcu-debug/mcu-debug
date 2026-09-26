@@ -1,41 +1,25 @@
 # GDB RSP Multiplexer in the Probe Agent — Design & Plan
 
-**Status:** Design agreed, and **its central premise is now confirmed on hardware** — OpenOCD answers
-a memory read in 0.5 ms on a connection that itself has a `c` outstanding (§7, `rsp-probe`). OpenOCD's
-tier is `Full`. **Phase 1 complete; Phase 2 complete bar item 11b** — `mux.rs` (core,
-sans-IO), `chunk.rs` (splitting and reassembly, sans-IO) and `channel.rs` (the threaded shell that
-owns the byte streams) are written and tested: 146 tests in `packages/mdbg/src/gdb_rsp/`.
-**Phase 3 items 13 and 14 done** — `StreamKind`/`StreamRole` and the `stream_id → {name, kind}`
-map on `ProxyServer`, classified at allocation; `handle_duplicate_stream` marks its stream
-`Secondary`; and `rsp_mux.rs` now gives the mux the gdb-server socket for a core's controller
-`gdbPort` stream, in both directions. Item 13's wire fields (`packet_size`, mux listener port on
-`PortReserved`) are deferred until the TypeScript side consumes them — item 14 did not need them.
+**Status:** **Phases 1–3 are done bar item 11b**, and the mux is in the data path on the branch
+`rsp-mux`. The design's central premise is confirmed on hardware: OpenOCD answers a memory read in
+0.5 ms on a connection that itself has a `c` outstanding (§7, `rsp-probe`), so its tier is `Full`.
+356 Rust tests, 180 of them in `gdb_rsp/`.
 
-**The mux is now in the path** (branch `rsp-mux`), with no consumers attached: every byte still goes
-between GDB and the gdb-server and nothing else is injected. Verified end to end against a fake RSP
-server through the real `mdbg proxy` binary — classification, mux ownership, the direct forwarder
-standing down, both directions of traffic, the state model reaching `Stopped`, and the trace file.
-Two switches exist for the hardware pass:
+With no consumers attached the mux is a pass-through, and that is what item 15 is checking. It has
+held on hardware for session setup — a dual-core PSoC 6 under OpenOCD, mux on the controller only,
+the live-watch GDB left alone as `Secondary`, ~60–80 µs of added setup cost on the message-loop
+thread. What is untested there is the steady state: flash/load, stepping, pause, breakpoints.
 
-- **`--no-rsp-mux`** restores the old byte-for-byte `read_and_forward` path on the same binary, so a
-  suspected mux regression can be confirmed or cleared in one run instead of a rebuild. That
-  comparison _is_ the item-15 measurement.
-- **`debugFlags.rspTrace: "off" | "packets" | "all"`** writes the §4.7.3 trace to
-  `rsp-trace-<stream>-<pid>-<n>.txt` beside the proxy log, logging the full path at `info`.
-  `debugFlags.rspMux: false` is the per-session form of the escape hatch. Both ride on `initialize`;
-  `--rsp-trace` and `--no-rsp-mux` are that proxy's defaults, which a session overrides (§4.7.3).
+Switches, both per session over `initialize` because one Agent serves many sessions:
+`debugFlags.rspTrace: "off" | "packets" | "all"` and `debugFlags.rspMux: false` (§4.7.3).
+`--rsp-trace` and `--no-rsp-mux` are that proxy's defaults, which a session overrides.
 
-**Item 15 is part-done on hardware.** A dual-core PSoC 6 session under OpenOCD classified all ten
-streams correctly, put the mux on the controller `gdbPort1` only, and left the live-watch GDB —
-arriving via `duplicateStream` — as `Secondary` on `read_and_forward`, with no mux and no errors.
-Setup cost measured at **60–80 µs** on the message-loop thread. Real caps read back:
-`PacketSize=16384`, hex read and write. What remains is the steady-state half: a
-`debugFlags.rspTrace: "packets"` run to see OpenOCD's real packet mix, and the A/B against
-`rspMux: false`. Item 11b is not on that path.
+**Next:** finish item 15, then item 11b. Phase 4 is blocked on the §8 decision (item 18), and item
+19 now has a prerequisite of its own: stop syncing files when the "remote" is local (item 18a).
 
 _Known unrelated flake:_ `proxy_helper::listeners::tests::two_specific_addresses_can_share_a_port`
 fails intermittently (port-binding race, pre-existing, untouched by this work) — don't read it as a
-regression. Revised 2026-09-20.
+regression. Revised 2026-09-21.
 
 **Goal:** make the Probe Agent (`mdbg proxy`) a **multiplexer on the GDB Remote Serial Protocol
 connection to the gdb-server**. GDB becomes one client on that connection; the Agent's own
@@ -304,7 +288,27 @@ We are interleaving, so the invariant must be stated precisely rather than as a 
 2. **GDB's traffic has strict priority** in the send queue. One of our packets is sent only when
    doing so cannot delay a GDB packet already queued. GDB never waits on us except where the
    protocol itself serialises (one reply at a time on the wire).
-3. **`\x03` bypasses everything.** It is not a packet; it is forwarded the instant it arrives.
+3. **`\x03` is forwarded in order, like every other byte — it does not jump the queue.** It is not a
+   framed packet, so it creates no pending entry and expects no reply; but we are a byte forwarder,
+   and a byte cannot overtake bytes already queued ahead of it. An earlier draft of this list claimed
+   it "bypasses everything", which contradicted invariant 1 one line above.
+   It is also **not inert**: it elicits a stop reply, so it is a transaction and has to be modelled as
+   one. The subtlety is that the stop reply it provokes is _the same_ stop reply that completes the
+   resume already outstanding — there is only ever one — so giving the interrupt its own pending entry
+   means deciding which entry that reply retires. That is why it has none today.
+
+    **What we owe our own consumers on an interrupt is a notification, not a policy — and what they do
+    with it is TBD, per consumer.** An earlier draft of this list had the mux close its injection gate
+    on `\x03`; that was too clever. A consumer's memory read is the same kind of traffic GDB itself is
+    about to do, and live watch demonstrates it today: it has reads in flight behind a ctrl-C on every
+    pause, across a second connection, with nothing observed to fail. A trace consumer draining an ETB
+    FIFO might want one last pass, or might want to stop at once; only it knows. So the mux publishes
+    "an interrupt is pending" and each consumer decides, which is the §4.8 division of
+    responsibilities. The number to decide against: the servers are strictly serial (§4.2.1), so any
+    request of ours still outstanding is SWD time the server spends before it even looks at the
+    `\x03`, so continuing to inject costs measurable latency on the user's pause. `StateTracker`
+    already records `interrupt_pending`; **nothing consults or publishes it yet** — item 15b.
+
 4. **We never emit a packet that mutates connection-scoped state GDB depends on.** See §3.10 —
    this was merely advisable with a second connection; on a shared socket it is the difference
    between working and corrupting the user's debug session.
@@ -394,6 +398,15 @@ Three consequences for the mux:
    before. It is self-synchronising: it needs no notification, no cooperation from a detach the
    server may mishandle, and no clean shutdown — which matters, because teardown is exactly when the
    debug adapter is most likely to be killed mid-flight.
+4. **But the transport could simply tell us, and that is the better primary signal.** GDB's socket
+   closes on the _client_ side, where the client sees it plainly — it just has no way to say so. The
+   funnel has no client→server stream close at all: `serial.close` exists because serial ports outlive
+   sessions, while streams were assumed to live exactly as long as the session. That assumption is
+   what is wrong. A stream's **consumer** comes and goes within a session — GDB reconnecting, an SWO
+   viewer opened and closed, the live-watch GDB going away — and nothing tells the Agent. So this is
+   not an RSP problem at all, and fixing it there would be fixing it in the wrong place; see item 15c.
+   The in-band signals above stay useful as backstops for the case the transport cannot see: a GDB
+   that detaches without its socket closing.
 
 **The mux must never delay or swallow a `D`.** Refusing a detach leaves the firmware in whatever
 state the halt left it, which is a real cost to the user and the thing several upstream detach fixes
@@ -406,6 +419,58 @@ and not one the mux creates: the server stays in no-ack mode on that socket for 
 GDB expects acks. The mux cannot fix it — it cannot put the server back — but it is the only thing
 positioned to _notice_ it, so it should say so in the log and the trace rather than leave GDB
 retransmitting into silence.
+
+### 3.12 GDB arriving needs a target that stays halted for the whole handshake
+
+Diagnosed from a real failure: a second GDB connecting a few hundred ms after the first got `E0E`
+(EFAULT) to its `g` packet and aborted `target-select`. Worth writing down because the obvious reading
+— "a race, so fix the timing" — is wrong, and the correct reading changes what is possible.
+
+**Registers are the only thing that needs a halt, and they are the only thing GDB insists on at
+connect.** `armv7m_get_core_reg` (`src/target/armv7m.c:250`) returns `ERROR_TARGET_NOT_HALTED`
+outright when `target->state != TARGET_HALTED`, while memory goes through the MEM-AP with no such gate
+(§4.2.1 — 0.5 ms with a `c` outstanding). GDB's connect sequence reads registers unconditionally.
+
+| Target state across the handshake  | `?` reply                                             | `g`   | Connect |
+| ---------------------------------- | ----------------------------------------------------- | ----- | ------- |
+| Halted throughout                  | a true stop reply (`T02`/`T05`)                       | works | ✓       |
+| **Running throughout**             | still a stop reply — a lie (`T00`, or a stale reason) | `E0E` | ✗       |
+| Halted, then resumed mid-handshake | likewise a lie                                        | `E0E` | ✗       |
+
+Rows two and three fail identically, so the requirement is not "avoid the in-between" — it is **halted
+for the entire duration of the handshake**.
+
+**The rule the server breaks is `?`'s contract.** The manual: _"This is sent when connection is first
+established to query the reason the target halted. The reply is the same as for step and continue."_ A
+stop reply asserts the target is stopped, and **all-stop mode has no way to say "running"** — that is
+the mode's premise. OpenOCD answers `T00`, which its own source flags as impossible:
+`case DBG_REASON_NOTHALTED: return 0x0; /* no signal... shouldn't happen */`. With one connection it
+_is_ impossible; with two, connection 1 resumes the target underneath connection 2, and §4.7's missing
+resume notification means nothing can tell connection 2 that its world-view is stale. **GDB is the
+victim of exactly the limitation that keeps our mux on the controller connection.**
+
+**`set remote interrupt-on-connect off` is not the exemption it appears to be.** It defaults to off
+(`gdb/remote.c:2101`) and only stops _GDB_ sending `\x03`. Something must still halt the target or the
+connect fails, and in practice that something is the `gdb-attach` event handler: a passing session
+shows `gdb-attach`, then `halted due to debug-request`, then a clean handshake. OpenOCD's
+second-GDB scheme works **because** it halts; the guidance moved the rudeness from GDB into Tcl rather
+than removing it.
+
+**So a genuinely non-intrusive attach needs one of two things**, neither of which is a timing fix:
+
+1. **Non-stop mode**, where `?` answers `OK` if all threads are running and GDB does not read registers
+   for a running thread. That reply exists precisely for this case. OpenOCD declines non-stop; pyOCD
+   advertises it (item 17c), which makes pyOCD the only server in §7 that might manage a true
+   never-halt attach.
+2. **No GDB in the path** — the Agent reading memory over the MEM-AP, which needs no handshake, no
+   registers and no halt (item 20a).
+
+**Consequence for the always-running use cases** (motor control being the one that prompted this): the
+ordering fix below helps live watch at session start, where the target is halted anyway, and cannot
+help here at all. This applies to the **primary** GDB as much as a secondary. Note also that 20a alone
+is not sufficient for a session that must _never_ halt, because 20a still presumes a controller GDB
+that attached — and attaching halted it. A never-halt monitoring session means no GDB at all, which is
+a larger feature than this design covers.
 
 ---
 
@@ -674,6 +739,12 @@ rule there is no second stream to mux.
 
 One mux per core still follows, because there is one controller per core.
 
+**Superseded for the case that motivated it.** Live watch is to become one of the Agent's own
+consumers — memory reads and writes on the controller connection — rather than a second GDB (item
+20a). That delivers everything the list below promises, with no per-client virtualisation at all,
+because there is no second GDB left to virtualise. The maximal mux is therefore only interesting if
+someone wants a genuine **second user GDB**, which nobody has asked for. Kept for the record:
+
 The maximal version — all GDB clients _and_ all our consumers on a single server socket per core —
 has grown more attractive in light of §2:
 
@@ -751,10 +822,70 @@ one turns up, is a bridge to cross then. Note also that OpenOCD's own documentat
 second-GDB-connection method for inspecting memory, which is where our live-watch design came from;
 that makes the wipe-on-connect a documented approach undermined by its own implementation.
 
-**Adapter-side, meanwhile:** the live-watch GDB has to connect **before** we send `InitializedEvent`,
-because VS Code sets its breakpoints immediately after that event, and a connection arriving later
-wipes them. Today it is started lazily, which puts it in a race with exactly those breakpoints. That
-is a debug-adapter sequencing fix, tracked separately from this design.
+**Adapter-side, meanwhile:** connect the live-watch GDB **immediately after the primary's connection
+succeeds, and before doing anything else with the primary.** Not tied to `InitializedEvent` or
+`configurationDone` — those are driven by VS Code, which sets breakpoints and can resume in between, so
+they leave both the §4.7.4 breakpoint window and the §3.12 halt window open.
+
+Anchoring on the primary's success closes both by **causation rather than timing**: the primary's own
+connect read registers, which _proves_ the target was halted at that instant (§3.12), and the only
+thing that would resume it is the primary work we have not started yet. It also means the second
+attach's `gdb-attach` halt is a no-op, so nothing is halted rudely.
+
+Two refinements belong in it. **Spawn the live GDB process early but let it attach late** — the process
+launch is the slow part and touches nothing, so it can overlap the primary's connect while only the
+attach waits for the halted window; otherwise session start pays the whole cost serially. And **a
+live-watch failure must not fail the session** — it is an optional feature, and moving it onto the
+critical path turns an unguarded failure from cosmetic into fatal. The same ordering has to hold on the
+restart/re-attach path. Tracked as a debug-adapter sequencing fix, separate from this design.
+
+### 4.7.5 One local connection, one server connection
+
+**The Agent mirrors the gdb-server rather than improving on it.** Each local consumer gets its own
+connection to the server — which is what `duplicateStream` is for — and if the server refuses the
+second one, so do we. No local fan-out of one server connection to several consumers.
+
+**Scope: streams that _are_ a gdb-server port.** `gdbPort`, `swoPort`, `tclPort`, `telnetPort`. It says
+nothing about services the Agent provides itself: once RTT is ours (item 20) we set its policy, which
+has nothing to do with any gdb-server's. Note also that RTT is **bidirectional** — down channels take
+host input — so it was never a candidate for "safe to fan out" reasoning in the first place. SWO is the
+only genuinely unidirectional one, and for it mirroring the server is fine; if real demand for several
+viewers ever appears, fan-out can be added _on top_ without disturbing this rule.
+
+This is a correctness position, not a purity one. A fan-out would silently share **per-connection
+state** between consumers: one `qSupported` negotiation, one ack mode, one `Hg`, one `Z`/`z` table
+seen by two clients that each believe they own it (§3.10). That is precisely the corruption the
+maximal mux would have to do real work to avoid, arrived at by accident instead. And it would hide a
+server's limits at the moment they matter: **probe-rs allows only one GDB connection.** A user whose
+live watch quietly misbehaves is worse off than one told it is unavailable, and the same reasoning
+retired the RSP-port probe in §4.6 — do not do things to a server it cannot distinguish from a real
+client, and do not pretend on a server's behalf.
+
+It also settles a question the transport gap raises (item 15c): with 1:1 there is exactly **one
+consumer per stream**, so "my consumer went away" is unambiguous. A fan-out would have forced a
+distinction between "one of several closed" and "the last one closed".
+
+**Expect no `ECONNREFUSED`, and make the refusal attributable anyway.** OpenOCD at its connection
+limit `accept()`s and immediately `close()`s, logging _"rejected '%s' connection, no more connections
+allowed"_ (`src/server/server.c:560`). That is not sloppiness — a server cannot close its _listening_
+socket while it is still serving other clients, so accept-then-close is the only refusal available to
+it. So `wait_and_connect_sync` succeeds, the client is told `StreamStatus: Connected`, and the refusal
+arrives moments later as a bare `StreamClosed` with no stated cause. RSP is client-speaks-first, so a
+legitimate new connection is silent too and timing alone cannot separate them. Clients do learn this
+quickly by experiment, so this is a clarity improvement rather than a defect: **a stream that closes
+before carrying a single byte in either direction is a failed open, not a close**, reported against
+the request that created it.
+
+**Where discovery-by-attempt is not acceptable: probe-rs does not refuse a second connection, it
+crashes.** So "try it and see" costs the whole session, and the connection limit has to be **declared
+per server** and checked before the attempt, not probed. §7's matrix already has the row for it; this
+is why it is not merely informational.
+
+**The consequence to accept deliberately:** on a strictly single-connection server, honest 1:1 means
+live watch is _unavailable_ rather than quietly degraded. That makes item 20a — live watch as an Agent
+consumer on the controller connection — the only route to it there, rather than an optimisation of a
+path that already works. It stays low priority for OpenOCD and J-Link; it is the whole story for
+probe-rs.
 
 ### 4.7.1 Chunking belongs in the Agent, not in the clients
 
@@ -1330,6 +1461,14 @@ ordinary. The alternative (a separate `mdbg` subcommand the DA spawns for local 
 the `gdb_rsp` module but not the proxy) exists as a fallback and is why §6 puts the engine at
 crate level, but it is second choice.
 
+**One thing has to go first: file syncing.** A session with `hostConfig` set syncs files from the
+extension's install directory to a remote working directory. That is right for a real remote probe
+and wrong for every local session, which would be all of them under this plan — copying files to a
+directory on the same disk they came from. Local mode exists today as a way to **simulate** a remote
+session without owning a second machine, and it earned its keep; but the simulation's cost is
+exactly the behaviour that must not survive into production. Turn the syncing off before making local
+sessions the default path, not after — item 18a, which gates item 19.
+
 **Blocking for Phase 4.** Phases 1–3 are unaffected: the codec, the mux and its tests are the same
 code either way.
 
@@ -1471,7 +1610,7 @@ Phases 1–3 do not depend on the §8 decision. Each item is sized to be a revie
 
 ### Phase 3 — Integration into `ProxyServer`
 
-- [ ] **13.** Retain `stream_id_str` on `PortInfoListner`/`PortInfo` (it is already on the wire in
+- [x] **13.** Retain `stream_id_str` on `PortInfoListner`/`PortInfo` (it is already on the wire in
       `PortReserved`; the Agent throws it away today). **Also add to `PortReserved`**, for `GdbRsp`
       streams: `packet_size` (§4.7.1), so the TypeScript side can retire its blind 512-byte chunking
       on paths that do not go through `chunk.rs`; and the **mux listener port** the Agent bound for
@@ -1485,6 +1624,12 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
       `portsNeeded`.
       _This enum is also what [Stream-Flow-Control.md](./Stream-Flow-Control.md) needs for its own
       throttling policy — one classification serves both._
+- [ ] **13a.** _(deferred, needs a TypeScript consumer.)_ The `PortReserved` wire fields item 13
+      described but did not need: `packet_size` (§4.7.1), so the TS side can retire its blind
+      512-byte chunking on paths that do not go through `chunk.rs`; and the mux listener port for the
+      local topology (§4.7.2), which becomes that stream's `localPort`. Both are additive and wait on
+      item 19.
+
 - [x] **14.** Give the mux ownership of the server socket for `StreamKind::GdbRsp` streams,
       replacing that stream's `read_and_forward` and the direct `pinfo.stream` write in
       `message_loop`. **One mux, on the core's controller `GdbRsp` stream only** (§4.7) — the
@@ -1516,15 +1661,53 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
       ownership, the waiter standing down, both directions byte-for-byte, `TargetState::Stopped`
       observed from the `?` reply, and the trace file written. That clears the wiring; only hardware
       can clear the timing and OpenOCD's real packet mix.
-- [ ] **15b.** Act on §3.11: reset the GDB side of `MuxCore` on `D`+`OK` and on a fresh `qSupported`,
-      and log the no-ack-reconnect hazard when it is detectable. Tests: a `D` is forwarded even with
-      our own request in flight, and a second `qSupported` clears the previous GDB's pending entries
-      without touching ours. No wire change and no client cooperation — which is the point, since
-      `disconnect` is invisible to us and teardown is when the adapter is most likely to be killed.
+- [ ] **15b.** React to the GDB packets that mean something to us. None of this needs a wire change or
+      any client cooperation, which makes it a useful backstop whatever else is true — though the
+      _primary_ signal for "GDB went away" belongs in the transport, not here (item 15c).
+      **(a)** Reset the GDB side of `MuxCore` on `D`+`OK` and on a fresh `qSupported`, and log the
+      no-ack-reconnect hazard when it is detectable. Tests: a `D` is forwarded even with a request of
+      ours in flight, and a second `qSupported` clears the previous GDB's pending entries without
+      touching ours.
+      **(b)** Publish `\x03` to consumers rather than gating them (§2 invariant 3). The signal is
+      already there and unused — `StateTracker` sets `interrupt_pending` and only its own tests read
+      it. What a consumer should do with it is **TBD and per consumer**: a memory read is what GDB is
+      about to do anyway, while a trace drain may want a final pass or an immediate stop. Settle it by
+      experiment, one consumer at a time, once there are consumers to experiment on.
+      **(c)** Decide whether `\x03` gets a pending entry of its own. It is a transaction — a stop
+      reply follows — but that reply is the one the outstanding resume is already waiting for, and
+      there is only one of it. Either it stays unmodelled as today, or the FIFO learns that a single
+      reply can retire two entries.
+- [ ] **15c.** **The funnel has no client→server stream close.** Not an RSP matter — it affects every
+      stream the Agent serves — but the mux is what makes the cost visible, so it is recorded here and
+      belongs to [Proxy-Plan.md](./Proxy-Plan.md) to design; the client-side defects it interacts with
+      are catalogued in
+      [Proxy-Client-Stream-Issues.md](./Proxy-Client-Stream-Issues.md). Today a local consumer can go away and
+      the Agent never learns: the gdb-server keeps producing, the Agent keeps forwarding over the
+      funnel, and the client has nowhere to put it. It goes unnoticed because in practice these closes
+      only happen during session teardown, when everything is being dismantled anyway.
+      What it costs, by stream: **SWO** keeps streaming bytes nobody will read — real bandwidth in the
+      remote topology, and an unbounded `fromServerBuffer` in the client. A **duplicated gdb stream**
+      keeps its second connection to the gdb-server open after the live-watch GDB has gone, holding a
+      `-gdb-max-connections` slot for nothing (§4.7). For the **controller gdb stream** it is the
+      missing call to `RspChannel::gdb_disconnected()`, which exists and has no caller.
+      The 1:1 rule in §4.7.5 simplifies this: one consumer per stream, so the notification is
+      unambiguous.
+      Two decisions come with it. **(a)** A duplicated stream should be dismantled completely; it was
+      created on demand and its port belongs to the parent. **(b)** The original stream should become
+      re-openable rather than gone: `StreamClosed` currently does `streams.remove()`, so
+      `handle_start_stream` then rejects the id as unknown. Setting `conn = StreamConn::Idle` instead
+      is the whole fix — that variant already means "port known, nothing connected" — at the cost of
+      `StreamStatus` reporting `Ready` rather than `NotAvailable` for such a stream, which is the more
+      truthful answer anyway.
 - [ ] **16.** Publish the mux's observations to interested parties (`TargetState` changes, `RspCaps`,
       GDB disconnect). **No per-core state extraction needed** — §4.7's controller rule means the only
       connection ever muxed is the one that resumes, so `MuxCore`'s own `StateTracker` is correct by
       construction. Revisit only if the maximal mux (§12 q4) is ever taken on.
+- [ ] **16b.** Check each server in §7 for the §4.7.4 pattern — target state disturbed, or worse, by
+      the mere arrival of a second GDB connection. **probe-rs crashes** rather than refusing, so for it
+      the answer must come from a declared limit and never from an attempt (§4.7.5). OpenOCD wipes breakpoints and watchpoints; the others are
+      unknown and `rsp-probe` cannot see it, since it is a side effect on the _first_ connection.
+      Worth an upstream one-liner for OpenOCD regardless of what we do here.
 - [x] **17a.** `mdbg rsp-probe` (§7) — a raw-RSP diagnostic that asks a live gdb-server every
       matrix question in one pass, including the one **no arrangement of GDB processes can test**
       (does it answer `m` while a `c` is outstanding). Tested against fake servers that do and do
@@ -1532,24 +1715,54 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
 - [x] **17b (OpenOCD).** Run on hardware: both critical cells **YES** — `m` answered in 0.5 ms with a
       `c` outstanding on the same connection, and a resume issued on conn2 answered on conn2. Tier
       **`Full`**. §7's OpenOCD column is complete.
-- [ ] **16b.** Check each server in §7 for the §4.7.4 pattern — target state disturbed by the mere
-      arrival of a second GDB connection. OpenOCD wipes breakpoints and watchpoints; the others are
-      unknown and `rsp-probe` cannot see it, since it is a side effect on the _first_ connection.
-      Worth an upstream one-liner for OpenOCD regardless of what we do here.
-- [ ] **17c.** The other five: J-Link, ST-LINK, pyOCD, probe-rs, QEMU. Closed source or a different
-      architecture, so `rsp-probe` is the only way in — there is no chain to trace as there was for
-      OpenOCD.
+- [ ] **17c.** The other five: J-Link, ST-LINK, pyOCD, probe-rs, QEMU.
+      **Test `JLinkGDBServer`, and do not infer from Ozone.** SEGGER's own debugger talks to the DLL
+      directly and can do things its gdb-server does not expose over RSP; the matrix is about what the
+      gdb-server answers, so an Ozone capability is not evidence for a column here. The same caution
+      applies to any vendor GUI debugger sharing a probe backend with a gdb-server. `rsp-probe` is the way in for
+      the closed ones; pyOCD and probe-rs have source to read, as OpenOCD did.
+      **pyOCD now advertises `QNonStop`**, which is suggestive rather than conclusive. Non-stop mode's
+      defining property is that the stub keeps answering packets while threads run, so a stub that
+      implements it honestly must have no halt gate on its memory path — which is the §7 question. But
+      advertising a feature is not implementing it, and the tier we care about is about **all-stop**
+      behaviour on a connection with a `c` outstanding; we never enter non-stop mode (§3.6). So treat
+      it as a strong prior that pyOCD is at least `Full`, and confirm with `rsp-probe` plus the
+      source now in hand. If it holds, it is the second independent data point that `Full` is normal
+      rather than an OpenOCD peculiarity.
+      **Measure in the mode we actually use.** A server may legitimately behave differently once
+      non-stop is negotiated — the same way a stub is supposed to withhold extended behaviours from a
+      plain `remote` client that did not ask for `extended-remote`. So a `Full` result observed in
+      non-stop would not transfer to all-stop, and all-stop is where we live. `rsp-probe` never
+      negotiates non-stop, which is exactly why that is the right default. Worth knowing too that
+      OpenOCD **declines** `QNonStop` outright and says why — its threading model cannot honour it —
+      which is the honest position; a server that advertises it may simply mean something narrower by
+      it.
 
 ### Phase 4 — Consumers _(blocked on §8)_
 
 - [ ] **18.** Decide and record how local (non-proxy) sessions reach the Agent. Preferred:
       `hostConfig.type = "local"` for all sessions.
+- [ ] **18a.** _(prerequisite for 19, and for 18 becoming the default path.)_ Stop syncing files
+      when the "remote" is local. Today a
+      session with `hostConfig` set copies files from the extension's install directory to a remote
+      working directory; with every session local that is a copy to the same disk. Local mode was
+      built to simulate a remote session without a second machine and did that job well — this is
+      retiring the simulation, not the feature, and real remote sessions keep syncing.
 - [ ] **19.** Expose the primitive to TypeScript: control requests/events for memory read/write and
       state subscription, authored in Rust with `ts_rs` and exported in `ensure_ts_exports`
       (AGENTS.md — never hand-write the generated TS).
 - [ ] **20.** Port RTT: move the control-block walk from `rtt-builtin.ts` onto the mux, on its own
       thread, with the existing decoder pipeline unchanged. Keep the TS path behind a switch until
       parity is measured. Server-side RTT stays available and unchanged.
+- [ ] **20a.** _(low priority.)_ Move live watch onto the controller connection as an Agent
+      **consumer** — memory reads and writes through item 11b/19, not a second GDB. This is the
+      answer to §12 q4 and it removes, in one move, `duplicateStream`'s extra connection,
+      `CDLiveWatchSetup` and `-gdb-max-connections`, the §4.7.4 breakpoint wipe, and the fact that a
+      secondary connection can never learn the run state. **Priority is per use case, not global:** for
+      sessions that halt normally it stays low, because the two-GDB path works; for a target that must
+      keep running it is the only route with OpenOCD at all (§3.12), and there it is not an
+      optimisation. The route is known — live watch stops being a GDB and becomes a consumer like RTT —
+      so this is scheduling, not design risk.
 - [ ] **21.** Measure. RTT throughput and latency, Agent vs. live-GDB, in both topologies, plus
       GDB's own step/continue latency with a consumer active. Also settle §4.7.2 empirically:
       **local via a mux-owned TCP listener vs. local via the funnel**, watching jitter as well as
@@ -1578,14 +1791,14 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
    not SWD time; and in ack mode it collides with the server's post-reply ack read. The rule
    (`depth > 1` only in no-ack mode, default 1) follows from OpenOCD's code. What remains is
    whether any other server is _less_ tolerant than OpenOCD, which recovers with a warning.
-4. **§4.7 — should the mux eventually carry multiple GDB clients on one server socket?** The case
-   got stronger in review: it would remove `duplicateStream`'s extra connections, retire
-   `CDLiveWatchSetup` and its per-server equivalents, make live watch work on strictly
-   single-connection servers, and let the mux hand the live GDB the run/stop state the server will
-   not send a second connection. The cost is virtualising per-client `qSupported`, ack mode, `Hg`
-   and `qXfer`, plus an ownership policy for `Z`/`z` — which is per-core state two GDBs would both
-   think they own, and the genuinely hard part. Out of scope here, but worth knowing whether it is
-   the intended end state, because it changes how much the Phase-2 FIFO should generalise.
+4. **§4.7 — should the mux eventually carry multiple GDB clients on one server socket?** ~~Open~~ —
+   **answered no, by removing the need.** Everything it promised (no `duplicateStream` connections,
+   no `CDLiveWatchSetup`, live watch on single-connection servers, run/stop state for the second
+   client, and no §4.7.4 breakpoint wipe) follows from making live watch an Agent **consumer**
+   instead of a second GDB — item 20a. That needs none of the hard part: no per-client `qSupported`,
+   ack mode, `Hg` or `qXfer` virtualisation, and no `Z`/`z` ownership policy between two GDBs that
+   both think they own the breakpoint table. It would only come back for a genuine second _user_
+   GDB, which nobody has asked for.
 5. **`g`/`p` register reads** (§4.5) — halted-only, and formally `Hg`-dependent on a socket where
    we may not set `Hg`. Needed for stack probing. Decide at Phase 4 item 23.
 6. **Reads while the target runs are not atomic with respect to the target.** RTT copes by design

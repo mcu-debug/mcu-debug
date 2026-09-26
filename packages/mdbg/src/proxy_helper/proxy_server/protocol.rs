@@ -389,6 +389,10 @@ pub enum ControlRequest {
         server_args: Vec<String>,
         /** Environment variables for the gdb-server process */
         server_env: Option<HashMap<String, String>>,
+        /** CWD of the gdb-server process */
+        server_cwd: Option<String>,
+        /** Security file path for the gdb-server process */
+        security_file: Option<String>,
     },
 
     #[serde(rename = "endSession")]

@@ -117,9 +117,10 @@ export class RttBufferManager extends EventEmitter {
                 throw new Error("RTT is not enabled in the configuration. This method should not have been called.");
             }
             this.intervalMs = this.config?.polling_interval ?? 100;
-            if (this.intervalMs < 50) {
-                // Something less than 50, allow it, but warn
-                this.mainSession.handleMsg(Stderr, "Warning: RTT polling interval too low. Setting to minimum of 50 ms.\n");
+            if (this.intervalMs < this.minIntervalMs) {
+                // Something less than 20, allow it, but warn
+                this.mainSession.handleMsg(Stderr, `Warning: RTT polling interval ${this.intervalMs} too low (< ${this.minIntervalMs}ms). Text windows may not be able to keep up\n`);
+                this.intervalMs = this.minIntervalMs;
             }
 
             this.cbAddr = parseAddress(this.config?.address || "0");
@@ -331,6 +332,9 @@ export class RttBufferManager extends EventEmitter {
     }
 
     // Start polling at regular intervals. We are either polling to find the RTT block, or to drain it.
+    private inInnerPoll: boolean = false;
+    private counter: number = -100;
+    private readonly minIntervalMs: number = 20;
     private async startPoll() {
         if (this.disableRtt) {
             return;
@@ -339,16 +343,29 @@ export class RttBufferManager extends EventEmitter {
         if (this.sessionStatus === "stopped") {
             stop = true;
         }
-        await this.doInnerPoll();
+        const now = Date.now();
+        if (!this.inInnerPoll) {
+            this.counter++;
+            if (this.counter % 10000 === 0) {
+                this.mainSession.handleMsg(Stderr, `Polling iteration: ${this.counter}\n`);
+            }
+            await this.doInnerPoll();
+        }
         if (!stop) {
+            let delta = this.intervalMs - (Date.now() - now);
+            if (delta <= 0) {
+                // We missed the previous interval, so use the minimum interval instead
+                delta = this.minIntervalMs;
+            }
             setTimeout(() => {
                 this.startPoll();
-            }, this.intervalMs);
+            }, delta);
         }
     }
 
     private async doInnerPoll() {
         try {
+            this.inInnerPoll = true;
             if (this.disableRtt) {
                 return;
             }
@@ -379,6 +396,8 @@ export class RttBufferManager extends EventEmitter {
             }
         } catch (e) {
             // console.error("RTT Poll error:", e);
+        } finally {
+            this.inInnerPoll = false;
         }
     }
 

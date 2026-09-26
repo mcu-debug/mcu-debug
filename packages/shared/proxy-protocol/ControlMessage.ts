@@ -54,6 +54,14 @@ export type ControlMessage = { seq: number } & (
                * Environment variables for the gdb-server process
                */
               server_env: { [key in string]: string } | null;
+              /**
+               * CWD of the gdb-server process
+               */
+              server_cwd: string | null;
+              /**
+               * Security file path for the gdb-server process
+               */
+              security_file: string | null;
           };
       }
     | { method: "endSession" }

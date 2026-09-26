@@ -11,6 +11,7 @@ import {
     defSymbolFile,
     ConfigurationArguments,
     substituteEnvVarsInConfig,
+    HostConfig,
 } from "../adapter/servers/common";
 import { IHostAdapter } from "./host-adapter";
 import { logger } from "./logger";
@@ -268,15 +269,27 @@ export class McuDebugConfigurationProviderBase {
     }
 
     public async resolveDebugConfigurationWithSubstitutedVariables(folderPath: string | undefined, config: ConfigOptions): Promise<ConfigOptions | undefined> {
+        const remoteName = this.hostAdapter.getRemoteName();
+        if (!remoteName) {
+            // This not a remote session. If no hostConfig is specified, we default to local.
+            let hc = config.hostConfig as HostConfig | undefined | null | boolean;
+            const isSsh = hc && typeof hc === "object" && hc?.type === "ssh" && hc?.enabled;
+            if (!isSsh && (hc === undefined || hc === null || typeof hc === "boolean")) {
+                config.hostConfig = { type: "local", enabled: true };
+            } else if (!isSsh) {            // If ssh then can't assume local
+                hc.type = "local";          // auto becomes local by default
+                hc.enabled = true;
+            }
+        }
         if (typeof config.hostConfig === "boolean") {
             if (config.hostConfig === false) {
-                config.hostConfig = undefined;
+                config.hostConfig = { type: "local", enabled: true };
             } else {
-                config.hostConfig = { enabled: true, type: "auto" };
+                config.hostConfig = { type: "auto", enabled: true };
             }
         }
         if (!config.hostConfig?.enabled) {
-            config.hostConfig = undefined;
+            config.hostConfig = { type: "local", enabled: true };
         }
         if (config.hostConfig?.enabled && config.hostConfig?.type === "auto" && !this.hostAdapter.getRemoteName()) {
             config.hostConfig = undefined;

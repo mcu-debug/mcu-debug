@@ -1,9 +1,10 @@
 import * as net from "net";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import { GDBDebugSession } from "./gdb-session";
 import { GDBServerSession } from "./server-session";
-import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, processEnvForConfig } from "./servers/common";
+import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, processEnvForConfig, HostConfig, needsProxySync } from "./servers/common";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
 import { DefaultPortBase } from "@mcu-debug/shared";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
@@ -47,6 +48,7 @@ export class ProxyClient extends EventEmitter {
     private clientStreams: Map<number, RemoteServer> = new Map();
     private heartbeatTimer: NodeJS.Timeout | null = null;
     private cwd: string = process.cwd();
+    private securityFile: string | null = null;
     constructor(
         public session: GDBDebugSession,
         public serverSession: GDBServerSession,
@@ -162,7 +164,12 @@ export class ProxyClient extends EventEmitter {
      */
     private async syncFiles() {
         const cwd = this.cwd;
-        const syncFiles = (typeof this.session.args.hostConfig === "object" && this.session.args.hostConfig?.syncFiles) || [];
+        const isHostConfigObject = typeof this.session.args.hostConfig === "object" && this.session.args.hostConfig !== null;
+        const hostConfig = isHostConfigObject ? (this.session.args.hostConfig as HostConfig) : null;
+        if (!needsProxySync(hostConfig)) {
+            return;
+        }
+        const syncFiles = (hostConfig && hostConfig?.syncFiles) || [];
         let counter = 0;
         const maxFiles = 20; // Limit the number of files to sync to prevent abuse and performance issues
         let hitMaxFiles = false;
@@ -505,16 +512,38 @@ export class ProxyClient extends EventEmitter {
         // Opt-in reconnect was considered and deferred, with the conditions it would have to
         // meet: docs-internal/Proxy-Connection-Loss.md.
         await this.syncFiles();
+        const isLocal = typeof this.args.hostConfig === "object" && this.args.hostConfig?.type === "local";
+        if (isLocal) {
+            const rand = Math.random().toString(36).substring(2, 15);
+            const fName = path.join(os.tmpdir(), `mcu-debug-${rand}`).replace(/\\/g, "/");
+            fs.writeFileSync(fName, "");
+            this.securityFile = fName
+        }
+
+        const params = {
+            server_path: executable,
+            server_args: args,
+            server_env: processEnvForConfig(this.session.args),
+            server_cwd: isLocal ? this.args.cwd : null,
+            security_file: isLocal ? this.securityFile : null,
+        };
         const cmd: ControlMessage = {
             seq: this.nextSeq++,
             method: "startGdbServer",
-            params: {
-                server_path: executable,
-                server_args: args,
-                server_env: processEnvForConfig(this.session.args),
-            },
+            params: params,
         };
         return this.sendControlCommand(cmd);
+    }
+
+    private cleanupSecurityFile() {
+        if (this.securityFile) {
+            try {
+                fs.unlinkSync(this.securityFile);
+            } catch {
+                // Ignore errors
+            }
+            this.securityFile = null;
+        }
     }
 
     private msgBuffer: Buffer = Buffer.alloc(0);
@@ -568,15 +597,18 @@ export class ProxyClient extends EventEmitter {
                 switch (msg.event) {
                     case "gdbServerLaunched":
                         this.handleGdbServerLaunched(msg.params.pid, msg.params.port);
+                        this.cleanupSecurityFile();
                         break;
                     case "gdbServerExited":
                         this.handleGdbServerExited(msg.params.pid, msg.params.exit_code);
+                        this.cleanupSecurityFile();
                         break;
                     case "streamReady":
                         this.handleStreamReady(msg.params.stream_id, msg.params.port);
                         break;
                     case "streamClosed":
                         this.handleStreamClosed(msg.params.stream_id);
+                        this.cleanupSecurityFile();
                         break;
                     default:
                         this.logError(`Received unknown proxy event: ${msg.event}`);
@@ -607,7 +639,7 @@ export class ProxyClient extends EventEmitter {
     private handleGdbServerExited(pid: any, exit_code: any) {
         // Let any streams drain before we emit the serverExited event, so that the streams can be closed gracefully
         setTimeout(() => {
-            this.emit("serverExited", { pid, exit_code });
+            this.emit("serverExited", exit_code);
         }, 100);
     }
 
@@ -750,7 +782,7 @@ export class RemoteServer {
                     cleanupSocket(socket);
                     if (!this.endingSession) {
                         this.proxyManager.logError(`Error on client socket for ${this.pInfo.stream_id_str}: ${e.message}`);
-                        throw new Error(`Error on client socket for ${this.pInfo.stream_id_str}, ${e}`);
+                        // throw new Error(`Error on client socket for ${this.pInfo.stream_id_str}, ${e}`);
                     }
                 });
 

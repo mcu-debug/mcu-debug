@@ -302,6 +302,41 @@ export enum SessionMode {
     Reset = "reset",
 }
 
+/**
+ * Determines whether file synchronization is needed based on the host configuration.
+ * hostConfig Regardless of syncFiles, does the configuration even require syncing?
+ * If type is local we don't sync files unless `pvtForceSync` is true to emulate a remote debug
+ * Plan is to always use the proxy server. But for the type is local, we only sync if `pvtForceSync` is true.
+ * So, avoid syncing if the host is local and `pvtForceSync` is not true. Every other case requires syncing.
+ * 
+ * We are expecting the hostConfig to already have gone through resolveDebugConfiguration or a similar resolution step.
+ * @returns True if synchronization is needed, false otherwise.
+ */
+export function needsProxySync(hostConfig: HostConfig | any): boolean {
+    if (hostConfig === undefined || hostConfig === null || hostConfig === false) {
+        return false;
+    }
+    const isObject = typeof hostConfig === "object";
+    if (isObject && hostConfig.type === "local") {
+        // forceSync can only be true if the launch.json had an object for hostConfig.
+        return hostConfig.forceSync === true;
+    }
+    return true;
+}
+
+export function addSyncFileIfNeeded(config: ConfigurationArguments, local: string, remote?: string): void {
+    if (!needsProxySync(config.hostConfig)) {
+        return;
+    }
+    if (typeof config.hostConfig !== "object" || config.hostConfig === null) {
+        config.hostConfig = { type: "local", enabled: true };
+    }
+    if (!config.hostConfig.syncFiles) {
+        config.hostConfig.syncFiles = [];
+    }
+    config.hostConfig.syncFiles.push({ local, remote });
+}
+
 export interface HostConfig {
     enabled: boolean;
     // User-facing fields (set in launch.json)
@@ -335,6 +370,7 @@ export interface HostConfig {
     pvtSshTunnelLocalPort?: number; // Local port of the SSH -L tunnel (ssh type only)
     pvtNetworkMode?: string; // Resolved runtime network mode hint (e.g. local, ssh, auto-wsl, auto-dev-container)
     pvtResolved?: boolean; // Whether the config has been resolved and is ready to be used by the DA
+    forceSync?: boolean; // Internal use only. Not for definitions.js/launch.json.
 }
 
 export class TcpPortDef {

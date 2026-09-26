@@ -119,7 +119,7 @@ export class GDBServerSession extends EventEmitter {
             return;
         }
 
-        if (this.session.args.hostConfig) {
+        if (true /*this.session.args.hostConfig*/) {
             this.proxyClient = new ProxyClient(this.session, this);
             // Registered before `start()`, so a connection that fails half-way is still
             // handed to the next session to clean up rather than being forgotten.
