@@ -141,6 +141,21 @@ impl FrameWriter {
 
 // ── Stream bookkeeping ────────────────────────────────────────────────────────
 
+/// Which side ended a stream's connection to the gdb-server.
+///
+/// It decides one thing: whether the RSP multiplexer is told that **GDB** went away, as
+/// opposed to simply being stopped. That distinction is not observable from the socket the
+/// mux reads -- a consumer closing on the client side leaves no trace on the wire
+/// (`docs-internal/gdb-rsp.md` §3.11) -- so it has to be carried down from the call site
+/// that knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamEnd {
+    /// The client asked, through `CloseStream`: its local consumer went away.
+    ClientLeft,
+    /// The gdb-server hung up, and this stream's forwarder reported EOF.
+    ServerLeft,
+}
+
 /// How a stream's connection to the gdb-server is being carried.
 ///
 /// A three-state enum rather than `Option<TcpStream>` so that **a muxed stream holds no
@@ -709,10 +724,15 @@ impl ProxyServer {
                 }
                 ProxyEvent::StreamClosed { stream_id } => {
                     eprintln!("Stream {} closed", stream_id);
-                    // Before anything else: the mux's own teardown sends this same
-                    // event, so the entry has to be gone by the time that one arrives.
-                    self.stop_rsp_mux(stream_id);
-                    self.streams.remove(&stream_id);
+                    // `release_stream` stops the mux before anything else, which matters
+                    // here: the mux's own teardown sends this same event, so the entry has
+                    // to be gone by the time that one arrives.
+                    //
+                    // It used to `streams.remove()` unconditionally. That is right for a
+                    // duplicate and wrong for an original -- it is what made a reconnect
+                    // on the same id fail as an unknown stream, rather than reusing the
+                    // port reservation that is still perfectly good (item 15c(b)).
+                    self.release_stream(stream_id, StreamEnd::ServerLeft);
                     let event = ProxyServerEvents::StreamClosed { stream_id };
                     send_or_break!(event.send(&self.writer));
                 }

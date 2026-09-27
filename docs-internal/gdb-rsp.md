@@ -389,7 +389,7 @@ The comment directly above `disconnect` is explicit: _"Same as remote_detach, bu
 packet; just disconnect."_ OpenOCD handles both ends of this — `case 'D'` → `gdb_detach()`, plus a
 `connection_closed_handler` for the silent case (`gdb_server.c:3746`, `:1138`).
 
-Three consequences for the mux:
+Four consequences for the mux:
 
 1. **`D` is a free, reliable signal** for the clean case, and it is the mux's cue to reset the GDB
    side: drop GDB's pending entries, reset ack mode, re-learn caps on the next `qSupported`. Our own
@@ -401,15 +401,16 @@ Three consequences for the mux:
    before. It is self-synchronising: it needs no notification, no cooperation from a detach the
    server may mishandle, and no clean shutdown — which matters, because teardown is exactly when the
    debug adapter is most likely to be killed mid-flight.
-4. **But the transport could simply tell us, and that is the better primary signal.** GDB's socket
-   closes on the _client_ side, where the client sees it plainly — it just has no way to say so. The
-   funnel has no client→server stream close at all: `serial.close` exists because serial ports outlive
+4. **But the transport can simply tell us, and that is the better primary signal.** GDB's socket
+   closes on the _client_ side, where the client sees it plainly — it just had no way to say so. The
+   funnel had no client→server stream close at all: `serial.close` exists because serial ports outlive
    sessions, while streams were assumed to live exactly as long as the session. That assumption is
-   what is wrong. A stream's **consumer** comes and goes within a session — GDB reconnecting, an SWO
-   viewer opened and closed, the live-watch GDB going away — and nothing tells the Agent. So this is
-   not an RSP problem at all, and fixing it there would be fixing it in the wrong place; see item 15c.
-   The in-band signals above stay useful as backstops for the case the transport cannot see: a GDB
-   that detaches without its socket closing.
+   what was wrong. A stream's **consumer** comes and goes within a session — GDB reconnecting, an SWO
+   viewer opened and closed, the live-watch GDB going away — and nothing told the Agent. So this was
+   not an RSP problem at all, and fixing it there would have been fixing it in the wrong place. **Done
+   as item 15c**: `CloseStream` on the funnel, and `stop_rsp_mux` calls `gdb_disconnected()` when it is
+   the client that left. The in-band signals above stay useful as backstops for the case the transport
+   cannot see: a GDB that detaches without its socket closing.
 
 **The mux must never delay or swallow a `D`.** Refusing a detach leaves the firmware in whatever
 state the halt left it, which is a real cost to the user and the thing several upstream detach fixes
@@ -474,6 +475,33 @@ help here at all. This applies to the **primary** GDB as much as a secondary. No
 is not sufficient for a session that must _never_ halt, because 20a still presumes a controller GDB
 that attached — and attaching halted it. A never-halt monitoring session means no GDB at all, which is
 a larger feature than this design covers.
+
+### 3.13 The interrupt, audited against the manual
+
+Checked line by line against
+[E.9 Interrupts](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Interrupts.html) — the
+authoritative text, not the archived copy that turns up first in a search, which predates half of
+this. Only the all-stop column matters; we do not run non-stop (§4.7). Every row holds today, and the
+two that hold only by accident of structure now have tests.
+
+| What the manual says                                                                                                                            | What we do                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `\x03` is "the single byte `0x03` without any of the usual packet overhead"                                                                     | `FrameKind::Interrupt`, one byte, forwarded verbatim. **No pending entry** — it is not a packet, so there is nothing to match or time out                                                                                                                                                                                              |
+| "When a `0x03` byte is transmitted as part of a packet, it is … packet data and does _not_ represent an interrupt" — e.g. inside an `X` payload | Holds structurally: `0x03` is only examined as the _first_ byte of the buffer, and once a `$` is seen the scan runs to the terminating `#`. Now pinned by a test                                                                                                                                                                       |
+| "Stubs are not required to recognize these interrupt mechanisms"                                                                                | Nothing of ours waits for a reply to one. Had we given it a pending entry, a stub that ignores `\x03` would have left it outstanding for ever                                                                                                                                                                                          |
+| A successful stub "should send one of the stop reply packets"                                                                                   | In all-stop that reply also answers GDB's outstanding resume, so it matches that entry rather than arriving unattributed. If none is outstanding it is unmatched and forwarded to GDB, with the state observed either way (§4.1)                                                                                                       |
+| "Interrupts received while the program is stopped are **queued** and the program will be interrupted when it is resumed next time"              | `interrupt_pending` now **survives a resume**. It used to be cleared, which described the following run as open-ended when it was about to stop at once. Any halt clears it, so it cannot stick                                                                                                                                        |
+| In non-stop GDB sends `vCtrlC` instead                                                                                                          | Not modelled, deliberately, and `classify_client` says so at the spot where it would go. It is a packet, so if one ever arrives it is classified `ORDINARY` (`OK`/`E nn`) — accidentally the right shape                                                                                                                               |
+| `BREAK`, or `BREAK` then `g`, selectable with `interrupt-sequence`; over TCP the telnet `BREAK` sequence                                        | Forwarded byte for byte, because unrecognised bytes between frames are `FrameKind::Garbage` and **garbage is still forwarded**. So a user who sets `interrupt-sequence break` is not broken by us — but the trace calls those bytes garbage, which would mislead anyone reading it. Cosmetic; worth a special case if it ever comes up |
+
+**The one rule that matters beyond forwarding.** A queued interrupt fires on the _next_ resume,
+whoever issues it. If the Agent could resume the target, a `\x03` that GDB sent and gave up on would
+halt the target under our resume, and GDB would receive a stop reply for a run it never started.
+§4.5 forbids us from sending any resume, so this cannot happen — but it is a second, independent
+reason for that rule, and a reason it must not be relaxed for "just a single step".
+
+Multiple `\x03`s need no handling at all: each is implementation-defined, extras are queued, and we
+count none of them. This was checked because it looked like it might need bookkeeping; it does not.
 
 ---
 
@@ -1676,32 +1704,63 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
       it. What a consumer should do with it is **TBD and per consumer**: a memory read is what GDB is
       about to do anyway, while a trace drain may want a final pass or an immediate stop. Settle it by
       experiment, one consumer at a time, once there are consumers to experiment on.
-      **(c)** Decide whether `\x03` gets a pending entry of its own. It is a transaction — a stop
-      reply follows — but that reply is the one the outstanding resume is already waiting for, and
-      there is only one of it. Either it stays unmodelled as today, or the FIFO learns that a single
-      reply can retire two entries.
-- [ ] **15c.** **The funnel has no client→server stream close.** Not an RSP matter — it affects every
-      stream the Agent serves — but the mux is what makes the cost visible, so it is recorded here and
-      belongs to [Proxy-Plan.md](./Proxy-Plan.md) to design; the client-side defects it interacts with
-      are catalogued in
-      [Proxy-Client-Stream-Issues.md](./Proxy-Client-Stream-Issues.md). Today a local consumer can go away and
-      the Agent never learns: the gdb-server keeps producing, the Agent keeps forwarding over the
-      funnel, and the client has nowhere to put it. It goes unnoticed because in practice these closes
-      only happen during session teardown, when everything is being dismantled anyway.
-      What it costs, by stream: **SWO** keeps streaming bytes nobody will read — real bandwidth in the
-      remote topology, and an unbounded `fromServerBuffer` in the client. A **duplicated gdb stream**
-      keeps its second connection to the gdb-server open after the live-watch GDB has gone, holding a
-      `-gdb-max-connections` slot for nothing (§4.7). For the **controller gdb stream** it is the
-      missing call to `RspChannel::gdb_disconnected()`, which exists and has no caller.
-      The 1:1 rule in §4.7.5 simplifies this: one consumer per stream, so the notification is
-      unambiguous.
-      Two decisions come with it. **(a)** A duplicated stream should be dismantled completely; it was
-      created on demand and its port belongs to the parent. **(b)** The original stream should become
-      re-openable rather than gone: `StreamClosed` currently does `streams.remove()`, so
-      `handle_start_stream` then rejects the id as unknown. Setting `conn = StreamConn::Idle` instead
-      is the whole fix — that variant already means "port known, nothing connected" — at the cost of
-      `StreamStatus` reporting `Ready` rather than `NotAvailable` for such a stream, which is the more
-      truthful answer anyway.
+      **(c)** ~~Decide whether `\x03` gets a pending entry of its own.~~ **Settled: it stays
+      unmodelled**, and the manual is what settles it — see §3.13. "Stubs are not required to
+      recognize these interrupt mechanisms", so a pending entry for an interrupt could legitimately
+      never be retired; and when the stub _does_ honour it, the stop reply that follows is the one the
+      outstanding resume is already waiting for, so there is nothing for a second entry to match. The
+      FIFO does not need to learn that one reply can retire two entries. Note for (b): a queued
+      interrupt survives a resume (§3.13), so a consumer that backs off while one is pending must not
+      assume a resume cleared it.
+- [x] **15c.** **The funnel had no client→server stream close.** Not an RSP matter — it affects every
+      stream the Agent serves — but the mux is what made the cost visible, so it is recorded here. The
+      client-side defects it interacts with are catalogued in
+      [Proxy-Client-Stream-Issues.md](./Proxy-Client-Stream-Issues.md).
+      What it cost, by stream, and why each is now closed:
+      **SWO** kept streaming bytes nobody would read — real bandwidth in the remote topology, and an
+      unbounded `fromServerBuffer` in the client. A **duplicated gdb stream** kept its second
+      connection to the gdb-server open after the live-watch GDB had gone, holding a
+      `-gdb-max-connections` slot for nothing (§4.7). For the **controller gdb stream** it was the
+      missing call to `RspChannel::gdb_disconnected()`, which existed with no caller.
+      **Done**, in four pieces:
+    - `ControlRequest::CloseStream { stream_id }` on the wire, sent from `cleanupSocket` in
+      `proxy-client.ts` — the only place that can see it, since a consumer's socket terminates on the
+      client side and the Agent has no way to observe it.
+    - `ProxyServer::release_stream`, shared by the client-initiated close and the gdb-server-initiated
+      one, implementing both decisions below.
+    - `stop_rsp_mux` now takes a `StreamEnd`, and tells the mux `gdb_disconnected()` when the
+      **client** is what left. That is the transition §3.11 says is invisible on the wire, so the
+      transport is the only thing that can report it. Thin today because no consumers are attached
+      yet; the ordering is what makes it stop being thin without a redesign.
+    - The **cascade**: `RemoteServer.close()` sets `endingSession` before destroying its sockets,
+      which silences `cleanupSocket`, so closing the _original_ stream never reported the duplicates
+      on its listener. `close(notifyAgent)` reports them first. Covered by
+      `proxy-client-streams.test.ts`.
+      Both decisions were taken as written. **(a)** A duplicated stream is dismantled completely; it
+      was created on demand and its port belongs to its parent. **(b)** The original becomes
+      re-openable rather than gone: `conn = StreamConn::Idle` — that variant already means "port
+      known, nothing connected" — at the cost of `StreamStatus` reporting `Ready` rather than
+      `NotAvailable`, which is the more truthful answer anyway. (b) applies to **both** paths now; the
+      server-initiated one still did `streams.remove()`, so a reconnect after the gdb-server dropped a
+      connection failed as an unknown stream id.
+      The 1:1 rule in §4.7.5 is what makes the notification unambiguous: one consumer per stream.
+      **Not unit-tested on the Rust side.** `release_stream` needs a live `ProxyServer`, which has no
+      cheap constructor, so the split is covered only by the TS tests and the full-server test. If it
+      regresses, the symptom is a reconnect refused as an unknown stream id.
+- [ ] **15d.** **Keep the mux alive across a GDB reconnect.** Falls out of 15c and is deliberately not
+      part of it. Today the channel's lifetime is the server connection's: GDB leaving closes it, and a
+      new GDB gets a new connection and a new mux. That is coherent and it is what makes (b) above
+      simple, but it means a reconnecting GDB walks into §4.7.4 — OpenOCD wipes breakpoints and
+      watchpoints on every new connection. Holding the server connection open across the gap would
+      avoid that, and would let Agent consumers keep working while no GDB is attached, which is what
+      `gdb_disconnected()` retains our pending requests _for_. The cost is a stream that is `Muxed`
+      with no GDB on it — a state nothing else models — and `handle_start_stream` having to reattach to
+      a live channel instead of spawning a port waiter. It would also retire the no-ack hazard at the
+      end of §3.11: a reconnecting GDB expects acks from a socket that is still in no-ack mode, and the
+      mux can currently only _notice_ that, because it cannot put the server back. Reusing the
+      connection means there is nothing to put back — the mux's own ack state is already correct for
+      it. **Worth doing only once consumers exist**
+      (Phase 4), since without them an idle mux holds a `-gdb-max-connections` slot and buys nothing.
 - [ ] **16.** Publish the mux's observations to interested parties (`TargetState` changes, `RspCaps`,
       GDB disconnect). **No per-core state extraction needed** — §4.7's controller rule means the only
       connection ever muxed is the one that resumes, so `MuxCore`'s own `StateTracker` is correct by

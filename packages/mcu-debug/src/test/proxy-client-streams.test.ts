@@ -215,6 +215,24 @@ test("closing the original stream takes the listener down", async () => {
     }
 });
 
+test("closing the original also releases the duplicates on its listener", async () => {
+    // The listener belongs to the original, so taking it down takes every duplicate on it down
+    // too -- locally. The Agent is told about the original by *sending* us this event; it knows
+    // nothing about the duplicates, and each one it still believes in holds a connection to the
+    // gdb-server and a -gdb-max-connections slot with it. close() sets endingSession before
+    // destroying sockets, so cleanupSocket cannot be what reports them.
+    const rig = await twoConsumers();
+    try {
+        rig.client.handleStreamClosed(ORIGINAL_STREAM_ID);
+
+        await waitFor(() => rig.fake.methods("closeStream").length === 1, "a closeStream request");
+        const ids = rig.fake.methods("closeStream").map((r) => r.params.stream_id);
+        assert.deepEqual(ids, [DUP_STREAM_ID], "only the duplicate needs reporting");
+    } finally {
+        rig.cleanup();
+    }
+});
+
 test("a consumer that goes away on its own is reported to the agent", async () => {
     // The Agent cannot see this: the consumer's socket terminates on the client side. Without the
     // report it keeps its own connection to the gdb-server open for a reader that has left, which for

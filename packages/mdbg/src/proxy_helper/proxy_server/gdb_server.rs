@@ -579,10 +579,31 @@ impl ProxyServer {
             ControlResponse::success(msg_seq, None).send(&self.writer).ok();
             return;
         }
+        self.release_stream(stream_id, StreamEnd::ClientLeft);
+        ControlResponse::success(msg_seq, None).send(&self.writer).ok();
+    }
 
+    /// Release a stream's connection to the gdb-server.
+    ///
+    /// Both ends can start this -- the client's consumer went away (`CloseStream`) or the
+    /// gdb-server hung up (`ProxyEvent::StreamClosed`) -- and what has to happen to the stream is
+    /// the same either way, which is why they share this. The two differ only in who gets told
+    /// afterwards, and in `end`.
+    ///
+    /// "Release" is not "forget", and the difference is per stream kind
+    /// (`docs-internal/gdb-rsp.md` item 15c):
+    ///
+    /// - a **duplicate** is dismantled completely -- decision (a). It was created on demand and
+    ///   its port belongs to the stream it was duplicated from, so there is nothing to reconnect
+    ///   to.
+    /// - an **original** keeps its `PortInfo` and its port reservation and goes back to
+    ///   [`StreamConn::Idle`] -- decision (b). That variant already means "port known, nothing
+    ///   connected", so `handle_start_stream` can connect it again. Removing the entry instead is
+    ///   what used to make a reconnect fail as an unknown stream id.
+    pub(super) fn release_stream(&mut self, stream_id: u8, end: StreamEnd) {
         // The mux first, if this was a muxed controller stream, so its threads stop reading a
         // descriptor we are about to shut down.
-        self.stop_rsp_mux(stream_id);
+        self.stop_rsp_mux(stream_id, end);
 
         if let Some(pinfo) = self.streams.get_mut(&stream_id) {
             // Shut down whichever half we still hold, so the gdb-server sees the connection end
@@ -592,18 +613,22 @@ impl ProxyServer {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
             pinfo.conn = StreamConn::Idle;
+        } else {
+            // Nothing left to release. Both ends can report the same close -- shutting the socket
+            // down here makes the forwarder report EOF, which comes back as `StreamClosed` for a
+            // stream we have already dealt with -- so this is the ordinary second notice, not a
+            // problem.
+            return;
         }
 
         if self.stream_meta.get(&stream_id).and_then(|m| m.duplicate_of).is_some() {
-            eprintln!("CloseStream: dismantling duplicated stream {}", stream_id);
+            eprintln!("Dismantling duplicated stream {}", stream_id);
             self.streams.remove(&stream_id);
             self.stream_meta.remove(&stream_id);
             self.reserved_ports.retain(|p| p.stream_id != stream_id);
         } else {
-            eprintln!("CloseStream: stream {} disconnected and left connectable", stream_id);
+            eprintln!("Stream {} disconnected and left connectable", stream_id);
         }
-
-        ControlResponse::success(msg_seq, None).send(&self.writer).ok();
     }
 
     pub(super) fn handle_duplicate_stream(&mut self, stream_id: u8, msg_seq: u64) {

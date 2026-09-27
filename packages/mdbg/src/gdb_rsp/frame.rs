@@ -429,6 +429,33 @@ mod tests {
     }
 
     #[test]
+    fn an_0x03_inside_a_packet_is_data_and_not_an_interrupt() {
+        // E.9 Interrupts is explicit about this: "When a 0x03 byte is transmitted as part
+        // of a packet, it is considered to be packet data and does not represent an
+        // interrupt. E.g., an 'X' packet, used for binary downloads, may include an
+        // unescaped 0x03 as part of its packet." Treating it as an interrupt would split
+        // the packet in two and hand the gdb-server a halt request it was never sent.
+        //
+        // It holds structurally rather than by a special case: `0x03` is only examined as
+        // the *first* byte of the buffer, and once a `$` has been seen the scan runs to the
+        // terminating `#`. Locked down here because the structure is what could change.
+        let body: &[u8] = b"X20000000,2:\x03\x03";
+        let sum = body.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        let mut raw = vec![b'$'];
+        raw.extend_from_slice(body);
+        raw.push(b'#');
+        raw.extend_from_slice(format!("{:02x}", sum).as_bytes());
+
+        let mut c = PacketCodec::new();
+        c.feed(&raw);
+        let frame = c.next_frame().expect("one packet");
+        assert_eq!(frame.kind, FrameKind::Packet);
+        assert_eq!(frame.payload, body, "the 0x03 bytes stay in the payload");
+        assert_eq!(frame.raw, raw, "and the bytes forwarded are the bytes received");
+        assert!(c.next_frame().is_none(), "nothing left over");
+    }
+
+    #[test]
     fn junk_between_frames_surfaces_as_garbage() {
         assert_eq!(kinds(b"x$OK#9a"), vec![FrameKind::Garbage, FrameKind::Packet]);
     }

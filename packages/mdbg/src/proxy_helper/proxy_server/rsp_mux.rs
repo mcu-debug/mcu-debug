@@ -282,8 +282,25 @@ impl ProxyServer {
     /// Called when the stream closes. Removing before shutting down matters: the
     /// channel's teardown calls `GdbSink::closed`, which sends another `StreamClosed`,
     /// and the entry must already be gone when that arrives.
-    pub(super) fn stop_rsp_mux(&mut self, stream_id: u8) {
+    /// Retire the mux on `stream_id`, if it had one.
+    ///
+    /// `StreamEnd::ClientLeft` is the one case where the mux is told that GDB itself went
+    /// away, and that call is not decoration. `gdb_disconnected` drops GDB's outstanding
+    /// requests and keeps **ours**: without it the core would be carrying entries for
+    /// replies that can never arrive, and any of our own in-flight requests would be
+    /// indistinguishable from them. It is also the only notification available for it --
+    /// GDB closing its socket to the *client* is invisible on the wire we read
+    /// (`docs-internal/gdb-rsp.md` §3.11), which is why the transport has to say so.
+    ///
+    /// The shutdown that follows makes this thin today, because no Agent consumers are
+    /// attached yet (item 14 attached none). It stops being thin the moment they are, and
+    /// the ordering -- tell it, then stop it -- is what makes that a one-line change rather
+    /// than a redesign.
+    pub(super) fn stop_rsp_mux(&mut self, stream_id: u8, end: StreamEnd) {
         if let Some(channel) = self.rsp_channels.remove(&stream_id) {
+            if end == StreamEnd::ClientLeft {
+                channel.gdb_disconnected();
+            }
             channel.shutdown("the stream closed");
         }
     }

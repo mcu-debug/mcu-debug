@@ -117,7 +117,15 @@ impl StateTracker {
             (Direction::ToServer, FrameKind::Packet) => match classify_client(&frame.payload) {
                 ClientEffect::Resume => {
                     self.state = TargetState::Running;
-                    self.interrupt_pending = false;
+                    // `interrupt_pending` deliberately survives this. The manual is
+                    // explicit (E.9 Interrupts): "Interrupts received while the program
+                    // is stopped are queued and the program will be interrupted when it
+                    // is resumed next time." A `\x03` that arrived while we were halted
+                    // is an ordinary race -- GDB asking for a stop at the same moment a
+                    // breakpoint hit -- and it is still owed a halt, which *this* resume
+                    // will deliver almost immediately. Clearing it here would describe
+                    // the run as open-ended when it is about to end at once. It cannot
+                    // stick, because any halt clears it in `apply_stop_reply`.
                 }
                 ClientEffect::Invalidate => {
                     self.state = TargetState::Unknown;
@@ -235,6 +243,12 @@ fn classify_client(payload: &[u8]) -> ClientEffect {
                     ClientEffect::None
                 };
             }
+            // `vCtrlC` is deliberately `None` rather than an interrupt request. It is
+            // the *non-stop* spelling of `\x03` (E.9: in non-stop mode GDB "sends a
+            // regular packet ... instead of the single byte 0x03"), and we do not run
+            // non-stop (§4.7). Handling it would be modelling a mode we have no way to
+            // exercise; this comment is here so its absence reads as a decision.
+            //
             // `vRun` restarts the program and `vAttach` attaches to one. Neither
             // implies a run state: both are answered by a stop reply when they
             // halt, and an attach need not halt at all. See `ClientEffect`.
@@ -382,6 +396,28 @@ mod tests {
             (From_, pkt(b"OK")),
         ]);
         assert_eq!(states, vec![TargetState::Running; 5]);
+    }
+
+    #[test]
+    fn an_interrupt_that_arrived_while_halted_survives_the_next_resume() {
+        // E.9: "Interrupts received while the program is stopped are queued and the
+        // program will be interrupted when it is resumed next time." The race is real --
+        // GDB sends 0x03 just as a breakpoint hits -- so the resume that follows is not a
+        // fresh open-ended run, and anything reading `interrupt_pending` to decide that
+        // must still see the request.
+        let mut t = StateTracker::new();
+        t.observe(To, &pkt(b"c"));
+        t.observe(From_, &pkt(b"T05"));
+        assert_eq!(t.state(), TargetState::Stopped);
+
+        t.observe(To, &interrupt());
+        assert!(t.interrupt_pending(), "queued while stopped");
+        assert_eq!(t.observe(To, &pkt(b"c")), Some(TargetState::Running));
+        assert!(t.interrupt_pending(), "the queued interrupt is still owed a halt");
+
+        // And the halt it produces clears it, so it cannot stick.
+        t.observe(From_, &pkt(b"T02"));
+        assert!(!t.interrupt_pending());
     }
 
     #[test]

@@ -763,8 +763,11 @@ export class ProxyClient extends EventEmitter {
         this.logDebug(`Closing stream ${stream_id}`);
         this.clientStreams.delete(stream_id);
         if (stream_id === server.pInfo.stream_id) {
-            // The original: its port reservation is the listener's, so the listener goes too.
-            server.close();
+            // The original: its port reservation is the listener's, so the listener goes too --
+            // and with it every duplicate on that listener. The Agent knows about *this* id
+            // because it just told us; the duplicates are news to it, so they have to be
+            // reported or their connections to the gdb-server leak.
+            server.close(true);
         } else {
             // A duplicate: close just its consumer and leave the listener serving the others.
             server.closeStream(stream_id);
@@ -998,7 +1001,26 @@ export class RemoteServer {
         stream.close();
     }
 
-    close() {
+    /**
+     * Unbind the listener and drop every consumer on it. Session teardown, in other words.
+     *
+     * `notifyAgent` exists for the one caller that is *not* teardown: `handleStreamClosed` for the
+     * original stream id. Anything else on this listener is a duplicate the Agent still believes is
+     * live, holding its own connection to the gdb-server -- and a `-gdb-max-connections` slot with
+     * it. Setting `endingSession` first is what silences `cleanupSocket`, so the report has to
+     * happen before that, not from the socket's own `close` event.
+     *
+     * It stays off for real teardown, where the session releases everything anyway and a control
+     * round trip per consumer on the way out buys nothing.
+     */
+    close(notifyAgent = false) {
+        if (notifyAgent) {
+            for (const s of this.sockets) {
+                if (s.stream_id >= 0 && s.stream_id !== this.pInfo.stream_id) {
+                    void this.proxyManager.closeStream(s.stream_id);
+                }
+            }
+        }
         this.endingSession = true;
         if (this.server) {
             this.sockets.forEach((s) => s.socket.destroy());
