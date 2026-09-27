@@ -7,6 +7,41 @@
 
 ## [v0.1.18] - 2026-09-??
 
+## RTT
+
+- Add a 'pipe' RTT decoder: You can use this to send RTT data to any program
+  and use stdio to process the data. The data output from your program is displayed
+  back in a terminal (or CLI output). So it works similar to a "console" but your
+  program processing any data first. The following is the formal definition, but you
+  only need the "port", "type" and "program" properties. "label" is recommended
+  ```
+  "rttConfig": {
+    "enabled": true,
+    "decoders": [
+      type: { enum: ["pipe"], type: "string", description: "Send this channel's bytes to an external program's stdin and show what it writes to stdout." },
+      port: { description: "RTT Channel Number (0 to 15)", default: 0, maximum: 15, minimum: 0, multipleOf: 1, type: "number" },
+      label: { description: "A label for the output window.", type: "string" },
+      program: {
+          type: "string",
+          description:
+              "Program to pipe this channel through, e.g. 'defmt-print'. Its stdin receives the raw RTT bytes and its stdout is displayed. If omitted, the bytes are counted and discarded -- which with \"stats\": true measures the channel's throughput with nothing else in the path.",
+      },
+      args: { type: "array", description: "Arguments for the program.", items: { type: "string" }, default: ["-e", "${executable}"] },
+      cwd: { type: "string", description: "Working directory for the program.", default: "${workspaceFolder}" },
+      env: { type: "object", description: "Additional environment variables for the program.", additionalProperties: { type: "string" }, default: {} },
+      output: {
+          type: "string",
+          enum: ["terminal", "none"],
+          default: "terminal",
+          description:
+              "Where the program's output goes. 'terminal' opens a normal RTT terminal for it. 'none' discards it, which is how you measure throughput without a terminal in the data path.",
+      },
+      stats: { type: "boolean", description: "Report the byte rate of this channel to the debug console.", default: true },
+      statsInterval: { type: "number", description: "Seconds between rate reports.", default: 5, minimum: 1 },
+    ]
+  }
+  ```
+
 ### Live Watch
 - In certain cases, live-watch did not automatically start and showed variables as "not available"
 
