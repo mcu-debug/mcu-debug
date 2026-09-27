@@ -10,6 +10,7 @@ import { RTTConfiguration, RTTServerHelper } from "./servers/common";
 import { EventEmitter } from "events";
 import { DebugProtocol } from "@vscode/debugprotocol";
 import { Decoder, DecoderSpec, TcpPortScanner } from "@mcu-debug/shared";
+import { ThroughputMonitor } from "../common/throughput-monitor";
 
 /**
  * RTT Up/Down-Buffer Descriptor Offsets (32-bit)
@@ -96,7 +97,7 @@ export class RttBufferManager extends EventEmitter {
         this.mainSession.gdbInstance.on(GdbEventNames.Stopped, this.onStopped.bind(this));
         this.mainSession.gdbInstance.on(GdbEventNames.Running, this.onRunning.bind(this));
         this.mainSession.gdbInstance.on(GdbEventNames.Exited, this.onExited.bind(this));
-        this.throughputMonitor = new ThroughputMonitor(this.mainSession);
+        this.throughputMonitor = new ThroughputMonitor((msg) => this.mainSession.handleMsg(Stdout, msg + "\n"), "RTT builtin");
     }
 
     private setTransport(transport: RttTransport) {
@@ -412,7 +413,7 @@ export class RttBufferManager extends EventEmitter {
         }
         if (this.initialized) {
             this.startPoll();
-            this.throughputMonitor = new ThroughputMonitor(this.mainSession);
+            this.throughputMonitor = new ThroughputMonitor((msg) => this.mainSession.handleMsg(Stdout, msg + "\n"), "RTT builtin");
         }
     }
 
@@ -622,46 +623,5 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
             this.removeAllListeners();
             this.server = null;
         }
-    }
-}
-
-export class ThroughputMonitor {
-    private totalBytes = 0;
-    private messageCount = 0;
-    private startTime = Date.now();
-    private lastReportTime = Date.now();
-
-    constructor(private mainSession: GDBDebugSession) {}
-
-    /** Call this inside your RTT poll logic when data arrives */
-    public record(buffer: Buffer, msgCount: number = 1) {
-        if (this.messageCount === 0) {
-            this.startTime = Date.now();
-            this.lastReportTime = this.startTime;
-        }
-        this.totalBytes += buffer.length;
-        this.messageCount += msgCount;
-
-        const now = Date.now();
-        const delta = now - this.lastReportTime;
-
-        // Report every 5 seconds
-        if (delta > 5000) {
-            this.report(delta);
-            this.lastReportTime = now;
-        }
-    }
-
-    public report(deltaMs: number) {
-        const seconds = deltaMs / 1000;
-        const bps = (this.totalBytes / seconds).toFixed(2);
-        const msgPerSec = (this.messageCount / seconds).toFixed(1);
-        const uptime = ((Date.now() - this.startTime) / 1000).toFixed(1);
-
-        this.mainSession.handleMsg(Stdout, `[RTT Stats] Uptime: ${uptime}s | ${bps} Bytes/sec | ${msgPerSec} Msgs/sec`);
-
-        // Reset counters for next window
-        this.totalBytes = 0;
-        this.messageCount = 0;
     }
 }

@@ -11,6 +11,7 @@ flowchart LR
    Device <-- SWD --> Probe <-- USB --> gdb-server <-- TCP --> D(Ddebug<br>Adapter/IDE) <--> F(Final<br>Presentations)
 
 ```
+
 Notice that GDB is not involved at all but the gdb-server performs a critical function of polling for chainges in the RTT. The "Final Presetation" can be many things. A simple Terminal like interface, looging to a file, graphing. In MCU Debug (and Cortex-Debug) you can have multiple ways to present the same channel.
 
 **MCU Debug** supports the model described above but also provides an alternate impelementation that bypasses the gdb-server for RTT data and instead uses GDB to perform memory IO. While it adds a little overhead our performance bottleneck is really the SWD interface. Our architecutre is as follows
@@ -21,10 +22,16 @@ flowchart LR
    DAP <--> TCP
 
 ```
+
 #### Notes:
 
-- The "pre-decoder" can be something like Rust's [defmt-print](https://crates.io/crates/defmt-print) which is super efficient and increases the throughput  by an order of magnititude for some use cases. In **MCU Debug**, you can specify any number of pre-decoders or none at all. There can be one optional pre-decoder per RTT channel
+- The "pre-decoder" can be something like Rust's [defmt-print](https://crates.io/crates/defmt-print) which is super efficient and increases the throughput by an order of magnititude for some use cases. In **MCU Debug**, you can specify any number of pre-decoders or none at all. There can be one optional pre-decoder per RTT channel
 - The "Final Presentation" layer can also have multiple ways to present data. This can be useful for logging while viewing data, offline examination, or even debugging the presentation layers.
 - Final note is that all the channels can be birectional depending you how your FW is configured. It also depends on what the final user interface looks like. A Terminal could provide that bi-directionality. A file may not.
+
+See [Pipe decoder & throughput](./rtt-pipe.md) for the `pipe` decoder, which is the generalised
+form of the pre-decoder above: it works for gdb-server RTT as well as built-in RTT, can run with no
+output at all, and reports the channel's byte rate so these claims can be checked on your own
+hardware.
 
 The TCP interface can handle several megabytes per second and most of our operations are pipelined. So, SWD is still our limiting factor. It is true that the roundrip to see if any new data is available is much slower compared what a gdb-server can do, in practice, we can still poll every 10ms. We have seen good results even at 40Hz. So, speed/throughput is important. You can use `rttConfig.polling_interval` to control polling speed.

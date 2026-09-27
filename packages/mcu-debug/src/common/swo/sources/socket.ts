@@ -230,7 +230,10 @@ export class SocketRTTSource extends SocketIOSource {
     constructor(
         public readonly channel: number,
         tcpPort: string,
-        decoderSpec: DecoderSpec,
+        // Optional, as it is on the base class: `createRTTSource` passes nothing when built-in
+        // RTT is in use (the debug adapter runs the pre-decoder there instead), and
+        // `RTTPipeSource` runs its own program rather than this one.
+        decoderSpec?: DecoderSpec,
     ) {
         super(tcpPort, decoderSpec);
     }
@@ -264,7 +267,7 @@ export class SocketUARTSource extends SocketIOSource {
 }
 
 export class JLinkSocketRTTSource extends SocketRTTSource {
-    constructor(channel: number, tcpPort: string, decoderSpec: DecoderSpec) {
+    constructor(channel: number, tcpPort: string, decoderSpec?: DecoderSpec) {
         super(channel, tcpPort, decoderSpec);
 
         // When the TCP connection to the RTT port is established, send config commands
@@ -415,7 +418,7 @@ export class PeMicroSocketSource extends SocketSWOSource {
         this.write(JSON.stringify(resumePipe));
     }
 
-    constructor(tcpPort: string, decoderSpec: DecoderSpec) {
+    constructor(tcpPort: string, decoderSpec?: DecoderSpec) {
         super(tcpPort, decoderSpec);
         this.on("connected", () => {
             // When we connect we need to start a sequence of commands to configure the SWO stream.

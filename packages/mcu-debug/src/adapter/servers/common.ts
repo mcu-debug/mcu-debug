@@ -109,13 +109,18 @@ export interface SWOCommonDecoderOpts {
 }
 
 export interface RTTCommonDecoderOpts {
-    type: string; // 'console', 'graph', ...
+    type: string; // 'console', 'graph', 'pipe', ...
     tcpPort: string; // [hostname:]port
     port: number; // RTT Channel number
 
     // Following two used for 'Advanced' category
     tcpPorts: string[];
     ports: number[];
+
+    /** Report byte rates for this decoder to the debug console. See `ThroughputMonitor`. */
+    stats?: boolean;
+    /** Seconds between rate reports. Default 5. */
+    statsInterval?: number;
 }
 
 export enum TextEncoding {

@@ -58,7 +58,13 @@ export class Decoder extends EventEmitter {
             });
 
             this.process.on("error", (err: Error) => {
-                this.emit("error", err);
+                // Guarded, because an `error` event on an EventEmitter with no listener is
+                // *thrown* by Node -- so a mistyped decoder program name ended the host process
+                // instead of rejecting this promise, and the caller's own error reporting never
+                // ran. `runProgram` is awaited, so rejecting is the whole contract.
+                if (this.listenerCount("error") > 0) {
+                    this.emit("error", err);
+                }
                 reject(err);
             });
 
