@@ -1447,29 +1447,53 @@ does the asking. OpenOCD's column came from
 reading `gdb_server.c` (§4.2.1) — where a server ships source, read it; it is faster and far more
 definite than probing.
 
-| Question                                                  | Why it matters                                                               | OpenOCD                                                                               | J-Link | pyOCD | ST-LINK | probe-rs | QEMU |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------ | ----- | ------- | -------- | ---- |
-| Answers `m`/`x` while the target **runs**?                | The premise the design rests on.                                             | **Yes** — 66 reads observed (§2 A)                                                    | ?      | ?     | ?       | ?        | ?    |
-| …on a connection that **itself** has the `c` outstanding? | The narrower form the mux needs.                                             | **Yes — 0.5 ms**, `rsp-probe` on hardware; chain also traced to `mem_ap_read_buf`     | ?      | ?     | ?       | ?        | ?    |
-| Tolerates `depth = 2` in no-ack mode?                     | Sets the pipelining rule.                                                    | **Yes** — both replies arrived (`rsp-probe`); warns and recovers in ack mode (§4.2.1) | ?      | ?     | ?       | ?        | ?    |
-| `PacketSize`? Advertises `binary-upload+`?                | Bounds chunking; picks `x` over `m`.                                         | **16384**; **no `binary-upload`** — no `x` packet at all                              | ?      | ?     | ?       | ?        | ?    |
-| Advertises `QNonStop+`, and honours it?                   | Confirms it is as irrelevant as §2 assumes.                                  | **no** — not advertised                                                               | ?      | ?     | ?       | ?        | ?    |
-| `QStartNoAckMode` honoured after advertising it?          | The codec must switch at the right byte (§4.3).                              | **Yes**                                                                               | ?      | ?     | ?       | ?        | ?    |
-| Connection limit — default, and per core?                 | Whether the maximal mux (§4.7) removes a real burden elsewhere or only here. | **`-gdb-max-connections`, per target, default 1**                                     | ?      | ?     | ?       | ?        | ?    |
-| Is a **secondary** told about a halt it did not cause?    | Whether a non-controller connection could host a mux (§4.7).                 | **No** — 0 packets across 4 breakpoint halts (§2 B)                                   | ?      | ?     | ?       | ?        | ?    |
-| Is a resume issued on **conn2** answered on conn2?        | Behavioural vs positional. No GDB session can produce this.                  | **Yes** — `T02thread:1;` (`rsp-probe`). **Behavioural, confirmed**                    | ?      | ?     | ?       | ?        | ?    |
-| **Tier (§7)**                                             |                                                                              | **`Full`**                                                                            | ?      | ?     | ?       | ?        | ?    |
+| Question                                                  | Why it matters                                                               | OpenOCD                                                                               | J-Link                      | pyOCD                               | ST-LINK                     | probe-rs | QEMU |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------- | ----------------------------------- | --------------------------- | -------- | ---- |
+| Answers `m`/`x` while the target **runs**?                | The premise the design rests on.                                             | **Yes** — 66 reads observed (§2 A)                                                    | ?                           | ?                                   | ?                           | ?        | ?    |
+| …on a connection that **itself** has the `c` outstanding? | The narrower form the mux needs.                                             | **Yes — 0.5 ms**, `rsp-probe` on hardware; chain also traced to `mem_ap_read_buf`     | **Yes** — 70 s of Agent RTT | **No — queues until the next halt** | **Yes** — 70 s of Agent RTT | ?        | ?    |
+| Tolerates `depth = 2` in no-ack mode?                     | Sets the pipelining rule.                                                    | **Yes** — both replies arrived (`rsp-probe`); warns and recovers in ack mode (§4.2.1) | ?                           | ?                                   | ?                           | ?        | ?    |
+| `PacketSize`? Advertises `binary-upload+`?                | Bounds chunking; picks `x` over `m`.                                         | **16384**; **no `binary-upload`** — no `x` packet at all                              | ?                           | ?                                   | ?                           | ?        | ?    |
+| Advertises `QNonStop+`, and honours it?                   | Confirms it is as irrelevant as §2 assumes.                                  | **no** — not advertised                                                               | ?                           | ?                                   | ?                           | ?        | ?    |
+| `QStartNoAckMode` honoured after advertising it?          | The codec must switch at the right byte (§4.3).                              | **Yes**                                                                               | ?                           | ?                                   | ?                           | ?        | ?    |
+| Connection limit — default, and per core?                 | Whether the maximal mux (§4.7) removes a real burden elsewhere or only here. | **`-gdb-max-connections`, per target, default 1**                                     | ?                           | ?                                   | ?                           | ?        | ?    |
+| Is a **secondary** told about a halt it did not cause?    | Whether a non-controller connection could host a mux (§4.7).                 | **No** — 0 packets across 4 breakpoint halts (§2 B)                                   | ?                           | ?                                   | ?                           | ?        | ?    |
+| Is a resume issued on **conn2** answered on conn2?        | Behavioural vs positional. No GDB session can produce this.                  | **Yes** — `T02thread:1;` (`rsp-probe`). **Behavioural, confirmed**                    | ?                           | ?                                   | ?                           | ?        | ?    |
+| **Tier (§7)**                                             |                                                                              | **`Full`**                                                                            | **`Full`**                  | **`HaltedOnly`**                    | **`Full`**                  | ?        | ?    |
 
-**`ServerTier::Unknown` currently gates as `HaltedOnly`, and that default is provisional.** It is
-the conservative reading for a server we know nothing about, and it is what `caps.rs` ships with.
-But once five or so servers have been measured, the right default is whatever turns out to be
-_common_ — if nearly all of them answer while running, defaulting an unmeasured server to
-`HaltedOnly` is pessimism that costs real features for no benefit. Revisit after item 17. Changing
-it is a one-line edit to `ServerTier::allows_while_running` plus its test, deliberately kept that
-cheap.
+#### Four servers measured, by running Agent-side RTT on them
 
-Until this is filled in, the design's viability beyond OpenOCD rests on inference from live watch
-working on J-Link — one data point, taken on a _second_ connection rather than an interleaved one.
+Not with `rsp-probe` in the end, but with the feature itself — 70-second runs of Agent-side RTT on
+real hardware, which asks the narrow question (§12 q2) continuously rather than once. The decisive
+column is "answers on a connection that itself has the `c` outstanding".
+
+| Server  | Verdict                                         | Tier         | Agent RTT | Adapter RTT |
+| ------- | ----------------------------------------------- | ------------ | --------- | ----------- |
+| OpenOCD | Yes — and from source, no halt gate (§4.2.1)    | `Full`       | 66.2 KB/s | 50.9 KB/s   |
+| ST-LINK | Yes — 70 s, no stall                            | `Full`       | 89.5 KB/s | 62.4 KB/s   |
+| J-Link  | Yes — 70 s, no stall                            | `Full`       | 80.5 KB/s | 68.3 KB/s   |
+| pyOCD   | **No — it queues the read until the next halt** | `HaltedOnly` | —         | 24.8 KB/s   |
+
+**pyOCD is the one that does not work, and it fails in a way worth recording.** It does not refuse
+the read and it does not error: it _queues_ it and answers when the target next stops. Observed as
+five consecutive two-second timeouts through a run, every one of them answered within a millisecond
+of the halt that followed. The target was running throughout — `WrOff` advanced from 0 to 0x2f9 — so
+the data was there and unreachable. Its late replies then matched nothing and were forwarded to GDB,
+which reported `Unknown remote qXfer reply` against our RTT descriptor; that consequence is fixed
+(`MuxCore::abandoned_replies`), but the tier is what stops it arising. For pyOCD,
+`useBuiltinRTT.implementation: "typescript"` is not a fallback but the only option, because the
+adapter's own engine reads over a **second** connection where pyOCD answers happily.
+
+**`ServerTier::Unknown` still gates as `HaltedOnly`, and the case for that has weakened.** Three of
+four measured servers answer while running, so the pessimistic default is now the minority
+behaviour, and it fails _silently_ — RTT simply produces nothing on an unmeasured server, which
+reads as a bug rather than as caution. Against that: pyOCD proves the permissive default can be
+wrong. What has changed since this paragraph was written is the blast radius. A server that queues
+now produces logged timeouts and dropped late replies instead of a corrupted GDB session, so
+optimism costs a diagnosable failure rather than a broken debug session.
+
+Still a judgement call about servers neither measurement covers — probe-rs, QEMU, Black Magic, custom
+stubs — and `debugFlags.rspTier` is how to settle each. Changing the default remains a one-line edit
+to `ServerTier::allows_while_running` plus its test, deliberately kept that cheap.
 
 ---
 

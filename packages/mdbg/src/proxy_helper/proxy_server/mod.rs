@@ -42,6 +42,7 @@ pub use protocol::*;
 
 mod gdb_server;
 mod rsp_mux;
+mod rtt_bridge;
 mod serial;
 pub use serial::{
     force_close_serial, serial_status, FunnelWriter, OpenPort, SerialPortRegistry, SerialStatus, CLOSE_ALL_SERIAL,
@@ -258,10 +259,21 @@ pub struct ProxyServer {
     /// that is structural rather than a matter of lookup order — a muxed stream's
     /// `PortInfo` holds [`StreamConn::Muxed`], which carries no socket at all.
     rsp_channels: HashMap<u8, crate::gdb_rsp::RspChannel>,
+    /// The Agent's RTT engine, when this session asked for it (`debugFlags.rttRust`). At most one
+    /// per session: RTT is per target, not per stream.
+    rtt_engine: Option<crate::rtt::RttEngine>,
+    /// Stream id to RTT channel, for the streams `StartRtt` minted.
+    ///
+    /// Consulted **before** `streams` in the message loop, the same way `rsp_channels` is. RTT
+    /// streams are deliberately absent from `streams`: that map means "a TCP connection to the
+    /// gdb-server", and an RTT channel has neither a server port nor a socket.
+    rtt_streams: HashMap<u8, u32>,
     /// Agent-side switches this session asked for on `initialize`. Per session because the
     /// proxy is shared: a command-line flag would apply to everyone's session at once, so
     /// these override the `--rsp-*` defaults for this one only.
     debug_flags: SessionDebugFlags,
+    /// The client's `servertype`, from `initialize`. Decides this session's [`ServerTier`].
+    server_type: Option<String>,
     exit: bool,
     /// Ports reserved via `AllocatePorts` but not yet handed to the gdb-server process.
     reserved_ports: Vec<PortInfoListner>,
@@ -340,7 +352,10 @@ impl ProxyServer {
             next_stream_id: 3,
             stream_meta: HashMap::new(),
             rsp_channels: HashMap::new(),
+            rtt_engine: None,
+            rtt_streams: HashMap::new(),
             debug_flags: SessionDebugFlags::default(),
+            server_type: None,
             server_cwd: String::new(),
             monitor_stop_tx: None,
             serial_registry,
@@ -376,6 +391,11 @@ impl ProxyServer {
     /// socket alive to send its success response.
     pub(super) fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
+        // Before the mux threads: the RTT poll thread holds a `Consumer` on one of them, and a
+        // request in flight when the channel dies would wait out its whole timeout.
+        if let Some(engine) = &self.rtt_engine {
+            engine.shutdown("the session is ending");
+        }
         // The mux threads block on a socket read, which the dying gdb-server would end
         // on its own -- but only eventually, and only if it dies. Ask them directly.
         self.stop_all_rsp_muxes();
@@ -596,6 +616,11 @@ impl ProxyServer {
                                             self.serial_funnel_write.remove(&stream_id);
                                         }
                                     }
+                                } else if let Some(&rtt_channel) = self.rtt_streams.get(&stream_id) {
+                                    // Input for an RTT down channel. Queued on the engine, not
+                                    // written here: the firmware may have no space, and the message
+                                    // loop must not be what waits for it.
+                                    self.feed_rtt_down(rtt_channel, &msg);
                                 } else if let Some(channel) = self.rsp_channels.get(&stream_id) {
                                     // A multiplexed gdb stream: the mux owns that
                                     // socket, so GDB's bytes go to it instead of
@@ -722,6 +747,11 @@ impl ProxyServer {
                 ProxyEvent::StreamData { stream_id, data } => {
                     send_or_break!(self.writer.write_frame(stream_id, &data));
                 }
+                ProxyEvent::ServerEvent(event) => {
+                    // Straight through: a background thread composed it, and this loop owns the
+                    // writer.
+                    send_or_break!(event.send(&self.writer));
+                }
                 ProxyEvent::StreamClosed { stream_id } => {
                     eprintln!("Stream {} closed", stream_id);
                     // `release_stream` stops the mux before anything else, which matters
@@ -841,6 +871,14 @@ impl ProxyServer {
             ControlRequest::CloseStream { stream_id } => {
                 eprintln!("Received CloseStream request for stream_id {}", stream_id);
                 self.handle_close_stream(stream_id, msg.seq);
+            }
+            ControlRequest::StartRtt { stream_id, config } => {
+                eprintln!("Received StartRtt request on stream_id {}", stream_id);
+                self.handle_start_rtt(stream_id, config, msg.seq);
+            }
+            ControlRequest::StopRtt => {
+                eprintln!("Received StopRtt request");
+                self.handle_stop_rtt(msg.seq);
             }
             ControlRequest::EndSession => {
                 eprintln!("Received EndSession request, closing connection");

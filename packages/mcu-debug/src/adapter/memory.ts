@@ -5,6 +5,25 @@ import { formatAddress, parseAddress } from "../common/utils";
 import { GdbMiRecord } from "./gdb-mi/mi-types";
 
 export type MemoryReadCallback = (b: Buffer, len: number) => Promise<void>;
+/**
+ * Most bytes to ask for in one `-data-read-memory-bytes`.
+ *
+ * Was 512, "to avoid GDB limits". The real hazard is downstream of GDB: gdb-servers have
+ * reply-buffer boundaries and get them wrong. A hex `m` reply is `$` + 2n + `#` + 2 = **2n + 4**
+ * bytes, so a read of 510 lands on exactly 1024 -- and the ST-LINK gdb-server truncates a
+ * 1024-byte reply, losing its final checksum digit to a NUL terminator. OpenOCD had a bug of the
+ * same family around 512-byte memory requests; that one is fixed upstream, but vendor
+ * installations lag by years and those versions are what most people actually run.
+ *
+ * 500 sits below the smallest size in that family (510, then 1022, then 2046 -- the n where 2n + 4
+ * is a power of two) with room to spare. The cost is one extra round trip on reads above 500 bytes,
+ * which for RTT is rare: drains average a few hundred bytes.
+ *
+ * The Agent's own engine uses the same number for the same reason; see `SAFE_DRAIN_BYTES` in
+ * `packages/mdbg/src/rtt/mod.rs`.
+ */
+const MAX_MEMORY_CHUNK = 500;
+
 export class MemoryRequests {
     constructor(
         private mainSession: GDBDebugSession,
@@ -23,7 +42,7 @@ export class MemoryRequests {
             let promises: Promise<void>[] = [];
             while (length > 0) {
                 const addressHex = formatAddress(address);
-                const chunkSize = Math.min(length, 512); // Read in 512B chunks to avoid GDB limits
+                const chunkSize = Math.min(length, MAX_MEMORY_CHUNK);
                 const command = `-data-read-memory-bytes "${addressHex}" ${chunkSize}`;
                 const miOutput = await this.gdbInstance.sendCommand(command);
                 const record = miOutput.resultRecord?.result as any;

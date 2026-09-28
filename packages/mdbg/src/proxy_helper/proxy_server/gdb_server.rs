@@ -111,6 +111,7 @@ impl ProxyServer {
             workspace_uid,
             session_uid,
             debug_flags,
+            server_type,
         } = &msg.request
         {
             eprintln!(
@@ -123,6 +124,10 @@ impl ProxyServer {
             if let Some(flags) = debug_flags {
                 eprintln!("Session debug flags: {:?}", flags);
                 self.debug_flags = flags.clone();
+            }
+            self.server_type = server_type.clone();
+            if let Some(kind) = server_type {
+                eprintln!("Session gdb-server type: {}", kind);
             }
             // Collected rather than assigned one at a time: these used to overwrite a single
             // `err_msg`, so a client that was both unauthenticated *and* mismatched was told

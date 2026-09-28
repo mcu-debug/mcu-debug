@@ -10,6 +10,8 @@ import { DefaultPortBase } from "@mcu-debug/shared";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { PROXY_KEEPALIVE_MS } from "../common/utils";
 import { PortReserved } from "@mcu-debug/shared/proxy-protocol/PortReserved";
+import { RttStartConfig } from "@mcu-debug/shared/proxy-protocol/RttStartConfig";
+import { RttChannelStream } from "@mcu-debug/shared/proxy-protocol/RttChannelStream";
 import { PortSet } from "@mcu-debug/shared/proxy-protocol/PortSet";
 import { PortAllocatorSpec } from "@mcu-debug/shared/proxy-protocol/PortAllocatorSpec";
 import { EventEmitter } from "stream";
@@ -120,7 +122,12 @@ export class ProxyClient extends EventEmitter {
                     debug_flags: {
                         rsp_trace: this.args.debugFlags?.rspTrace ?? null,
                         rsp_mux: this.args.debugFlags?.rspMux ?? null,
+                        rsp_tier: this.args.debugFlags?.rspTier ?? null,
                     },
+                    // The Agent is handed a path to an executable, not a kind, so it cannot work
+                    // this out for itself -- and what its own features may do while the target runs
+                    // depends on the kind (gdb-rsp.md §7).
+                    server_type: this.args.servertype ?? null,
                 },
             };
             await this.sendControlCommand(cmd);
@@ -437,6 +444,26 @@ export class ProxyClient extends EventEmitter {
 
     private streamStrToPortInfo: Map<string, PortReservedInfo> = new Map();
     private streamIdToPortInfo: Map<number, PortReservedInfo> = new Map();
+    /**
+     * Streams the **Agent itself** produces, rather than ones that carry a gdb-server connection.
+     *
+     * RTT is the first: its channels have no server port and no socket on either side, so there is
+     * nothing for a `RemoteServer` to manage -- the bytes go straight to whoever registered here.
+     * Consulted before `clientStreams` for the same reason the Agent consults `rtt_streams` before
+     * `streams`. PC sampling and a trace drain will want the same hook.
+     */
+    private rawStreams: Map<number, (data: Buffer) => void> = new Map();
+    /**
+     * Raw streams we have closed ourselves, so their last few frames are expected rather than a
+     * fault.
+     *
+     * Closing one is a request to the Agent, and the Agent is several frames ahead of the answer:
+     * whatever it had already written to the funnel is in flight and arrives after we have stopped
+     * listening. Logging that as "data for unknown stream_id" was accurate and useless -- it fired
+     * on every ordinary session teardown. Remembering the id turns a suspicious message into a
+     * silent, explainable one. Never cleaned: ids are per session and a handful at most.
+     */
+    private closedRawStreams: Set<number> = new Set();
     // clientPorts is a map of a port id string to an actual port on the local machine. The proxy will map these
     // to the ports on the remote machine and handle the forwarding
     private clientPorts: TcpPortDefMap = {};
@@ -584,9 +611,15 @@ export class ProxyClient extends EventEmitter {
                     this.serverSession.writeToConsole(payload);
                     return;
                 }
+                const raw = this.rawStreams.get(stream_id);
                 let stream = this.clientStreams.get(stream_id);
-                if (stream) {
+                if (raw) {
+                    raw(payload);
+                } else if (stream) {
                     stream.dataFromServer(payload, stream_id);
+                } else if (this.closedRawStreams.has(stream_id)) {
+                    // In flight when we stopped listening. Expected, so not an error.
+                    this.logDebug(`Dropped ${payload.length} late bytes for closed stream ${stream_id}`);
                 } else {
                     this.logError(`Received data for unknown stream_id ${stream_id}`);
                 }
@@ -609,6 +642,15 @@ export class ProxyClient extends EventEmitter {
                     case "streamClosed":
                         this.handleStreamClosed(msg.params.stream_id);
                         this.cleanupSecurityFile();
+                        break;
+                    case "rttReady":
+                        // The `startRtt` response only meant a search had begun -- how long it takes
+                        // belongs to the firmware, which may not initialise RTT until well after the
+                        // session starts. This is the moment data begins to flow.
+                        this.emit("rttReady", msg.params);
+                        break;
+                    case "rttStopped":
+                        this.emit("rttStopped", msg.params);
                         break;
                     default:
                         this.logError(`Received unknown proxy event: ${msg.event}`);
@@ -772,6 +814,71 @@ export class ProxyClient extends EventEmitter {
             // A duplicate: close just its consumer and leave the listener serving the others.
             server.closeStream(stream_id);
             this.streamIdToPortInfo.delete(stream_id);
+        }
+    }
+
+    /** Receive the bytes of an Agent-produced stream. See `rawStreams`. */
+    public registerRawStream(stream_id: number, onData: (data: Buffer) => void): void {
+        this.rawStreams.set(stream_id, onData);
+    }
+
+    public unregisterRawStream(stream_id: number): void {
+        this.rawStreams.delete(stream_id);
+        this.closedRawStreams.add(stream_id);
+    }
+
+    /** Send bytes back on an Agent-produced stream -- RTT terminal input, for instance. */
+    public sendRawStream(stream_id: number, data: Buffer): void {
+        this.sendCommandBytes(stream_id, data);
+    }
+
+    /**
+     * The stream id of this session's controller gdb connection.
+     *
+     * Needed by `startRtt`, which names it rather than an RTT stream: it is whose multiplexer the
+     * Agent's RTT engine reads target memory through. Found by name because that is what the Agent
+     * classifies streams by -- `gdbPort` for core 0, which is the only core RTT applies to.
+     */
+    public controllerGdbStreamId(): number | undefined {
+        for (const [stream_id, pInfo] of this.streamIdToPortInfo) {
+            if (pInfo.stream_id_str === "gdbPort") {
+                return stream_id;
+            }
+        }
+        return undefined;
+    }
+
+    /**
+     * Ask the Agent to run RTT on the controller connection's multiplexer.
+     *
+     * Returns one stream id per up channel. Those are ordinary funnel streams, so their data
+     * arrives through `registerRawStream` and needs no new transport.
+     */
+    public async startRtt(config: RttStartConfig): Promise<RttChannelStream[]> {
+        const stream_id = this.controllerGdbStreamId();
+        if (stream_id === undefined) {
+            throw new Error("no controller gdb stream is registered with the proxy; cannot start Agent-side RTT");
+        }
+        const ret = await this.sendControlCommand({
+            seq: this.nextSeq++,
+            method: "startRtt",
+            params: { stream_id, config },
+        });
+        const channels = (ret as any)?.startRtt?.channels;
+        if (!Array.isArray(channels) || channels.length === 0) {
+            throw new Error("the Agent started RTT but named no channel streams");
+        }
+        return channels as RttChannelStream[];
+    }
+
+    public async stopRtt(): Promise<void> {
+        if (this.endingSession || !this.socket) {
+            return; // Session teardown releases it anyway.
+        }
+        try {
+            await this.sendControlCommand({ seq: this.nextSeq++, method: "stopRtt" });
+        } catch (err) {
+            this.logError(`Failed to stop Agent-side RTT: ${err}`);
         }
     }
 

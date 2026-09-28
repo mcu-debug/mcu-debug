@@ -1,5 +1,16 @@
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { ConfigurationArguments, GDBServerController, RTTServerHelper, SWOConfigureEvent, SessionMode, TcpPortDef, TcpPortDefMap, createPortName, genDownloadCommands, getGDBSWOInitCommands } from "./common";
+import {
+    ConfigurationArguments,
+    GDBServerController,
+    RTTServerHelper,
+    SWOConfigureEvent,
+    SessionMode,
+    TcpPortDef,
+    TcpPortDefMap,
+    createPortName,
+    genDownloadCommands,
+    getGDBSWOInitCommands,
+} from "./common";
 import { EventEmitter } from "events";
 
 export class PyOCDServerController extends EventEmitter implements GDBServerController {
@@ -69,9 +80,8 @@ export class PyOCDServerController extends EventEmitter implements GDBServerCont
             }
             */
 
-            // tslint:disable-next-line: forin
             for (const channel in this.rttHelper.rttLocalPortMap) {
-                const tcpPort = this.rttHelper.rttLocalPortMap[channel];
+                const tcpPort = this.rttHelper.rttLocalPortMap[channel]; // TODO: Fix this. channel is a string!
                 commands.push(`interpreter-exec console "monitor rtt server start ${tcpPort} ${channel}"`);
             }
 
@@ -152,7 +162,7 @@ export class PyOCDServerController extends EventEmitter implements GDBServerCont
         return /GDB server (listening|started) (at|on) port/;
     }
 
-    public serverLaunchStarted(): void { }
+    public serverLaunchStarted(): void {}
     public serverLaunchCompleted(): void {
         if (this.args.swoConfig.enabled) {
             const source = this.args.swoConfig.source;
@@ -180,6 +190,6 @@ export class PyOCDServerController extends EventEmitter implements GDBServerCont
         }
     }
 
-    public debuggerLaunchStarted(): void { }
-    public debuggerLaunchCompleted(): void { }
+    public debuggerLaunchStarted(): void {}
+    public debuggerLaunchCompleted(): void {}
 }

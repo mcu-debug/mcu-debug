@@ -144,6 +144,31 @@ impl ReadAssembler {
         Ok(self.remaining == 0)
     }
 
+    /// Ask for less per packet from here on, and report whether that was possible.
+    ///
+    /// For a reply the server sent but mangled ([`RspError::ReplyRejected`]). A read is idempotent,
+    /// so asking again is safe -- and asking for a *different length* is what actually helps, because
+    /// the fault can be a property of the reply's size rather than of the memory: the ST-LINK
+    /// gdb-server truncates a reply of exactly 1024 bytes, losing its last checksum digit to a NUL
+    /// terminator, so the identical read one byte shorter succeeds.
+    ///
+    /// Halves rather than decrements. One byte less would step off that particular boundary, but a
+    /// server with a different boundary would then be probed one byte at a time; halving finds any
+    /// workable size in a few attempts and cannot loop.
+    ///
+    /// Measured from **what the next request would actually ask for**, not from the budget ceiling.
+    /// Those are usually different: a 510-byte read against an advertised `PacketSize` of 16384 has a
+    /// budget of 8192, so halving the budget would leave `remaining.min(budget)` at 510 and resend
+    /// the identical request -- a retry that cannot possibly behave differently.
+    pub fn shrink_budget(&mut self) -> bool {
+        let asking = self.remaining.min(self.budget);
+        if asking <= 1 {
+            return false;
+        }
+        self.budget = asking / 2;
+        true
+    }
+
     /// Bytes gathered so far. Useful on error: a partial read is often still worth
     /// something to a consumer that can say so.
     pub fn collected(&self) -> &[u8] {

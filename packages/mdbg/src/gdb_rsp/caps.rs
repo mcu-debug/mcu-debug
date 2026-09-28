@@ -122,6 +122,51 @@ impl ServerTier {
     pub fn allows_anything(self) -> bool {
         !matches!(self, ServerTier::Unsupported)
     }
+
+    /// The tier for a `servertype` from the launch configuration.
+    ///
+    /// Only what has actually been measured is claimed here. §7's matrix is filled in by
+    /// `mdbg rsp-probe` (item 17a), and so far only **OpenOCD** has been run (item 17b): both
+    /// critical cells came back YES, and its memory-read path has no halt gate in the source
+    /// (§4.2.1). Everything else stays [`ServerTier::Unknown`], which the send gate reads as
+    /// halted-only -- so an Agent-side feature on those servers works while the target is stopped
+    /// and waits while it runs.
+    ///
+    /// **That is not a placeholder to be guessed at.** The question is narrower than "does this
+    /// server read memory while the target runs": it is whether it does so *on the same connection
+    /// GDB has a `c` outstanding on* (§12 q2). The debug adapter's own RTT reads while running on
+    /// every one of these servers, but over a **second** connection, so it is evidence for the
+    /// easier case and not for this one. `debugFlags.rspTier` is how to try the answer on a server
+    /// before the matrix has it.
+    pub fn from_server_type(server_type: &str) -> Self {
+        match server_type.to_ascii_lowercase().as_str() {
+            "openocd" => ServerTier::Full,
+            // Measured on hardware with Agent-side RTT, which is the narrow question (§12 q2): reads
+            // answered on the same connection GDB has a `vCont;c` outstanding on, for 70 seconds
+            // without a stall. ST-LINK 89 KB/s, J-Link 80 KB/s.
+            "stlink" | "jlink" => ServerTier::Full,
+            // Measured, and it is a firm no: pyOCD does not answer an `m` while the target runs --
+            // it *queues* it and replies when the target next stops. Observed on hardware as five
+            // consecutive two-second timeouts during a run, every one of them answered within a
+            // millisecond of the halt that followed. So `HaltedOnly` rather than `Unknown`: the
+            // behaviour is known, not merely unprobed.
+            "pyocd" => ServerTier::HaltedOnly,
+            _ => ServerTier::Unknown,
+        }
+    }
+
+    /// Parse an explicit override from `debugFlags.rspTier`.
+    ///
+    /// `None` for anything unrecognised, including `"auto"`, so a typo in a launch configuration
+    /// falls back to the measured default rather than failing the session.
+    pub fn from_flag(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "full" => Some(ServerTier::Full),
+            "haltedonly" | "halted-only" | "halted" => Some(ServerTier::HaltedOnly),
+            "unsupported" | "off" => Some(ServerTier::Unsupported),
+            _ => None,
+        }
+    }
 }
 
 /// Everything the `qSupported` exchange told us.
@@ -261,6 +306,48 @@ impl RspCaps {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_measured_server_is_claimed_to_answer_while_running() {
+        // The bug this exists to stop coming back: a mux started at `Unknown` reads as halted-only,
+        // so an Agent-side feature on a running target waits for a gate that never opens. Silently.
+        assert_eq!(ServerTier::from_server_type("openocd"), ServerTier::Full);
+        assert_eq!(ServerTier::from_server_type("OpenOCD"), ServerTier::Full);
+        // Not yet measured *on the same connection GDB is running on*, which is the narrower
+        // question (§12 q2). The adapter's own RTT reads while running on all of these, but over a
+        // second connection, so it is not evidence for this case.
+        assert_eq!(
+            ServerTier::from_server_type("pyocd"),
+            ServerTier::HaltedOnly,
+            "measured: pyOCD queues our reads until the target stops"
+        );
+        for kind in ["stlink", "jlink"] {
+            assert_eq!(
+                ServerTier::from_server_type(kind),
+                ServerTier::Full,
+                "measured on hardware: {kind}"
+            );
+        }
+        for kind in ["external", "qemu", "probe-rs", ""] {
+            assert_eq!(ServerTier::from_server_type(kind), ServerTier::Unknown, "{kind}");
+        }
+        assert!(
+            !ServerTier::Unknown.allows_while_running(),
+            "which is what shuts the gate"
+        );
+        assert!(ServerTier::Full.allows_while_running());
+    }
+
+    #[test]
+    fn a_tier_override_is_parsed_and_a_typo_falls_back() {
+        assert_eq!(ServerTier::from_flag("full"), Some(ServerTier::Full));
+        assert_eq!(ServerTier::from_flag("haltedOnly"), Some(ServerTier::HaltedOnly));
+        assert_eq!(ServerTier::from_flag("unsupported"), Some(ServerTier::Unsupported));
+        // `auto` and anything misspelled mean "use the measured default", not "fail the session".
+        assert_eq!(ServerTier::from_flag("auto"), None);
+        assert_eq!(ServerTier::from_flag("Fulll"), None);
+        assert_eq!(ServerTier::from_flag(""), None);
+    }
+
     use super::*;
 
     /// OpenOCD's reply, **captured verbatim** from its own

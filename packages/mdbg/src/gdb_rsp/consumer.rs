@@ -126,9 +126,21 @@ impl Consumer {
         // to the 400-byte default for the rest of the session.
         let caps = self.channel.caps();
         let mut asm = ReadAssembler::new(&caps, addr, len);
+        // Retries are only ever spent on a reply the server *sent* and mangled, never on silence or
+        // on a target error. Bounded, and each one halves the request, so the worst case is a handful
+        // of packets rather than a loop.
+        let mut shrinks_left = 4u8;
         while let Some(request) = asm.next_request() {
             let reply = match self.channel.request(self.id, request, self.timeout) {
                 Ok(reply) => reply,
+                // The reply arrived and could not be used. A read is idempotent, so ask again -- and
+                // ask for less, because the fault may be a property of the reply's *size*. Without
+                // this the same length is requested for ever and the channel stalls on data it can
+                // never collect.
+                Err(RspError::ReplyRejected) if shrinks_left > 0 && asm.shrink_budget() => {
+                    shrinks_left -= 1;
+                    continue;
+                }
                 Err(e) => return (asm.collected().to_vec(), Some(e)),
             };
             if let Err(e) = asm.accept(&reply) {
@@ -196,6 +208,7 @@ mod tests {
     use super::*;
     use crate::common::sync::MutexExt;
     use crate::gdb_rsp::frame::encode_packet;
+    use crate::gdb_rsp::RspCaps;
     use crate::gdb_rsp::{GdbSink, ServerTier};
     use std::io::{self, Read, Write};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -304,13 +317,20 @@ mod tests {
         ch.feed_from_gdb(&encode_packet(b"?"));
         tx.send(encode_packet(b"T05")).unwrap();
 
-        // Those replies cross the reader thread, so the gate opens a moment later.
+        // Wait for **both** the gate and the server having seen all three of GDB's packets, which
+        // are not the same event. The replies above are injected straight into the reader thread,
+        // while the requests travel out through the writer thread -- so the gate can open while
+        // GDB's packets are still queued for the server. Arming at that moment let those queued
+        // writes pop entries from the test's reply script, desynchronising everything after it.
+        // Rare when this test runs alone; reliable under a loaded parallel run.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !ch.agent_gate_open() {
+        while !ch.agent_gate_open() || seen.lock_recover().len() < 3 {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the handshake never settled: state={:?}",
-                ch.state()
+                "the handshake never settled: state={:?}, gate={}, requests seen={}",
+                ch.state(),
+                ch.agent_gate_open(),
+                seen.lock_recover().len()
             );
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -376,6 +396,61 @@ mod tests {
             Err(RspError::Target(code)) => assert_eq!(code, Some(0x0e)),
             other => panic!("expected a target error, got {other:?}"),
         }
+        ch.shutdown("test over");
+    }
+
+    #[test]
+    fn a_mangled_reply_is_retried_with_a_smaller_request() {
+        // The ST-LINK gdb-server truncates a reply of exactly 1024 bytes, losing its final checksum
+        // digit to a NUL terminator, so a 510-byte read fails every time while 509 or 511 succeed.
+        // Asking again at the same length would stall the channel on data it can never collect, so
+        // the point of shrinking is that the next attempt is a *different size*.
+        //
+        // `next_request` yields the unframed payload; framing happens when it is sent.
+        let (ch, _seen) = scripted(vec![]);
+        // PacketSize 0x100 gives a 128-byte budget for a hex read.
+        let mut asm = ReadAssembler::new(&ch.caps(), 0x1000, 200);
+        assert_eq!(asm.next_request().unwrap(), b"m1000,80".to_vec());
+        assert!(asm.shrink_budget(), "128 can be halved");
+        assert_eq!(
+            asm.next_request().unwrap(),
+            b"m1000,40".to_vec(),
+            "asks for half as much, from the same address"
+        );
+        ch.shutdown("test over");
+    }
+
+    #[test]
+    fn shrinking_is_measured_from_the_request_not_the_budget_ceiling() {
+        // The case that actually happens, and that an earlier version of this got wrong. RTT reads a
+        // few hundred bytes while `PacketSize` allows 8192, so the budget sits far above the request:
+        // halving the *budget* leaves `remaining.min(budget)` unchanged and resends the identical
+        // packet -- which, for a fault that depends on the reply's size, is no retry at all.
+        let caps = RspCaps::parse_reply("PacketSize=4000");
+        assert_eq!(caps.max_read_bytes(), 8192, "budget far above the read below");
+        let mut asm = ReadAssembler::new(&caps, 0x2000_0103, 510);
+        assert_eq!(asm.next_request().unwrap(), b"m20000103,1fe".to_vec());
+        assert!(asm.shrink_budget());
+        assert_eq!(
+            asm.next_request().unwrap(),
+            b"m20000103,ff".to_vec(),
+            "255 bytes, not 510 again"
+        );
+    }
+
+    #[test]
+    fn shrinking_stops_at_one_byte_rather_than_reaching_zero() {
+        // A zero-length request would ask for nothing and be answered with nothing, which
+        // `ReadAssembler::accept` treats as a stub refusing without saying so -- trading a stall for
+        // an error loop.
+        let (ch, _seen) = scripted(vec![]);
+        let mut asm = ReadAssembler::new(&ch.caps(), 0x1000, 4096);
+        let mut shrinks = 0;
+        while asm.shrink_budget() {
+            shrinks += 1;
+            assert!(shrinks < 64, "shrinking must terminate");
+        }
+        assert_eq!(asm.next_request().unwrap(), b"m1000,1".to_vec(), "never below one byte");
         ch.shutdown("test over");
     }
 

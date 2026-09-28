@@ -417,6 +417,17 @@ module.exports = {
                     "alongside GDB. Set false to fall back to plain byte-for-byte forwarding for this session only -- the way " +
                     "to tell whether a problem is the multiplexer's, without restarting the Agent or affecting other sessions.",
             },
+            rspTier: {
+                type: "string",
+                enum: ["auto", "full", "haltedOnly", "unsupported"],
+                default: "auto",
+                description:
+                    "What the Probe Agent may assume this gdb-server can do while the target is running. 'auto' uses what has " +
+                    "been measured for this servertype -- so far only OpenOCD, which answers memory reads on the same " +
+                    "connection GDB is running on. On every other server the Agent's own features (Agent-side RTT included) " +
+                    "wait until the target halts, which for RTT means no data while it runs. Set 'full' to find out whether " +
+                    "that caution is necessary on your server; 'unsupported' turns Agent-side features off for this session.",
+            },
         },
     },
     svdFile: {
@@ -690,6 +701,18 @@ module.exports = {
                         minimum: 1024,
                         maximum: 65535,
                         multipleOf: 1,
+                    },
+                    implementation: {
+                        type: "string",
+                        enum: ["rust", "typescript"],
+                        default: "rust",
+                        description:
+                            "Which engine reads the target. 'rust' runs RTT inside the Probe Agent on the multiplexed gdb " +
+                            "connection, which takes GDB and the MI text layer out of every memory read -- that is where RTT " +
+                            "throughput goes. 'typescript' is the debug adapter's own engine, polling through GDB. Never both: " +
+                            "each keeps its own idea of the ring buffer's read pointer, and two of them would corrupt the " +
+                            "channel. Same ports, same decoders and same terminals either way. 'rust' needs the multiplexer, " +
+                            "so a session with debugFlags.rspMux false falls back to 'typescript' and says so.",
                     },
                 },
                 default: { enabled: true },

@@ -78,6 +78,14 @@ pub enum RspError {
     /// A reply that cannot be interpreted. Carries a static reason rather than a
     /// formatted string so it stays cheap on a per-read path.
     Malformed(&'static str),
+    /// The reply arrived but could not be accepted -- a bad checksum, or a payload the codec
+    /// rejected -- so the request has no answer even though the server sent one.
+    ///
+    /// Separate from [`RspError::Malformed`] because it is worth *retrying*: a read is idempotent,
+    /// and a server that mangles one reply may well answer a differently-sized request correctly.
+    /// The ST-LINK gdb-server, for one, truncates a reply of exactly 1024 bytes, losing the last
+    /// checksum digit to a NUL terminator -- so the same read asked for one byte shorter succeeds.
+    ReplyRejected,
     /// No reply within the request's deadline.
     Timeout,
     /// The channel is gone.
@@ -91,6 +99,7 @@ impl std::fmt::Display for RspError {
             RspError::Target(Some(code)) => write!(f, "gdb-server returned error E{code:02x}"),
             RspError::Target(None) => write!(f, "gdb-server returned an error"),
             RspError::Malformed(why) => write!(f, "malformed RSP reply: {why}"),
+            RspError::ReplyRejected => write!(f, "the gdb-server's reply could not be accepted"),
             RspError::Timeout => write!(f, "timed out waiting for an RSP reply"),
             RspError::Closed => write!(f, "RSP channel is closed"),
         }

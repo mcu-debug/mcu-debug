@@ -28,4 +28,13 @@ export type SessionDebugFlags = {
      * defers to the proxy's own default (on, unless it was started `--no-rsp-mux`).
      */
     rsp_mux: boolean | null;
+    /**
+     * Override what the Agent believes this gdb-server can do: `full`, `haltedOnly` or
+     * `unsupported`. `None`, or anything unrecognised, uses the measured default for the
+     * `servertype` (`RspCaps`/`ServerTier::from_server_type`).
+     *
+     * Exists because the compatibility matrix in §7 has one server measured and four to go, and
+     * without a way to say "try it" there is no way to measure the rest on real hardware.
+     */
+    rsp_tier: string | null;
 };

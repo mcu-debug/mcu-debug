@@ -302,8 +302,23 @@ fn format_line(out: &mut String, stamped: &Stamped) {
 /// Printable ASCII verbatim, everything else as `\xNN`, truncated at
 /// [`MAX_RENDER`] with the full length noted.
 fn render_bytes(out: &mut String, raw: &[u8]) {
-    let shown = raw.len().min(MAX_RENDER);
-    for &b in &raw[..shown] {
+    // Head **and** tail when truncating. Showing only the head hid the one part of a long frame
+    // that decides whether it is valid at all -- the `#` and its two checksum digits -- so a
+    // rejected frame and an accepted one looked identical in the trace, and telling them apart
+    // meant reasoning about code instead of reading the evidence.
+    const TAIL: usize = 8;
+    if raw.len() <= MAX_RENDER {
+        render_run(out, raw);
+        return;
+    }
+    let head = MAX_RENDER - TAIL;
+    render_run(out, &raw[..head]);
+    let _ = write!(out, "…(+{} bytes)…", raw.len() - head - TAIL);
+    render_run(out, &raw[raw.len() - TAIL..]);
+}
+
+fn render_run(out: &mut String, raw: &[u8]) {
+    for &b in raw {
         match b {
             0x20..=0x7e => out.push(b as char),
             b'\n' => out.push_str("\\n"),
@@ -313,9 +328,6 @@ fn render_bytes(out: &mut String, raw: &[u8]) {
                 let _ = write!(out, "\\x{b:02x}");
             }
         }
-    }
-    if raw.len() > shown {
-        let _ = write!(out, "…(+{} bytes)", raw.len() - shown);
     }
 }
 

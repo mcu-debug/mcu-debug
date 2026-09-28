@@ -280,14 +280,12 @@ export class RttBufferManager extends EventEmitter {
 
         // Try to write as much as possible
         while (chInfo.wrBuffer.length > 0) {
-            let spaceAvailable: number;
-            if (rttDesc.rdOff <= rttDesc.wrOff) {
-                // Free space is from wrOff to end, plus from start to rdOff - 1
-                spaceAvailable = rttDesc.size - rttDesc.wrOff + (rttDesc.rdOff > 0 ? rttDesc.rdOff - 1 : 0);
-            } else {
-                // Free space is from wrOff to rdOff - 1
-                spaceAvailable = rttDesc.rdOff - rttDesc.wrOff - 1;
-            }
+            // One byte of the buffer is always left unused, because WrOff == RdOff is how the
+            // target recognises an *empty* buffer. The old form special-cased rdOff === 0 as
+            // `size - wrOff`, one too many: writing that many bytes set WrOff back to RdOff and
+            // the target saw an empty buffer instead of a full one, silently discarding the lot.
+            const used = rttDesc.wrOff >= rttDesc.rdOff ? rttDesc.wrOff - rttDesc.rdOff : rttDesc.size - rttDesc.rdOff + rttDesc.wrOff;
+            const spaceAvailable = rttDesc.size - 1 - used;
 
             if (spaceAvailable === 0) {
                 // No space available, exit the loop. Catch next time.
@@ -318,6 +316,11 @@ export class RttBufferManager extends EventEmitter {
                 newWrOff -= rttDesc.size;
             }
             await this.memoryManager.writeWord(descAddr + 4n + BigInt(OFF_WROFF), newWrOff);
+            // Keep the local copy in step with the target. Without this, a second pass round the
+            // loop recomputed the space and the destination from the *old* WrOff, so a write
+            // larger than the free space overwrote its own first bytes and left WrOff short --
+            // scrambling the data and losing everything before the final pass.
+            rttDesc.wrOff = newWrOff;
 
             // Remove written data from buffer
             chInfo.wrBuffer = chInfo.wrBuffer.subarray(bytesToWrite);

@@ -6,7 +6,12 @@
     // purpose — Markdown uses emoji deliberately and would be noise. See AGENTS.md.
     "[typescript]": {
         "editor.formatOnSave": true,
-        "editor.defaultFormatter": "vscode.typescript-language-features",
+        // Prettier, not the built-in TypeScript formatter. A language-specific defaultFormatter
+        // overrides the global one above, so this block silently opted .ts files out of prettier:
+        // the built-in formatter leaves `) { }` alone and knows nothing about printWidth 200, which
+        // is how files drifted out of style while `npm run fmt:ts:check` was the only thing to
+        // notice. `[javascript]` already pointed here, which is why .js files stayed clean.
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
         "editor.unicodeHighlight.nonBasicASCII": true,
         "editor.unicodeHighlight.includeComments": true
     },

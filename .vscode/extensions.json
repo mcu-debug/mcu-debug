@@ -1,5 +1,6 @@
 {
   "recommendations": [
+    "esbenp.prettier-vscode",
     "connor4312.esbuild-problem-matchers",
     "vadimcn.vscode-lldb",
     "rust-lang.rust-analyzer"

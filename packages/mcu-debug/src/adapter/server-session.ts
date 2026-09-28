@@ -83,6 +83,18 @@ export class GDBServerSession extends EventEmitter {
     public usingParentServer: boolean = false;
     private clientRequestedStop: boolean = false;
     private proxyClient: ProxyClient | null = null;
+
+    /**
+     * The session's proxy client, for the few things outside this class that need to talk to the
+     * Agent directly rather than through a stream.
+     *
+     * `null` when there is no proxy -- an external server matched by `matchRegex`, or a session that
+     * never started one -- so every caller has to decide what to do without it. Agent-side RTT falls
+     * back to the debug adapter's own engine, for instance.
+     */
+    public get proxy(): ProxyClient | null {
+        return this.proxyClient;
+    }
     private serverResolve: (() => void) | null = null;
     private resolved: boolean = false; // Could be resolved or rejected, but we just want to know if it's resolved in any way to stop timers and avoid multiple resolve/reject calls
 

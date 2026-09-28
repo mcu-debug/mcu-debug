@@ -43,6 +43,12 @@
 //! of the session -- every later read is offset, and the output is silently corrupt rather than
 //! obviously broken -- so it is worth testing without a target in the way.
 
+pub mod engine;
+#[cfg(test)]
+pub mod fake;
+
+pub use engine::{RttConfig, RttEngine, RttSink, RttStats};
+
 use crate::gdb_rsp::{Consumer, Endian, RspError};
 
 /// `acID` is 16 bytes, and the search string is truncated to fit.
@@ -96,9 +102,15 @@ impl std::fmt::Display for RttError {
 /// A trait rather than a concrete [`Consumer`] so that the ring-buffer logic can be tested against
 /// a plain byte array. Both implementations are blocking; callers are expected to be on their own
 /// thread.
-pub trait TargetMemory {
+pub trait TargetMemory: Send + Sync {
     fn read(&self, addr: u64, len: usize) -> Result<Vec<u8>, RspError>;
     fn write(&self, addr: u64, data: &[u8]) -> Result<(), RspError>;
+
+    /// Would a request go out now, or wait? The engine polls this before spending one, so a shut
+    /// gate costs a lock rather than a timeout. Default `true` for a memory that has no gate.
+    fn ready(&self) -> bool {
+        true
+    }
 }
 
 impl TargetMemory for Consumer {
@@ -107,6 +119,9 @@ impl TargetMemory for Consumer {
     }
     fn write(&self, addr: u64, data: &[u8]) -> Result<(), RspError> {
         self.write_memory(addr, data)
+    }
+    fn ready(&self) -> bool {
+        Consumer::ready(self)
     }
 }
 
@@ -255,6 +270,83 @@ pub fn plan_drain(rb: &RingBuffer, max_bytes: Option<usize>) -> Result<Option<Dr
     }
 }
 
+/// What a single fill of a down channel should write, and what `WrOff` becomes afterwards.
+///
+/// The mirror of [`DrainPlan`], and the roles of the two offsets swap with it: on a down channel
+/// **we** write `WrOff` and the target writes `RdOff`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FillPlan {
+    pub first: Run,
+    /// Present only when the free space wraps past the end of the buffer.
+    pub second: Option<Run>,
+    /// `WrOff` once everything in this plan has been written. Only write it **after** the data, or
+    /// the target may consume bytes that are not there yet.
+    pub new_wr_off: u32,
+    /// How many of the caller's bytes this plan places. May be fewer than offered.
+    pub consumed: usize,
+}
+
+/// Plan writing up to `len` bytes into a down channel.
+///
+/// `Ok(None)` when the buffer is full, which is ordinary when the firmware is not reading its input
+/// channel — so it must not be an error.
+pub fn plan_fill(rb: &RingBuffer, len: usize) -> Result<Option<FillPlan>, RttError> {
+    rb.validate()?;
+    let space = down_channel_space(rb);
+    let n = space.min(len);
+    if n == 0 {
+        return Ok(None);
+    }
+    let to_end = (rb.size - rb.wr_off) as usize;
+    let new_wr_off = ((rb.wr_off as usize + n) % rb.size as usize) as u32;
+    if n <= to_end {
+        Ok(Some(FillPlan {
+            first: (rb.buf_addr + rb.wr_off as u64, n),
+            second: None,
+            new_wr_off,
+            consumed: n,
+        }))
+    } else {
+        Ok(Some(FillPlan {
+            first: (rb.buf_addr + rb.wr_off as u64, to_end),
+            second: Some((rb.buf_addr, n - to_end)),
+            new_wr_off,
+            consumed: n,
+        }))
+    }
+}
+
+/// Write as much of `data` as fits into a down channel, returning how much went.
+///
+/// Partial by design: the caller keeps the remainder and offers it again next cycle. Looping here
+/// until everything fits would block this thread on firmware that is not reading its input.
+pub fn fill_down_channel(
+    mem: &dyn TargetMemory,
+    cb: &ControlBlock,
+    channel: u32,
+    data: &[u8],
+    endian: Endian,
+) -> Result<usize, RttError> {
+    if data.is_empty() {
+        return Ok(0);
+    }
+    let desc_addr = cb.down_desc_addr(channel);
+    let rb = read_descriptor(mem, desc_addr, endian)?;
+    let Some(plan) = plan_fill(&rb, data.len())? else {
+        return Ok(0);
+    };
+
+    let (addr, len) = plan.first;
+    mem.write(addr, &data[..len])?;
+    if let Some((addr2, len2)) = plan.second {
+        mem.write(addr2, &data[len..len + len2])?;
+    }
+    // `WrOff` last: it is what makes the bytes visible to the target.
+    let wr_off_addr = desc_addr + DESC_SKIP + 8; // past pBuffer and SizeOfBuffer
+    write_u32(mem, wr_off_addr, plan.new_wr_off, endian)?;
+    Ok(plan.consumed)
+}
+
 /// How a drain behaves. Both knobs exist because the right answer depends on the firmware.
 #[derive(Debug, Clone, Copy)]
 pub struct DrainOptions {
@@ -269,10 +361,26 @@ pub struct DrainOptions {
     pub advance_after_each_run: bool,
 }
 
+/// Default cap on one drain, chosen to stay clear of gdb-server reply-buffer boundaries.
+///
+/// A hex `m` reply is `$` + 2n + `#` + 2 = **2n + 4** bytes on the wire, so a read of n bytes lands
+/// on 1024 exactly when n = 510. The ST-LINK gdb-server truncates a reply of exactly 1024 bytes,
+/// losing its last checksum digit to a NUL terminator, and 510-byte reads therefore fail every time
+/// on it. OpenOCD had a 512-byte memory-request bug of the same family, fixed upstream. The pattern
+/// generalises: the sizes to fear are those where `2n + 4` is a power of two -- n = 510, 1022, 2046.
+///
+/// 500 is below the smallest of them with room to spare, and costs little: RTT drains average a few
+/// hundred bytes, so most are unaffected, and a larger one becomes two reads rather than one.
+///
+/// This is a floor of caution, not a limit anyone is stuck with -- `rttConfig` can raise it per
+/// session, and [`crate::gdb_rsp::RspError::ReplyRejected`] retries a rejected read at half the size
+/// regardless, which is what covers a server whose boundary is somewhere else.
+pub const SAFE_DRAIN_BYTES: usize = 500;
+
 impl Default for DrainOptions {
     fn default() -> Self {
         Self {
-            max_bytes: Some(4096),
+            max_bytes: Some(SAFE_DRAIN_BYTES),
             advance_after_each_run: false,
         }
     }
@@ -400,96 +508,9 @@ fn write_u32(mem: &dyn TargetMemory, addr: u64, value: u32, endian: Endian) -> R
 
 #[cfg(test)]
 mod tests {
+    use super::fake::{FakeTarget, BUF_ADDR, BUF_SIZE, CB_ADDR};
     use super::*;
     use crate::common::sync::MutexExt;
-    use std::sync::Mutex;
-
-    const CB_ADDR: u64 = 0x2000_0000;
-    const BUF_ADDR: u64 = 0x2000_1000;
-    const BUF_SIZE: u32 = 64;
-
-    /// A target that is a byte array, so the ring-buffer arithmetic is checked against memory that
-    /// behaves exactly like the real thing and nothing else.
-    struct FakeTarget {
-        base: u64,
-        mem: Mutex<Vec<u8>>,
-        /// Every read, so a test can assert how many round trips a drain cost.
-        reads: Mutex<Vec<(u64, usize)>>,
-        writes: Mutex<Vec<(u64, Vec<u8>)>>,
-        fail_reads_at: Mutex<Option<u64>>,
-    }
-
-    impl FakeTarget {
-        fn new() -> Self {
-            Self {
-                base: CB_ADDR,
-                mem: Mutex::new(vec![0u8; 0x4000]),
-                reads: Mutex::new(Vec::new()),
-                writes: Mutex::new(Vec::new()),
-                fail_reads_at: Mutex::new(None),
-            }
-        }
-
-        fn put(&self, addr: u64, bytes: &[u8]) {
-            let off = (addr - self.base) as usize;
-            self.mem.lock_recover()[off..off + bytes.len()].copy_from_slice(bytes);
-        }
-
-        fn put_u32(&self, addr: u64, value: u32) {
-            self.put(addr, &value.to_le_bytes());
-        }
-
-        /// A control block with one up and one down channel, and a 64-byte up buffer.
-        fn with_control_block(self, id: &str, up: u32, down: u32) -> Self {
-            let mut id_field = [0u8; ID_LEN];
-            let bytes = id.as_bytes();
-            id_field[..bytes.len()].copy_from_slice(bytes);
-            self.put(CB_ADDR, &id_field);
-            self.put_u32(CB_ADDR + 16, up);
-            self.put_u32(CB_ADDR + 20, down);
-            self
-        }
-
-        /// Fill up channel 0's descriptor and its buffer contents.
-        fn with_up_channel(self, wr_off: u32, rd_off: u32, contents: &[u8]) -> Self {
-            let desc = CB_ADDR + CB_HEADER_LEN as u64;
-            self.put_u32(desc, 0xdead_beef); // sName, never followed
-            self.put_u32(desc + 4, BUF_ADDR as u32);
-            self.put_u32(desc + 8, BUF_SIZE);
-            self.put_u32(desc + 12, wr_off);
-            self.put_u32(desc + 16, rd_off);
-            self.put(BUF_ADDR, contents);
-            self
-        }
-
-        fn read_count(&self) -> usize {
-            self.reads.lock_recover().len()
-        }
-
-        fn write_count(&self) -> usize {
-            self.writes.lock_recover().len()
-        }
-
-        fn last_write(&self) -> (u64, Vec<u8>) {
-            self.writes.lock_recover().last().cloned().expect("a write")
-        }
-    }
-
-    impl TargetMemory for FakeTarget {
-        fn read(&self, addr: u64, len: usize) -> Result<Vec<u8>, RspError> {
-            self.reads.lock_recover().push((addr, len));
-            if Some(addr) == *self.fail_reads_at.lock_recover() {
-                return Err(RspError::Target(Some(5)));
-            }
-            let off = (addr - self.base) as usize;
-            Ok(self.mem.lock_recover()[off..off + len].to_vec())
-        }
-        fn write(&self, addr: u64, data: &[u8]) -> Result<(), RspError> {
-            self.writes.lock_recover().push((addr, data.to_vec()));
-            self.put(addr, data);
-            Ok(())
-        }
-    }
 
     fn rb(wr_off: u32, rd_off: u32) -> RingBuffer {
         RingBuffer {
@@ -582,6 +603,22 @@ mod tests {
     }
 
     #[test]
+    fn the_default_cap_avoids_every_power_of_two_reply_size() {
+        // A hex `m` reply is 2n + 4 bytes. The sizes that bite are the ones where that is a power of
+        // two, because a server whose reply buffer is that size has no room for its NUL terminator.
+        for bits in 10..=14 {
+            let poison = ((1usize << bits) - 4) / 2;
+            assert!(
+                SAFE_DRAIN_BYTES < poison,
+                "a drain of {SAFE_DRAIN_BYTES} must stay below the {poison}-byte read whose reply is exactly {} bytes",
+                1usize << bits
+            );
+        }
+        // And the smallest of them is the one actually observed on hardware.
+        assert_eq!((1024 - 4) / 2, 510);
+    }
+
+    #[test]
     fn a_cap_inside_the_tail_produces_one_run() {
         let plan = plan_drain(&rb(10, 50), Some(8)).unwrap().unwrap();
         assert_eq!(plan.first, (BUF_ADDR + 50, 8));
@@ -645,6 +682,92 @@ mod tests {
         let mut b = rb(0, 0);
         b.buf_addr = 0;
         assert_eq!(plan_drain(&b, None), Err(RttError::NotReady));
+    }
+
+    // ── Filling a down channel ────────────────────────────────────────────────
+
+    #[test]
+    fn a_fill_into_an_empty_buffer_is_one_run_leaving_one_byte_spare() {
+        let plan = plan_fill(&rb(0, 0), 1000).unwrap().unwrap();
+        assert_eq!(plan.first, (BUF_ADDR, BUF_SIZE as usize - 1));
+        assert_eq!(plan.second, None);
+        assert_eq!(plan.consumed, BUF_SIZE as usize - 1);
+        assert_eq!(plan.new_wr_off, BUF_SIZE - 1);
+    }
+
+    #[test]
+    fn a_fill_that_runs_off_the_end_wraps_to_the_start() {
+        // The branch the engine tests do not reach, because a first write starts at offset 0.
+        // WrOff 60 with RdOff 10 leaves 4 bytes to the end and 9 more at the front.
+        let plan = plan_fill(&rb(60, 10), 100).unwrap().unwrap();
+        assert_eq!(plan.first, (BUF_ADDR + 60, 4));
+        assert_eq!(plan.second, Some((BUF_ADDR, 9)));
+        assert_eq!(plan.consumed, 13);
+        assert_eq!(plan.new_wr_off, 9);
+    }
+
+    #[test]
+    fn a_fill_smaller_than_the_space_takes_only_what_was_offered() {
+        let plan = plan_fill(&rb(10, 0), 5).unwrap().unwrap();
+        assert_eq!(plan.first, (BUF_ADDR + 10, 5));
+        assert_eq!(plan.second, None);
+        assert_eq!(plan.consumed, 5);
+        assert_eq!(plan.new_wr_off, 15);
+    }
+
+    #[test]
+    fn a_fill_landing_exactly_on_the_end_sets_wroff_to_zero() {
+        // Same off-by-one as the drain side: an offset equal to `size` is out of range.
+        let plan = plan_fill(&rb(60, 20), 4).unwrap().unwrap();
+        assert_eq!(plan.first, (BUF_ADDR + 60, 4));
+        assert_eq!(plan.second, None);
+        assert_eq!(plan.new_wr_off, 0, "offset 0, never 64");
+    }
+
+    #[test]
+    fn a_full_buffer_plans_nothing_rather_than_failing() {
+        // Ordinary whenever the firmware is not reading its input channel.
+        assert_eq!(plan_fill(&rb(63, 0), 10).unwrap(), None);
+        assert_eq!(plan_fill(&rb(0, 1), 10).unwrap(), None);
+    }
+
+    #[test]
+    fn a_fill_never_lets_wroff_catch_rdoff() {
+        // The invariant the whole one-byte reservation exists for: if WrOff ever equals RdOff the
+        // target reads the buffer as *empty* and discards everything in it. Checked across every
+        // offset pair rather than at chosen points, because one bad pair loses a whole buffer.
+        for wr in 0..BUF_SIZE {
+            for rd in 0..BUF_SIZE {
+                let b = rb(wr, rd);
+                if let Some(plan) = plan_fill(&b, 1000).unwrap() {
+                    assert_ne!(plan.new_wr_off, rd, "WrOff caught RdOff at wr={wr} rd={rd}");
+                    assert!(plan.new_wr_off < b.size, "WrOff out of range at wr={wr} rd={rd}");
+                    assert_eq!(
+                        plan.consumed,
+                        down_channel_space(&b),
+                        "took the wrong amount at wr={wr} rd={rd}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_wrapped_fill_writes_the_callers_bytes_in_order() {
+        let t = FakeTarget::new()
+            .with_control_block("SEGGER RTT", 1, 1)
+            .with_up_channel(0, 0, b"")
+            .with_down_channel(0, 10);
+        let cb = find_control_block(&t, CB_ADDR, "SEGGER RTT", Endian::Little).unwrap();
+        // Put WrOff near the end so the write has to split.
+        let desc = cb.down_desc_addr(0);
+        t.put_u32(desc + 4 + 8, 60);
+
+        let n = fill_down_channel(&t, &cb, 0, b"ABCDEFGHI", Endian::Little).unwrap();
+        assert_eq!(n, 9);
+        assert_eq!(t.bytes_at(super::fake::DOWN_BUF_ADDR + 60, 4), b"ABCD".to_vec());
+        assert_eq!(t.bytes_at(super::fake::DOWN_BUF_ADDR, 5), b"EFGHI".to_vec());
+        assert_eq!(t.read_u32_at(desc + 4 + 8), 5, "WrOff wrapped to 5");
     }
 
     // ── A whole drain ─────────────────────────────────────────────────────────

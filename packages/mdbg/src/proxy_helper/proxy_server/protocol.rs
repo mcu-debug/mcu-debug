@@ -138,6 +138,13 @@ pub enum ProxyEvent {
     SerialPortError(PortErrorEvent),
     /// Full-snapshot update of available serial ports.
     SerialAvailableChanged { revision: u64, ports: Vec<AvailablePort> },
+    /// A background thread wants an event forwarded to the client verbatim.
+    ///
+    /// The funnel writer belongs to the message loop, so a thread that has something to *say*
+    /// rather than something to write hands it over here. Added for the RTT engine, whose
+    /// `rttReady` can fire minutes after the request that started it, and general because every
+    /// future Agent-side feature will have the same need.
+    ServerEvent(ProxyServerEvents),
     /// A session-owned background thread exited — returned, errored, or panicked.
     /// Emitted by `spawn_session_thread` so the loop always learns of the death
     /// (even on panic) and can end the session for fatal roles or note the rest.
@@ -208,6 +215,12 @@ pub enum StreamKind {
     },
     Swo {
         core: u16,
+    },
+    /// One RTT channel served by the Agent's own engine. Never produced by
+    /// [`StreamKind::classify`]: these streams are minted by `StartRtt`, not reserved through
+    /// `AllocatePorts`, so there is no client-supplied name to classify.
+    Rtt {
+        channel: u32,
     },
     Tcl,
     Telnet,
@@ -318,6 +331,47 @@ pub struct SessionDebugFlags {
     /// Whether the RSP multiplexer owns this session's controller gdb streams. `None`
     /// defers to the proxy's own default (on, unless it was started `--no-rsp-mux`).
     pub rsp_mux: Option<bool>,
+    /// Override what the Agent believes this gdb-server can do: `full`, `haltedOnly` or
+    /// `unsupported`. `None`, or anything unrecognised, uses the measured default for the
+    /// `servertype` (`RspCaps`/`ServerTier::from_server_type`).
+    ///
+    /// Exists because the compatibility matrix in §7 has one server measured and four to go, and
+    /// without a way to say "try it" there is no way to measure the rest on real hardware.
+    pub rsp_tier: Option<String>,
+}
+
+/// What the Agent needs to run RTT, from the client's `rttConfig`.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
+pub struct RttStartConfig {
+    /// Absolute address of `_SEGGER_RTT`, as a hex string (`"0x20000000"`).
+    ///
+    /// **Already resolved.** `rttConfig.address: "auto"` is turned into a number by the debug
+    /// adapter from the ELF symbol table, which is the only side that has one -- so no symbol
+    /// lookup happens in the Agent.
+    pub cb_address: String,
+    /// The id the firmware writes last, normally `"SEGGER RTT"`. Truncated to 16 bytes.
+    pub search_id: String,
+    /// True for a big-endian target. From `TargetInfo.endianness`, which only the adapter knows.
+    pub big_endian: bool,
+    /// Up channels (target to host) to drain.
+    pub up_channels: Vec<u32>,
+    /// Down channels (host to target) to accept input for.
+    pub down_channels: Vec<u32>,
+    /// How long to wait after a pass that moved nothing. The engine polls back to back while data
+    /// is flowing, so this is an idle interval and not a rate limit.
+    pub poll_interval_ms: Option<u32>,
+    /// Cap on one channel's drain, so a full buffer cannot hold the shared RSP connection while
+    /// GDB waits behind it.
+    pub max_bytes_per_drain: Option<u32>,
+}
+
+/// One RTT channel and the funnel stream its data arrives on.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "proxy-protocol/")]
+pub struct RttChannelStream {
+    pub channel: u32,
+    pub stream_id: u8,
 }
 
 // ── Port allocator types ──────────────────────────────────────────────────────
@@ -373,6 +427,17 @@ pub enum ControlRequest {
          */
         #[serde(default)]
         debug_flags: Option<SessionDebugFlags>,
+        /**
+         * The launch configuration's `servertype` -- `openocd`, `jlink`, `pyocd`, ...
+         *
+         * The Agent cannot work this out for itself: it is given a path to an executable, not a
+         * kind. It needs the kind because what an Agent-side feature may do depends on the server
+         * (`docs-internal/gdb-rsp.md` §7), and reading that off `ServerTier::Unknown` for everyone
+         * means those features never run while the target is running -- which is when most of them
+         * are wanted.
+         */
+        #[serde(default)]
+        server_type: Option<String>,
     },
 
     #[serde(rename = "allocatePorts")]
@@ -403,6 +468,24 @@ pub enum ControlRequest {
 
     #[serde(rename = "startStream")]
     StartStream { stream_id: u8 },
+
+    /// Run RTT in the Agent, on `stream_id`'s multiplexer.
+    ///
+    /// **No new data path comes with this.** Each up channel is given an ordinary funnel stream, so
+    /// the bytes arrive as `StreamData` like any other stream and the client's existing decoders --
+    /// terminals, graphs, the `pipe` decoder and its throughput stats -- work unchanged. Input for a
+    /// down channel travels the other way on the same stream. Inventing a request per chunk would
+    /// have duplicated the funnel for no gain.
+    ///
+    /// `stream_id` names the **controller gdb stream**, not an RTT stream: it is whose mux the
+    /// engine reads target memory through.
+    #[serde(rename = "startRtt")]
+    StartRtt { stream_id: u8, config: RttStartConfig },
+
+    /// Stop the Agent's RTT engine and dismantle its streams. A `StreamClosed` follows for each, so
+    /// the client tears its listeners down the same way it does for any stream that ends.
+    #[serde(rename = "stopRtt")]
+    StopRtt,
 
     #[serde(rename = "duplicateStream")]
     DuplicateStream { stream_id: u8 },
@@ -470,6 +553,8 @@ impl ControlRequest {
             ControlRequest::StartStream { .. } => "startStream",
             ControlRequest::DuplicateStream { .. } => "duplicateStream",
             ControlRequest::CloseStream { .. } => "closeStream",
+            ControlRequest::StartRtt { .. } => "startRtt",
+            ControlRequest::StopRtt => "stopRtt",
             ControlRequest::Heartbeat => "heartbeat",
             ControlRequest::SyncFile { .. } => "syncFile",
             ControlRequest::SerialOpen(..) => "serial.open",
@@ -548,6 +633,16 @@ pub enum ControlResponseData {
         status: StreamStatus,
         msg_seq: u64,
     },
+
+    /// One entry per **up** channel, in the order they were requested. The client binds a local
+    /// listener for each, exactly as it does for a gdb-server port, and its existing decoders
+    /// connect to those -- which is why Agent-side RTT needs no new data path.
+    #[serde(rename = "startRtt")]
+    StartRtt { channels: Vec<RttChannelStream> },
+
+    /// `stopRtt`: whether an engine was running to stop.
+    #[serde(rename = "stopRtt")]
+    StopRtt { was_running: bool },
 
     #[serde(rename = "heartbeat")]
     Heartbeat,
@@ -657,6 +752,36 @@ pub enum ProxyServerEvents {
     /// Debounced full snapshot of currently available serial ports.
     #[serde(rename = "serial.availableChanged")]
     SerialAvailableChanged { revision: u64, ports: Vec<AvailablePort> },
+
+    /// The Agent's RTT engine found and validated the control block.
+    ///
+    /// `startRtt` answers as soon as the search has **begun**, because how long it takes is a
+    /// property of the firmware and not of us: `defmt-rtt` and SEGGER's own implementation both
+    /// initialise RTT lazily, so a session stopped at `main`, or at a breakpoint the user set before
+    /// the first log call, has no control block at all yet. It can be under a millisecond or it can
+    /// be minutes. This is the event that says data is about to flow.
+    ///
+    /// Not a success/failure pair: failing to find it is not a failure, it is waiting. The engine
+    /// keeps looking, and `rttStopped` is what says it has given up.
+    #[serde(rename = "rttReady")]
+    RttReady {
+        /// Where the control block was found, for confirming it against the ELF symbol.
+        cb_address: String,
+        /// What the block itself says, which may be fewer than the channels that were asked for --
+        /// worth comparing, since a decoder naming a channel the firmware never allocated will
+        /// simply never produce anything.
+        up_channels: u32,
+        down_channels: u32,
+        /// How long the search ran, in milliseconds. Almost always the firmware rather than us.
+        search_ms: u64,
+    },
+
+    /// The Agent's RTT engine has stopped and will produce nothing further, with the reason.
+    ///
+    /// Sent whether it was asked to stop or gave up on its own, so a client never has to infer the
+    /// difference between "RTT ended" and "RTT went quiet".
+    #[serde(rename = "rttStopped")]
+    RttStopped { reason: String },
 }
 
 impl ProxyServerEvents {

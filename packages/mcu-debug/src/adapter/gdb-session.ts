@@ -32,6 +32,7 @@ import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } fro
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse, LiveWatchClientReadyResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
+import { chooseRttEngine, RttProxyBridge } from "./rtt-proxy-bridge";
 import { TcpPortScanner, formatThrown } from "@mcu-debug/shared";
 import { DisassemblyAdapter } from "./disassebly-gdb";
 import { DebugHelper, withTimeout } from "./helper";
@@ -69,6 +70,8 @@ export class GDBDebugSession extends SeqDebugSession {
     public liveWatchMonitor: LiveWatchMonitor;
     public rttManager: RttBufferManager;
     public rttTcpServer: RttTcpServer;
+    /** Set only when the Agent's RTT engine is the one running. See `chooseRttEngine`. */
+    public rttProxyBridge: RttProxyBridge | null = null;
     public memoryRequests: MemoryRequests;
     public suppressStoppedEvents: boolean = true;
     public continuing: boolean = false;
@@ -233,6 +236,7 @@ export class GDBDebugSession extends SeqDebugSession {
             const doDetach = !doTerminate && !args.suspendDebuggee;
             this.debugHelper.dispose();
             this.rttManager.dispose();
+            void this.rttProxyBridge?.dispose();
             this.suppressStoppedEvents = true;
             if (this.liveWatchMonitor.enabled()) {
                 await this.liveWatchMonitor.stop();
@@ -1309,7 +1313,32 @@ export class GDBDebugSession extends SeqDebugSession {
 
     private postInitComplete(): Promise<void> {
         return new Promise(async (resolve) => {
-            const doBuiltinRtt = !!this.args.pvtRttConfig;
+            const rttConfig = this.args.pvtRttConfig;
+            const choice = rttConfig ? chooseRttEngine(rttConfig, this.serverSession?.proxy ?? null, this.args.debugFlags?.rspMux) : null;
+            if (choice?.why) {
+                this.handleMsg(Stderr, `WARNING: built-in RTT is using the debug adapter's engine -- ${choice.why}\n`);
+            }
+
+            // The Agent's engine reads target memory over the multiplexed RSP connection, so it has
+            // no need of the live GDB the debug adapter's engine polls through. This is still the
+            // right *moment* to start -- symbols are loaded, so the control block address is known,
+            // and the target is about to run -- but the dependency is gone, so it does not wait.
+            if (choice?.engine === "rust" && rttConfig) {
+                const proxy = this.serverSession!.proxy!;
+                this.rttProxyBridge = new RttProxyBridge(this, proxy);
+                try {
+                    await this.rttProxyBridge.start(this.rttTcpServer, rttConfig);
+                } catch (e) {
+                    // Not fatal, and not silently downgraded either: whatever went wrong here would
+                    // very likely go wrong for the other engine too, and starting both is the one
+                    // thing that must never happen -- each keeps its own read pointer and they would
+                    // corrupt the channel between them.
+                    this.rttProxyBridge = null;
+                    this.handleMsg(Stderr, `ERROR: Failed to start Agent-side RTT: ${formatThrown(e)}\n`);
+                }
+            }
+
+            const doBuiltinRtt = !!rttConfig && choice?.engine === "typescript";
             const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
             if (doStart) {
                 this.liveWatchMonitor

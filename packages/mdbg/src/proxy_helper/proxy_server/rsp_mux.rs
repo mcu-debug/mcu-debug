@@ -208,19 +208,28 @@ impl ProxyServer {
         // a file name; there is deliberately no sanitiser to keep in step with it.
         let label = meta.name.clone();
         let trace = self.open_rsp_trace(&label);
-        // `Unknown` gates our own injected packets as if the server answered nothing
-        // while running (§7). It costs nothing here -- item 14 attaches no consumers,
-        // and GDB's own traffic is never gated -- and it is the safe default until
-        // `rsp-probe` has filled in the column for each server (item 17c). OpenOCD is
-        // measured as `Full`; raising it per server is item 16's business.
-        match start_channel(
-            stream_id,
-            server,
-            &label,
-            ServerTier::Unknown,
-            trace,
-            self.event_tx.clone(),
-        ) {
+        // The tier decides whether **our own** packets may go out while the target is running;
+        // GDB's are never gated. It used to be hardcoded `Unknown`, which the gate reads as
+        // halted-only, and the comment here said that cost nothing because item 14 attached no
+        // consumers. It stopped costing nothing the moment one existed: Agent-side RTT on a running
+        // target sat waiting for a gate that never opened, silently, because a running target is
+        // exactly when RTT has data.
+        //
+        // So it comes from the `servertype` now, with an explicit override for measuring a server
+        // the matrix has not reached (§7, item 17c).
+        let tier = self
+            .debug_flags
+            .rsp_tier
+            .as_deref()
+            .and_then(ServerTier::from_flag)
+            .unwrap_or_else(|| {
+                self.server_type
+                    .as_deref()
+                    .map(ServerTier::from_server_type)
+                    .unwrap_or_default()
+            });
+        eprintln!("Stream {} ('{}') server tier: {:?}", stream_id, label, tier);
+        match start_channel(stream_id, server, &label, tier, trace, self.event_tx.clone()) {
             Ok(channel) => {
                 eprintln!("RSP mux now owns stream {} ('{}')", stream_id, label);
                 self.rsp_channels.insert(stream_id, channel);

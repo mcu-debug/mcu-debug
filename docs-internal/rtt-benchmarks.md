@@ -4,18 +4,54 @@ We will use a Rust STM32 program that streams data via RTT as fast as it can. No
 
 See: /Users/hdm/src/stm32f429-rtt
 
+All figures are session averages, computed from the last `total` line of each run rather than from a
+single window. Measured at the same place in every case -- a `pipe` decoder with `output: "none"`, so
+no terminal and no child process are in the data path.
 
-| Server  | builtin (TS) | server RTT                     | ratio |
-| ------- | ------------ | ------------------------------ | ----- |
-| OpenOCD | 50.9 KB/s    | 80.1 KB/s                      | 1.57× |
-| pyOCD   | 24.8         | — (needs the start/poll dance) |
-| ST-LINK | 62.4         | — (unsupported)                |
-| JLink   | 68.3         | 152.1                          | 2.23× |
+| Server  | builtin (TS) | builtin (Rust) | Rust vs TS | server RTT | Rust vs server |
+| ------- | ------------ | -------------- | ---------- | ---------- | -------------- |
+| OpenOCD | 50.9 KB/s    | 66.2           | 1.30×      | 80.1       | 0.83×          |
+| pyOCD   | 24.8         | — (see below)  | —          | — ¹        | —              |
+| ST-LINK | 62.4         | **89.5**       | **1.43×**  | — ²        | —              |
+| JLink   | 68.3         | 80.5           | 1.18×      | 152.1 ³    | 0.53×          |
 
+¹ needs OpenOCD's `rtt start`/poll dance, which we have not implemented for pyOCD.
+² the ST-LINK gdb-server has no RTT support at all, so builtin is the only option.
+³ J-Link polls RTT in **probe firmware**, with no host round trip per poll. Not the same architecture,
+and not a target to chase.
+
+**pyOCD cannot run the Agent engine.** It does not refuse a memory read while the target runs and it
+does not error -- it _queues_ the read and answers when the target next stops. Observed as five
+consecutive two-second timeouts through a run, each answered within a millisecond of the halt that
+followed, while `WrOff` advanced 0 → 0x2f9 the whole time. So the data was there and unreachable. Its
+tier is `HaltedOnly`, and for pyOCD `useBuiltinRTT.implementation: "typescript"` is not a fallback but
+the only option: the adapter's own engine reads over a **second** connection, where pyOCD answers
+happily. See `gdb-rsp.md` §7.
+
+### Where the ceiling is
+
+Not bytes -- round trips. OpenOCD and ST-LINK both run at ~180 drain passes/sec, J-Link at ~112, and
+each pass costs three round trips (read the descriptor, read the data, write `RdOff`). Bytes per pass
+differ (377, 514 and 736 respectively); passes per second is what the server and probe latency set.
+
+So the remaining lever is `set_depth(2)` in no-ack mode, overlapping the `RdOff` write with the next
+descriptor read -- three serialised round trips down to about two. §4.2.1 says the servers are serial
+so it buys nothing server-side, but the latency it hides is exactly what we are bound by.
+
+### Caveats on these numbers
+
+- ST-LINK's 89.5 predates the 500-byte drain cap (`SAFE_DRAIN_BYTES`) and averaged 514 bytes/pass,
+  just above it -- so expect nearer 88 on a re-run.
+- The ST-LINK gdb-server truncates a reply of exactly 1024 bytes, losing its last checksum digit to a
+  NUL terminator. A 510-byte read produces exactly that, and failed 4 times out of 4. Hence the cap;
+  see `SAFE_DRAIN_BYTES` for the arithmetic and the family of bad sizes.
+- `polling_interval: 1` throughout, which is irrelevant at these rates: the loop does not sleep at all
+  while data is flowing.
 
 ## Builtin RTT in Typescript
 
 ### OpenOCD
+
 ```
 [RTT Logs stats] 53.42 KB/sec | 195.9 msgs/sec | window 5.0s, 267.18 KB | total 267.18 KB over 5.0s
 [RTT Logs stats] 52.52 KB/sec | 196.0 msgs/sec | window 5.0s, 262.67 KB | total 529.85 KB over 10.0s
@@ -31,7 +67,9 @@ See: /Users/hdm/src/stm32f429-rtt
 [RTT Logs stats] 49.98 KB/sec | 192.0 msgs/sec | window 5.0s, 250.14 KB | total 2.99 MB over 60.1s
 [RTT Logs stats] 50.10 KB/sec | 191.6 msgs/sec | window 5.0s, 250.78 KB | total 3.24 MB over 65.1s
 ```
+
 ### pyOCD
+
 ```
 [RTT Logs stats] 25.85 KB/sec | 98.2 msgs/sec | window 5.0s, 129.50 KB | total 129.50 KB over 5.0s
 [RTT Logs stats] 25.27 KB/sec | 95.1 msgs/sec | window 5.0s, 126.50 KB | total 256.00 KB over 10.0s
@@ -42,7 +80,9 @@ See: /Users/hdm/src/stm32f429-rtt
 [RTT Logs stats] 24.09 KB/sec | 93.5 msgs/sec | window 5.0s, 120.54 KB | total 870.54 KB over 35.1s
 [RTT Logs stats] 24.44 KB/sec | 92.6 msgs/sec | window 5.0s, 122.46 KB | total 993.00 KB over 40.1s
 ```
+
 ### STLink
+
 ```
 [RTT Logs stats] 64.35 KB/sec | 219.8 msgs/sec | window 5.0s, 321.83 KB | total 321.83 KB over 5.0s
 [RTT Logs stats] 61.87 KB/sec | 216.8 msgs/sec | window 5.0s, 309.67 KB | total 631.50 KB over 10.0s
@@ -54,7 +94,9 @@ See: /Users/hdm/src/stm32f429-rtt
 [RTT Logs stats] 64.17 KB/sec | 222.6 msgs/sec | window 5.0s, 321.11 KB | total 2.44 MB over 40.1s
 [RTT Logs stats] 62.43 KB/sec | 218.7 msgs/sec | window 5.0s, 312.57 KB | total 2.75 MB over 45.1s
 ```
+
 ### JLink (fw programmed into STLink)
+
 ```
 [RTT Logs stats] 67.45 KB/sec | 114.2 msgs/sec | window 5.0s, 337.38 KB | total 337.38 KB over 5.0s
 [RTT Logs stats] 68.26 KB/sec | 114.3 msgs/sec | window 5.0s, 341.63 KB | total 679.00 KB over 10.0s
@@ -67,9 +109,71 @@ See: /Users/hdm/src/stm32f429-rtt
 [RTT Logs stats] 69.79 KB/sec | 115.0 msgs/sec | window 5.0s, 349.50 KB | total 3.01 MB over 45.1s
 ```
 
+## Builtin RTT in Rust
+
+### OpenOCD
+
+```
+[RTT Logs stats] 66.05 KB/sec | 183.0 msgs/sec | window 5.0s, 330.58 KB | total 330.58 KB over 5.0s
+[RTT Logs stats] 66.40 KB/sec | 182.1 msgs/sec | window 5.0s, 332.25 KB | total 662.83 KB over 10.0s
+[RTT Logs stats] 66.57 KB/sec | 179.3 msgs/sec | window 5.0s, 333.07 KB | total 995.90 KB over 15.0s
+[RTT Logs stats] 66.65 KB/sec | 180.3 msgs/sec | window 5.0s, 333.54 KB | total 1.30 MB over 20.0s
+[RTT Logs stats] 66.12 KB/sec | 181.8 msgs/sec | window 5.0s, 330.94 KB | total 1.62 MB over 25.0s
+[RTT Logs stats] 65.26 KB/sec | 179.3 msgs/sec | window 5.0s, 326.77 KB | total 1.94 MB over 30.1s
+[RTT Logs stats] 65.65 KB/sec | 179.4 msgs/sec | window 5.0s, 328.63 KB | total 2.26 MB over 35.1s
+[RTT Logs stats] 66.52 KB/sec | 181.0 msgs/sec | window 5.0s, 332.91 KB | total 2.59 MB over 40.1s
+[RTT Logs stats] 66.29 KB/sec | 179.2 msgs/sec | window 5.0s, 331.80 KB | total 2.91 MB over 45.1s
+[RTT Logs stats] 67.05 KB/sec | 181.7 msgs/sec | window 5.0s, 335.45 KB | total 3.24 MB over 50.1s
+[RTT Logs stats] 66.91 KB/sec | 178.6 msgs/sec | window 5.0s, 334.64 KB | total 3.57 MB over 55.1s
+[RTT Logs stats] 65.89 KB/sec | 180.3 msgs/sec | window 5.0s, 329.65 KB | total 3.89 MB over 60.1s
+[RTT Logs stats] 66.24 KB/sec | 177.1 msgs/sec | window 5.0s, 331.38 KB | total 4.21 MB over 65.1s
+[RTT Logs stats] 65.25 KB/sec | 179.3 msgs/sec | window 5.0s, 326.45 KB | total 4.53 MB over 70.1s
+```
+
+### STLink
+
+```
+[RTT Logs stats] 91.23 KB/sec | 184.9 msgs/sec | window 5.0s, 456.33 KB | total 456.33 KB over 5.0s
+[RTT Logs stats] 88.87 KB/sec | 180.7 msgs/sec | window 5.0s, 444.54 KB | total 900.88 KB over 10.0s
+[RTT Logs stats] 88.35 KB/sec | 177.6 msgs/sec | window 5.0s, 441.86 KB | total 1.31 MB over 15.0s
+[RTT Logs stats] 92.18 KB/sec | 185.2 msgs/sec | window 5.0s, 461.01 KB | total 1.76 MB over 20.0s
+[RTT Logs stats] 91.39 KB/sec | 182.1 msgs/sec | window 5.0s, 457.31 KB | total 2.21 MB over 25.0s
+[RTT Logs stats] 90.15 KB/sec | 183.3 msgs/sec | window 5.0s, 451.37 KB | total 2.65 MB over 30.0s
+[RTT Logs stats] 89.07 KB/sec | 178.6 msgs/sec | window 5.0s, 445.42 KB | total 3.08 MB over 35.0s
+[RTT Logs stats] 91.06 KB/sec | 177.5 msgs/sec | window 5.0s, 455.47 KB | total 3.53 MB over 40.0s
+[RTT Logs stats] 90.50 KB/sec | 183.0 msgs/sec | window 5.0s, 453.03 KB | total 3.97 MB over 45.1s
+[RTT Logs stats] 90.57 KB/sec | 183.5 msgs/sec | window 5.0s, 453.01 KB | total 4.41 MB over 50.1s
+[RTT Logs stats] 91.41 KB/sec | 180.7 msgs/sec | window 5.0s, 457.43 KB | total 4.86 MB over 55.1s
+[RTT Logs stats] 90.55 KB/sec | 181.5 msgs/sec | window 5.0s, 453.09 KB | total 5.30 MB over 60.1s
+[RTT Logs stats] 89.58 KB/sec | 177.0 msgs/sec | window 5.0s, 448.34 KB | total 5.74 MB over 65.1s
+[RTT Logs stats] 90.81 KB/sec | 181.5 msgs/sec | window 5.0s, 454.23 KB | total 6.18 MB over 70.1s
+[RTT Logs stats] 90.14 KB/sec | 184.0 msgs/sec | window 5.0s, 450.77 KB | total 6.62 MB over 75.1s
+[RTT Logs stats] 89.58 KB/sec | 177.6 msgs/sec | window 5.0s, 448.00 KB | total 7.06 MB over 80.1s
+```
+
+### JLink
+
+```
+[RTT Logs stats] 80.93 KB/sec | 112.1 msgs/sec | window 5.0s, 404.96 KB | total 404.96 KB over 5.0s
+[RTT Logs stats] 80.35 KB/sec | 112.5 msgs/sec | window 5.0s, 402.24 KB | total 807.20 KB over 10.0s
+[RTT Logs stats] 80.62 KB/sec | 113.2 msgs/sec | window 5.0s, 403.20 KB | total 1.18 MB over 15.0s
+[RTT Logs stats] 80.33 KB/sec | 114.7 msgs/sec | window 5.0s, 402.54 KB | total 1.58 MB over 20.0s
+[RTT Logs stats] 80.91 KB/sec | 112.9 msgs/sec | window 5.0s, 404.94 KB | total 1.97 MB over 25.1s
+[RTT Logs stats] 80.81 KB/sec | 111.9 msgs/sec | window 5.0s, 404.28 KB | total 2.37 MB over 30.1s
+[RTT Logs stats] 80.10 KB/sec | 112.0 msgs/sec | window 5.0s, 401.38 KB | total 2.76 MB over 35.1s
+[RTT Logs stats] 79.69 KB/sec | 110.4 msgs/sec | window 5.0s, 398.52 KB | total 3.15 MB over 40.1s
+[RTT Logs stats] 79.87 KB/sec | 110.6 msgs/sec | window 5.0s, 399.42 KB | total 3.54 MB over 45.1s
+[RTT Logs stats] 80.89 KB/sec | 113.0 msgs/sec | window 5.0s, 404.54 KB | total 3.93 MB over 50.1s
+[RTT Logs stats] 80.69 KB/sec | 111.5 msgs/sec | window 5.0s, 403.86 KB | total 4.33 MB over 55.1s
+[RTT Logs stats] 80.67 KB/sec | 111.3 msgs/sec | window 5.0s, 403.83 KB | total 4.72 MB over 60.2s
+[RTT Logs stats] 80.73 KB/sec | 112.6 msgs/sec | window 5.0s, 404.20 KB | total 5.12 MB over 65.2s
+[RTT Logs stats] 82.06 KB/sec | 113.2 msgs/sec | window 5.0s, 410.88 KB | total 5.52 MB over 70.2s
+```
+
 # RTT provided by gdb-server
 
 ## Openocd
+
 ```
 [RTT Logs stats] 81.62 KB/sec | 162.6 msgs/sec | window 5.0s, 408.68 KB | total 408.68 KB over 5.0s
 [RTT Logs stats] 81.17 KB/sec | 161.9 msgs/sec | window 5.0s, 406.02 KB | total 814.69 KB over 10.0s
@@ -92,6 +196,7 @@ that yet as we use the tcl channel for doing that polling. Not worth that invest
 Not supported by stlink
 
 ## JLink (fw programmed into STLink)
+
 ```
 [RTT Logs stats] 59.04 KB/sec | 24.1 msgs/sec | window 5.0s, 296.12 KB | total 296.12 KB over 5.0s
 [RTT Logs stats] 150.68 KB/sec | 55.0 msgs/sec | window 5.0s, 753.68 KB | total 1.03 MB over 10.0s

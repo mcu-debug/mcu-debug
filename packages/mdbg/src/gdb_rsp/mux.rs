@@ -150,6 +150,10 @@ struct Queued {
 }
 
 /// The protocol core. See the module docs for why it has no I/O.
+/// How many abandoned requests we will remember replies for. A server that simply never answers
+/// must not be able to make us drop GDB's traffic indefinitely.
+const MAX_ABANDONED_REPLIES: usize = 8;
+
 pub struct MuxCore {
     /// Decodes the client→server direction, for snooping only. Forwarding uses
     /// each frame's `raw`, never a re-encode.
@@ -172,6 +176,19 @@ pub struct MuxCore {
     /// A stub `F` request is outstanding and GDB owes it a reply. Nothing of ours
     /// may go out in between.
     file_io_outstanding: bool,
+    /// Requests of ours that timed out and might still be answered.
+    ///
+    /// pyOCD does not answer an `m` while the target runs -- it *queues* it and replies when the
+    /// target next stops. So a read issued during a run times out, and its reply turns up seconds
+    /// later with nothing left in the FIFO to match it. An unmatched reply goes to GDB (§4.1, "GDB
+    /// is the only plausible owner"), which is right for a reply nobody asked for and wrong for one
+    /// *we* asked for: GDB was handed our RTT descriptor as the answer to its own `qXfer`, and
+    /// reported "Unknown remote qXfer reply".
+    ///
+    /// A count rather than retained queue entries, because an entry would sit earlier in the FIFO
+    /// than whatever went out next and absorb that request's reply instead, shifting every later one
+    /// by a place for the rest of the session.
+    abandoned_replies: usize,
     closed: bool,
     trace_level: TraceLevel,
 }
@@ -191,6 +208,7 @@ impl MuxCore {
             next_seq: 1,
             no_ack_requested: false,
             file_io_outstanding: false,
+            abandoned_replies: 0,
             closed: false,
             trace_level: TraceLevel::Off,
         }
@@ -391,6 +409,20 @@ impl MuxCore {
                 FrameKind::Interrupt | FrameKind::Garbage => {
                     // Garbage from the server is GDB's problem too: it may nack and
                     // recover. Swallowing it would leave GDB waiting forever.
+                    //
+                    // But it is *our* problem as well, and silently was not. A rejected frame that
+                    // was in fact the reply to one of our requests leaves that request pending until
+                    // it times out, and an entry that outlives its reply goes on to match the next
+                    // reply that fits -- which is GDB's. One bad frame becomes two misrouted ones,
+                    // seconds apart, with nothing said about either. So say it, with the arithmetic
+                    // that decided it.
+                    if frame.kind == FrameKind::Garbage {
+                        log::warn!(
+                            "RSP mux: the gdb-server sent a frame we could not accept -- {}",
+                            describe_rejected(&frame.raw)
+                        );
+                        self.fail_the_request_that_lost_its_reply(&mut actions);
+                    }
                     actions.push(Action::ToGdb(frame.raw));
                 }
             }
@@ -466,12 +498,40 @@ impl MuxCore {
         }
 
         let Some(idx) = self.match_reply(&frame.payload) else {
+            // First: is this the late reply to a request of ours that timed out? If so it is ours to
+            // drop, not GDB's to be confused by. Restricted to non-stop replies, because a stop reply
+            // that matches nothing is an *unsolicited halt* -- the target stopping on its own, or
+            // answering a `\x03` -- which GDB must always see.
+            if parse_stop_reply(&frame.payload).is_none() && self.abandoned_replies > 0 {
+                self.abandoned_replies -= 1;
+                log::info!(
+                    "RSP mux: dropped a late reply to a request of ours that had already timed out ({} still expected); GDB must not be given it",
+                    self.abandoned_replies
+                );
+                actions.extend(self.trace(Party::ServerToAgent, &frame.raw, Some("late, abandoned".to_string())));
+                return;
+            }
             // A reply to nothing we know about. It cannot be ours, so GDB is the
             // only plausible owner; hand it over rather than dropping it.
+            //
+            // Ordinary when nothing of ours is outstanding -- an unsolicited stop reply, say. Worth
+            // a word when something *is*, because then either the reply set of one of our requests
+            // is wrong or the server answered out of order, and both are our bug rather than GDB's.
+            if self.pending.iter().any(|p| p.source != RspSource::Gdb) {
+                log::warn!(
+                    "RSP mux: a reply matched none of {} pending requests and was given to GDB: {:?}",
+                    self.pending.len(),
+                    String::from_utf8_lossy(&frame.payload[..frame.payload.len().min(32)])
+                );
+            }
             actions.push(Action::ToGdb(frame.raw));
             return;
         };
         let p = self.pending.remove(idx).expect("index came from match_reply");
+        // A reply that matched means the server is answering in step again, so a reply we are still
+        // waiting on from before cannot arrive after this one -- the servers are serial. Forgetting
+        // here keeps the count from swallowing a genuinely unattributable reply much later.
+        self.abandoned_replies = 0;
 
         match p.source {
             RspSource::Gdb => {
@@ -527,6 +587,71 @@ impl MuxCore {
                 });
             }
         }
+    }
+
+    /// A frame arrived that cannot be used. If exactly one prompt request of ours was in flight,
+    /// that frame was its reply, so fail it now.
+    ///
+    /// Sound because **this core is the sole writer of the socket and the servers are strictly
+    /// serial** (§4.2.1, §4.3): with one prompt request outstanding, the next frame the server
+    /// produces is its answer. An open-ended resume of GDB's may also be outstanding and is
+    /// excluded -- its reply arrives whenever the target halts, and is a stop reply, not this.
+    ///
+    /// Leaving the entry in place is what turned one mangled frame into a broken debug session: it
+    /// waited out its whole timeout, and while it waited it was the earliest entry that could match a
+    /// non-stop reply -- so it took **GDB's** next reply, and GDB was handed an answer to a packet it
+    /// never sent. Failing fast costs one RTT read, which the next poll repeats a millisecond later.
+    ///
+    /// Deliberately does nothing when more than one of ours is outstanding: guessing would risk
+    /// failing the wrong request, and at depth 1 it cannot arise.
+    /// Returns whether the frame was claimed. A claimed frame must **not** then be forwarded to GDB:
+    /// it is not GDB's reply, and handing it over only makes GDB report an "Invalid remote reply" for
+    /// a packet it never sent. Forwarding is right for garbage we cannot attribute -- GDB may nack and
+    /// recover from its own -- and wrong for garbage we can.
+    fn fail_the_request_that_lost_its_reply(&mut self, actions: &mut Vec<Action>) -> bool {
+        let ours: Vec<usize> = self
+            .pending
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.source != RspSource::Gdb && !p.open_ended())
+            .map(|(i, _)| i)
+            .collect();
+        if ours.len() != 1 {
+            if !ours.is_empty() {
+                log::warn!(
+                    "RSP mux: {} of our requests are in flight, so which lost its reply is not knowable; leaving them to time out",
+                    ours.len()
+                );
+            }
+            return false;
+        }
+        // And it must be the *earliest* prompt request, because the server answers in the order it
+        // was asked (§4.2.1). At depth 1 the gate makes this so by construction -- we may only send
+        // when nothing prompt is outstanding -- so reaching the branch below would mean the gate had
+        // changed underneath this reasoning.
+        let idx = ours[0];
+        if self.pending.iter().take(idx).any(|p| !p.open_ended()) {
+            log::warn!(
+                "RSP mux: a rejected frame arrived behind one of GDB's prompt requests; leaving ours to time out"
+            );
+            return false;
+        }
+        let Some(p) = self.pending.remove(idx) else {
+            return false;
+        };
+        if let RspSource::Agent(id) = p.source {
+            log::warn!(
+                "RSP mux: failing our request s{} -- the server's reply to it was unusable",
+                p.seq
+            );
+            actions.push(Action::Completed {
+                id,
+                seq: p.seq,
+                result: Err(RspError::ReplyRejected),
+            });
+            return true;
+        }
+        false
     }
 
     /// Decide which pending request a reply answers.
@@ -688,6 +813,11 @@ impl MuxCore {
                 (true, RspSource::Agent(id)) => {
                     let seq = self.pending[i].seq;
                     self.pending.remove(i);
+                    // Remembered as a **count**, not as a queue entry. A retained entry sits earlier
+                    // in the FIFO than whatever went out next, so it would absorb *that* request's
+                    // reply and shift every later one by a place for the rest of the session. The
+                    // count is consulted only for a reply that matches nothing at all.
+                    self.abandoned_replies = (self.abandoned_replies + 1).min(MAX_ABANDONED_REPLIES);
                     actions.push(Action::Completed {
                         id,
                         seq,
@@ -807,6 +937,40 @@ fn classify_request(payload: &[u8]) -> Option<ReplyShape> {
         }
         _ => ORDINARY,
     })
+}
+
+/// Why a frame was rejected, as far as can be told from the bytes.
+///
+/// Recomputes the checksum rather than plumbing a reason out of the codec: this is for one log line
+/// on a path that should never be taken, and `frame.rs` stays pure.
+fn describe_rejected(raw: &[u8]) -> String {
+    if raw.len() == 1 {
+        return format!("a stray byte {:?} between frames", raw[0] as char);
+    }
+    let Some(hash) = raw.iter().rposition(|&b| b == b'#') else {
+        return format!("{} bytes with no '#' terminator", raw.len());
+    };
+    if raw.first() != Some(&b'$') && raw.first() != Some(&b'%') {
+        return format!("{} bytes not starting with '$' or '%'", raw.len());
+    }
+    if hash + 2 >= raw.len() {
+        return format!("{} bytes ending before the checksum digits", raw.len());
+    }
+    let body = &raw[1..hash];
+    let computed = body.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+    let stated = String::from_utf8_lossy(&raw[hash + 1..hash + 3]).to_string();
+    format!(
+        "{} bytes, {} byte body, checksum stated {} and computed {:02x}{}",
+        raw.len(),
+        body.len(),
+        stated,
+        computed,
+        if format!("{computed:02x}").eq_ignore_ascii_case(&stated) {
+            " (they agree, so the payload itself was rejected)"
+        } else {
+            " (they disagree)"
+        }
+    )
 }
 
 /// Does this reply look like the answer to `qSupported`?
@@ -1667,6 +1831,94 @@ mod tests {
         let acts = m.on_tick(t0 + Duration::from_millis(150));
         assert_eq!(completions(&acts), vec![(5, Err(RspError::Timeout))]);
         assert_eq!(m.in_flight(), 0, "a timed-out request kept its slot");
+    }
+
+    #[test]
+    fn a_late_reply_to_a_timed_out_request_is_dropped_rather_than_given_to_gdb() {
+        // Observed against pyOCD, which does not answer an `m` while the target runs -- it queues it
+        // and replies when the target next stops. Five reads timed out during a run and their replies
+        // all arrived after the halt, unmatched, and were handed to GDB in place of its own answers.
+        // GDB reported "Unknown remote qXfer reply: 4000002000040000cf02000000000000" -- our RTT
+        // descriptor.
+        let mut m = handshaken(ServerTier::Full);
+        let t0 = Instant::now();
+        m.submit(
+            7,
+            packet::mem_read(0x2000_0024, 16, MemoryReadKind::Hex),
+            Some(Duration::from_millis(100)),
+        )
+        .unwrap();
+        m.pump_at(t0);
+        let acts = m.on_tick(t0 + Duration::from_millis(150));
+        assert_eq!(
+            completions(&acts),
+            vec![(7, Err(RspError::Timeout))],
+            "reported to its consumer"
+        );
+
+        // The reply turns up late, with nothing left to match it.
+        let acts = m.on_server_bytes(&encode_packet(b"4000002000040000cf02000000000000"));
+        assert!(
+            to_gdb(&acts).is_empty(),
+            "GDB must not be handed our descriptor: {:?}",
+            to_gdb(&acts)
+        );
+        assert!(completions(&acts).is_empty(), "and nobody is waiting for it any more");
+    }
+
+    #[test]
+    fn an_unsolicited_stop_reply_still_reaches_gdb_after_one_of_ours_timed_out() {
+        // The guard on the rule above. A stop reply that matches nothing is the target halting on its
+        // own, or answering a `\x03`; swallowing it would leave GDB believing the program still runs.
+        let mut m = handshaken(ServerTier::Full);
+        let t0 = Instant::now();
+        m.submit(
+            7,
+            packet::mem_read(0, 4, MemoryReadKind::Hex),
+            Some(Duration::from_millis(100)),
+        )
+        .unwrap();
+        m.pump_at(t0);
+        m.on_tick(t0 + Duration::from_millis(150));
+
+        let acts = m.on_server_bytes(&encode_packet(b"T05"));
+        assert_eq!(
+            to_gdb(&acts),
+            vec![encode_packet(b"T05")],
+            "a halt is always GDB's to see"
+        );
+    }
+
+    #[test]
+    fn a_reply_that_matches_stops_us_expecting_late_ones() {
+        // The servers are serial, so once a later request has been answered an earlier reply cannot
+        // still be in flight. Forgetting then keeps the count from swallowing a genuinely
+        // unattributable reply much later in the session.
+        let mut m = handshaken(ServerTier::Full);
+        let t0 = Instant::now();
+        m.submit(
+            7,
+            packet::mem_read(0, 4, MemoryReadKind::Hex),
+            Some(Duration::from_millis(100)),
+        )
+        .unwrap();
+        m.pump_at(t0);
+        m.on_tick(t0 + Duration::from_millis(150));
+
+        // A fresh request, answered normally.
+        m.submit(
+            7,
+            packet::mem_read(4, 4, MemoryReadKind::Hex),
+            Some(Duration::from_secs(5)),
+        )
+        .unwrap();
+        m.pump_at(t0 + Duration::from_millis(200));
+        let acts = m.on_server_bytes(&encode_packet(b"11223344"));
+        assert_eq!(completions(&acts).len(), 1, "the live request completed");
+
+        // Now an unattributable reply must go to GDB again, not be eaten as a late one.
+        let acts = m.on_server_bytes(&encode_packet(b"deadbeef"));
+        assert_eq!(to_gdb(&acts), vec![encode_packet(b"deadbeef")]);
     }
 
     #[test]

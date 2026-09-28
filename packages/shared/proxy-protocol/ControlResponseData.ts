@@ -2,6 +2,7 @@
 import type { AvailablePort } from "../serial-helper/AvailablePort";
 import type { SerialParams } from "../serial-helper/SerialParams";
 import type { PortReserved } from "./PortReserved";
+import type { RttChannelStream } from "./RttChannelStream";
 import type { SerialPortInfo } from "./SerialPortInfo";
 import type { StreamStatus } from "./StreamStatus";
 
@@ -10,6 +11,8 @@ export type ControlResponseData =
     | { allocatePorts: { ports: Array<PortReserved> } }
     | { startGdbServer: { pid: number } }
     | { streamStatus: { stream_id: number; status: StreamStatus; msg_seq: number } }
+    | { startRtt: { channels: Array<RttChannelStream> } }
+    | { stopRtt: { was_running: boolean } }
     | "heartbeat"
     | {
           "serial.open": {

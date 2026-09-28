@@ -18,6 +18,10 @@ fn ensure_ts_exports() {
     ProxyServerEvents::export(&config).unwrap();
     ControlResponse::export(&config).unwrap();
     ControlResponseData::export(&config).unwrap();
+    // Agent-side RTT: the request payload and the stream ids it hands back. Not reachable from
+    // `ControlRequest` alone for ts-rs -- a nested struct needs its own export.
+    RttStartConfig::export(&config).unwrap();
+    RttChannelStream::export(&config).unwrap();
     PortAllocatorSpec::export(&config).unwrap();
     PortReserved::export(&config).unwrap();
     PortSet::export(&config).unwrap();
@@ -195,6 +199,7 @@ fn test_proxy_server() {
             // A client that sends nothing gets the proxy's defaults, which is the path
             // most worth having covered: it is what any client predating these flags does.
             debug_flags: None,
+            server_type: None,
         },
     };
     seq += 1;

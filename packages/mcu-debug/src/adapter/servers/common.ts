@@ -218,6 +218,15 @@ export interface RttBuiltinConfig {
     enabled?: boolean;
     hostName?: string;
     tcpPort?: number;
+    /**
+     * Which built-in RTT engine reads the target: the Probe Agent's (`"rust"`, the default) or the
+     * debug adapter's own (`"typescript"`). Never both -- they would each keep their own idea of
+     * the ring buffer's read pointer and corrupt the channel between them.
+     *
+     * `"rust"` needs the RSP multiplexer, which is on by default; a session with
+     * `debugFlags.rspMux` false falls back to `"typescript"` with a warning rather than losing RTT.
+     */
+    implementation?: "rust" | "typescript";
 }
 
 export interface PreDecoder extends DecoderSpec {
@@ -280,7 +289,7 @@ export interface HWWatchpointInfo {
 // Without this, `rspMux: true` would silently switch on every GDB/MI trace in the Debug
 // Console, and the two Agent flags would behave differently from each other purely because
 // one of them happens to be a string.
-export const AGENT_DEBUG_FLAGS = ["rspTrace", "rspMux"] as const;
+export const AGENT_DEBUG_FLAGS = ["rspTrace", "rspMux", "rspTier"] as const;
 
 export interface DebugFlags {
     gdbTraces?: boolean;
@@ -296,8 +305,16 @@ export interface DebugFlags {
     // its own file beside the proxy log, not to the Debug Console; the path is logged when
     // it opens. rspMux defaults to on; set it false to take the multiplexer out of the path
     // for this session only. Both are per session because one Agent serves many.
+    //
+    // Which built-in RTT engine to use is *not* here: it belongs to the feature it configures,
+    // `rttConfig.useBuiltinRTT.implementation`.
     rspTrace?: string;
     rspMux?: boolean;
+    // What the Agent may assume this gdb-server can do: "full" | "haltedOnly" | "unsupported".
+    // Unset uses the measured default for the servertype. Only OpenOCD has been measured, so on
+    // the others the Agent's own features -- RTT included -- wait while the target runs; "full" is
+    // how to find out whether that is necessary on a server the matrix has not reached.
+    rspTier?: string;
     anyFlags?: boolean;
 }
 

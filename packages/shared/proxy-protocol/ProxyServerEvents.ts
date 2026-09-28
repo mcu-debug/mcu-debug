@@ -13,4 +13,25 @@ export type ProxyServerEvents =
     | { event: "streamClosed"; params: { stream_id: number } }
     | { event: "streamTimedOut"; params: { stream_id: number } }
     | { event: "serial.portError"; params: { path: string; kind: SerialErrorKind; msg: string } }
-    | { event: "serial.availableChanged"; params: { revision: number; ports: Array<AvailablePort> } };
+    | { event: "serial.availableChanged"; params: { revision: number; ports: Array<AvailablePort> } }
+    | {
+          event: "rttReady";
+          params: {
+              /**
+               * Where the control block was found, for confirming it against the ELF symbol.
+               */
+              cb_address: string;
+              /**
+               * What the block itself says, which may be fewer than the channels that were asked for --
+               * worth comparing, since a decoder naming a channel the firmware never allocated will
+               * simply never produce anything.
+               */
+              up_channels: number;
+              down_channels: number;
+              /**
+               * How long the search ran, in milliseconds. Almost always the firmware rather than us.
+               */
+              search_ms: number;
+          };
+      }
+    | { event: "rttStopped"; params: { reason: string } };
