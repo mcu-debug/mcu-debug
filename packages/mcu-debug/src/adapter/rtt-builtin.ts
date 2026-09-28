@@ -72,7 +72,7 @@ export class RttBufferManager extends EventEmitter {
     private searchStr: string = "SEGGER RTT";
     private intervalMs = 100; // ms
     private measureThroughput = true;
-    private throughputMonitor: ThroughputMonitor;
+    private throughputMonitor: ThroughputMonitor | undefined;
 
     // In the future, we may support multiple channels
     private numRdChannels: number = 0;
@@ -97,7 +97,11 @@ export class RttBufferManager extends EventEmitter {
         this.mainSession.gdbInstance.on(GdbEventNames.Stopped, this.onStopped.bind(this));
         this.mainSession.gdbInstance.on(GdbEventNames.Running, this.onRunning.bind(this));
         this.mainSession.gdbInstance.on(GdbEventNames.Exited, this.onExited.bind(this));
-        this.throughputMonitor = new ThroughputMonitor((msg) => this.mainSession.handleMsg(Stdout, msg + "\n"), "RTT builtin");
+        if (this.measureThroughput) {
+            this.throughputMonitor = new ThroughputMonitor((msg) => this.mainSession.handleMsg(Stdout, msg + "\n"), "RTT builtin");
+        } else {
+            this.throughputMonitor = undefined;
+        }
     }
 
     private setTransport(transport: RttTransport) {
@@ -175,7 +179,7 @@ export class RttBufferManager extends EventEmitter {
             const updateWriteForChunk = async (chunk: Buffer) => {
                 return new Promise<void>(async (resolve, reject) => {
                     this.transport?.onRttDataRead(channel, chunk);
-                    if (this.measureThroughput) {
+                    if (this.throughputMonitor) {
                         this.throughputMonitor.record(chunk);
                     }
                     // 4. Move the pointer to unblock FW
@@ -334,8 +338,7 @@ export class RttBufferManager extends EventEmitter {
 
     // Start polling at regular intervals. We are either polling to find the RTT block, or to drain it.
     private inInnerPoll: boolean = false;
-    private counter: number = -100;
-    private readonly minIntervalMs: number = 20;
+    private readonly minIntervalMs: number = 1;
     private async startPoll() {
         if (this.disableRtt) {
             return;
@@ -346,10 +349,6 @@ export class RttBufferManager extends EventEmitter {
         }
         const now = Date.now();
         if (!this.inInnerPoll) {
-            this.counter++;
-            if (this.counter % 10000 === 0) {
-                this.mainSession.handleMsg(Stderr, `Polling iteration: ${this.counter}\n`);
-            }
             await this.doInnerPoll();
         }
         if (!stop) {
@@ -413,7 +412,11 @@ export class RttBufferManager extends EventEmitter {
         }
         if (this.initialized) {
             this.startPoll();
-            this.throughputMonitor = new ThroughputMonitor((msg) => this.mainSession.handleMsg(Stdout, msg + "\n"), "RTT builtin");
+            if (this.measureThroughput) {
+                this.throughputMonitor = new ThroughputMonitor((msg) => this.mainSession.handleMsg(Stdout, msg + "\n"), "RTT builtin");
+            } else {
+                this.throughputMonitor = undefined;
+            }
         }
     }
 

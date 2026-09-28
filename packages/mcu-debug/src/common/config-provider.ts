@@ -43,7 +43,7 @@ export class McuDebugConfigurationProviderBase {
     constructor(
         protected readonly hostAdapter: IHostAdapter,
         private isCli: boolean = false,
-    ) {}
+    ) { }
 
     public provideDebugConfigurations(): { [key: string]: any }[] {
         return [
@@ -325,14 +325,14 @@ export class McuDebugConfigurationProviderBase {
         this.validateLoadAndSymbolFiles(config, cwd);
 
         if (config.liveWatch?.enabled) {
-            const supportedList = ["openocd", "jlink", "stlink"];
+            const supportedList = ["openocd", "jlink", "stlink", "pyocd"];
             if (supportedList.indexOf(config.servertype) < 0) {
                 const str = supportedList.join(", ");
                 this.hostAdapter.showInfo(
                     `Live watch is not officially supported for servertype '${config.servertype}'. ` +
-                        `Only ${str} are supported and tested. ` +
-                        `Report back to us if it works with your servertype '${config.servertype}'.\n \n` +
-                        'If you are using an "external" servertype and it is working for you, then you can safely ignore this message. ',
+                    `Only ${str} are supported and tested. ` +
+                    `Report back to us if it works with your servertype '${config.servertype}'.\n \n` +
+                    'If you are using an "external" servertype and it is working for you, then you can safely ignore this message. ',
                 );
             }
         }

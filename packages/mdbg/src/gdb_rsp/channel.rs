@@ -228,6 +228,11 @@ impl RspChannel {
         self.inner.core.lock_recover().caps().clone()
     }
 
+    /// Would one of our own packets go out now, or wait in the queue? See [`Consumer::ready`].
+    pub fn agent_gate_open(&self) -> bool {
+        self.inner.core.lock_recover().agent_gate_open()
+    }
+
     pub fn set_tier(&self, tier: ServerTier) {
         self.inner.core.lock_recover().set_tier(tier);
     }

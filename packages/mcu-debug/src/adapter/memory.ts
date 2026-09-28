@@ -53,12 +53,17 @@ export class MemoryRequests {
                 }
                 const end = parseAddress(memory["end"] || "0x0");
                 const actualLength = Number(end - actualStart);
+                // The callback runs for what *did* arrive, before the short-read exit below. It
+                // used to be skipped on a short read while `ret` kept the bytes anyway, and for
+                // RTT that silently duplicated data: the caller received and displayed the chunk,
+                // but `updateWriteForChunk` -- which is this callback -- never advanced `RdOff` for
+                // it, so the next poll read the same bytes again.
+                if (callback) {
+                    promises.push(callback(chunk, actualLength));
+                }
                 if (actualLength < chunkSize) {
                     // GDB returned less data than requested - likely hit unmapped region
                     break; // End loop
-                }
-                if (callback) {
-                    promises.push(callback(chunk, actualLength));
                 }
 
                 length -= chunkSize;

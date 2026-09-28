@@ -18,6 +18,7 @@ pub mod common;
 pub mod da_helper;
 pub mod gdb_rsp;
 pub mod proxy_helper;
+pub mod rtt;
 pub mod serial;
 
 // Re-export commonly used API from the library for binaries/tests

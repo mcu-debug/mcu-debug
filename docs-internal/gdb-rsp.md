@@ -1315,16 +1315,16 @@ New directory `packages/mdbg/src/gdb_rsp/` — crate-level, **not** under `proxy
 §8 requires it to be reachable from more than one entry point.
 `proxy_helper/proxy_server/gdb_rsp.rs` shrinks to the glue that wires a mux into `ProxyServer`.
 
-| File                  | Contents                                                                                                                                                          |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gdb_rsp/mod.rs`      | Public surface: `RspMux`, `RspSource`, `ConsumerId`, `RspError`, `TargetState`, `RspCaps`.                                                                        |
-| `gdb_rsp/frame.rs`    | `PacketCodec`: incremental byte stream → `Frame`. Escaping, RLE decode, checksum verify, ack-mode switch, `\x03` passthrough, `%` notifications. Pure, no I/O.    |
-| `gdb_rsp/packet.rs`   | Builders/parsers for what we care about: `m`/`M`/`x`/`X`, `?`, `qSupported`, `QNonStop`, `QStartNoAckMode`, `vCont`, stop replies. Hex and binary-escape helpers. |
-| `gdb_rsp/caps.rs`     | `RspCaps` — parsed `qSupported` reply, plus the per-server-type capability tier (§7).                                                                             |
-| `gdb_rsp/state.rs`    | `TargetState` + the transition table driven by observed resume packets and stop replies.                                                                          |
-| `gdb_rsp/mux.rs`      | `RspMux`: owns the socket, reader + writer threads, send queue, pending FIFO, ack accounting, the send gate, the forbidden-packet choke point.                    |
-| `gdb_rsp/consumer.rs` | Consumer registration (`attach`/`detach`, id-keyed, copied in shape from `serial/port.rs`), the `read_memory`/`write_memory` API, one-shot reply plumbing.        |
-| `gdb_rsp/tests/`      | Codec and state unit tests; mock-stub integration tests; recorded-transcript fixtures.                                                                            |
+| File                  | Contents                                                                                                                                                                                                                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `gdb_rsp/mod.rs`      | Public surface: `RspMux`, `RspSource`, `ConsumerId`, `RspError`, `TargetState`, `RspCaps`.                                                                                                                                                                                                 |
+| `gdb_rsp/frame.rs`    | `PacketCodec`: incremental byte stream → `Frame`. Escaping, RLE decode, checksum verify, ack-mode switch, `\x03` passthrough, `%` notifications. Pure, no I/O.                                                                                                                             |
+| `gdb_rsp/packet.rs`   | Builders/parsers for what we care about: `m`/`M`/`x`/`X`, `?`, `qSupported`, `QNonStop`, `QStartNoAckMode`, `vCont`, stop replies. Hex and binary-escape helpers.                                                                                                                          |
+| `gdb_rsp/caps.rs`     | `RspCaps` — parsed `qSupported` reply, plus the per-server-type capability tier (§7).                                                                                                                                                                                                      |
+| `gdb_rsp/state.rs`    | `TargetState` + the transition table driven by observed resume packets and stop replies.                                                                                                                                                                                                   |
+| `gdb_rsp/mux.rs`      | `RspMux`: owns the socket, reader + writer threads, send queue, pending FIFO, ack accounting, the send gate, the forbidden-packet choke point.                                                                                                                                             |
+| `gdb_rsp/consumer.rs` | The `read_memory`/`write_memory` API its clients use, over `chunk.rs`. **No `attach`/`detach`** — see §4.7.2; this row originally proposed registration copied from `serial/port.rs`, which was wrong, because a serial port outlives the sessions that use it and these consumers do not. |
+| `gdb_rsp/tests/`      | Codec and state unit tests; mock-stub integration tests; recorded-transcript fixtures.                                                                                                                                                                                                     |
 
 ### Frame type — the API detail that enforces invariant 5
 
@@ -1632,9 +1632,23 @@ Phases 1–3 do not depend on the §8 decision. Each item is sized to be a revie
       caller that wants the whole schedule, `ReadAssembler`/`WriteAssembler` for one that goes step
       by step. Handles **short replies** by resuming from where the stub stopped, refuses to spin on
       a zero-length answer, and reports how far a failed write got. Pure — no I/O.
-- [ ] **11b.** The blocking `read_memory`/`write_memory` façade over `chunk.rs` + `MuxCore`, once
-      the threaded shell exists to drive it. **No attach/detach protocol** (§4.7.2): consumers are
-      in-process and session-scoped, so `ConsumerId` for reply routing is all that is needed.
+- [x] **11b.** The blocking `read_memory`/`write_memory` façade over `chunk.rs` + `MuxCore`, in
+      `consumer.rs`. **No attach/detach protocol** (§4.7.2): consumers are in-process and
+      session-scoped, so `ConsumerId` for reply routing is all that is needed. `Consumer` is a
+      channel handle, an id, a timeout and an endianness, and is cheap to clone onto a feature's own
+      thread. Capabilities are re-read **per call**, not cached at construction: they are learned
+      from GDB's `qSupported` exchange, which may not have happened when the consumer was built, and
+      a consumer created too early would otherwise chunk to the 400-byte default for the whole
+      session.
+      Two things came out of writing it. **`Consumer::ready()`**, over a new
+      `MuxCore::agent_gate_open()` — the send gate with the "is anything queued" test removed.
+      Everything in that gate makes a submitted packet _wait_ rather than fail, so a poll loop that
+      submits while the gate is shut gets `Timeout` seconds later, which is both slow and a
+      misdiagnosis of a stall as a fault. And **`read_memory_partial`/`write_memory_partial`**, which
+      give `ReadAssembler::collected()` and `WriteAssembler::remaining()` the callers they were
+      written for. `read_memory` still discards a partial, deliberately: RTT must not consume half a
+      ring buffer, because advancing the read pointer by what arrived desynchronises the channel for
+      the rest of the session.
 - [x] **12.** Verbatim-forwarding test — both directions fed **one byte at a time, interleaved**,
       asserting the forwarded streams are byte-identical to the input with no consumers attached.
       Plus routing, gating, ack and timeout unit tests.

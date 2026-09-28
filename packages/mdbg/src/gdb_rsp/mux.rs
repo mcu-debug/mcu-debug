@@ -625,7 +625,17 @@ impl MuxCore {
 
     /// The whole send policy, in one predicate (§4.2).
     fn may_send_agent_packet(&self) -> bool {
-        if self.closed || self.queue.is_empty() {
+        !self.queue.is_empty() && self.agent_gate_open()
+    }
+
+    /// The send policy without "is there anything to send".
+    ///
+    /// Split out so a consumer can ask *before* spending a request. Everything below makes a
+    /// submitted packet wait rather than fail, so a consumer that submits while the gate is shut
+    /// gets a `Timeout` some seconds later — which for a poll loop is both slow and a misleading
+    /// diagnosis. Asking first turns that into "not now", which is the truth.
+    pub fn agent_gate_open(&self) -> bool {
+        if self.closed {
             return false;
         }
         // §4.4: nothing of ours goes out until capabilities and ack mode have
