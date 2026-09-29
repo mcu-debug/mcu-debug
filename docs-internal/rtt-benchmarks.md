@@ -10,7 +10,7 @@ no terminal and no child process are in the data path.
 
 | Server   | builtin (TS)  | builtin (Rust) | Rust vs TS | server RTT |
 | -------- | ------------- | -------------- | ---------- | ---------- |
-| OpenOCD  | 50.9 KB/s     | 66.2           | 1.30×      | 80.1       |
+| OpenOCD  | 50.9 KB/s     | **74.3** ⁵     | 1.46×      | 80.1       |
 | ST-LINK  | 62.4          | **89.5**       | **1.43×**  | — ²        |
 | JLink    | 68.3          | 80.5           | 1.18×      | 152.1 ³    |
 | pyOCD    | 24.8          | — ⁴            | —          | — ¹        |
@@ -40,6 +40,10 @@ the only option: the adapter's own engine reads over a **second** connection, wh
 happily. See `gdb-rsp.md` §7.
 
 ⁴ pyOCD cannot run the Agent engine at all -- see below.
+
+⁵ measured with a **production VSIX**; 66.2 was the same build run under the node inspector. The other
+Rust figures in this column are still development-build numbers and are understated by roughly 12% --
+see _The 12% was the development setup_ below.
 
 ### Where the ceiling is, and probe-rs proving it
 
@@ -76,23 +80,36 @@ So the remaining lever is `set_depth(2)` in no-ack mode, overlapping the `RdOff`
 descriptor read -- three serialised round trips down to about two. §4.2.1 says the servers are serial
 so it buys nothing server-side, but the latency it hides is exactly what we are bound by.
 
-### The host is worth 12% -- VS Code against the CLI
+### The 12% was the development setup, and VS Code is not a factor
 
-The same OpenOCD, the same firmware, the same Agent engine, run from the CLI instead of VS Code:
+Three runs, same OpenOCD, same firmware, same Agent engine, differing only in how the extension was
+built and hosted:
 
-| Run                  | KB/s     | msgs/sec | bytes/msg | gap to OpenOCD's own RTT |
-| -------------------- | -------- | -------- | --------- | ------------------------ |
-| VS Code              | 66.2     | 180      | 377       | 17.4%                    |
-| CLI                  | **74.4** | 201      | 378       | **7.1%**                 |
-| OpenOCD's native RTT | 80.1     | 162      | 506       | --                       |
+| Run                                     | KB/s     | msgs/sec | bytes/msg | of OpenOCD's own RTT |
+| --------------------------------------- | -------- | -------- | --------- | -------------------- |
+| development build, VS Code + inspector  | 66.2     | 180      | 377       | 82.6%                |
+| development build, CLI, no debugger     | 74.5     | 201      | 378       | 93.0%                |
+| **production VSIX, VS Code, optimised** | **74.3** | 202      | 377       | **92.7%**            |
+| OpenOCD's own RTT server                | 80.1     | 162      | 506       | --                   |
 
-Two things fall out of this, and the second is the more interesting.
+**The production VSIX under VS Code and the CLI agree to 0.23% -- they are the same number.** So the
+earlier framing of this as "the host costs 12%" was wrong: VS Code costs nothing measurable. What cost
+12% was the ordinary F5 development loop -- an unoptimised build with the node inspector attached -- and
+the fix was to stop measuring that. Every conclusion drawn from the 66.2 figure about OpenOCD being
+slow was drawn from a development artifact.
 
-**Most of the OpenOCD "deficit" was the host, not the server.** +12% in throughput, +12% in message
-rate, nothing touched on the probe side. The likeliest cause is simply that the VS Code run was the
-extension host **under the node inspector** -- the ordinary F5 development loop -- and the CLI run was
-not. The first counter run below shows `gated 0`, so gate contention (an earlier guess of ours) is not
-what it was.
+**So the Agent's engine reaches 93% of OpenOCD's own RTT server**, reading target memory through GDB's
+own RSP connection, multiplexed, on a server whose RTT support we are not using at all. That is the
+result worth quoting.
+
+Two caveats on the rest of the table. The ST-LINK (89.5) and J-Link (80.5) Rust figures were measured
+in the same development setup, so **expect both to move up by something like 12%** on a production
+build; they are understated, not wrong. And the counter runs below are development-build runs too, so
+the ~1.46 ms round trip is if anything pessimistic -- though the ring-buffer size it recovers does not
+depend on that at all.
+
+The first counter run below shows `gated 0`, so gate contention -- an earlier guess of ours -- was never
+what this was.
 
 **The two lines separate the two possible causes, which is what they are for.** The poll thread hands
 bytes to an _unbounded_ `mpsc` channel (`proxy_server/mod.rs`: `let (event_tx, event_rx) = channel()`),
@@ -104,8 +121,8 @@ so a slow client cannot throttle it -- it can only make the queue grow. Therefor
 | both low together, `gated`/`errors` at 0 | the Agent genuinely drained less; the probe or the target     |
 | both low together, `gated` climbing      | GDB's traffic on the shared connection                        |
 
-In the CLI run they agree to within 0.1% (74.7 against 74.74), so nothing was lost in the host there.
-Re-running under VS Code and comparing the same two lines settles it.
+In the CLI run they agree to within 0.1% (74.7 against 74.74), so nothing was lost in the host there --
+and the production VSIX matching the CLI says the same thing a second way.
 
 One consequence of that unbounded channel is worth recording separately: a client that stalls while RTT
 is flowing makes the Agent accumulate at the full RTT rate -- ~75 KB/s here -- with nothing to stop it.

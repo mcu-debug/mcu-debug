@@ -1467,11 +1467,14 @@ definite than probing.
 
 Not with `rsp-probe` in the end, but with the feature itself — 70-second runs of Agent-side RTT on
 real hardware, which asks the narrow question (§12 q2) continuously rather than once. The decisive
-column is "answers on a connection that itself has the `c` outstanding".
+column is "answers on a connection that itself has the `c` outstanding". The OpenOCD row is a
+production-build measurement, 93% of OpenOCD's own RTT server; the others were measured with a
+development build and are understated by roughly 12% (see
+[rtt-benchmarks.md](./rtt-benchmarks.md)).
 
 | Server   | Verdict                                         | Tier         | Agent RTT | Adapter RTT |
 | -------- | ----------------------------------------------- | ------------ | --------- | ----------- |
-| OpenOCD  | Yes — and from source, no halt gate (§4.2.1)    | `Full`       | 66.2 KB/s | 50.9 KB/s   |
+| OpenOCD  | Yes — and from source, no halt gate (§4.2.1)    | `Full`       | 74.3 KB/s | 50.9 KB/s   |
 | ST-LINK  | Yes — a minute, no stall                        | `Full`       | 89.5 KB/s | 62.4 KB/s   |
 | J-Link   | Yes — a minute, no stall                        | `Full`       | 80.5 KB/s | 68.3 KB/s   |
 | probe-rs | Yes — but at ~20 ms a round trip                | `Full`       | 6.2 KB/s  | —           |
