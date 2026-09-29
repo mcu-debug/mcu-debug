@@ -87,16 +87,40 @@ so it buys nothing server-side, but the latency it hides is exactly what we are 
 Three runs, same OpenOCD, same firmware, same Agent engine, differing only in how the extension was
 built and hosted:
 
-| Run (OpenOCD)                           | KB/s     | msgs/sec | bytes/msg | of OpenOCD's own RTT |
-| --------------------------------------- | -------- | -------- | --------- | -------------------- |
-| development build, VS Code + inspector  | 66.2     | 180      | 377       | 82.6%                |
-| development build, CLI, no debugger     | 74.5     | 201      | 378       | 93.0%                |
-| **production VSIX, VS Code, optimised** | **74.3** | 202      | 377       | **92.7%**            |
-| OpenOCD's own RTT server                | 80.1     | 162      | 506       | --                   |
+| Run (OpenOCD)                          | KB/s     | msgs/sec | bytes/msg | of OpenOCD's own RTT |
+| -------------------------------------- | -------- | -------- | --------- | -------------------- |
+| development build, VS Code + inspector | 66.2     | 180      | 377       | 82.6%                |
+| **CLI, no debugger -- audited**        | **74.5** | 201      | 378       | **93.0%**            |
+| production VSIX, VS Code -- _suspect_  | 74.3     | 202      | 377       | 92.7%                |
+| OpenOCD's own RTT server               | 80.1     | 162      | 506       | --                   |
 
-VS Code costing nothing is the expected result rather than a lucky one: the debug adapter is an ordinary
-node program either way, and VS Code sends no DAP traffic worth measuring while the target runs -- the
-same fact the `gated 0` counter reports from the other side.
+> **The VS Code rows here are provisional and the conclusion below is not yet earned.** Every VS Code run
+> in this section was made with `"debugServer": 4721` set in the firmware project's `launch.json`, which
+> makes VS Code **attach to an already-running debug adapter** instead of starting one. The adapter it
+> attached to had been running for hours, under the debugger, from older code. The proof is in the run
+> itself: no `[RTT engine]` line appeared, although the installed VSIX's bundle and Agent binary both
+> contain that code -- so the adapter serving those sessions was neither.
+>
+> The reasoning for why VS Code _should_ cost nothing is still sound -- the debug adapter is an ordinary
+> node program either way, and VS Code sends no DAP traffic worth measuring while the target runs, which
+> is the same fact `gated 0` reports from the other side. But it is reasoning, not measurement, until a
+> clean run confirms it.
+>
+> **The CLI row is the trustworthy one**, and it is self-corroborating: its `[RTT engine]` and
+> `[RTT Logs stats]` lines agree to 0.1%, which rules out loss anywhere in the host.
+
+Two false leads were chased before this was found, and both had the same shape -- _you are talking to an
+older process than you think_:
+
+1. A daemonized Agent for the `dev` instance, started before a rebuild and still serving the replaced
+   binary. `setDevelopmentModeEnvVars` gives the dev instance `MDBG_PROXY_IDLE_TIMEOUT=0`, so it never
+   exits and never picks up a rebuild; `lsof` showed it running an inode that no longer existed on disk.
+   Not the cause here, but real, and it will bite again.
+2. Stale binaries in the VSIX. Ruled out by grepping each `mdbg` and each `adapter.js` bundle for the
+   new symbols -- all five were current.
+
+Lockstep versioning cannot catch either: every process involved reported 0.1.18. What differs is the
+_build_, not the version.
 
 **The production VSIX under VS Code and the CLI agree to 0.23% -- they are the same number.** So the
 earlier framing of this as "the host costs 12%" was wrong: VS Code costs nothing measurable. What cost
@@ -113,10 +137,14 @@ pessimistic -- though the ring-buffer size it recovers does not depend on that a
 
 #### ST-LINK, production: 86.4 KB/s -- and an extrapolation of ours that was wrong
 
-| Run (ST-LINK)                     | KB/s     | msgs/sec | bytes/msg |
-| --------------------------------- | -------- | -------- | --------- |
-| development build, before the cap | 89.5     | 182      | 505       |
-| **production VSIX**               | **86.4** | 232      | 381       |
+| Run (ST-LINK)                         | KB/s | msgs/sec | bytes/msg |
+| ------------------------------------- | ---- | -------- | --------- |
+| development build, before the cap     | 89.5 | 182      | 505       |
+| production VSIX, VS Code -- _suspect_ | 86.4 | 232      | 381       |
+
+**ST-LINK has no clean figure at the moment.** The 89.5 predates the drain cap and the 86.4 was measured
+through the attached stale adapter described above. Both are recorded because the _shape_ of the
+difference between them is still informative; neither should be quoted.
 
 **It went slightly _down_, not up by 12% as this section first predicted.** The prediction was unsound,
 and instructively so: the 89.5 run predated `SAFE_DRAIN_BYTES` and sat at 505 bytes/drain, pinned against
