@@ -8,6 +8,7 @@ import { McuDebugConfigurationProviderBase } from "../common/config-provider";
 import { processVarSubstitution } from "../adapter/servers/common";
 import { getHostAdapter } from "../common/host-adapter";
 import { CustomTransport } from "../common/logger";
+import { minimatch } from "minimatch";
 
 export interface ConfigLoaderArgs {
     json?: string; // JSON file if any
@@ -163,8 +164,9 @@ export class CLIConfigLoader {
             }
         }
         // See if we can do a glob match, but it has to match exactly one configuration to avoid ambiguity.
-        const minimatch = require("minimatch");
-        const globMatches = configurations.filter((c: any) => minimatch(c.name, args.config));
+        const options = { nocase: true, nonegate: true, nocomment: true };
+        const cName = "**" + args.config.replace(/^\**/, "").replace(/\**$/, "") + "**";
+        const globMatches = configurations.filter((c: any) => minimatch(c.name, cName, options));
         if (globMatches.length === 1) {
             selectedConfig = globMatches[0];
             this.logger.info(`Selected configuration with name "${selectedConfig.name}" from ${args.json} using glob pattern "${args.config}"`);

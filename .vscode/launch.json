@@ -91,8 +91,8 @@
       // "cwd": "${workspaceFolder}",
       // "cwd": "/Users/hdm/mtw37/Hello_World",
       // "cwd": "/Users/hdm/rtt/Hello_RTT",
-      "cwd": "/Users/hdm/test/mtb37-p6h",
-      // "cwd": "c:/Users/hdm/mtw37/Empty_App",
+      // "cwd": "/Users/hdm/test/mtb37-p6h",
+      "cwd": "/Users/hdm/src/stm32f429-rtt",
       "runtimeArgs": [
         "--nolazy",
         "--trace-warnings"
@@ -104,14 +104,13 @@
       "outputCapture": "std",
       "args": [
         "-c",
-        "0",
-        "-d",
+        "openocd",
         "-l",
         "/tmp/mcu-debug.log"
       ],
       "env": {
         "RUST_BACKTRACE": "1",
-        "PROD_MCU_DEBUG_HELPER": "0"
+        // "PROD_MCU_DEBUG_HELPER": "0"
       },
       "sourceMaps": true,
       "outFiles": [

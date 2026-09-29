@@ -168,14 +168,13 @@ function isDevVersion(): boolean {
 }
 
 async function main() {
+    const { cliArgs } = await import("./cli-options");
+    const customTransport = createInitialTransports(cliArgs, cliArgs.debug ? "debug" : "info");
     if (isDevVersion()) {
         logger.debug("Running in development version");
         setDevelopmentModeEnvVars();
         process.env[CLI_DEV_ENV] = "1"; // so parked telemetry is tagged `development`
     }
-    const { cliArgs } = await import("./cli-options");
-    const customTransport = createInitialTransports(cliArgs, cliArgs.debug ? "debug" : "info");
-
     // Housekeeping, out of the way of starting a session. unref() so a short-lived invocation is
     // never held open waiting for it -- skipping a prune costs nothing, delaying an exit does.
     setTimeout(() => {
