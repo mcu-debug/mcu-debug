@@ -66,7 +66,12 @@ mcu-debug debug -c "Launch PSoC6 CM4" -j /path/to/launch.json
 
 # Force terminal mode (no TUI)
 mcu-debug debug -c "My Config" --no-tui
+
+# Run a file of commands unattended and exit, like gdb -batch
+mcu-debug debug -c "My Config" --batch --script commands.txt
 ```
+
+All options are listed in the [CLI Commands reference](../reference/cli-commands.md#debug).
 
 ## Session Discovery
 

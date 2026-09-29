@@ -45,6 +45,13 @@ import { CliTelemetry } from "../analytics/telemetry-cli";
  * We track in-flight request promises in pendingRequests keyed by seq so we can await each step.
  */
 
+/** Where a line of input came from. Interactive-ness is separate: that is `isTTY`, and only for stdin. */
+type InputSource = "stdin" | "socket" | "script";
+interface QueuedLine {
+    line: string;
+    source: InputSource;
+}
+
 export class CliSessionDriver {
     private session: GDBDebugSession | null = null;
     private rl: readline.Interface | null = null;
@@ -65,6 +72,19 @@ export class CliSessionDriver {
     private history: string[] = [];
     private isPaused = false;
     private isInternalClose = false; // to distinguish user-initiated vs DA-initiated session close
+    // Input queue: see submitLine()
+    private inputQueue: QueuedLine[] = [];
+    private draining = false;
+    private inputOpen = false; // closed until the session has settled (see openInputWhenSettled), and again during a restart
+    private configDoneSeen = false;
+    private postInitializedSeen = false;
+    private stopCount = 0; // number of `stopped` events so far, so a batch can wait for the next one
+    private stopWaiters: Array<() => void> = [];
+    private stdinEnded = false;
+    private scriptQueued = false;
+    private batchAborted = false;
+    private batchFinished = false;
+    private exitCode = 0;
     private serialManager = new SerialPortManager();
     public debugSession: CDebugSession | null = null;
     public status: CLISessionType = "not-started";
@@ -151,7 +171,7 @@ export class CliSessionDriver {
     async startSession(cliArgs: any) {
         // Nobody would be flying: stdin cannot be the pilot and no client is expected either.
         // Refuse now, before the gdb-server is launched and has to be torn down again.
-        if (!this.restarting && !this.stdinIsPilot && !this.cliArgs.waitForClient) {
+        if (!this.restarting && !this.stdinIsPilot && !this.cliArgs.waitForClient && !(this.cliArgs.batch && this.cliArgs.script)) {
             const msg =
                 "stdin is closed and no client can connect, so nothing would be able to control this session.\n" +
                 "Use --wait-for-client (and --nostdin if you are backgrounding this process) to drive it over the socket.";
@@ -169,6 +189,22 @@ export class CliSessionDriver {
         this.serialManager.createSerialPorts(JSON.parse(JSON.stringify(this.config))).catch((error) => {
             this.stderrLogger.error("Failed to create serial ports: " + (error instanceof Error ? error.message : String(error)));
         });
+
+        if (!this.restarting && this.cliArgs.batch && !(this.stdinIsPilot && process.stdin.isTTY)) {
+            // Readline only sees Ctrl-C when it is reading a terminal, and the default would kill
+            // us without releasing the probe. Do what gdb does instead: the first one interrupts a
+            // running target (unblocking a waiting `continue`), one while halted ends the session.
+            process.on("SIGINT", () => {
+                if (this.isPaused) {
+                    this.batchAborted = true;
+                    this.exitCode = 1;
+                    this.doExit(true);
+                } else {
+                    logger.info("SIGINT received, sending interrupt to debug session...");
+                    this.doInterrupt();
+                }
+            });
+        }
 
         try {
             if (!this.restarting) {
@@ -243,7 +279,13 @@ export class CliSessionDriver {
                     throw new Error(`configurationDone failed: ${configDoneResponse.message}`);
                 }
                 logger.debug("Debug session started successfully.");
-                this.runScript(cliArgs.script);
+                if (!(this.cliArgs.batch && this.scriptQueued)) {
+                    // Not twice in a batch: a `restart` in the script would queue it again, forever.
+                    this.runScript(cliArgs.script);
+                }
+                this.scriptQueued = true;
+                this.configDoneSeen = true;
+                this.openInputWhenSettled();
             })
             .catch((error: Error | unknown) => {
                 logger.error("Failed to start debug session: " + (error instanceof Error ? error.message : String(error)));
@@ -251,7 +293,7 @@ export class CliSessionDriver {
             });
     }
 
-    private async runScript(script?: string) {
+    private runScript(script?: string) {
         if (!script) {
             return;
         }
@@ -262,20 +304,18 @@ export class CliSessionDriver {
             // Execute the GDB script content here
         } catch (error) {
             logger.error("Failed to run script: " + (error instanceof Error ? error.message : String(error)));
+            if (this.cliArgs.batch) {
+                this.exitCode = 1; // the batch has nothing to run; say so in the exit status
+            }
             return;
         }
         // Split on either line ending. Unlike the readline-based stdin and socket readers, this
         // path would otherwise leave a \r on every line of a CRLF file, and commands that take
         // their arguments verbatim (!!send) would pass it through to the target.
-        const lines = scriptContent.split(/\r?\n/);
-        for (const line of lines) {
-            // Execute each line of the GDB script here
-            if (this.isPaused) {
-                await this.handleInputLinePaused(line, false);
-            } else {
-                await this.handleInputLineRunning(line, false);
-            }
-        }
+        const lines = scriptContent.split(/\r?\n/).filter((line) => line.trim());
+        // Ahead of anything stdin or a socket queued while the session was starting: the script
+        // runs "after startup", before anyone else gets a turn.
+        this.inputQueue.unshift(...lines.map((line): QueuedLine => ({ line, source: "script" })));
     }
 
     private startGDBServerConsole(message: string): Promise<void> {
@@ -342,15 +382,7 @@ export class CliSessionDriver {
 
         // Single line handler — dispatches based on current session state.
         this.rl.on("line", (input: string) => {
-            if (!input.trim()) {
-                if (this.isPaused) this.rl?.prompt();
-                return;
-            }
-            if (this.isPaused) {
-                this.handleInputLinePaused(input, true);
-            } else {
-                this.handleInputLineRunning(input, true);
-            }
+            this.submitLine(input, "stdin");
         });
 
         this.rl.on("history", (history) => {
@@ -372,8 +404,16 @@ export class CliSessionDriver {
             // even if an AI is attached over the socket. The AI is the copilot; it does not
             // inherit the controls when the human walks away. A deliberate handoff is expressed
             // at launch with --wait-for-client --nostdin, not by closing a terminal.
+            //
+            // Except in batch mode, where end of input only means there is nothing more to queue:
+            // the session ends once the queue has run dry, as `gdb -batch` does.
             if (!this.isInternalClose) {
-                this.doExit(true);
+                if (this.cliArgs.batch) {
+                    this.stdinEnded = true;
+                    this.maybeFinishBatch();
+                } else {
+                    this.doExit(true);
+                }
             }
             this.isInternalClose = false;
         });
@@ -476,7 +516,9 @@ export class CliSessionDriver {
     private get stdinIsPilot(): boolean {
         if (this.stdinIsPilotCached === undefined) {
             // startedWithNoStdin() stats fd 0, so evaluate it once and remember the answer.
-            this.stdinIsPilotCached = !this.cliArgs.nostdin && !this.startedWithNoStdin();
+            // `--batch --script` takes its commands from the script alone, as `gdb -batch -x` does.
+            const scriptIsTheBatch = !!this.cliArgs.batch && !!this.cliArgs.script;
+            this.stdinIsPilotCached = !this.cliArgs.nostdin && !scriptIsTheBatch && !this.startedWithNoStdin();
         }
         return this.stdinIsPilotCached;
     }
@@ -495,8 +537,8 @@ export class CliSessionDriver {
      */
     private setReadlineState(paused: boolean) {
         this.ensureReadline();
-        if (!this.isTTY) {
-            return; // TUI / VS Code panel — no prompt, no redraw needed
+        if (!this.isTTY || !this.rl) {
+            return; // TUI / VS Code panel — no prompt, no redraw needed; or stdin is not being read
         }
         this.rl!.setPrompt(paused ? "gdb> " : "");
         if (paused) {
@@ -559,52 +601,207 @@ export class CliSessionDriver {
         return true;
     }
 
-    private handleInputLinePaused(input: string, isTerminal: boolean): Promise<void> {
+    /** Batch sources run gdb-style: an execution command is not finished until the target stops. */
+    private isBatchSource(source: InputSource): boolean {
+        return source === "script" || (source === "stdin" && !!this.cliArgs.batch);
+    }
+
+    /**
+     * Commands that act on the session rather than on the target, and must not wait behind
+     * whatever the queue is doing -- above all `pause`, which is how a human or an AI gets back
+     * control from a queue blocked on a long command. From a batch source they are queued like
+     * anything else: there, their position in the script is the point.
+     */
+    private isOutOfBand(trimmedInput: string): boolean {
+        const lower = trimmedInput.toLowerCase();
+        if (["pause", "!!sigint", "status", "!!status", "exit"].includes(lower)) {
+            return true;
+        }
+        return /^!!(ai|ai-request|ai-request-clear|note)(\s|:|$)/.test(lower);
+    }
+
+    /**
+     * Every line of input, from any source, enters here. Lines are executed one at a time, in
+     * arrival order: the next one is not taken until the previous one has finished. Before this
+     * queue each line was dispatched the moment it arrived, against whatever state the session
+     * was in at that instant -- fine for a human, but a piped script arrives all at once and
+     * every command raced the one before it.
+     */
+    private submitLine(input: string, source: InputSource) {
         const trimmedInput = input.trim();
         if (!trimmedInput) {
-            return Promise.resolve();
+            if (source === "stdin" && this.isTTY && this.isPaused) {
+                this.rl?.prompt();
+            }
+            return;
         }
-        const src = isTerminal ? "user-input" : "socket-input";
-        logger.info(input, { source: src, skipConsole: true }); // log user input, but not to console to avoid confusion with DA output
-        // Handle user input and send it to the debug session
-        const continueCommands = ["continue", "c", "cont", "run"];
-        if (continueCommands.includes(trimmedInput.toLowerCase())) {
-            this.sendRequest<DebugProtocol.ContinueResponse>({
-                seq: 0, // overwritten by sendRequest
-                type: "request", // overwritten by sendRequest
-                command: "continue",
-                arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
-            }).then((response) => {
-                if (!response.success) {
-                    logger.warn(`Continue request failed: ${response.message}`);
+        if (this.batchAborted && this.isBatchSource(source)) {
+            return; // the batch already failed; we are on our way out
+        }
+        if (!this.isBatchSource(source) && this.isOutOfBand(trimmedInput)) {
+            void this.executeLine(input, source);
+            return;
+        }
+        this.inputQueue.push({ line: input, source });
+        void this.drainQueue();
+    }
+
+    private async drainQueue() {
+        if (this.draining) {
+            return;
+        }
+        this.draining = true;
+        try {
+            while (this.inputOpen && this.inputQueue.length > 0) {
+                const item = this.inputQueue.shift()!;
+                const ok = await this.executeLine(item.line, item.source);
+                if (!ok && this.isBatchSource(item.source)) {
+                    this.abandonBatch(item);
                 }
-                return Promise.resolve();
-            });
-        } else if (this.handleSpecialCommands(trimmedInput, isTerminal, input)) {
-            // Special commands handled
-            return Promise.resolve();
-        } else {
-            // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest"
-            this.doReplCommand(trimmedInput)
-                .then((response) => {
-                    if (!response.success) {
-                        logger.warn(`Evaluate request failed: ${response.message}`);
-                    }
-                })
-                .finally(() => {
-                    if (isTerminal) {
-                        setTimeout(() => {
-                            // Only re-prompt if still paused — a continued/stopped event
-                            // may have changed state while the command was in-flight.
-                            if (this.isPaused) {
-                                this.rl?.prompt();
-                            }
-                        }, 250);
-                    }
-                    return Promise.resolve();
-                });
+            }
+        } finally {
+            this.draining = false;
         }
-        return Promise.resolve();
+        this.maybeFinishBatch();
+    }
+
+    /** A failed command stops the batch, as it stops a gdb `source` file. */
+    private abandonBatch(item: QueuedLine) {
+        const what = item.source === "script" ? `script ${this.cliArgs.script}` : "batch input";
+        logger.error(`Stopping ${what}: '${item.line.trim()}' failed`, { source: "DA", isConsole: true, command: item.line.trim(), error: "batch-aborted" });
+        this.inputQueue = this.inputQueue.filter((q) => !this.isBatchSource(q.source));
+        if (this.cliArgs.batch) {
+            this.batchAborted = true;
+            this.exitCode = 1;
+            this.doExit(true);
+        }
+    }
+
+    /** In batch mode the session ends once all of its input has been consumed and executed. */
+    private maybeFinishBatch() {
+        if (!this.cliArgs.batch || this.batchAborted || this.batchFinished) {
+            return;
+        }
+        // A batch driven over the socket alone has no end of input; it ends with `exit`.
+        const inputExhausted = this.stdinIsPilot ? this.stdinEnded : !!this.cliArgs.script && this.scriptQueued;
+        if (inputExhausted && this.inputOpen && !this.draining && this.inputQueue.length === 0) {
+            this.batchFinished = true;
+            this.doExit(true);
+        }
+    }
+
+    /**
+     * An execution command, recognised so that a batch can wait for the target to stop again.
+     * A trailing `&` (as in gdb's `continue &`) means "don't wait": it is stripped here, and the
+     * command finishes as soon as the target is running.
+     */
+    private parseExecCommand(trimmedInput: string): { command: string; isContinue: boolean; async: boolean } | undefined {
+        const async = trimmedInput.endsWith("&");
+        const command = async ? trimmedInput.slice(0, -1).trimEnd() : trimmedInput;
+        const verb = command.split(/\s+/)[0].toLowerCase();
+        if (["continue", "c", "cont", "run"].includes(command.toLowerCase())) {
+            return { command, isContinue: true, async };
+        }
+        const stepping = ["step", "s", "next", "n", "stepi", "si", "nexti", "ni", "finish", "fin", "until", "u", "advance", "jump"];
+        if (stepping.includes(verb)) {
+            return { command, isContinue: false, async };
+        }
+        return undefined;
+    }
+
+    /**
+     * Execute one line and resolve when it has finished, with whether it succeeded. For an
+     * execution command from a batch source, finished means the target has stopped again.
+     */
+    private async executeLine(input: string, source: InputSource): Promise<boolean> {
+        const trimmedInput = input.trim();
+        if (!trimmedInput) {
+            return true;
+        }
+        // Log input, but not to the console, to avoid confusion with DA output
+        logger.info(input, { source: `${source === "stdin" ? "user" : source}-input`, skipConsole: true });
+
+        const exec = this.parseExecCommand(trimmedInput);
+        const stopsBefore = this.stopCount;
+        let ok: boolean;
+        if (exec?.isContinue && this.isPaused) {
+            ok = await this.doContinue();
+        } else {
+            const special = this.handleSpecialCommands(trimmedInput, source, input);
+            if (special) {
+                return special;
+            }
+            // Anything else, we treat as a raw GDB command and send as REPL "evaluateRequest".
+            // Everything goes to GDB whether we are paused or running. We used to drop commands
+            // while running, which was a self-inflicted limitation: because we drive GDB through
+            // the MI interface (not a terminal REPL), GDB accepts plenty of commands while the
+            // target is running -- `info breakpoints`, `info threads`, breakpoint management,
+            // symbol/type and source queries. Only commands that actually read or write target
+            // state need a halted core, and GDB rejects those itself with a clear error. GDB is
+            // the authority on what is legal in the current state; our job is to deliver the
+            // command and report the answer.
+            const response = await this.doReplCommand(exec ? exec.command : trimmedInput);
+            if (!response.success) {
+                logger.warn(`Evaluate request failed: ${response.message}`);
+            }
+            ok = response.success;
+            if (source === "stdin" && this.isTTY) {
+                // Give GDB's output a moment to be printed before the prompt goes back up.
+                setTimeout(() => {
+                    // Only re-prompt if still paused — a continued/stopped event
+                    // may have changed state while the command was in-flight.
+                    if (this.isPaused) {
+                        this.rl?.prompt();
+                    }
+                }, 250);
+            }
+        }
+        if (ok && exec && !exec.async && this.isBatchSource(source)) {
+            // Counted rather than tested with isPaused: a short step can stop again before its
+            // response reaches us, and a response can arrive before the `continued` event does.
+            ok = await this.waitForStop(stopsBefore);
+        }
+        return ok;
+    }
+
+    private async doContinue(): Promise<boolean> {
+        const response = await this.sendRequest<DebugProtocol.ContinueResponse>({
+            seq: 0, // overwritten by sendRequest
+            type: "request", // overwritten by sendRequest
+            command: "continue",
+            arguments: { threadId: 1 }, // Assuming single-threaded target; adjust as needed
+        });
+        if (!response.success) {
+            logger.warn(`Continue request failed: ${response.message}`);
+        }
+        return response.success;
+    }
+
+    /**
+     * Resolve once the target has stopped more than `stopsBefore` times in total, or with false
+     * after `timeoutMs`. Without a timeout this waits as long as the target runs, as gdb does;
+     * Ctrl-C or `pause` from another client is the way out.
+     */
+    private waitForStop(stopsBefore: number, timeoutMs?: number): Promise<boolean> {
+        if (this.stopCount > stopsBefore) {
+            return Promise.resolve(true);
+        }
+        return new Promise<boolean>((resolve) => {
+            let timer: NodeJS.Timeout | undefined;
+            const waiter = () => {
+                if (timer) {
+                    clearTimeout(timer);
+                }
+                resolve(true);
+            };
+            this.stopWaiters.push(waiter);
+            if (timeoutMs !== undefined) {
+                timer = setTimeout(() => {
+                    this.stopWaiters = this.stopWaiters.filter((w) => w !== waiter);
+                    resolve(false);
+                }, timeoutMs);
+            }
+        });
     }
 
     /**
@@ -612,23 +809,30 @@ export class CliSessionDriver {
      * and don't get sent to the DA as raw GDB commands. They are for controlling the session itself,
      * not the target. Some are not even gdb commands (e.g. reset)
      * @param trimmedInput use for dispatch and for commands whose arguments are tokens
-     * @param isTerminal use true for stdin
+     * @param source where the line came from
      * @param rawInput the line as typed. Use this where whitespace is payload rather than
      *                 separator -- `!!send` carries text meant for the target verbatim.
-     * @returns true if handled
+     * @returns undefined if not a special command, otherwise a promise that resolves with
+     *          whether it succeeded, once it has finished
      */
-    private handleSpecialCommands(trimmedInput: string, isTerminal: boolean, rawInput: string): boolean {
+    private handleSpecialCommands(trimmedInput: string, source: InputSource, rawInput: string): Promise<boolean> | undefined {
         // Match on the lower-cased copy; slice payloads out of `trimmedInput` so their own case
         // survives. Meta-commands are recognised case-insensitively so that capitalisation alone
         // cannot turn a command into an error; a genuine misspelling falls through to
         // unknowMetaCommand() below and is reported rather than acted on.
         const lower = trimmedInput.toLowerCase();
+        const done = (ok: boolean = true) => Promise.resolve(ok);
         if (lower === "pause" || lower === "!!sigint") {
-            this.doInterrupt();
-            return true;
+            if (!this.isBatchSource(source)) {
+                return this.doInterrupt();
+            }
+            // In a batch the next line usually needs the halted core (`bt`), and the pause
+            // response can arrive before the `stopped` event does.
+            const stopsBefore = this.stopCount;
+            return this.doInterrupt().then((ok) => ok && this.waitForStop(stopsBefore));
         }
         if (lower === "reset" || lower === "!!reset") {
-            this.sendRequest<DebugProtocol.RestartResponse>({
+            return this.sendRequest<DebugProtocol.RestartResponse>({
                 seq: 0, // overwritten by sendRequest
                 type: "request", // overwritten by sendRequest
                 command: "reset-device",
@@ -636,23 +840,47 @@ export class CliSessionDriver {
                 if (!response.success) {
                     logger.warn(`Reset request failed: ${response.message}`);
                 }
+                return response.success;
             });
-            return true;
         } else if (lower === "status" || lower === "!!status") {
             this.doStatus();
-            return true;
+            return done();
         } else if (lower === "restart" || lower === "!!restart") {
-            this.doRestart(isTerminal);
-            return true;
+            return this.doRestart(source === "stdin").then(() => true);
         } else if (lower === "exit") {
-            this.doExit(isTerminal);
-            return true;
+            return this.doExit(source === "stdin");
+        } else if (/^!!sleep(\s|$)/.test(lower)) {
+            // For batches: `c&` / `!!sleep 2000` / `pause` / `bt` samples a running target.
+            const ms = Number(lower.substring("!!sleep".length).trim());
+            if (!Number.isFinite(ms) || ms < 0) {
+                this.stdoutLogger.warn("Usage: !!sleep <milliseconds>");
+                return done(false);
+            }
+            return new Promise<boolean>((resolve) => setTimeout(() => resolve(true), ms));
+        } else if (/^!!wait-stop(\s|$)/.test(lower)) {
+            // Wait until the target is halted -- e.g. at the top of a script, for runToEntryPoint.
+            // Returns at once if it already is. A timeout counts as a failure.
+            const arg = lower.substring("!!wait-stop".length).trim();
+            const ms = arg ? Number(arg) : undefined;
+            if (ms !== undefined && (!Number.isFinite(ms) || ms < 0)) {
+                this.stdoutLogger.warn("Usage: !!wait-stop [timeout-milliseconds]");
+                return done(false);
+            }
+            if (this.isPaused) {
+                return done();
+            }
+            return this.waitForStop(this.stopCount, ms).then((ok) => {
+                if (!ok) {
+                    logger.warn(`!!wait-stop: target still running after ${ms} ms`);
+                }
+                return ok;
+            });
         } else if (lower.startsWith("!!ai-request-clear")) {
             // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
             // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
             // to the UI to clear/display something
             logger.info("!!AI-REQUEST-CLEAR", { isConsole: true, source: "AI" });
-            return true;
+            return done();
         } else if (lower.startsWith("!!ai-request:")) {
             // All we do is echo it back so the console display can pick it up and use it to trigger the AI Request UI.
             // The actual processing of the command is done in the console UI. It is an instruction to the user or a request
@@ -661,21 +889,20 @@ export class CliSessionDriver {
             // prefix exactly (cockpit/tui.rs), so a lower-case variant would pass through here
             // and then fail to be intercepted downstream.
             logger.info(`!!AI-REQUEST:${trimmedInput.substring("!!AI-REQUEST:".length)}`, { isConsole: true, source: "AI" });
-            return true;
+            return done();
         } else if (lower.startsWith("!!note:")) {
             // This is a command from the DA to the CLI to update the notes. The payload is in the format of !!NOTE:{"doc":[{...json-patch...}]}
             const jsonStr = trimmedInput.substring("!!NOTE:".length);
             this.handleNotes(jsonStr);
-            return true;
+            return done();
         } else if (/^!!send(\s|$)/i.test(trimmedInput)) {
             // Match on a whitespace boundary, not a literal space: `!!send\t[]` used to miss this
             // branch and fall through to the catch-all below, which forwards anything starting
             // with `!!` to the AI -- so a tab silently turned a target write into a chat message.
             // Take the arguments from the raw line: trimStart() drops indentation before the
             // command, but anything after it -- trailing spaces included -- is the target's data.
-            this.doSendToStream(rawInput.trimStart().substring("!!send".length).replace(/^\s/, ""));
-            return true;
-        } else if (isTerminal && /^!!ai(\s|$)/i.test(trimmedInput)) {
+            return done(this.doSendToStream(rawInput.trimStart().substring("!!send".length).replace(/^\s/, "")));
+        } else if (source === "stdin" && /^!!ai(\s|$)/i.test(trimmedInput)) {
             // A free-text message to whatever client is attached. This used to be the catch-all for
             // any unrecognised `!!` typed on stdin, which meant a mistyped command was relayed as
             // chat instead of being reported, and no line beginning with `!!` could ever reach gdb.
@@ -688,18 +915,18 @@ export class CliSessionDriver {
             const request = trimmedInput.substring("!!ai".length).trim();
             if (!request) {
                 this.stdoutLogger.warn("Usage: !!ai <text> — sends the text to any connected AI");
-                return true;
+                return done(false);
             }
             logger.info(request, { skipConsole: true, source: "USER-REQUEST" });
             this.stdoutLogger.info(`Sent to any connected AI: ${request}`);
-            return true;
+            return done();
         } else if (lower.startsWith("!!")) {
             // An unrecognised meta-command from a socket client. This is the agent's only signal
             // that it got the spelling wrong, so it is reported rather than dropped.
             this.unknowMetaCommand(trimmedInput);
-            return true;
+            return done(false);
         }
-        return false;
+        return undefined;
     }
 
     private handleNotes(message: string) {
@@ -802,6 +1029,9 @@ export class CliSessionDriver {
         // issues with the clients attached to them.
         this.rtts = [];
         this.restarting = true;
+        this.inputOpen = false; // reopened once the new session is up
+        this.configDoneSeen = false;
+        this.postInitializedSeen = false;
         // this.closeLineReaders();
         // While a restart is not officially supported we have some rudimentary support to finish
         // the previous session but not send a 'terminated' event which will exit our program. We kinda
@@ -850,7 +1080,7 @@ export class CliSessionDriver {
      * Everything after the address is payload, whitespace included -- which is why the caller
      * hands us the raw line rather than a trimmed one.
      */
-    private doSendToStream(args: string): void {
+    private doSendToStream(args: string): boolean {
         type Sink = { prefix: string; write: (text: string) => boolean };
         const sinks: Sink[] = [
             ...this.rtts.map((r) => ({
@@ -884,7 +1114,7 @@ export class CliSessionDriver {
             const end = addressPart.indexOf("]");
             if (end < 0) {
                 fail(`unterminated stream name in '${addressPart}'`, "bad-prefix");
-                return;
+                return false;
             }
             const prefix = addressPart.substring(0, end + 1);
             addressed = prefix === "[]" ? undefined : prefix; // '[]' is "the only one", stated explicitly
@@ -898,24 +1128,25 @@ export class CliSessionDriver {
             target = sinks.find((s) => s.prefix === addressed);
             if (!target) {
                 fail(`no stream named ${addressed}. Known streams: ${names().join(", ") || "(none)"}`, "unknown-stream", { target: addressed, available: names() });
-                return;
+                return false;
             }
         } else if (sinks.length > 1) {
             fail(`more than one stream, name the one you mean: ${names().join(", ")}`, "ambiguous", { available: names() });
-            return;
+            return false;
         } else {
             target = sinks[0]; // undefined when the session has no streams at all
         }
         if (!target) {
             fail("this session has no serial or RTT streams to send to", "no-streams", { available: [] });
-            return;
+            return false;
         }
 
         if (!target.write(text)) {
             fail(`${target.prefix} is not connected`, "not-connected", { target: target.prefix });
-            return;
+            return false;
         }
         logger.info(`${target.prefix} <= ${text}`, { source: "DA", skipConsole: true, command: "send", target: target.prefix, text });
+        return true;
     }
 
     private doStatus() {
@@ -950,8 +1181,8 @@ export class CliSessionDriver {
         logger.info(`Session summary: ${JSON.stringify(obj, null, 2)}`);
     }
 
-    private doExit(isTerminal: boolean) {
-        this.sendRequest<DebugProtocol.TerminateResponse>({
+    private doExit(isTerminal: boolean): Promise<boolean> {
+        return this.sendRequest<DebugProtocol.TerminateResponse>({
             seq: 0, // overwritten by sendRequest
             type: "request", // overwritten by sendRequest
             command: "terminate",
@@ -964,11 +1195,12 @@ export class CliSessionDriver {
                 // when the terminated event arrives via closeLineReaders().
                 this.closeLineReaders();
             }
+            return response.success;
         });
     }
 
-    private doInterrupt() {
-        this.sendRequest<DebugProtocol.PauseResponse>({
+    private doInterrupt(): Promise<boolean> {
+        return this.sendRequest<DebugProtocol.PauseResponse>({
             seq: 0, // overwritten by sendRequest
             type: "request", // overwritten by sendRequest
             command: "pause",
@@ -977,39 +1209,13 @@ export class CliSessionDriver {
             if (!response.success) {
                 logger.warn(`Pause request failed: ${response.message}`);
             }
+            return response.success;
         });
     }
 
     // startReadlineRunning() has been merged into ensureReadline() / setReadlineState().
     // The single this.rl interface handles both paused and running states, dispatching
     // input via this.isPaused at the point each line arrives.
-
-    private handleInputLineRunning(input: string, isTerminal: boolean): Promise<void> {
-        const trimmedInput = input.trim();
-        if (!trimmedInput) {
-            return Promise.resolve();
-        }
-        const src = isTerminal ? "user-input" : "socket-input";
-        logger.info(input, { source: src, skipConsole: true });
-        try {
-            if (this.handleSpecialCommands(trimmedInput, isTerminal, input)) {
-                return Promise.resolve();
-            }
-        } catch {}
-        // Everything else goes to GDB, exactly as it does when paused. We used to drop these
-        // silently, which was a self-inflicted limitation: because we drive GDB through the MI
-        // interface (not a terminal REPL), GDB accepts plenty of commands while the target is
-        // running -- `info breakpoints`, `info threads`, breakpoint management, symbol/type and
-        // source queries. Only commands that actually read or write target state need a halted
-        // core, and GDB rejects those itself with a clear error. GDB is the authority on what is
-        // legal in the current state; our job is to deliver the command and report the answer.
-        return this.doReplCommand(trimmedInput).then((response) => {
-            if (!response.success) {
-                logger.warn(`Evaluate request failed: ${response.message}`);
-            }
-            return Promise.resolve();
-        });
-    }
 
     /**
      * Dispatch one request into the DA and return a Promise that resolves with the response.
@@ -1063,8 +1269,10 @@ export class CliSessionDriver {
             case "stopped": {
                 const reason = `${event.body?.reason}` + (event.body?.description ? ` — ${event.body.description}` : "");
                 this.isPaused = true;
+                this.stopCount++;
                 this.setState("paused", reason);
                 this.setReadlineState(true);
+                this.releaseStopWaiters();
                 break;
             }
             case "continued":
@@ -1076,7 +1284,7 @@ export class CliSessionDriver {
                 if (!this.restarting) {
                     this.setState("terminated");
                     this.closeLineReaders();
-                    process.exit(0);
+                    process.exit(this.exitCode);
                 }
                 break;
             case "thread":
@@ -1106,6 +1314,10 @@ export class CliSessionDriver {
                     }
                 }
                 break;
+            case "post-initialized":
+                this.postInitializedSeen = true;
+                this.openInputWhenSettled();
+                break;
             case "swo-configure":
                 // this.receivedSWOConfigureEvent(event);
                 break;
@@ -1124,6 +1336,39 @@ export class CliSessionDriver {
                 break;
         }
         // TODO: route stopped/output/terminated events to the TUI / headless stream
+    }
+
+    /**
+     * Open the input queue once start-up has settled: the DA has sent `post-initialized` (its
+     * session-mode commands -- runToEntryPoint, breakAfterReset -- are done) and has answered
+     * configurationDone. Either can come first.
+     *
+     * Until then our paused/running state cannot be trusted. The DA decides to continue the target
+     * (runToEntryPoint, or no breakAfterReset) while it is still halted from the reset, and the
+     * `continued` event only follows once gdb reports running. A batch that started in that gap
+     * saw a halted target -- `!!wait-stop` returned at once, and the `continue` after it was
+     * rejected as the target was by then running. The DA's own isBusy() is set synchronously when
+     * it issues the continue, so at this point it is the truth; take our state from it.
+     */
+    private openInputWhenSettled() {
+        if (this.inputOpen || !this.configDoneSeen || !this.postInitializedSeen) {
+            return;
+        }
+        if (this.isPaused && this.session?.isBusy()) {
+            this.isPaused = false;
+            this.setState("running");
+            this.setReadlineState(false);
+        }
+        this.inputOpen = true;
+        void this.drainQueue();
+    }
+
+    private releaseStopWaiters() {
+        const waiters = this.stopWaiters;
+        this.stopWaiters = [];
+        for (const waiter of waiters) {
+            waiter();
+        }
     }
 
     private closeLineReaders() {
@@ -1348,11 +1593,7 @@ export class CliSessionDriver {
             this.server = net.createServer((conn) => {
                 const rl = readline.createInterface({ input: conn });
                 rl.on("line", (line) => {
-                    if (this.isPaused) {
-                        this.handleInputLinePaused(line, false);
-                    } else {
-                        this.handleInputLineRunning(line, false);
-                    }
+                    this.submitLine(line, "socket");
                 });
                 if (!this.customTransport.getRingBuffer().isEmpty()) {
                     // Replay recent history to the new client, trimmed to a whole-line boundary.

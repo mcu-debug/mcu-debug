@@ -16,6 +16,7 @@ Terminal mode activates in any of these conditions:
 - stdout is redirected to a file or pipe: `mcu-debug debug ... > output.log`
 - Running as a subprocess of an AI tool (Claude Code, GitHub Copilot)
 - `--no-tui` flag is passed explicitly
+- `--batch` is passed — see [Batch Mode](#batch-mode)
 - Headless CI environment without a terminal (no TTY allocated)
 
 ## Input
@@ -24,6 +25,16 @@ Type commands directly and press Enter. Commands are GDB commands or [meta-comma
 
 - **Ctrl-C**: sends SIGINT to the target (interrupt execution)
 - **Ctrl-D**: graceful exit (disconnect GDB, stop gdb-server, exit)
+
+## Batch Mode
+
+A pipe on stdin is not enough to mean "run this unattended": the TUI and other programs drive a session through a pipe too. Pass `--batch` to run a file of commands the way `gdb -batch` does:
+
+```sh
+mcu-debug debug -c "My Config" --batch < commands.txt
+```
+
+Commands run one at a time. Each `continue` or `step` waits until the target stops again, and the session exits when the input ends, with status 1 if a command failed. See [`--batch`](../reference/cli-commands.md#--batch) for the rules.
 
 ## Output Format
 

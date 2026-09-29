@@ -41,6 +41,31 @@ This sends the appropriate monitor reset command for the configured gdb-server (
 
 ---
 
+### !!sleep
+
+Wait a number of milliseconds before the next command runs. It is meant for [batch scripts](./cli-commands.md#--batch), to let a running target run for a while:
+
+```
+c&
+!!sleep 2000
+pause
+bt
+```
+
+---
+
+### !!wait-stop
+
+Wait until the target is halted. It finishes at once if the target already is. An optional timeout, in milliseconds, turns an endless wait into a failure, which ends a batch with exit status 1:
+
+```
+!!wait-stop 5000
+```
+
+Use it at the top of a script when the configuration has `runToEntryPoint`: the script starts while the target is still on its way to the entry point. It also helps after `reset`, when whether the target halts depends on the configuration.
+
+---
+
 ### !!send
 
 Write a line to one of the target's own I/O streams — a serial port or an RTT channel. stdin belongs to GDB, so this is the only way to answer firmware that prompts for input ("Press 'Enter' to continue", a serial menu, a command shell on UART).
@@ -174,3 +199,5 @@ process.stdin.flush()
 | Update notes             | `!!NOTE: [...]`     | —                    | No GDB equivalent                                                  |
 | Request human input      | `!!AI-REQUEST: ...` | —                    | No GDB equivalent                                                  |
 | Message the AI           | `!!ai <text>`       | —                    | Human → AI, stdin only                                            |
+| Pause a script           | `!!sleep <ms>`      | —                    | For batch scripts                                                  |
+| Wait for a halt          | `!!wait-stop [ms]`  | —                    | For batch scripts; a timeout is a failure                          |

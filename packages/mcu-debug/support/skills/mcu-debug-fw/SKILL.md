@@ -245,6 +245,7 @@ Full source list:
 * `source: "USER-REQUEST"` ➡️ a message the human typed to you, as `!!ai <text>` at their keyboard — the mirror of your `!!AI-REQUEST:`. The `!!ai` is already stripped, so the `message` is their words alone. **Treat it as addressed to you and answer it**; it is not session telemetry and it will not repeat. Only that explicit command produces one, so it is a message meant for you rather than a meta-command that went astray.
 * `source: "user-input"` ➡️ Echoes what the user typed
 * `source: "socket-input"` ➡️ Echoes what came over the socket, presumably from AI
+* `source: "script-input"` ➡️ Echoes a line run from the `--script` file
 * `source: "RTT"` ➡️ Live RTT print statements containing application telemetry
 * `source: "serial"` ➡️ Live UART/serial print statements containing application telemetry
 

@@ -7,6 +7,18 @@
 
 ## [v0.1.18] - 2026-09-??
 
+## General
+
+- **Fixed**: The pause button did not work if there was no breakOnReset, no runToEntryPoint and have not stopped for some other brakpoint
+
+## CLI
+
+- `--batch` option added to the CLI command so that an pipe/reidrect a set of gdb/meta commands from a file
+- Also added meta commands `!!sleep ms` to sleep for the said duration, and `!!wait-stop [ms]` to wait for the
+  FW to halt before executing the next command
+- There is now a `c&` command to continue the FW in background so you can add additional commands
+- See http://localhost:3000/mcu-debug/docs/reference/meta-commands
+
 ## RTT
 
 - Add a 'pipe' RTT decoder: You can use this to send RTT data to any program

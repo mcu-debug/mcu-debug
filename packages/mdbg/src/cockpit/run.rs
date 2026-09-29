@@ -108,9 +108,19 @@ pub struct DebugArgs {
     #[arg(long = "nostdin")]
     pub nostdin: bool,
 
-    /// Path to the script to run.
+    /// Script of GDB commands and meta-commands to run once the session has started, as though
+    /// typed on stdin.  Without `--batch` the session stays open afterwards for you to drive.
     #[arg(short = 'r', long = "script")]
     pub script: Option<String>,
+
+    /// Run commands like `gdb -batch`: one at a time, in order, each execution command
+    /// (`continue`, `step`, `next`, ...) waiting until the target stops again -- a trailing `&`
+    /// does not wait.  The first failure stops the batch.  Commands come from `--script` if given,
+    /// otherwise from stdin; the session exits when they run out, with status 1 if one failed.
+    ///
+    /// Implies `--no-tui`: the TUI would take over the stdin the commands arrive on.
+    #[arg(long = "batch")]
+    pub batch: bool,
 
     /// Dump the configuration and exit.
     #[arg(long = "dump-config")]
@@ -134,7 +144,7 @@ pub fn run(args: DebugArgs) -> Result<()> {
     // Auto-detect headless mode: if stdout is not a TTY (piped, redirected,
     // or spawned by an AI agent) we behave as --no-tui automatically.
     // The flag remains useful as an explicit override when stdout IS a TTY.
-    let headless = args.no_tui || !std::io::stdout().is_terminal();
+    let headless = args.no_tui || args.batch || !std::io::stdout().is_terminal();
 
     // Argument validation first, before probing the environment: a bad flag combination should
     // be reported as such, not as a missing Node or a missing CLI bundle.
@@ -181,12 +191,20 @@ pub fn run(args: DebugArgs) -> Result<()> {
         node_args.push("--script".to_string());
         node_args.push(script.clone());
     }
+    if args.batch {
+        node_args.push("--batch".to_string());
+    }
 
     if headless {
         // Headless mode: Node inherits our stdio. The mux stream goes directly
         // to stdout for the AI or CI caller. We just wait for Node to finish.
         let mut child = spawn::spawn_node_cli_headless(&cli_js, &node_args)?;
         let status = child.wait()?;
+        if args.batch && !status.success() {
+            // The batch has already said which command failed; pass its status through as ours,
+            // without a second error message, so a CI step sees exactly what the session reported.
+            std::process::exit(status.code().unwrap_or(1));
+        }
         if !status.success() {
             anyhow::bail!("mcu-debug-cli.js exited with {status}");
         }

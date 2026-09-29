@@ -67,11 +67,11 @@ Typical autonomous AI debugging cycle:
 In CI/CD pipelines, mcu-debug can be used for automated hardware-in-the-loop testing:
 
 ```sh
-# Run a GDB script file
-mcu-debug debug -c "Test Config" --script tests/run_tests.gdb
+# Run a script of commands unattended, then exit
+mcu-debug debug -c "Test Config" --batch --script tests/run_tests.txt
 ```
 
-The GDB script can set breakpoints, run to completion, verify values, and exit with an appropriate exit code. The exit code propagates to the CI/CD pipeline result.
+With `--batch`, commands run one at a time. Each `continue` or `step` waits until the target stops again. The session exits when the script ends: with status 0 when every command succeeded, and with status 1 at the first one that failed. That status is the CI/CD pipeline result. See [`--batch`](../reference/cli-commands.md#--batch) for the details.
 
 ## Logging
 

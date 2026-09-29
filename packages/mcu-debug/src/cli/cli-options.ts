@@ -18,6 +18,7 @@ export interface CliArgs {
     // what the name suggests every time you read it.
     nostdin?: boolean;
     script?: string;
+    batch?: boolean;
 }
 
 const program = new Command();
@@ -36,6 +37,10 @@ program
     .option("--wait-for-client", "Wait for a client to connect before starting the debug session")
     .option("--nostdin", "Never read stdin; drive the session over the socket instead. Required when backgrounding the process from an interactive shell. Implies --wait-for-client")
     .option("-r, --script <string>", "script file to execute after startup as though commands were entered on stdin")
+    .option(
+        "--batch",
+        "Run commands like gdb -batch: one at a time, each execution command (continue, step, ...) waiting until the target stops again (a trailing '&' does not wait), stopping at the first failure. Commands come from --script if given, otherwise stdin; the session exits when they run out",
+    )
     .version(version, "-V, --version", "Show version information")
     .helpOption("-h, --help", "Show this help message")
     .parse(process.argv);
