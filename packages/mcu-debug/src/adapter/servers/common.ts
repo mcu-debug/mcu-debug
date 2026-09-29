@@ -311,9 +311,10 @@ export interface DebugFlags {
     rspTrace?: string;
     rspMux?: boolean;
     // What the Agent may assume this gdb-server can do: "full" | "haltedOnly" | "unsupported".
-    // Unset uses the measured default for the servertype. Only OpenOCD has been measured, so on
-    // the others the Agent's own features -- RTT included -- wait while the target runs; "full" is
-    // how to find out whether that is necessary on a server the matrix has not reached.
+    // Unset uses the measured default for the servertype. OpenOCD, ST-LINK, J-Link and probe-rs are
+    // all measured as "full"; pyOCD is "haltedOnly" because it queues a read until the next halt
+    // rather than refusing it. Setting this is how to find out where a server the matrix has not
+    // reached belongs -- see docs-internal/gdb-rsp.md section 7.
     rspTier?: string;
     anyFlags?: boolean;
 }

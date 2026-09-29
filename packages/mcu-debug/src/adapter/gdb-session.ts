@@ -1311,13 +1311,44 @@ export class GDBDebugSession extends SeqDebugSession {
         }
     }
 
+    /** Memoised so the fallback is reported once; see `rttEngineChoice`. */
+    private rttChoiceCache: { engine: "rust" | "typescript"; why?: string } | null | undefined;
+
+    /**
+     * Which built-in RTT engine this session uses, or `null` when RTT is off.
+     *
+     * Asked at two points in the launch sequence -- deciding whether a live GDB is needed at all, and
+     * later starting whichever engine won -- so it has to be one answer, not two conditions that can
+     * drift apart. They did drift: the earlier site tested `pvtRttConfig` alone, which was right when
+     * built-in RTT always meant the adapter's engine reading through the live GDB, and wrong once the
+     * Agent's engine existed. It attached a second GDB for sessions that had not asked for live watch
+     * and did not need one -- visible on probe-rs, which allows a single connection and refuses it.
+     *
+     * Memoised from the first call, which happens after the proxy client exists, so the answer cannot
+     * change underneath the two callers.
+     */
+    private rttEngineChoice(): { engine: "rust" | "typescript"; why?: string } | null {
+        if (this.rttChoiceCache === undefined) {
+            const cfg = this.args.pvtRttConfig;
+            this.rttChoiceCache = cfg ? chooseRttEngine(cfg, this.serverSession?.proxy ?? null, this.args.debugFlags?.rspMux) : null;
+            if (this.rttChoiceCache?.why) {
+                this.handleMsg(Stderr, `WARNING: built-in RTT is using the debug adapter's engine -- ${this.rttChoiceCache.why}\n`);
+            }
+        }
+        return this.rttChoiceCache;
+    }
+
+    /** True when something in this session needs the second, live-watch GDB connection. */
+    private needsLiveGdb(): boolean {
+        // The Agent's RTT engine reads target memory over the multiplexed gdb connection and has no
+        // use for a live GDB. Only the adapter's own engine does.
+        return !!this.args.liveWatch?.enabled || this.rttEngineChoice()?.engine === "typescript";
+    }
+
     private postInitComplete(): Promise<void> {
         return new Promise(async (resolve) => {
             const rttConfig = this.args.pvtRttConfig;
-            const choice = rttConfig ? chooseRttEngine(rttConfig, this.serverSession?.proxy ?? null, this.args.debugFlags?.rspMux) : null;
-            if (choice?.why) {
-                this.handleMsg(Stderr, `WARNING: built-in RTT is using the debug adapter's engine -- ${choice.why}\n`);
-            }
+            const choice = this.rttEngineChoice();
 
             // The Agent's engine reads target memory over the multiplexed RSP connection, so it has
             // no need of the live GDB the debug adapter's engine polls through. This is still the
@@ -1339,7 +1370,7 @@ export class GDBDebugSession extends SeqDebugSession {
             }
 
             const doBuiltinRtt = !!rttConfig && choice?.engine === "typescript";
-            const doStart = this.args.liveWatch?.enabled || doBuiltinRtt;
+            const doStart = this.needsLiveGdb();
             if (doStart) {
                 this.liveWatchMonitor
                     .requestLiveCapability()
@@ -1472,7 +1503,7 @@ export class GDBDebugSession extends SeqDebugSession {
             // idempotent -- it guards on startInvoked and returns at once once connected -- so the
             // call still in postInitComplete() costs nothing and continues to serve clients that
             // register lazily.
-            if (this.args.liveWatch?.enabled || !!this.args.pvtRttConfig) {
+            if (this.needsLiveGdb()) {
                 // Bounded, and quiet about a failure. A live watch that cannot attach has already
                 // said so itself, in terms that name the cause -- reporting it again here is how one
                 // root cause turns into three messages. The bound is the backstop for a promise that
