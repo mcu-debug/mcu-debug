@@ -204,25 +204,16 @@ impl PacketCodec {
     /// its running sum, so expanding first would give the wrong sum for any
     /// payload containing a run.
     fn try_take_packet(&mut self, start: u8) -> PacketScan {
-        // Locate the '#' that ends the payload. '#' cannot appear unescaped inside
-        // payload data -- not by convention but structurally, because the framing
-        // layer terminates there -- so the first one is the terminator.
-        //
-        // An unescaped '$' before it means the stream is out of step. GDB's
-        // read_frame() logs "Saw new packet start in middle of old one" and
-        // restarts framing at the new '$'; we do the same, reporting the skipped
-        // bytes as garbage. Resynchronising on the next plausible packet start
-        // recovers far better than consuming through a '#' that may belong to a
-        // later, valid packet.
-        let restart = self.buf.iter().skip(1).position(|&b| b == b'$').map(|i| i + 1);
-        let hash = self.buf.iter().position(|&b| b == b'#');
-        let hash = match (hash, restart) {
-            (Some(h), Some(r)) if r < h => return PacketScan::Frame(self.take_raw(r, FrameKind::Garbage, Vec::new())),
-            (Some(h), _) => h,
-            // No '#' yet. If a restart is already visible there is no point
-            // waiting for a terminator that will never come for this frame.
-            (None, Some(r)) => return PacketScan::Frame(self.take_raw(r, FrameKind::Garbage, Vec::new())),
-            (None, None) => return PacketScan::NeedMore,
+        // Locate the `#` that ends the payload -- see `scan_frame`, which is where the subtlety is.
+        let hash = match scan_frame(&self.buf) {
+            FrameScan::Hash(h) => h,
+            // An unescaped `$` before the terminator: the stream is out of step. GDB's own
+            // read_frame() logs "Saw new packet start in middle of old one" and restarts framing at
+            // the new `$`; we do the same, reporting the skipped bytes as garbage. Resynchronising on
+            // the next plausible packet start recovers far better than consuming through a `#` that
+            // may belong to a later, valid packet.
+            FrameScan::Restart(r) => return PacketScan::Frame(self.take_raw(r, FrameKind::Garbage, Vec::new())),
+            FrameScan::NeedMore => return PacketScan::NeedMore,
         };
         // Two checksum digits must follow it.
         if self.buf.len() < hash + 3 {
@@ -279,6 +270,57 @@ fn classify(start: u8, payload: &[u8]) -> FrameKind {
         Some(b'F') if payload.len() > 1 => FrameKind::FileIo,
         _ => FrameKind::Packet,
     }
+}
+
+/// Where a frame ends, or where the stream restarts.
+enum FrameScan {
+    /// Index of the `#` that terminates the payload.
+    Hash(usize),
+    /// Index of an unescaped `$` that began a new frame before this one terminated.
+    Restart(usize),
+    /// Not enough bytes yet to tell.
+    NeedMore,
+}
+
+/// Find the framing terminator, honouring the two payload constructs that may contain a raw `#` or
+/// `$`: an escape (`}` then one byte) and a run-length count (`*` then one byte).
+///
+/// **A positional search for the first `#` is wrong, and the way it is wrong is subtle.** The byte
+/// after `}` and the byte after `*` are *data*, whatever their value, and neither is escaped. GDB
+/// gets the right answer from what looks like a naive reader because it handles `*` inline as it
+/// scans, consuming the count byte; this codec scanned for the terminator first and decoded RLE
+/// second, so a count byte of `$` read as the start of a new packet and one of `#` as a terminator.
+///
+/// probe-rs emits exactly that. Eight spaces of XML indentation in its `target.xml` encode as
+/// ` *$` -- `0x24 - 29 = 7` further spaces -- and the manual's rule that a count byte must be
+/// neither `#` nor `$` is one it does not follow. Every frame of that reply was split at the count
+/// byte, each fragment rejected, and the pending entry for GDB's `qXfer` never retired; at depth 1
+/// that shut the Agent's send gate for the rest of the session, so Agent-side RTT sent nothing at
+/// all and said only that its packets were not allowed out.
+///
+/// GDB tolerates it, so a transparent relay has to as well. Being stricter than GDB is not a virtue
+/// here: it turns another implementation's liberty into our outage.
+fn scan_frame(buf: &[u8]) -> FrameScan {
+    let mut i = 1; // buf[0] is the `$` or `%` that opened this frame
+    while i < buf.len() {
+        match buf[i] {
+            // The count byte belongs to the run, whatever its value. Stepping past the end means it
+            // has not arrived yet, which the loop condition turns into `NeedMore`.
+            RLE_MARKER => i += 2,
+            // `}` is deliberately **not** skipped, and the asymmetry is not an oversight. An escape
+            // is always followed by the original byte XOR 0x20, and the four bytes that need escaping
+            // -- `#`, `$`, `}`, `*` -- escape to 0x03, 0x04, `]` and `\n`. So a well-formed escape is
+            // never followed by `#` or `$`, and skipping would gain nothing. What it would cost is
+            // real: a payload truncated mid-escape would swallow the `#` and then hunt through the
+            // *next* packet for a terminator. For an endpoint like GDB that is merely a lost packet;
+            // for a relay it is a desynchronised stream. So a trailing escape stays garbage, and
+            // resynchronisation still works.
+            b'#' => return FrameScan::Hash(i),
+            b'$' => return FrameScan::Restart(i),
+            _ => i += 1,
+        }
+    }
+    FrameScan::NeedMore
 }
 
 /// Undo escaping and run-length encoding. `None` if the data is malformed
@@ -539,26 +581,50 @@ mod tests {
     }
 
     #[test]
-    fn hash_and_dollar_cannot_be_rle_count_bytes_at_all() {
-        // Counts 6 and 7 are not merely forbidden, they are STRUCTURALLY
-        // IMPOSSIBLE: framing terminates at '#' and resynchronises at '$' before
-        // the payload decoder ever sees them. GDB's read_frame() behaves the same
-        // way. So no decoder, however lenient, can accept these -- which is the
-        // real reason the spec excludes them.
-        // Framing ends at the '#' the encoder meant as a count, so the payload is
-        // a bare "z*" -- an unterminated run. Never a valid packet, whatever
-        // trailing bytes the rest of the stream leaves behind.
-        let fs = kinds(&raw_packet(b"z*#"));
-        assert_eq!(fs[0], FrameKind::Garbage);
-        assert!(!fs.contains(&FrameKind::Packet), "got {fs:?}");
-        // '$' mid-packet: bytes up to it are garbage, then framing restarts and
-        // the following valid packet decodes normally.
-        let fs = frames(b"$z*$OK#9a");
+    fn hash_and_dollar_are_accepted_as_rle_count_bytes() {
+        // This test used to assert the opposite, on the reasoning that counts 6 and 7 are
+        // "structurally impossible" because framing terminates at `#` and restarts at `$` before the
+        // payload decoder sees them -- and that "GDB's read_frame() behaves the same way".
+        //
+        // **That last claim is false, and hardware disproved it.** GDB handles `*` inline as it
+        // scans, consuming the count byte as data, so counts 6 and 7 are perfectly representable to
+        // it. probe-rs emits count 7: eight spaces of XML indentation in `target.xml` encode as
+        // ` *$`. Every frame of that reply was split at the count byte, and because the pending entry
+        // for GDB's `qXfer` then never retired, the Agent's send gate stayed shut for the whole
+        // session -- Agent-side RTT sent not one packet.
+        //
+        // So the spec's exclusion of `#` and `$` is a rule for *encoders*, not a property decoders
+        // may rely on. A relay must be at least as tolerant as GDB; being stricter turns another
+        // implementation's liberty into our outage.
+        let fs = frames(&raw_packet(b"z*#"));
+        assert_eq!(
+            fs.len(),
+            1,
+            "one frame, not a split: {:?}",
+            fs.iter().map(|f| f.kind).collect::<Vec<_>>()
+        );
+        assert_eq!(fs[0].kind, FrameKind::Packet);
+        assert_eq!(
+            fs[0].payload,
+            b"z".repeat(1 + (b'#' - 29) as usize),
+            "count byte 0x23 means 6 more"
+        );
+
+        let fs = frames(&raw_packet(b"z*$"));
+        assert_eq!(fs[0].kind, FrameKind::Packet);
+        assert_eq!(
+            fs[0].payload,
+            b"z".repeat(1 + (b'$' - 29) as usize),
+            "count byte 0x24 means 7 more"
+        );
+
+        // Resynchronisation still works for a `$` that is *not* a count byte.
+        let fs = frames(b"$zz$OK#9a");
         assert_eq!(
             fs.iter().map(|f| f.kind).collect::<Vec<_>>(),
             vec![FrameKind::Garbage, FrameKind::Packet]
         );
-        assert_eq!(fs[0].raw, b"$z*");
+        assert_eq!(fs[0].raw, b"$zz");
         assert_eq!(fs[1].payload, b"OK");
     }
 

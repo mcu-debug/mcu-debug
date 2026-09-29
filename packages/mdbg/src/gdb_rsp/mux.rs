@@ -623,6 +623,24 @@ impl MuxCore {
                     ours.len()
                 );
             }
+            // Nothing of ours to blame, so the frame was very likely GDB's reply -- and GDB's entry
+            // must not be left in the queue. At depth 1 one lingering prompt entry shuts our gate for
+            // the rest of the session, which is exactly how a mis-framed `qXfer` reply during startup
+            // silenced Agent-side RTT entirely: not one packet sent, and the only symptom a line
+            // saying our packets were not allowed out.
+            //
+            // Retiring it is safe. GDB's entries exist for the send gate's arithmetic and for ack
+            // accounting, not for routing: if GDB's real reply turns up later it simply matches
+            // nothing and is forwarded to GDB, which is where it was going anyway.
+            if let Some(i) = self
+                .pending
+                .iter()
+                .position(|p| p.source == RspSource::Gdb && !p.open_ended())
+            {
+                let seq = self.pending[i].seq;
+                self.pending.remove(i);
+                log::warn!("RSP mux: retiring GDB's request s{seq}, whose reply we could not accept, so it does not hold our send gate shut");
+            }
             return false;
         }
         // And it must be the *earliest* prompt request, because the server answers in the order it
@@ -1831,6 +1849,30 @@ mod tests {
         let acts = m.on_tick(t0 + Duration::from_millis(150));
         assert_eq!(completions(&acts), vec![(5, Err(RspError::Timeout))]);
         assert_eq!(m.in_flight(), 0, "a timed-out request kept its slot");
+    }
+
+    #[test]
+    fn a_frame_we_cannot_accept_does_not_hold_the_send_gate_shut() {
+        // The failure this exists to stop recurring, seen on probe-rs. One mis-framed `qXfer` reply
+        // during GDB's startup left GDB's pending entry unretired, and at depth 1 a single lingering
+        // prompt entry shuts the gate -- so Agent-side RTT sent nothing for the entire session and
+        // reported only that its packets were not allowed out.
+        let mut m = handshaken(ServerTier::Full);
+        // GDB asks something prompt; its entry occupies the whole depth-1 budget.
+        m.on_gdb_bytes(&encode_packet(b"qXfer:features:read:target.xml:0,ffb"));
+        assert!(!m.agent_gate_open(), "GDB has the connection, which is invariant 2");
+
+        // The server answers with something we cannot frame.
+        let acts = m.on_server_bytes(b"$rubbish#00");
+        assert_eq!(
+            to_gdb(&acts),
+            vec![b"$rubbish#00".to_vec()],
+            "still GDB's to see and nack"
+        );
+        assert!(
+            m.agent_gate_open(),
+            "and the gate must be open again, not shut for the session"
+        );
     }
 
     #[test]

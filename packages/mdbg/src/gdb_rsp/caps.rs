@@ -142,9 +142,14 @@ impl ServerTier {
         match server_type.to_ascii_lowercase().as_str() {
             "openocd" => ServerTier::Full,
             // Measured on hardware with Agent-side RTT, which is the narrow question (§12 q2): reads
-            // answered on the same connection GDB has a `vCont;c` outstanding on, for 70 seconds
+            // answered on the same connection GDB has a `vCont;c` outstanding on, for a minute or more
             // without a stall. ST-LINK 89 KB/s, J-Link 80 KB/s.
-            "stlink" | "jlink" => ServerTier::Full,
+            //
+            // probe-rs answers too, and is `Full` on capability -- but at ~20 ms per round trip
+            // against OpenOCD's ~1.8 ms, so 6.2 KB/s where OpenOCD manages 66. The tier is about what
+            // a server *permits*, not how fast it is, and gating on speed here would be the wrong
+            // lever: a slow server should be slow, not silently featureless.
+            "stlink" | "jlink" | "probe-rs" => ServerTier::Full,
             // Measured, and it is a firm no: pyOCD does not answer an `m` while the target runs --
             // it *queues* it and replies when the target next stops. Observed on hardware as five
             // consecutive two-second timeouts during a run, every one of them answered within a
@@ -320,14 +325,14 @@ mod tests {
             ServerTier::HaltedOnly,
             "measured: pyOCD queues our reads until the target stops"
         );
-        for kind in ["stlink", "jlink"] {
+        for kind in ["stlink", "jlink", "probe-rs"] {
             assert_eq!(
                 ServerTier::from_server_type(kind),
                 ServerTier::Full,
                 "measured on hardware: {kind}"
             );
         }
-        for kind in ["external", "qemu", "probe-rs", ""] {
+        for kind in ["external", "qemu", "bmp", "pe", "stutil", ""] {
             assert_eq!(ServerTier::from_server_type(kind), ServerTier::Unknown, "{kind}");
         }
         assert!(

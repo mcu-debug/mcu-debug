@@ -907,10 +907,13 @@ quickly by experiment, so this is a clarity improvement rather than a defect: **
 before carrying a single byte in either direction is a failed open, not a close**, reported against
 the request that created it.
 
-**Where discovery-by-attempt is not acceptable: probe-rs does not refuse a second connection, it
-crashes.** So "try it and see" costs the whole session, and the connection limit has to be **declared
-per server** and checked before the attempt, not probed. §7's matrix already has the row for it; this
-is why it is not merely informational.
+**Where discovery-by-attempt was not acceptable: probe-rs used to crash rather than refuse a second
+connection**, so "try it and see" cost the whole session. **Re-measured on a current version (2026-09):
+it now refuses cleanly and the first GDB session carries on** -- though it says nothing on its own
+stdio about having refused, so the only evidence is on our side. That makes discovery-by-attempt
+survivable there, but the limit is still better **declared per server** than probed: probe-rs errors
+and panics readily on anything slightly unexpected, and its gdb-server is a side project rather than
+its supported interface. §7's matrix has the row.
 
 **The consequence to accept deliberately:** on a strictly single-connection server, honest 1:1 means
 live watch is _unavailable_ rather than quietly degraded. That makes item 20a — live watch as an Agent
@@ -1447,18 +1450,18 @@ does the asking. OpenOCD's column came from
 reading `gdb_server.c` (§4.2.1) — where a server ships source, read it; it is faster and far more
 definite than probing.
 
-| Question                                                  | Why it matters                                                               | OpenOCD                                                                               | J-Link                      | pyOCD                               | ST-LINK                     | probe-rs | QEMU |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------- | ----------------------------------- | --------------------------- | -------- | ---- |
-| Answers `m`/`x` while the target **runs**?                | The premise the design rests on.                                             | **Yes** — 66 reads observed (§2 A)                                                    | ?                           | ?                                   | ?                           | ?        | ?    |
-| …on a connection that **itself** has the `c` outstanding? | The narrower form the mux needs.                                             | **Yes — 0.5 ms**, `rsp-probe` on hardware; chain also traced to `mem_ap_read_buf`     | **Yes** — 70 s of Agent RTT | **No — queues until the next halt** | **Yes** — 70 s of Agent RTT | ?        | ?    |
-| Tolerates `depth = 2` in no-ack mode?                     | Sets the pipelining rule.                                                    | **Yes** — both replies arrived (`rsp-probe`); warns and recovers in ack mode (§4.2.1) | ?                           | ?                                   | ?                           | ?        | ?    |
-| `PacketSize`? Advertises `binary-upload+`?                | Bounds chunking; picks `x` over `m`.                                         | **16384**; **no `binary-upload`** — no `x` packet at all                              | ?                           | ?                                   | ?                           | ?        | ?    |
-| Advertises `QNonStop+`, and honours it?                   | Confirms it is as irrelevant as §2 assumes.                                  | **no** — not advertised                                                               | ?                           | ?                                   | ?                           | ?        | ?    |
-| `QStartNoAckMode` honoured after advertising it?          | The codec must switch at the right byte (§4.3).                              | **Yes**                                                                               | ?                           | ?                                   | ?                           | ?        | ?    |
-| Connection limit — default, and per core?                 | Whether the maximal mux (§4.7) removes a real burden elsewhere or only here. | **`-gdb-max-connections`, per target, default 1**                                     | ?                           | ?                                   | ?                           | ?        | ?    |
-| Is a **secondary** told about a halt it did not cause?    | Whether a non-controller connection could host a mux (§4.7).                 | **No** — 0 packets across 4 breakpoint halts (§2 B)                                   | ?                           | ?                                   | ?                           | ?        | ?    |
-| Is a resume issued on **conn2** answered on conn2?        | Behavioural vs positional. No GDB session can produce this.                  | **Yes** — `T02thread:1;` (`rsp-probe`). **Behavioural, confirmed**                    | ?                           | ?                                   | ?                           | ?        | ?    |
-| **Tier (§7)**                                             |                                                                              | **`Full`**                                                                            | **`Full`**                  | **`HaltedOnly`**                    | **`Full`**                  | ?        | ?    |
+| Question                                                  | Why it matters                                                               | OpenOCD                                                                               | J-Link                      | pyOCD                               | ST-LINK                     | probe-rs          | QEMU |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------- | ----------------------------------- | --------------------------- | ----------------- | ---- |
+| Answers `m`/`x` while the target **runs**?                | The premise the design rests on.                                             | **Yes** — 66 reads observed (§2 A)                                                    | ?                           | ?                                   | ?                           | ?                 | ?    |
+| …on a connection that **itself** has the `c` outstanding? | The narrower form the mux needs.                                             | **Yes — 0.5 ms**, `rsp-probe` on hardware; chain also traced to `mem_ap_read_buf`     | **Yes** — 70 s of Agent RTT | **No — queues until the next halt** | **Yes** — 70 s of Agent RTT | ?                 | ?    |
+| Tolerates `depth = 2` in no-ack mode?                     | Sets the pipelining rule.                                                    | **Yes** — both replies arrived (`rsp-probe`); warns and recovers in ack mode (§4.2.1) | ?                           | ?                                   | ?                           | ?                 | ?    |
+| `PacketSize`? Advertises `binary-upload+`?                | Bounds chunking; picks `x` over `m`.                                         | **16384**; **no `binary-upload`** — no `x` packet at all                              | ?                           | ?                                   | ?                           | ?                 | ?    |
+| Advertises `QNonStop+`, and honours it?                   | Confirms it is as irrelevant as §2 assumes.                                  | **no** — not advertised                                                               | ?                           | ?                                   | ?                           | ?                 | ?    |
+| `QStartNoAckMode` honoured after advertising it?          | The codec must switch at the right byte (§4.3).                              | **Yes**                                                                               | ?                           | ?                                   | ?                           | ?                 | ?    |
+| Connection limit — default, and per core?                 | Whether the maximal mux (§4.7) removes a real burden elsewhere or only here. | **`-gdb-max-connections`, per target, default 1**                                     | ?                           | ?                                   | ?                           | ?                 | ?    |
+| Is a **secondary** told about a halt it did not cause?    | Whether a non-controller connection could host a mux (§4.7).                 | **No** — 0 packets across 4 breakpoint halts (§2 B)                                   | ?                           | ?                                   | ?                           | ?                 | ?    |
+| Is a resume issued on **conn2** answered on conn2?        | Behavioural vs positional. No GDB session can produce this.                  | **Yes** — `T02thread:1;` (`rsp-probe`). **Behavioural, confirmed**                    | ?                           | ?                                   | ?                           | ?                 | ?    |
+| **Tier (§7)**                                             |                                                                              | **`Full`**                                                                            | **`Full`**                  | **`HaltedOnly`**                    | **`Full`**                  | **`Full`** (slow) | ?    |
 
 #### Four servers measured, by running Agent-side RTT on them
 
@@ -1466,12 +1469,25 @@ Not with `rsp-probe` in the end, but with the feature itself — 70-second runs 
 real hardware, which asks the narrow question (§12 q2) continuously rather than once. The decisive
 column is "answers on a connection that itself has the `c` outstanding".
 
-| Server  | Verdict                                         | Tier         | Agent RTT | Adapter RTT |
-| ------- | ----------------------------------------------- | ------------ | --------- | ----------- |
-| OpenOCD | Yes — and from source, no halt gate (§4.2.1)    | `Full`       | 66.2 KB/s | 50.9 KB/s   |
-| ST-LINK | Yes — 70 s, no stall                            | `Full`       | 89.5 KB/s | 62.4 KB/s   |
-| J-Link  | Yes — 70 s, no stall                            | `Full`       | 80.5 KB/s | 68.3 KB/s   |
-| pyOCD   | **No — it queues the read until the next halt** | `HaltedOnly` | —         | 24.8 KB/s   |
+| Server   | Verdict                                         | Tier         | Agent RTT | Adapter RTT |
+| -------- | ----------------------------------------------- | ------------ | --------- | ----------- |
+| OpenOCD  | Yes — and from source, no halt gate (§4.2.1)    | `Full`       | 66.2 KB/s | 50.9 KB/s   |
+| ST-LINK  | Yes — a minute, no stall                        | `Full`       | 89.5 KB/s | 62.4 KB/s   |
+| J-Link   | Yes — a minute, no stall                        | `Full`       | 80.5 KB/s | 68.3 KB/s   |
+| probe-rs | Yes — but at ~20 ms a round trip                | `Full`       | 6.2 KB/s  | —           |
+| pyOCD    | **No — it queues the read until the next halt** | `HaltedOnly` | —         | 24.8 KB/s   |
+
+**probe-rs permits everything and is an order of magnitude slower at it.** The latency is its own, and
+visible without us — which is the only evidence needed, and the only evidence to rely on: its
+handshake with GDB takes ~10–12 ms per packet before the Agent has sent anything (`qSupported` 0.3 → 10.0 ms, `vCont?` 10.3 → 22.1 ms, `vMustReplyEmpty` 22.4 → 34.7 ms). The
+tier stays `Full` because a tier describes what a server _permits_; gating it on speed would make a
+slow server silently featureless instead of merely slow. Trace excerpt in
+[rtt-benchmarks.md](./rtt-benchmarks.md).
+
+probe-rs is also the only server observed to emit `#` or `$` as a run-length **count** byte, which the
+manual forbids and GDB tolerates anyway. That cost a framing fix on our side — `scan_frame` in
+`gdb_rsp/frame.rs` — and the lesson generalises: a relay must be **at least as tolerant as GDB**,
+because being stricter turns another implementation's liberty into our own outage.
 
 **pyOCD is the one that does not work, and it fails in a way worth recording.** It does not refuse
 the read and it does not error: it _queues_ it and answers when the target next stops. Observed as

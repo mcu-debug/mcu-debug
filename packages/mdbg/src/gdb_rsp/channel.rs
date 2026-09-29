@@ -562,7 +562,7 @@ mod tests {
     }
 
     /// Drive the startup handshake through the real threads.
-    fn handshake(ch: &RspChannel, srv: &FakeServer) {
+    fn handshake(ch: &RspChannel, srv: &FakeServer, sink: &RecordingSink) {
         ch.feed_from_gdb(&encode_packet(b"qSupported:multiprocess+"));
         expect_from_channel(srv);
         srv.from_client
@@ -588,8 +588,14 @@ mod tests {
         expect_from_channel(srv);
         srv.from_client.send(encode_packet(b"T05thread:01;")).unwrap();
         // Let the reader thread drain what we queued.
+        //
+        // Both halves are waited for, and the second is not redundant: `state()` is the mux's view,
+        // updated as the stop reply is *parsed*, while forwarding it to GDB is a separate action
+        // carried out afterwards. A test that samples `gdb_bytes()` on the strength of the state
+        // alone can catch the stop reply still in flight -- which it did, about one run in five,
+        // seeing 43 bytes where 60 were coming: the difference is exactly the 17 bytes of the framed stop reply.
         for _ in 0..200 {
-            if ch.state() == TargetState::Stopped {
+            if ch.state() == TargetState::Stopped && sink.gdb_bytes().ends_with(&encode_packet(b"T05thread:01;")) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -623,8 +629,8 @@ mod tests {
 
     #[test]
     fn a_request_completes_through_the_real_threads() {
-        let (ch, srv, _sink) = rig(ServerTier::Full);
-        handshake(&ch, &srv);
+        let (ch, srv, sink) = rig(ServerTier::Full);
+        handshake(&ch, &srv, &sink);
 
         let id = ch.new_consumer();
         let ch2 = ch.clone();
@@ -638,7 +644,7 @@ mod tests {
     #[test]
     fn a_consumer_reply_is_not_forwarded_to_gdb() {
         let (ch, srv, sink) = rig(ServerTier::Full);
-        handshake(&ch, &srv);
+        handshake(&ch, &srv, &sink);
         let before = sink.gdb_bytes().len();
 
         let id = ch.new_consumer();
@@ -653,8 +659,8 @@ mod tests {
 
     #[test]
     fn a_forbidden_packet_is_refused_without_reaching_the_server() {
-        let (ch, srv, _sink) = rig(ServerTier::Full);
-        handshake(&ch, &srv);
+        let (ch, srv, sink) = rig(ServerTier::Full);
+        handshake(&ch, &srv, &sink);
         let id = ch.new_consumer();
         assert!(ch.request(id, b"c".to_vec(), Duration::from_millis(200)).is_err());
         assert!(
@@ -665,8 +671,8 @@ mod tests {
 
     #[test]
     fn a_request_times_out_rather_than_hanging_for_ever() {
-        let (ch, srv, _sink) = rig(ServerTier::Full);
-        handshake(&ch, &srv);
+        let (ch, srv, sink) = rig(ServerTier::Full);
+        handshake(&ch, &srv, &sink);
         let id = ch.new_consumer();
         // Server never answers.
         let err = ch
@@ -685,7 +691,7 @@ mod tests {
     #[test]
     fn the_server_hanging_up_fails_outstanding_requests_and_reports_once() {
         let (ch, srv, sink) = rig(ServerTier::Full);
-        handshake(&ch, &srv);
+        handshake(&ch, &srv, &sink);
         let id = ch.new_consumer();
         let ch2 = ch.clone();
         let worker = std::thread::spawn(move || ch2.request(id, b"m0,4".to_vec(), Duration::from_secs(5)));
@@ -762,7 +768,7 @@ mod tests {
     #[test]
     fn an_outstanding_request_fails_when_a_thread_dies_unexpectedly() {
         let (ch, srv, sink) = rig(ServerTier::Full);
-        handshake(&ch, &srv);
+        handshake(&ch, &srv, &sink);
         let id = ch.new_consumer();
         let ch2 = ch.clone();
         let worker = std::thread::spawn(move || ch2.request(id, b"m0,4".to_vec(), Duration::from_secs(30)));
@@ -823,7 +829,7 @@ mod tests {
             to_client: srv_in_rx,
             from_client: srv_out_tx,
         };
-        handshake(&ch, &srv);
+        handshake(&ch, &srv, &sink);
 
         ch.feed_from_gdb(&encode_packet(b"vCont;c"));
         expect_from_channel(&srv);
@@ -873,7 +879,7 @@ mod tests {
     #[test]
     fn shutdown_is_idempotent() {
         let (ch, srv, sink) = rig(ServerTier::Full);
-        handshake(&ch, &srv);
+        handshake(&ch, &srv, &sink);
         ch.shutdown("first");
         ch.shutdown("second");
         assert_eq!(sink.closed.lock_recover().as_deref(), Some("first"));
@@ -881,8 +887,8 @@ mod tests {
 
     #[test]
     fn a_halted_only_server_holds_a_read_until_the_target_halts() {
-        let (ch, srv, _sink) = rig(ServerTier::HaltedOnly);
-        handshake(&ch, &srv);
+        let (ch, srv, sink) = rig(ServerTier::HaltedOnly);
+        handshake(&ch, &srv, &sink);
         // Target resumes.
         ch.feed_from_gdb(&encode_packet(b"vCont;c"));
         assert_eq!(expect_from_channel(&srv), encode_packet(b"vCont;c"));
