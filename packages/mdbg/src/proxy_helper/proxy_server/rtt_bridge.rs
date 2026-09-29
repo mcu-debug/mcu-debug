@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gdb_rsp::{Consumer, Endian};
-use crate::rtt::{ControlBlock, DrainOptions, RttConfig, RttEngine, RttError, RttSink, TargetMemory};
+use crate::rtt::{ControlBlock, DrainOptions, RttConfig, RttEngine, RttError, RttSink, RttStats, TargetMemory};
 
 use super::*;
 
@@ -120,6 +120,26 @@ impl RttSink for FunnelRttSink {
 
     fn waiting(&self, why: &str) {
         eprintln!("RTT: still waiting for the control block -- {why}");
+    }
+
+    /// The engine's counters, on to the client.
+    ///
+    /// Sent as an event rather than only logged, because the Agent's stderr is dropped unless a
+    /// host-side debug flag happens to be on -- and throughput measurement is a feature, not debug
+    /// noise. Cumulative, so the client subtracts consecutive samples to get a window; doing that
+    /// arithmetic on both sides would be two implementations of one subtraction.
+    fn progress(&self, stats: &RttStats, since: Duration) {
+        self.report(ProxyServerEvents::RttStats {
+            bytes_up: stats.bytes_up,
+            bytes_down: stats.bytes_down,
+            drains: stats.passes,
+            idle: stats.idle_passes,
+            gated: stats.gated_passes,
+            errors: stats.errors,
+            reads: stats.reads,
+            writes: stats.writes,
+            elapsed_ms: since.as_millis() as u64,
+        });
     }
 
     fn closed(&self, why: &str) {
@@ -219,6 +239,12 @@ impl ProxyServer {
                     ),
                     ..DrainOptions::default()
                 },
+                // The client's interval, taken from the decoder that asked for statistics, so the
+                // engine's line and the consumer's describe the same window and can be read against
+                // each other. `None` when nobody asked, and then nothing is sent at all.
+                stats_interval: config
+                    .stats_interval_ms
+                    .map(|ms| Duration::from_millis(ms.max(1) as u64)),
                 ..RttConfig::default()
             },
         );
@@ -251,8 +277,17 @@ impl ProxyServer {
             // Worth a line: these are the numbers a parity comparison is made of, and a session that
             // has ended is exactly when they are final.
             eprintln!(
-                "RTT: stopping ({why}) -- {} bytes up, {} down, {} passes, {} idle, {} gated, {} errors",
-                stats.bytes_up, stats.bytes_down, stats.passes, stats.idle_passes, stats.gated_passes, stats.errors
+                "RTT: stopping ({why}) -- {} bytes up, {} down, {} drains, {} idle, {} gated, {} errors, \
+                 {} reads + {} writes = {} round trips",
+                stats.bytes_up,
+                stats.bytes_down,
+                stats.passes,
+                stats.idle_passes,
+                stats.gated_passes,
+                stats.errors,
+                stats.reads,
+                stats.writes,
+                stats.reads + stats.writes
             );
             engine.shutdown(why);
         }

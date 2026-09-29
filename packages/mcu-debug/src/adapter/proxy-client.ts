@@ -649,6 +649,12 @@ export class ProxyClient extends EventEmitter {
                         // session starts. This is the moment data begins to flow.
                         this.emit("rttReady", msg.params);
                         break;
+                    case "rttStats":
+                        // Forwarded rather than logged here: only the RTT bridge knows which session
+                        // console these belong to, and unlike the Agent's stderr these must reach the
+                        // user without a debug flag being on -- measuring throughput is the feature.
+                        this.emit("rttStats", msg.params);
+                        break;
                     case "rttStopped":
                         this.emit("rttStopped", msg.params);
                         break;

@@ -364,6 +364,13 @@ pub struct RttStartConfig {
     /// Cap on one channel's drain, so a full buffer cannot hold the shared RSP connection while
     /// GDB waits behind it.
     pub max_bytes_per_drain: Option<u32>,
+    /// How often to send `rttStats`, or `None` for never.
+    ///
+    /// Asked for by the client rather than decided here, because the engine's counters are only half
+    /// of a throughput measurement -- the consumer's own line is the other half, and the two are
+    /// meaningless apart. So this rides the same per-decoder `stats` switch that turns that line on,
+    /// and carries its interval, which is what keeps both describing the same window.
+    pub stats_interval_ms: Option<u32>,
 }
 
 /// One RTT channel and the funnel stream its data arrives on.
@@ -774,6 +781,40 @@ pub enum ProxyServerEvents {
         down_channels: u32,
         /// How long the search ran, in milliseconds. Almost always the firmware rather than us.
         search_ms: u64,
+    },
+
+    /// The RTT engine's own counters, periodically.
+    ///
+    /// **Cumulative, not windowed**, and deliberately: the client keeps the previous sample and
+    /// subtracts, so a dropped or delayed event costs accuracy in one window rather than losing the
+    /// bytes from the running total.
+    ///
+    /// These exist because the only throughput figure the client can produce by itself is its
+    /// consumer's `msgs/sec`, and a `msg` there is one TCP buffer, not one drain -- on a fast probe
+    /// several drains arrive coalesced, so bytes-per-drain reads high and drains-per-second low, by
+    /// an amount that varies per probe. The number that actually sets RTT throughput is **round
+    /// trips**, and only the engine can count those.
+    #[serde(rename = "rttStats")]
+    RttStats {
+        /// Bytes delivered to the client, and bytes written to down channels.
+        bytes_up: u64,
+        bytes_down: u64,
+        /// Drains that moved at least one byte.
+        drains: u64,
+        /// Passes that found nothing. Climbing means the firmware had nothing for us, so throughput
+        /// is its production rate rather than our cost.
+        idle: u64,
+        /// Passes skipped because the multiplexer would not let a packet out. Climbing means GDB's
+        /// traffic on the shared connection, not the probe.
+        gated: u64,
+        /// Failed passes. Climbing means reads being rejected and retried at half the size, which
+        /// silently doubles the round-trip cost of the same bytes.
+        errors: u64,
+        /// Memory reads and writes issued. Their sum is round trips.
+        reads: u64,
+        writes: u64,
+        /// Milliseconds since the control block was found, which is when the counters started.
+        elapsed_ms: u64,
     },
 
     /// The Agent's RTT engine has stopped and will produce nothing further, with the reason.

@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::common::sync::MutexExt;
-use crate::gdb_rsp::Endian;
+use crate::gdb_rsp::{Endian, RspError};
 
 use super::{
     drain_up_channel, fill_down_channel, find_control_block, ControlBlock, DrainOptions, RttError, TargetMemory,
@@ -67,6 +67,15 @@ pub trait RttSink: Send + Sync + 'static {
     /// that is not there yet -- are indistinguishable from outside, and telling them apart by
     /// reading code is a poor use of anyone's afternoon.
     fn waiting(&self, _why: &str) {}
+
+    /// Counters so far, whenever [`RttConfig::stats_interval`] asks for them.
+    ///
+    /// `since` is measured from the control block being found, so it covers exactly the period the
+    /// counters do. Reported rather than only logged at shutdown because the interesting question
+    /// -- whether a slow server is costing us round trips, or the gate is shut, or the firmware
+    /// simply has nothing for us -- is answered by watching these move, and a session that has
+    /// ended is too late to ask.
+    fn progress(&self, _stats: &RttStats, _since: Duration) {}
 
     /// The engine has stopped and will do nothing further.
     fn closed(&self, _why: &str) {}
@@ -107,6 +116,8 @@ pub struct RttConfig {
     /// Consecutive failed passes before giving up. Without a bound, a target that has been reset
     /// out from under us produces one error per pass for the rest of the session.
     pub max_consecutive_errors: u32,
+    /// How often to call [`RttSink::progress`]. `None` reports only at shutdown.
+    pub stats_interval: Option<Duration>,
 }
 
 impl Default for RttConfig {
@@ -123,6 +134,7 @@ impl Default for RttConfig {
             search_timeout: None,
             drain: DrainOptions::default(),
             max_consecutive_errors: 100,
+            stats_interval: None,
         }
     }
 }
@@ -142,6 +154,16 @@ pub struct RttStats {
     /// Iterations skipped because the mux gate was shut.
     pub gated_passes: u64,
     pub errors: u64,
+    /// Memory reads issued, and writes. Their sum is **round trips**, which is the budget RTT
+    /// throughput is made of.
+    ///
+    /// Counted here because it cannot be recovered from outside. The only throughput figure the
+    /// funnel side can produce is the consumer's `msgs/sec`, and a `msg` there is one TCP buffer:
+    /// on a fast probe two drains routinely arrive as one, so bytes-per-msg reads high and
+    /// passes-per-second reads low, by an amount that varies per probe. That made a server
+    /// comparison built on those two numbers meaningless -- see `docs-internal/rtt-benchmarks.md`.
+    pub reads: u64,
+    pub writes: u64,
 }
 
 struct Inner {
@@ -216,7 +238,7 @@ impl RttEngine {
 ///
 /// Named for what it does: it sleeps in short slices and checks the stop flag between them, so a
 /// teardown is seen within one slice however long the wait was asked to be.
-fn nap(inner: &Inner, total: Duration) {
+fn nap_with_one_eye_open(inner: &Inner, total: Duration) {
     const SLICE: Duration = Duration::from_millis(5);
     let deadline = Instant::now() + total;
     while Instant::now() < deadline {
@@ -227,9 +249,38 @@ fn nap(inner: &Inner, total: Duration) {
     }
 }
 
+/// Wraps the real memory to count round trips.
+///
+/// A decorator rather than counters threaded through [`super::drain_up_channel`], so that the
+/// ring-buffer code stays testable against a plain byte array and knows nothing about statistics.
+struct Counted {
+    mem: Arc<dyn TargetMemory>,
+    inner: Arc<Inner>,
+}
+
+impl TargetMemory for Counted {
+    fn read(&self, addr: u64, len: usize) -> Result<Vec<u8>, RspError> {
+        self.inner.stats.lock_recover().reads += 1;
+        self.mem.read(addr, len)
+    }
+    fn write(&self, addr: u64, data: &[u8]) -> Result<(), RspError> {
+        self.inner.stats.lock_recover().writes += 1;
+        self.mem.write(addr, data)
+    }
+    fn ready(&self) -> bool {
+        // Deliberately not counted: it takes a lock, not a round trip.
+        self.mem.ready()
+    }
+}
+
 fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, config: RttConfig) {
+    let counted = Counted {
+        mem,
+        inner: Arc::clone(&inner),
+    };
+    let mem: &dyn TargetMemory = &counted;
     let began = Instant::now();
-    let Some(cb) = search(&*mem, &inner, &config) else {
+    let Some(cb) = search(mem, &inner, &config) else {
         let why = inner
             .stop_reason
             .lock_recover()
@@ -239,18 +290,27 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, config: RttConfig) {
     };
     inner.sink.on_ready(&cb, began.elapsed());
 
+    let ready_at = Instant::now();
+    let mut last_report = ready_at;
     let mut consecutive_errors = 0u32;
     while !inner.stop.load(Ordering::SeqCst) {
+        if let Some(every) = config.stats_interval {
+            if last_report.elapsed() >= every {
+                last_report = Instant::now();
+                let snapshot = inner.stats.lock_recover().clone();
+                inner.sink.progress(&snapshot, ready_at.elapsed());
+            }
+        }
         if !mem.ready() {
             inner.stats.lock_recover().gated_passes += 1;
-            nap(&inner, config.gate_interval);
+            nap_with_one_eye_open(&inner, config.gate_interval);
             continue;
         }
-        match one_pass(&*mem, &inner, &config, &cb) {
+        match one_pass(mem, &inner, &config, &cb) {
             Ok(0) => {
                 consecutive_errors = 0;
                 inner.stats.lock_recover().idle_passes += 1;
-                nap(&inner, config.idle_interval);
+                nap_with_one_eye_open(&inner, config.idle_interval);
             }
             Ok(_) => {
                 consecutive_errors = 0;
@@ -271,7 +331,7 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, config: RttConfig) {
                     inner.stop.store(true, Ordering::SeqCst);
                     return;
                 }
-                nap(&inner, config.idle_interval);
+                nap_with_one_eye_open(&inner, config.idle_interval);
             }
         }
     }
@@ -307,7 +367,7 @@ fn search(mem: &dyn TargetMemory, inner: &Inner, config: &RttConfig) -> Option<C
             // could not", and the search is exactly when a session is most likely to be gated --
             // the handshake has not settled, so the gate is shut by definition (§4.4).
             inner.stats.lock_recover().gated_passes += 1;
-            nap(inner, config.gate_interval);
+            nap_with_one_eye_open(inner, config.gate_interval);
             continue;
         }
         match find_control_block(mem, config.cb_addr, &config.search_id, config.endian) {
@@ -319,7 +379,7 @@ fn search(mem: &dyn TargetMemory, inner: &Inner, config: &RttConfig) -> Option<C
                         return None;
                     }
                 }
-                nap(inner, config.search_interval);
+                nap_with_one_eye_open(inner, config.search_interval);
             }
             Err(e) => {
                 // `Invalid` or a memory failure: the id matched and the rest did not, or the target

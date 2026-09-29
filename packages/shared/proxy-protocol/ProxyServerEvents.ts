@@ -34,4 +34,42 @@ export type ProxyServerEvents =
               search_ms: number;
           };
       }
+    | {
+          event: "rttStats";
+          params: {
+              /**
+               * Bytes delivered to the client, and bytes written to down channels.
+               */
+              bytes_up: number;
+              bytes_down: number;
+              /**
+               * Drains that moved at least one byte.
+               */
+              drains: number;
+              /**
+               * Passes that found nothing. Climbing means the firmware had nothing for us, so throughput
+               * is its production rate rather than our cost.
+               */
+              idle: number;
+              /**
+               * Passes skipped because the multiplexer would not let a packet out. Climbing means GDB's
+               * traffic on the shared connection, not the probe.
+               */
+              gated: number;
+              /**
+               * Failed passes. Climbing means reads being rejected and retried at half the size, which
+               * silently doubles the round-trip cost of the same bytes.
+               */
+              errors: number;
+              /**
+               * Memory reads and writes issued. Their sum is round trips.
+               */
+              reads: number;
+              writes: number;
+              /**
+               * Milliseconds since the control block was found, which is when the counters started.
+               */
+              elapsed_ms: number;
+          };
+      }
     | { event: "rttStopped"; params: { reason: string } };

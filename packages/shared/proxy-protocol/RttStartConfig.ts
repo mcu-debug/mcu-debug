@@ -38,4 +38,13 @@ export type RttStartConfig = {
      * GDB waits behind it.
      */
     max_bytes_per_drain: number | null;
+    /**
+     * How often to send `rttStats`, or `None` for never.
+     *
+     * Asked for by the client rather than decided here, because the engine's counters are only half
+     * of a throughput measurement -- the consumer's own line is the other half, and the two are
+     * meaningless apart. So this rides the same per-decoder `stats` switch that turns that line on,
+     * and carries its interval, which is what keeps both describing the same window.
+     */
+    stats_interval_ms: number | null;
 };

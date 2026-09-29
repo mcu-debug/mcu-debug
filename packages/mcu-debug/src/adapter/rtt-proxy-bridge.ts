@@ -35,11 +35,83 @@ import { parseAddress } from "../common/utils";
 import { RttStartConfig } from "@mcu-debug/shared/proxy-protocol/RttStartConfig";
 import { TargetInfo } from "./target-info";
 
+/**
+ * How often the Agent should report its counters, or `undefined` for never.
+ *
+ * Deliberately **not a flag of its own**. The engine's counters are one half of a throughput
+ * measurement and the consumer's `[RTT Logs stats]` line is the other -- `trips/sec` says what the
+ * bytes cost, and only the pair distinguishes "the Agent drained less" from "the host delivered
+ * less". Reporting one without the other would be noise, and asking users for a second switch to
+ * turn on the other half of one number would be worse.
+ *
+ * So it rides the existing per-decoder `stats` opt-in, and takes that decoder's `statsInterval` so
+ * both lines describe the same window. No decoder asking for statistics means the Agent sends none.
+ */
+export function statsIntervalMs(config: RTTConfiguration): number | undefined {
+    const asked = (config.decoders || []).filter((d) => (d as { stats?: boolean }).stats);
+    if (asked.length === 0) {
+        return undefined;
+    }
+    // The shortest, where several disagree: a window that divides the others is readable against all
+    // of them, and the engine's counters are per session rather than per channel anyway.
+    const intervals = asked.map((d) => (d as { statsInterval?: number }).statsInterval).filter((n): n is number => typeof n === "number" && n > 0);
+    return (intervals.length > 0 ? Math.min(...intervals) : 5) * 1000;
+}
+
+/** The Agent's RTT counters, as `rttStats` carries them. Cumulative since the block was found. */
+export interface RttEngineStats {
+    bytes_up: number;
+    bytes_down: number;
+    drains: number;
+    idle: number;
+    gated: number;
+    errors: number;
+    reads: number;
+    writes: number;
+    elapsed_ms: number;
+}
+
+/**
+ * One line of engine statistics, describing the window between `prev` and `now`.
+ *
+ * The complement to `ThroughputMonitor`'s line, and the two are meant to be read together: that one
+ * measures bytes arriving at the last consumer, this one measures what they cost. Its `msgs/sec`
+ * cannot stand in for `drains/sec` -- a `msg` there is one TCP buffer, and on a fast probe several
+ * drains arrive coalesced -- which is what made an earlier comparison of servers meaningless.
+ *
+ * **`trips/sec` is the figure that sets RTT throughput**, and `trips/drain` is the diagnostic: a
+ * drain costs three round trips (read the descriptor, read the data, write `RdOff`), so materially
+ * more than 3.0 means wrapped drains splitting into two reads, or reads being rejected and retried.
+ */
+export function formatRttEngineStats(now: RttEngineStats, prev: RttEngineStats | null): string {
+    const base: RttEngineStats = prev ?? { bytes_up: 0, bytes_down: 0, drains: 0, idle: 0, gated: 0, errors: 0, reads: 0, writes: 0, elapsed_ms: 0 };
+    // Guarded rather than assumed: an Agent restart would reset the counters, and a negative window
+    // printed as a rate is worse than a slightly wrong one.
+    const secs = Math.max((now.elapsed_ms - base.elapsed_ms) / 1000, 0.001);
+    const delta = (a: number, b: number) => Math.max(a - b, 0);
+    const bytes = delta(now.bytes_up, base.bytes_up);
+    const drains = delta(now.drains, base.drains);
+    const trips = delta(now.reads + now.writes, base.reads + base.writes);
+    const per = (n: number, d: number) => (d > 0 ? n / d : 0);
+    const totalKB = now.bytes_up / 1024;
+    const total = totalKB >= 1024 ? `${(totalKB / 1024).toFixed(2)} MB` : `${totalKB.toFixed(1)} KB`;
+    return (
+        `[RTT engine] ${(bytes / 1024 / secs).toFixed(1)} KB/sec | ` +
+        `${(drains / secs).toFixed(0)} drains/sec, ${per(bytes, drains).toFixed(0)} B/drain | ` +
+        `${(trips / secs).toFixed(0)} trips/sec, ${per(trips, drains).toFixed(1)} trips/drain | ` +
+        `idle ${delta(now.idle, base.idle)}, gated ${delta(now.gated, base.gated)}, errors ${delta(now.errors, base.errors)} | ` +
+        `total ${total} over ${(now.elapsed_ms / 1000).toFixed(1)}s`
+    );
+}
+
 export class RttProxyBridge {
     /** RTT channel → the funnel stream its data arrives on. */
     private channelToStream: Map<number, number> = new Map();
     private transport: RttTransport | null = null;
     private started = false;
+    /** The previous `rttStats` sample, since the event is cumulative and the line is a window. */
+    private lastStats: RttEngineStats | null = null;
+    private onStats: ((s: RttEngineStats) => void) | null = null;
 
     constructor(
         private mainSession: GDBDebugSession,
@@ -81,6 +153,7 @@ export class RttProxyBridge {
             down_channels: channels,
             poll_interval_ms: config.polling_interval ?? null,
             max_bytes_per_drain: null,
+            stats_interval_ms: statsIntervalMs(config) ?? null,
         };
 
         // Registered **before** the request, not after it resolves. The engine starts the moment the
@@ -105,6 +178,15 @@ export class RttProxyBridge {
                 );
             }
         });
+        // `on`, not `once`: one line per interval for as long as RTT runs. Printed without needing a
+        // debug flag -- the Agent's own stderr copy is dropped unless one happens to be set, and
+        // measuring throughput is a feature rather than debug noise. The Agent sends nothing at all
+        // unless a decoder asked for statistics, so this listener is normally never called.
+        this.onStats = (info: RttEngineStats) => {
+            this.mainSession.handleMsg(Stdout, `${formatRttEngineStats(info, this.lastStats)}\n`);
+            this.lastStats = info;
+        };
+        this.proxy.on("rttStats", this.onStats);
         this.proxy.once("rttStopped", (info: { reason: string }) => {
             // Said out loud whether we asked for it or the engine gave up, so RTT going quiet is
             // never something the user has to guess about.
@@ -143,6 +225,10 @@ export class RttProxyBridge {
         if (this.started) {
             this.started = false;
             await this.proxy.stopRtt();
+        }
+        if (this.onStats) {
+            this.proxy.off("rttStats", this.onStats);
+            this.onStats = null;
         }
         for (const stream_id of this.channelToStream.values()) {
             this.proxy.unregisterRawStream(stream_id);
