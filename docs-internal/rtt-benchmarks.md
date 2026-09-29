@@ -11,7 +11,7 @@ no terminal and no child process are in the data path.
 | Server   | builtin (TS)  | builtin (Rust) | Rust vs TS | server RTT |
 | -------- | ------------- | -------------- | ---------- | ---------- |
 | OpenOCD  | 50.9 KB/s     | **74.3** ⁵     | 1.46×      | 80.1       |
-| ST-LINK  | 62.4          | **89.5**       | **1.43×**  | — ²        |
+| ST-LINK  | 62.4          | **86.4** ⁶     | 1.38×      | — ²        |
 | JLink    | 68.3          | 80.5           | 1.18×      | 152.1 ³    |
 | pyOCD    | 24.8          | — ⁴            | —          | — ¹        |
 | probe-rs | not attempted | 6.2            | —          | —          |
@@ -41,9 +41,11 @@ happily. See `gdb-rsp.md` §7.
 
 ⁴ pyOCD cannot run the Agent engine at all -- see below.
 
-⁵ measured with a **production VSIX**; 66.2 was the same build run under the node inspector. The other
-Rust figures in this column are still development-build numbers and are understated by roughly 12% --
-see _The 12% was the development setup_ below.
+⁵ measured with a **production VSIX**; 66.2 was the same build run under the node inspector. J-Link's
+80.5 is still a development-build number.
+
+⁶ also a production VSIX, and _lower_ than the 89.5 measured earlier -- which predated the drain cap and
+was pinned against it. The two are not comparable; see _The 12% was the development setup_ below.
 
 ### Where the ceiling is, and probe-rs proving it
 
@@ -85,12 +87,16 @@ so it buys nothing server-side, but the latency it hides is exactly what we are 
 Three runs, same OpenOCD, same firmware, same Agent engine, differing only in how the extension was
 built and hosted:
 
-| Run                                     | KB/s     | msgs/sec | bytes/msg | of OpenOCD's own RTT |
+| Run (OpenOCD)                           | KB/s     | msgs/sec | bytes/msg | of OpenOCD's own RTT |
 | --------------------------------------- | -------- | -------- | --------- | -------------------- |
 | development build, VS Code + inspector  | 66.2     | 180      | 377       | 82.6%                |
 | development build, CLI, no debugger     | 74.5     | 201      | 378       | 93.0%                |
 | **production VSIX, VS Code, optimised** | **74.3** | 202      | 377       | **92.7%**            |
 | OpenOCD's own RTT server                | 80.1     | 162      | 506       | --                   |
+
+VS Code costing nothing is the expected result rather than a lucky one: the debug adapter is an ordinary
+node program either way, and VS Code sends no DAP traffic worth measuring while the target runs -- the
+same fact the `gated 0` counter reports from the other side.
 
 **The production VSIX under VS Code and the CLI agree to 0.23% -- they are the same number.** So the
 earlier framing of this as "the host costs 12%" was wrong: VS Code costs nothing measurable. What cost
@@ -102,11 +108,43 @@ slow was drawn from a development artifact.
 own RSP connection, multiplexed, on a server whose RTT support we are not using at all. That is the
 result worth quoting.
 
-Two caveats on the rest of the table. The ST-LINK (89.5) and J-Link (80.5) Rust figures were measured
-in the same development setup, so **expect both to move up by something like 12%** on a production
-build; they are understated, not wrong. And the counter runs below are development-build runs too, so
-the ~1.46 ms round trip is if anything pessimistic -- though the ring-buffer size it recovers does not
-depend on that at all.
+The counter runs below are development-build runs too, so the ~1.46 ms round trip is if anything
+pessimistic -- though the ring-buffer size it recovers does not depend on that at all.
+
+#### ST-LINK, production: 86.4 KB/s -- and an extrapolation of ours that was wrong
+
+| Run (ST-LINK)                     | KB/s     | msgs/sec | bytes/msg |
+| --------------------------------- | -------- | -------- | --------- |
+| development build, before the cap | 89.5     | 182      | 505       |
+| **production VSIX**               | **86.4** | 232      | 381       |
+
+**It went slightly _down_, not up by 12% as this section first predicted.** The prediction was unsound,
+and instructively so: the 89.5 run predated `SAFE_DRAIN_BYTES` and sat at 505 bytes/drain, pinned against
+the then-current cap, while the production run sits at 381. Two variables moved between those runs, so
+they were never comparable -- the same mistake as the retracted `bytes/pass` columns, repeated in an
+extrapolation. **Do not scale a figure across a change in the drain cap.**
+
+What is solid: **86.4 KB/s on ST-LINK beats OpenOCD's own RTT server (80.1) by 8%**, and our own OpenOCD
+result by 16%. ST-LINK's gdb-server has no RTT of its own to compare against (footnote 2), so OpenOCD's
+is the only host-side gdb-server RTT in the matrix -- and the Agent's engine is now faster than it, on a
+different probe, through GDB's own connection.
+
+#### The open question for tomorrow
+
+`bytes/msg` is **377 on OpenOCD and 381 on ST-LINK** despite 16% different throughput and quite different
+round-trip costs. Two readings, and the counters decide between them:
+
+- If those are delivery artifacts they mean nothing, and `B/drain` will differ.
+- If they are real drain sizes, then the same ~378 bytes accumulate between visits on both probes while
+  the visit _rate_ differs by 16% -- which would mean the firmware's production rate is not a constant
+  but depends on the probe.
+
+The second is less strange than it sounds: AHB-AP reads contend with the Cortex-M4 for SRAM, so a
+debugger that holds the bus longer per transfer steals more cycles from the firmware filling the ring.
+That predicts something cheap to test -- **raise OpenOCD's `adapter speed`**. A faster SWD clock finishes
+each transfer sooner, so it should raise _both_ `trips/sec` and bytes per drain. If it raises both, bus
+contention is real and OpenOCD's default clock is part of the 16% gap to ST-LINK. One config line and a
+rerun.
 
 The first counter run below shows `gated 0`, so gate contention -- an earlier guess of ours -- was never
 what this was.
