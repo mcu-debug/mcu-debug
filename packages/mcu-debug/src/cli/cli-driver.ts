@@ -529,6 +529,7 @@ export class CliSessionDriver {
      * nobody is flying any more.
      */
     private hasEverHadClient = false;
+    private clientSeq = 0; // distinguishes socket clients in the log transport's stream map
 
     /**
      * Update the prompt string and redraw the input line in place.
@@ -718,8 +719,13 @@ export class CliSessionDriver {
         if (!trimmedInput) {
             return true;
         }
-        // Log input, but not to the console, to avoid confusion with DA output
-        logger.info(input, { source: `${source === "stdin" ? "user" : source}-input`, skipConsole: true });
+        // One record per command: the structured stream (log file, socket clients) always gets it,
+        // whatever its source. The console echoes it too -- as it runs, not as it arrives, so each
+        // command sits directly above its own output in a batch -- except where it is already on
+        // screen: typed at a terminal, or an !!AI-REQUEST, which the TUI and panel turn into a banner.
+        const alreadyShown = (source === "stdin" && this.isTTY) || /^!!ai-request/i.test(trimmedInput);
+        const echo = alreadyShown ? { skipConsole: true } : { isConsole: true, consolePrefix: source === "socket" ? "socket> " : "gdb> ", color: source === "socket" ? "magenta" : "green" };
+        logger.info(input, { source: `${source === "stdin" ? "user" : source}-input`, ...echo });
 
         const exec = this.parseExecCommand(trimmedInput);
         const stopsBefore = this.stopCount;
@@ -1595,6 +1601,13 @@ export class CliSessionDriver {
                 rl.on("line", (line) => {
                     this.submitLine(line, "socket");
                 });
+                // readline re-emits its input's errors on the interface, so this is where a client
+                // that goes away mid-write (EPIPE, ECONNRESET) surfaces. Unhandled, it became an
+                // uncaught exception and ended the debug session. It is only a disconnect: 'close'
+                // follows and does the bookkeeping.
+                rl.on("error", (err) => {
+                    logger.debug(`Socket client error: ${err.message}`, { source: "DA" });
+                });
                 if (!this.customTransport.getRingBuffer().isEmpty()) {
                     // Replay recent history to the new client, trimmed to a whole-line boundary.
                     // The ring buffer wraps mid-line, so a raw snapshot() would lead with a JSON
@@ -1612,7 +1625,9 @@ export class CliSessionDriver {
                 // Also pipe mux output back to this connection
                 this.serverClients.add(conn);
                 this.hasEverHadClient = true;
-                this.customTransport.addStream(conn, socketPath);
+                // One key per connection: they all share the socket path, and under that one key
+                // each new client replaced the last, and the first to close cut off the rest.
+                this.customTransport.addStream(conn, `${socketPath}#${++this.clientSeq}`);
                 conn.on("close", () => {
                     this.serverClients.delete(conn);
                     // In socket-pilot mode the last client leaving means nobody is flying. Exit

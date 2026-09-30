@@ -71,9 +71,16 @@ export class CustomTransport extends Transport {
 
     addStream(stream: NodeJS.WritableStream, path: string) {
         this.pathMap[path] = stream;
-        stream.on("close", () => {
-            delete this.pathMap[path];
-        });
+        const drop = () => {
+            if (this.pathMap[path] === stream) {
+                delete this.pathMap[path];
+            }
+        };
+        stream.on("close", drop);
+        // A failed write is reported as an 'error' event, not thrown, so the try/catch in log()
+        // never sees it. Without a listener Node escalates it to an uncaught exception -- a socket
+        // client that vanished mid-write (EPIPE) used to end the whole debug session.
+        stream.on("error", drop);
     }
 
     replaceStream(oldPath: string, newPath: string) {
@@ -108,6 +115,7 @@ const stripProps = (info: any) => {
     delete info.isConsole;
     delete info.color;
     delete info.skipConsole;
+    delete info.consolePrefix;
 };
 
 // Strip internal console-only fields so they don't appear in file/JSON output.
@@ -138,7 +146,9 @@ export function createConsoleTransport(consoleLogLevel: string): void {
                 winston.format.printf(({ level, message, mi, ...meta }) => {
                     if (meta.isConsole) {
                         const color = meta.color as string | undefined;
-                        let msg: string = message as string;
+                        // A console-only prefix, so one record can read `gdb> bt` on the console
+                        // and stay a plain `bt` in the structured stream.
+                        let msg: string = (typeof meta.consolePrefix === "string" ? meta.consolePrefix : "") + (message as string);
                         if (typeof color === "string") {
                             msg = AnsiHelpers.colorize(msg, color);
                         }
