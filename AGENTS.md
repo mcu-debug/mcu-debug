@@ -4,6 +4,18 @@ This file captures architectural facts that are not obvious from reading the cod
 
 ---
 
+## Git and Code Changes
+- NEVER execute a git commit or push changes to a remote repository automatically.
+- Always provide a code summary and wait for explicit confirmation before committing.
+- Commit messages must be strictly concise (one-line summaries) using Conventional Commits. No paragraphs or conversational filler.
+
+## Custom Commands
+- `/commit`: Use this command to review staged changes and create a commit. 
+  1. Print a high-level, bulleted summary of staged modifications for user review.
+  2. Draft a single-line commit message following the Conventional Commits style guide (e.g., `feat(auth): add JWT expiration handling`).
+  3. Ask the user for confirmation: "Ready to commit with this message? (y/n)".
+  4. Only execute `git commit -m "<message>"` if the user explicitly types 'y' or approves.
+
 ## Key Reference Documents
 
 | Document                                                       | What it covers                                                                                                    |
