@@ -1432,7 +1432,95 @@ export function getHelperExecutable(extPath: string): string {
 // Substitution:
 //   ${<prefix>VAR}   → vars[VAR] if defined, otherwise the original match is kept and errFn is called.
 //   \\${<prefix>VAR} → literal \ followed by the substituted value (the escape only covers the backslash).
+// resolveVarMap — expand references that appear inside the variable *values*.
+//
+// Why this is needed at all: `String.prototype.replace` never re-examines the text it inserts. So a
+// variable whose value is itself a template substitutes once and stops --
+// `builtins.executable = "${workspaceFolder}/target/app.elf"` turns `${executable}` into
+// `"${workspaceFolder}/target/app.elf"` and leaves that reference standing. Resolving the map
+// against itself first means one pass over the document is always enough, however deep the nesting.
+//
+// Running the whole substitution twice looks like it fixes this, and must not be used: the second
+// pass also re-processes the *escapes*, so `\\` collapses to `\`, a literal `\n` becomes a newline,
+// and `\${VAR}` -- written precisely to prevent substitution -- loses its backslash and is then
+// substituted. Nesting is a property of the values; escaping is a property of the document. Only the
+// former may be resolved more than once.
+//
+// References only: escapes are deliberately **not** processed here. Values are data, and on Windows
+// they are full of backslashes -- running escape rules over `C:\Users\me` would eat them.
+export function resolveVarMap(vars: { [key: string]: string }, prefix: string, errFn?: (msg: string) => void): { [key: string]: string } {
+    const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const varNamePat = prefix === "" ? "[^}:]+" : "[^}]+";
+    const pattern = `\\$\\{${esc}(${varNamePat})\\}`;
+    const resolved: { [key: string]: string } = {};
+    // Names currently being expanded, so a cycle is caught rather than recursed into for ever.
+    const inProgress = new Set<string>();
+    // "This name is part of a cycle, so it has no value." Propagated rather than patched over at the
+    // point of detection: unwinding it all the way out is what lets every name in the cycle keep the
+    // text its author wrote. Returning the half-expanded string instead compounds the surrounding
+    // text once per level -- `A = "${A}/x"` came back as `"${A}/x/x"`, which is neither the input
+    // nor a resolution.
+    const CYCLIC = Symbol("cyclic");
+    // Names already known to be in a cycle. Checked *before* the memo, because the loop below
+    // records an authored value for each one -- and a later name reaching it must see "no value",
+    // not mistake that authored text for a resolution and build on it. Without this, `A = "${B}/a"`
+    // with `B = "${A}/b"` left A correct and B as `"${B}/a/b"`.
+    const cyclicNames = new Set<string>();
+
+    const expand = (name: string): string | typeof CYCLIC => {
+        if (cyclicNames.has(name)) {
+            return CYCLIC;
+        }
+        if (Object.prototype.hasOwnProperty.call(resolved, name)) {
+            return resolved[name];
+        }
+        const raw = vars[name];
+        if (raw === undefined) {
+            return `\${${prefix}${name}}`;
+        }
+        if (inProgress.has(name)) {
+            return CYCLIC;
+        }
+        inProgress.add(name);
+        let cyclic = false;
+        // A fresh RegExp per call: one shared global regex carries `lastIndex` across the nested
+        // `replace` this recursion performs, and would skip matches in the outer value.
+        const out = raw.replace(new RegExp(pattern, "g"), (match, ref: string) => {
+            if (vars[ref] === undefined) {
+                errFn?.(`Variable "\${${prefix}${ref}}" not found"`);
+                return match;
+            }
+            const value = expand(ref);
+            if (value === CYCLIC) {
+                cyclic = true;
+                return match;
+            }
+            return value;
+        });
+        inProgress.delete(name);
+        if (cyclic) {
+            // Not memoised: this name is only cyclic *as reached from here*. Recording it would
+            // poison an independent lookup that never enters the cycle.
+            return CYCLIC;
+        }
+        resolved[name] = out;
+        return out;
+    };
+
+    for (const name of Object.keys(vars)) {
+        if (expand(name) === CYCLIC) {
+            errFn?.(`Variable "\${${prefix}${name}}" refers to itself, directly or through another variable; left unsubstituted`);
+            cyclicNames.add(name);
+            resolved[name] = vars[name];
+        }
+    }
+    return resolved;
+}
+
 export function processVarSubstitution(str: string, vars: { [key: string]: string }, prefix: string, errFn?: (msg: string) => void): string {
+    // Values first, document second. See `resolveVarMap` for why one pass over the document is then
+    // sufficient, and why running this whole function twice instead is not a substitute for it.
+    vars = resolveVarMap(vars, prefix, errFn);
     const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // When prefix is empty, exclude ':' from variable names so that ${env:FOO} and ${config:BAR}
     // are not matched as bare variables named "env:FOO" / "config:BAR".

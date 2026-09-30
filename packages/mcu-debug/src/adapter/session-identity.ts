@@ -58,7 +58,7 @@ export interface AdapterIdentity {
 export function adapterIdentityLine(id: AdapterIdentity): string {
     const reused = id.uptimeSec > FRESH_ADAPTER_SECONDS || id.sessionCount > 1;
     const nth = id.sessionCount > 1 ? `, session #${id.sessionCount} in this process` : "";
-    let line = `MCU-Debug ${id.version} (${id.build}) — adapter pid ${id.pid}, up ${fmtDuration(id.uptimeSec)}${nth}.`;
+    let line = `MCU-Debug proxy${id.version} (${id.build}) — adapter pid ${id.pid}, up ${fmtDuration(id.uptimeSec)}${nth}.`;
     if (reused) {
         line +=
             ` NOTE: this adapter was already running, so it may predate your last build.` +

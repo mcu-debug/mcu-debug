@@ -104,7 +104,10 @@
       "outputCapture": "std",
       "args": [
         "-c",
-        "openocd",
+        "st",
+        "--batch",
+        "--script",
+        "commands.txt",
         "-l",
         "/tmp/mcu-debug.log"
       ],
