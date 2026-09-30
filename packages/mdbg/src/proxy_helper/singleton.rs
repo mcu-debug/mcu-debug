@@ -426,6 +426,24 @@ pub enum Handover {
     /// was replaced in place, so the running daemon is executing code that no longer
     /// exists on disk.
     UpgradeByExe,
+    /// Same version, and the running daemon was **compiled from a different commit**.
+    ///
+    /// Stronger evidence than [`Handover::UpgradeByExe`] and it fires where that cannot: the exe
+    /// rule compares one file with itself over time, so two binaries at *different paths* are
+    /// deliberately treated as incomparable. In a development tree that is the common case --
+    /// `bin/mdbg`, `bin/<platform>-<arch>/mdbg` and `target/debug/mdbg` are three paths carrying
+    /// the same version and, after a rebuild, three different builds. A commit does not care which
+    /// path it was copied to.
+    UpgradeByBuild,
+}
+
+/// Is this build string actual evidence, or just the absence of it?
+///
+/// `build.rs` stamps `"unknown"` when there is no usable git, and a proxy predating the field sends
+/// an empty string. Neither can be compared with, and treating either as "different" would hand
+/// over on every launch against a release binary built from an exported tree.
+fn build_is_known(build: &str) -> bool {
+    !build.is_empty() && build != "unknown"
 }
 
 /// Decide whether `challenger` should supersede `running`.
@@ -448,8 +466,10 @@ pub enum Handover {
 /// hole the whole mechanism exists to close.
 pub fn decide_handover(
     challenger_version: &str,
+    challenger_build: &str,
     challenger_exe: &ExeStamp,
     running_version: &str,
+    running_build: &str,
     running_exe: &ExeStamp,
     auto_upgrade: bool,
 ) -> Handover {
@@ -463,6 +483,24 @@ pub fn decide_handover(
     }
     if !auto_upgrade {
         return Handover::Reuse;
+    }
+    // Same version, different commit: the daemon is running code the launcher did not build.
+    //
+    // Checked before the exe stamp because it answers the question the stamp only approximates.
+    // The stamp reasons about one file over time and gives up when the paths differ; a commit is a
+    // property of the code, so it holds across paths, across copies, and across a `cargo build`
+    // that lands in `target/` rather than `bin/`.
+    //
+    // No ordering is claimed -- two commits have no "newer" -- and none is needed. The launcher is
+    // the binary the developer just invoked; deferring to a daemon whose provenance we cannot
+    // establish is exactly the failure being fixed. The version comparison above keeps the
+    // downgrade guard for the one dimension that *is* ordered, so an older release still cannot
+    // evict a newer one on the strength of a differing hash.
+    if build_is_known(challenger_build)
+        && build_is_known(running_build)
+        && strip_dirty(challenger_build) != strip_dirty(running_build)
+    {
+        return Handover::UpgradeByBuild;
     }
     // No mtime of our own is no evidence, and the burden is on the challenger.
     let Some(mine) = challenger_exe.mtime_ms else {
@@ -498,6 +536,19 @@ pub fn decide_handover(
     }
 }
 
+/// Compare builds by commit, ignoring the `+dirty` suffix.
+///
+/// A dirty tree is the normal state mid-development, and both sides are usually built from the same
+/// one -- so `+dirty` says nothing about whether the code agrees and must not on its own trigger a
+/// handover that tears a daemon down. When the commit itself differs the suffix is irrelevant
+/// anyway.
+///
+/// It does mean two *different* dirty trees on the same commit read as identical. Accepted: the
+/// alternative fires on every launch from any dirty tree, which is every development launch.
+fn strip_dirty(build: &str) -> &str {
+    build.strip_suffix("+dirty").unwrap_or(build)
+}
+
 /// Whether this launch may ask a same-version daemon to step down.
 ///
 /// Defaults to **on**, and `MDBG_PROXY_AUTO_UPGRADE=0` turns it off. On by default
@@ -524,8 +575,15 @@ pub fn self_version() -> String {
 /// Reported rather than enforced. A build difference between a client and a reused daemon is
 /// ordinary during development and is usually something the developer wants to *see* rather than
 /// be stopped by; `version` remains the compatibility gate.
-pub fn self_build() -> &'static str {
-    env!("MDBG_BUILD")
+pub fn self_build() -> String {
+    // `MDBG_PROXY_BUILD` mirrors `MDBG_PROXY_VERSION`, and exists for the same reason: the handover
+    // rules are impossible to exercise end to end when both halves of the comparison are baked in at
+    // compile time. No weaker than the version override it sits beside -- each side reports its own
+    // identity either way, and `upgrade` is loopback-only.
+    std::env::var("MDBG_PROXY_BUILD")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| env!("MDBG_BUILD").to_string())
 }
 
 /// Read and parse `endpoint.json`.
@@ -840,19 +898,25 @@ mod handover_tests {
         }
     }
 
+    /// The exe-stamp rules, with the build held equal.
+    ///
+    /// Deliberate: a differing build short-circuits the exe reasoning entirely, so leaving these
+    /// tests to supply builds of their own would quietly stop them testing what they are named
+    /// after. The build rule gets its own tests below.
+    fn decide(cv: &str, ce: &ExeStamp, rv: &str, re: &ExeStamp, auto: bool) -> Handover {
+        decide_handover(cv, "abc1234", ce, rv, "abc1234", re, auto)
+    }
+
     /// Unchanged behaviour: version still decides whenever the versions differ, and it
     /// outranks the file dates in both directions.
     #[test]
     fn version_still_decides_when_versions_differ() {
         let old = stamp("/x/mdbg", Some(1_000));
         let new = stamp("/x/mdbg", Some(2_000));
-        assert_eq!(
-            decide_handover("0.1.17", &new, "0.1.16", &old, true),
-            Handover::UpgradeByVersion
-        );
+        assert_eq!(decide("0.1.17", &new, "0.1.16", &old, true), Handover::UpgradeByVersion);
         // Downgrade guard: rebuilding an old checkout yields a NEW file with OLD code,
         // and must not evict the newer running proxy.
-        assert_eq!(decide_handover("0.1.15", &new, "0.1.16", &old, true), Handover::Reuse);
+        assert_eq!(decide("0.1.15", &new, "0.1.16", &old, true), Handover::Reuse);
     }
 
     #[test]
@@ -860,7 +924,7 @@ mod handover_tests {
         let running = stamp("/ext/mcu-debug-proxy-0.1.16/bin/mdbg", Some(1_000));
         let reinstalled = stamp("/ext/mcu-debug-proxy-0.1.16/bin/mdbg", Some(2_000));
         assert_eq!(
-            decide_handover("0.1.16", &reinstalled, "0.1.16", &running, true),
+            decide("0.1.16", &reinstalled, "0.1.16", &running, true),
             Handover::UpgradeByExe
         );
     }
@@ -870,17 +934,14 @@ mod handover_tests {
     #[test]
     fn same_version_same_file_reuses() {
         let e = stamp("/x/mdbg", Some(1_000));
-        assert_eq!(decide_handover("0.1.16", &e, "0.1.16", &e, true), Handover::Reuse);
+        assert_eq!(decide("0.1.16", &e, "0.1.16", &e, true), Handover::Reuse);
     }
 
     #[test]
     fn older_file_never_supersedes() {
         let running = stamp("/x/mdbg", Some(2_000));
         let mine = stamp("/x/mdbg", Some(1_000));
-        assert_eq!(
-            decide_handover("0.1.16", &mine, "0.1.16", &running, true),
-            Handover::Reuse
-        );
+        assert_eq!(decide("0.1.16", &mine, "0.1.16", &running, true), Handover::Reuse);
     }
 
     /// Two different installs of the same version: the mtimes describe different files
@@ -889,9 +950,109 @@ mod handover_tests {
     fn different_paths_are_not_comparable() {
         let running = stamp("/opt/mdbg", Some(1_000));
         let mine = stamp("/home/me/build/mdbg", Some(2_000));
+        assert_eq!(decide("0.1.16", &mine, "0.1.16", &running, true), Handover::Reuse);
+    }
+
+    // ── The build rule ────────────────────────────────────────────────────────
+    //
+    // Why a second rule at all, when the exe stamp already catches a rebuild: the stamp reasons
+    // about one *file* over time and gives up when the paths differ. A development tree has the
+    // same version at three paths -- `bin/mdbg`, `bin/<platform>-<arch>/mdbg` and
+    // `target/debug/mdbg` -- so the case it gives up on is the common one. A commit is a property
+    // of the code, so it survives being copied.
+
+    #[test]
+    fn a_different_build_supersedes_even_where_the_paths_are_incomparable() {
+        // The hole this closes: `different_paths_are_not_comparable` above, which must keep
+        // reusing on the stamp alone but must NOT once the commits are known to differ.
+        let running = stamp("/ext/mcu-debug-0.1.18/bin/darwin-arm64/mdbg", Some(1_000));
+        let mine = stamp("/src/mcu-debug/packages/mcu-debug/bin/mdbg", Some(2_000));
         assert_eq!(
-            decide_handover("0.1.16", &mine, "0.1.16", &running, true),
+            decide_handover("0.1.18", "7de5791", &mine, "0.1.18", "502f335", &running, true),
+            Handover::UpgradeByBuild
+        );
+    }
+
+    #[test]
+    fn the_same_build_at_two_paths_still_reuses() {
+        // Two copies of one build is an ordinary install, not a stale daemon. Handing over here
+        // would churn the daemon on every launch and strand whatever it holds open.
+        let running = stamp("/opt/mdbg", Some(1_000));
+        let mine = stamp("/home/me/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.18", "7de5791", &mine, "0.1.18", "7de5791", &running, true),
             Handover::Reuse
+        );
+    }
+
+    #[test]
+    fn an_unknown_build_is_no_evidence_rather_than_a_difference() {
+        // `build.rs` stamps "unknown" with no usable git, and a proxy predating the field sends an
+        // empty string. Treating either as "different" would hand over on every launch against a
+        // release binary built from an exported tree -- so both fall back to the stamp rule, which
+        // reuses here because the paths differ.
+        let running = stamp("/opt/mdbg", Some(1_000));
+        let mine = stamp("/home/me/mdbg", Some(2_000));
+        for (ours, theirs) in [
+            ("", "502f335"),
+            ("7de5791", ""),
+            ("unknown", "502f335"),
+            ("7de5791", "unknown"),
+            ("", ""),
+        ] {
+            assert_eq!(
+                decide_handover("0.1.18", ours, &mine, "0.1.18", theirs, &running, true),
+                Handover::Reuse,
+                "ours={ours:?} theirs={theirs:?} must not be read as a difference"
+            );
+        }
+    }
+
+    #[test]
+    fn dirty_alone_is_not_a_different_build() {
+        // A dirty tree is the normal mid-development state and both sides usually come from the
+        // same one, so the suffix says nothing about whether the code agrees. Firing on it would
+        // tear the daemon down on every single development launch.
+        let e = stamp("/x/mdbg", Some(1_000));
+        assert_eq!(
+            decide_handover("0.1.18", "7de5791+dirty", &e, "0.1.18", "7de5791", &e, true),
+            Handover::Reuse
+        );
+        assert_eq!(
+            decide_handover("0.1.18", "7de5791", &e, "0.1.18", "7de5791+dirty", &e, true),
+            Handover::Reuse
+        );
+        // But a differing commit is a differing commit, dirty or not.
+        assert_eq!(
+            decide_handover("0.1.18", "7de5791+dirty", &e, "0.1.18", "502f335+dirty", &e, true),
+            Handover::UpgradeByBuild
+        );
+    }
+
+    #[test]
+    fn the_downgrade_guard_still_outranks_the_build() {
+        // Two commits have no order, so the build rule claims none -- which means it must never be
+        // able to walk an older *release* in over a newer running one. The version comparison runs
+        // first for exactly this reason.
+        let e = stamp("/x/mdbg", Some(2_000));
+        assert_eq!(
+            decide_handover("0.1.17", "7de5791", &e, "0.1.18", "502f335", &e, true),
+            Handover::Reuse
+        );
+    }
+
+    #[test]
+    fn auto_upgrade_off_suppresses_the_build_rule_too() {
+        // The escape hatch has to cover every same-version handover, or it stops being an escape
+        // hatch. A newer version still wins, because that was never gated.
+        let e = stamp("/x/mdbg", Some(1_000));
+        assert_eq!(
+            decide_handover("0.1.18", "7de5791", &e, "0.1.18", "502f335", &e, false),
+            Handover::Reuse
+        );
+        assert_eq!(
+            decide_handover("0.1.19", "7de5791", &e, "0.1.18", "502f335", &e, false),
+            Handover::UpgradeByVersion
         );
     }
 
@@ -903,15 +1064,12 @@ mod handover_tests {
         let pre_feature = ExeStamp::default();
         let mine = stamp("/x/mdbg", Some(2_000));
         assert_eq!(
-            decide_handover("0.1.16", &mine, "0.1.16", &pre_feature, true),
+            decide("0.1.16", &mine, "0.1.16", &pre_feature, true),
             Handover::UpgradeByExe
         );
         // ...and once it has a stamp of its own, an identical launch reuses it.
         let successor = stamp("/x/mdbg", Some(2_000));
-        assert_eq!(
-            decide_handover("0.1.16", &mine, "0.1.16", &successor, true),
-            Handover::Reuse
-        );
+        assert_eq!(decide("0.1.16", &mine, "0.1.16", &successor, true), Handover::Reuse);
     }
 
     /// A known path with no mtime means that daemon tried to stat itself and failed.
@@ -921,10 +1079,7 @@ mod handover_tests {
     fn a_failed_stat_on_the_running_side_does_not_loop() {
         let cannot_stat = stamp("/x/mdbg", None);
         let mine = stamp("/x/mdbg", Some(2_000));
-        assert_eq!(
-            decide_handover("0.1.16", &mine, "0.1.16", &cannot_stat, true),
-            Handover::Reuse
-        );
+        assert_eq!(decide("0.1.16", &mine, "0.1.16", &cannot_stat, true), Handover::Reuse);
     }
 
     /// No mtime of our own is no evidence, and the burden is on the challenger.
@@ -932,10 +1087,7 @@ mod handover_tests {
     fn a_challenger_that_cannot_stat_itself_reuses() {
         let running = stamp("/x/mdbg", Some(1_000));
         let mine = stamp("/x/mdbg", None);
-        assert_eq!(
-            decide_handover("0.1.16", &mine, "0.1.16", &running, true),
-            Handover::Reuse
-        );
+        assert_eq!(decide("0.1.16", &mine, "0.1.16", &running, true), Handover::Reuse);
     }
 
     /// `MDBG_PROXY_AUTO_UPGRADE=0` suppresses the exe rule only — a genuine version
@@ -944,12 +1096,9 @@ mod handover_tests {
     fn opting_out_suppresses_only_the_exe_rule() {
         let running = stamp("/x/mdbg", Some(1_000));
         let mine = stamp("/x/mdbg", Some(2_000));
+        assert_eq!(decide("0.1.16", &mine, "0.1.16", &running, false), Handover::Reuse);
         assert_eq!(
-            decide_handover("0.1.16", &mine, "0.1.16", &running, false),
-            Handover::Reuse
-        );
-        assert_eq!(
-            decide_handover("0.1.17", &mine, "0.1.16", &running, false),
+            decide("0.1.17", &mine, "0.1.16", &running, false),
             Handover::UpgradeByVersion
         );
     }
@@ -966,7 +1115,7 @@ mod handover_tests {
         let ep: Endpoint = serde_json::from_str(json).expect("a pre-exe record must parse");
         assert_eq!(ep.exe, ExeStamp::default());
         assert_eq!(
-            decide_handover("0.1.15", &stamp("/x/mdbg", Some(9)), &ep.version, &ep.exe, true),
+            decide("0.1.15", &stamp("/x/mdbg", Some(9)), &ep.version, &ep.exe, true),
             Handover::UpgradeByExe
         );
     }
@@ -1273,14 +1422,16 @@ mod fingerprint_tests {
         }
     }
 
+    /// As in `handover_tests`: the build is held equal so these keep testing the fingerprint rule.
+    fn decide(cv: &str, ce: &ExeStamp, rv: &str, re: &ExeStamp, auto: bool) -> Handover {
+        decide_handover(cv, "abc1234", ce, rv, "abc1234", re, auto)
+    }
+
     #[test]
     fn a_recopy_of_identical_bytes_with_a_newer_date_reuses() {
         let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
         let recopied = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
-        assert_eq!(
-            decide_handover("0.1.16", &recopied, "0.1.16", &running, true),
-            Handover::Reuse
-        );
+        assert_eq!(decide("0.1.16", &recopied, "0.1.16", &running, true), Handover::Reuse);
     }
 
     #[test]
@@ -1288,7 +1439,7 @@ mod fingerprint_tests {
         let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
         let rebuilt = stamp("/x/mdbg", Some(2_000), Some("crc32:deadbeef:42"));
         assert_eq!(
-            decide_handover("0.1.16", &rebuilt, "0.1.16", &running, true),
+            decide("0.1.16", &rebuilt, "0.1.16", &running, true),
             Handover::UpgradeByExe
         );
     }
@@ -1299,7 +1450,7 @@ mod fingerprint_tests {
         let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
         let rebuilt = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:43"));
         assert_eq!(
-            decide_handover("0.1.16", &rebuilt, "0.1.16", &running, true),
+            decide("0.1.16", &rebuilt, "0.1.16", &running, true),
             Handover::UpgradeByExe
         );
     }
@@ -1311,14 +1462,14 @@ mod fingerprint_tests {
         let old_without = stamp("/x/mdbg", Some(1_000), None);
         let new_with = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
         assert_eq!(
-            decide_handover("0.1.16", &new_with, "0.1.16", &old_without, true),
+            decide("0.1.16", &new_with, "0.1.16", &old_without, true),
             Handover::UpgradeByExe
         );
 
         let old_with = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
         let new_without = stamp("/x/mdbg", Some(2_000), None);
         assert_eq!(
-            decide_handover("0.1.16", &new_without, "0.1.16", &old_with, true),
+            decide("0.1.16", &new_without, "0.1.16", &old_with, true),
             Handover::UpgradeByExe
         );
     }
@@ -1328,10 +1479,7 @@ mod fingerprint_tests {
     fn different_bytes_with_an_older_date_still_reuse() {
         let running = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
         let older = stamp("/x/mdbg", Some(1_000), Some("crc32:deadbeef:42"));
-        assert_eq!(
-            decide_handover("0.1.16", &older, "0.1.16", &running, true),
-            Handover::Reuse
-        );
+        assert_eq!(decide("0.1.16", &older, "0.1.16", &running, true), Handover::Reuse);
     }
 
     /// Pins the algorithm to standard CRC-32 through its published check value. A dependency that

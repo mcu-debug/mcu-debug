@@ -86,6 +86,14 @@ pub struct AdminRequest {
     /// Empty for every other command.
     #[serde(default)]
     pub host: String,
+    /// For `upgrade`: the requester's build -- the commit it was compiled from, plus `+dirty`.
+    ///
+    /// The evidence that justifies a same-version handover when the two binaries live at different
+    /// paths, where `exe` is deliberately incomparable. Self-reported like `exe`, and safe for the
+    /// same reason: the running proxy re-derives the decision, and `decide_handover` treats an
+    /// empty or `"unknown"` value as no evidence rather than as a difference.
+    #[serde(default)]
+    pub build: String,
     /// For `upgrade`: the requester's executable path and mtime, which is what lets a
     /// *same-version* handover be justified (the binary was replaced in place).
     ///
@@ -221,6 +229,9 @@ pub struct AdminContext {
     /// comparison in [`singleton::decide_handover`]. Never re-stat it: the file may have
     /// been replaced since, which is exactly the condition being detected.
     pub exe: singleton::ExeStamp,
+    /// The commit this proxy was compiled from. Fixed at compile time, so unlike `exe` it cannot
+    /// go stale — which is what makes it the more reliable half of the same comparison.
+    pub build: String,
 }
 
 /// Handle one admin connection: read the request line, act, reply, close.
@@ -291,19 +302,38 @@ fn begin_upgrade(req: &AdminRequest, ctx: &Arc<AdminContext>, peer_is_loopback: 
     // inputs, so a challenger cannot argue its way past the rule. `true` for
     // auto_upgrade — the env var gates whether a launch *asks*, never whether we agree,
     // because a daemon started by an ordinary window must still be replaceable.
-    let decision = singleton::decide_handover(&req.version, &req.exe, &ctx.version, &ctx.exe, true);
+    let decision = singleton::decide_handover(
+        &req.version,
+        &req.build,
+        &req.exe,
+        &ctx.version,
+        &ctx.build,
+        &ctx.exe,
+        true,
+    );
     let reason = match decision {
         singleton::Handover::Reuse => {
             return AdminResponse::err(format!(
-                "requester v{} does not supersede running v{} (exe {} vs {})",
+                "requester v{} ({}) does not supersede running v{} ({}) (exe {} vs {})",
                 req.version,
+                if req.build.is_empty() {
+                    "build unknown"
+                } else {
+                    &req.build
+                },
                 ctx.version,
+                if ctx.build.is_empty() {
+                    "build unknown"
+                } else {
+                    &ctx.build
+                },
                 req.exe.mtime_ms.map(|m| m.to_string()).unwrap_or_else(|| "?".into()),
                 ctx.exe.mtime_ms.map(|m| m.to_string()).unwrap_or_else(|| "?".into()),
             ));
         }
         singleton::Handover::UpgradeByVersion => "newer version",
         singleton::Handover::UpgradeByExe => "same version, newer executable",
+        singleton::Handover::UpgradeByBuild => "same version, different build",
     };
     let active = ctx.lifetime.count();
     if !ctx.superseded.swap(true, Ordering::SeqCst) {
@@ -484,7 +514,12 @@ fn publish_hosts(ctx: &Arc<AdminContext>, hosts: &[String]) {
 ///
 /// `my_exe` is what justifies a *same-version* handover — the running proxy re-derives the
 /// decision from it rather than taking our word for the outcome.
-pub fn request_upgrade(endpoint: &Endpoint, my_version: &str, my_exe: &singleton::ExeStamp) -> Result<AdminResponse> {
+pub fn request_upgrade(
+    endpoint: &Endpoint,
+    my_version: &str,
+    my_build: &str,
+    my_exe: &singleton::ExeStamp,
+) -> Result<AdminResponse> {
     let req = AdminRequest {
         v: 1,
         cmd: "upgrade".into(),
@@ -493,6 +528,7 @@ pub fn request_upgrade(endpoint: &Endpoint, my_version: &str, my_exe: &singleton
         path: String::new(),
         host: String::new(),
         version: my_version.into(),
+        build: my_build.into(),
         exe: my_exe.clone(),
     };
     let resp = query(endpoint, &req)?;

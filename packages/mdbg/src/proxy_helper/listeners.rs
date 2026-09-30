@@ -772,6 +772,7 @@ mod tests {
             version: "test".to_string(),
             instance: "default".to_string(),
             started_at_unix: 0,
+            build: String::new(),
             exe: Default::default(),
         });
         AcceptCtx {

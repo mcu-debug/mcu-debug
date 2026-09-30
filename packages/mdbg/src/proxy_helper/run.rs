@@ -370,6 +370,7 @@ fn run_admin_client(args: &ProxyArgs) -> Result<()> {
         version: String::new(),
         path: String::new(),
         host: String::new(),
+        build: String::new(),
         exe: Default::default(),
     };
     match admin::query(&endpoint, &req) {
@@ -409,6 +410,7 @@ fn close_serial_request(endpoint: &singleton::Endpoint, path: &str) -> admin::Ad
         version: String::new(),
         path: path.to_string(),
         host: String::new(),
+        build: String::new(),
         exe: Default::default(),
     }
 }
@@ -518,6 +520,7 @@ fn print_status_all() -> Result<()> {
             graceful: true,
             version: String::new(),
             host: String::new(),
+            build: String::new(),
             exe: Default::default(),
         };
         if let Ok(resp) = admin::query(&endpoint, &req) {
@@ -573,6 +576,7 @@ fn shutdown_all() -> Result<()> {
             version: String::new(),
             path: String::new(),
             host: String::new(),
+            build: String::new(),
             exe: Default::default(),
         };
         // Only report instances that actually answered — a dead proxy's stale
@@ -630,6 +634,7 @@ fn widen_running_proxy(ep: &singleton::Endpoint, args: &ProxyArgs) -> (Vec<Strin
         version: String::new(),
         path: String::new(),
         host: host.to_string(),
+        build: String::new(),
         exe: Default::default(),
     };
     match admin::query(ep, &req) {
@@ -676,8 +681,15 @@ fn acquire_or_reuse<'a>(
                 departing = pid;
             }
             singleton::Holder::Active(ep) => {
-                let decision =
-                    singleton::decide_handover(mine, my_exe, &ep.version, &ep.exe, singleton::auto_upgrade_enabled());
+                let decision = singleton::decide_handover(
+                    mine,
+                    &singleton::self_build(),
+                    my_exe,
+                    &ep.version,
+                    &ep.build,
+                    &ep.exe,
+                    singleton::auto_upgrade_enabled(),
+                );
 
                 if decision == singleton::Handover::Reuse {
                     // Say why when it would otherwise look like a missed upgrade: the executable is newer by
@@ -728,9 +740,19 @@ fn acquire_or_reuse<'a>(
                         ep.exe.mtime_ms,
                         my_exe.path
                     ),
+                    // The path the exe stamp cannot reach, and the one that bites a development
+                    // tree: `bin/mdbg`, `bin/<platform>-<arch>/mdbg` and `target/debug/mdbg` are
+                    // three paths carrying the same version, and the stamp treats differing paths
+                    // as incomparable by design. A commit is a property of the code, not the copy.
+                    singleton::Handover::UpgradeByBuild => log::info!(
+                        "Same version v{mine} for '{}' but a different build (ours {}, running {}) — requesting handover",
+                        instance.name,
+                        singleton::self_build(),
+                        if ep.build.is_empty() { "unknown" } else { &ep.build }
+                    ),
                     singleton::Handover::Reuse => unreachable!("handled above"),
                 }
-                if let Err(e) = admin::request_upgrade(&ep, mine, my_exe) {
+                if let Err(e) = admin::request_upgrade(&ep, mine, &singleton::self_build(), my_exe) {
                     log::warn!("Handover request failed: {e:#}; reusing the existing proxy");
                     reuse_existing(&ep, args);
                     return Ok(None);
@@ -1024,7 +1046,7 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         instance: instance.name.clone(),
         pid: std::process::id(),
         version: singleton::self_version(),
-        build: singleton::self_build().to_string(),
+        build: singleton::self_build(),
         port: local_port,
         // The address a client most likely wants to dial: what was asked for, if it
         // bound, else the primary. `hosts` below is the complete, authoritative list.
@@ -1083,6 +1105,7 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         endpoint_path: instance.endpoint_path.clone(),
         pid: std::process::id(),
         version: singleton::self_version(),
+        build: singleton::self_build(),
         instance: instance.name.clone(),
         started_at_unix: endpoint.started_at_unix,
         // The same stamp published in endpoint.json — taken at startup, never re-read.
@@ -1162,7 +1185,7 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         local_port,
         std::process::id(),
         &singleton::self_version(),
-        singleton::self_build(),
+        &singleton::self_build(),
         Some(token.as_str()),
         &bound_hosts,
         std::mem::take(&mut bind_errors),

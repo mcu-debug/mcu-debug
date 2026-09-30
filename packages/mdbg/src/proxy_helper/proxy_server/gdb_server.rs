@@ -190,7 +190,7 @@ impl ProxyServer {
                 self.server_cwd = dir.clone();
                 let data = ControlResponseData::Initialize {
                     version: CURRENT_VERSION.to_string(),
-                    build: crate::proxy_helper::singleton::self_build().to_string(),
+                    build: crate::proxy_helper::singleton::self_build(),
                     pid: std::process::id(),
                     server_cwd: dir,
                 };
