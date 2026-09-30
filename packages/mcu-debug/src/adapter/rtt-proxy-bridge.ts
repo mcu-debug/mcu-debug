@@ -152,7 +152,11 @@ export class RttProxyBridge {
             // skipped by the engine rather than failing, so asking for all of them costs nothing.
             down_channels: channels,
             poll_interval_ms: config.polling_interval ?? null,
-            max_bytes_per_drain: null,
+            // Unset means "use the Agent's measured default for this gdb-server", which is where the
+            // per-server knowledge belongs -- the limit is a property of the server's reply buffer and
+            // is not derivable from its advertised `PacketSize`. `debugFlags.rttDrainBytes` overrides
+            // it for a sweep; it is a measurement knob, not something a user should have to set.
+            max_bytes_per_drain: this.mainSession.args.debugFlags?.rttDrainBytes ?? null,
             stats_interval_ms: statsIntervalMs(config) ?? null,
         };
 

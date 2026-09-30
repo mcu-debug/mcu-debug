@@ -45,7 +45,7 @@ pub mod probe;
 pub mod state;
 pub mod trace;
 
-pub use caps::{MemoryReadKind, MemoryWriteKind, RspCaps, ServerTier};
+pub use caps::{drain_cap, drain_cap_for_server, MemoryReadKind, MemoryWriteKind, RspCaps, ServerTier};
 pub use channel::{GdbSink, RspChannel};
 pub use chunk::{plan_read, plan_write, Chunk, ReadAssembler, WriteAssembler};
 pub use consumer::{Consumer, Endian};

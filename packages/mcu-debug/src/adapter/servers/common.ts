@@ -289,7 +289,7 @@ export interface HWWatchpointInfo {
 // Without this, `rspMux: true` would silently switch on every GDB/MI trace in the Debug
 // Console, and the two Agent flags would behave differently from each other purely because
 // one of them happens to be a string.
-export const AGENT_DEBUG_FLAGS = ["rspTrace", "rspMux", "rspTier"] as const;
+export const AGENT_DEBUG_FLAGS = ["rspTrace", "rspMux", "rspTier", "rttDrainBytes"] as const;
 
 export interface DebugFlags {
     gdbTraces?: boolean;
@@ -316,6 +316,18 @@ export interface DebugFlags {
     // rather than refusing it. Setting this is how to find out where a server the matrix has not
     // reached belongs -- see docs-internal/gdb-rsp.md section 7.
     rspTier?: string;
+    // Bytes per RTT drain, overriding the measured per-server default in `caps::drain_cap_for_server`.
+    //
+    // A **measurement knob, not a setting**: the right value is a property of the gdb-server's reply
+    // buffer, which cannot be read off its advertised `PacketSize` -- that bounds what the server
+    // *accepts*, not what it can send, and ST-LINK advertises plenty while truncating a reply of
+    // exactly 1024 bytes. So the value has to be measured per server, and this is how a sweep is run
+    // before a new default is committed. It lives here rather than in `rttConfig` for that reason:
+    // nobody configuring a debug session should have to hold an opinion about it.
+    //
+    // Avoid 510, 1022 and 2046: a hex `m` reply is 2n + 4 bytes, so those land on 1024, 2048 and 4096
+    // exactly, and a server whose buffer is that size has no room left for its terminator.
+    rttDrainBytes?: number;
     anyFlags?: boolean;
 }
 

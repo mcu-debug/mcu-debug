@@ -58,7 +58,13 @@ export interface AdapterIdentity {
 export function adapterIdentityLine(id: AdapterIdentity): string {
     const reused = id.uptimeSec > FRESH_ADAPTER_SECONDS || id.sessionCount > 1;
     const nth = id.sessionCount > 1 ? `, session #${id.sessionCount} in this process` : "";
-    let line = `MCU-Debug proxy${id.version} (${id.build}) — adapter pid ${id.pid}, up ${fmtDuration(id.uptimeSec)}${nth}.`;
+    // Both lines lead with the same product, version and build and then name the **role**, so the
+    // pair reads as a pair on stdout and neither can be mistaken for the other. That confusion is not
+    // hypothetical: these are two processes of the same product, lockstep-versioned, and the codebase
+    // itself calls the second one "Probe Agent", "Proxy Agent" and "proxy server" in roughly equal
+    // measure. Leading with a shared prefix also makes a version difference between them visible at a
+    // glance, which is the thing the version check would otherwise report far from here.
+    let line = `MCU-Debug ${id.version} (${id.build}) — debug adapter, pid ${id.pid}, up ${fmtDuration(id.uptimeSec)}${nth}.`;
     if (reused) {
         line +=
             ` NOTE: this adapter was already running, so it may predate your last build.` +
@@ -85,14 +91,14 @@ export interface AgentIdentity {
  * because both are the same release.
  */
 export function agentIdentityLine(id: AgentIdentity): string {
-    let line = `Probe Agent ${id.version} (${id.build || "build unknown"}) — pid ${id.pid}.`;
+    let line = `MCU-Debug ${id.version} (${id.build || "build unknown"}) — proxy (the Probe Agent), pid ${id.pid}.`;
     if (id.version !== id.ourVersion) {
         // Already fatal elsewhere; named here too so the console shows why, in the same place as
         // everything else about this session's identity.
-        line += ` MISMATCH: this adapter is ${id.ourVersion}. They must match exactly.`;
+        line += ` MISMATCH: the debug adapter is ${id.ourVersion}. They must match exactly.`;
     } else if (id.build && id.ourBuild && stripDirty(id.build) !== stripDirty(id.ourBuild)) {
         line +=
-            ` NOTE: same version, different build — this adapter is ${id.ourBuild}.` +
+            ` NOTE: same version, different build — the debug adapter is ${id.ourBuild}.` +
             ` The Agent is a singleton and a running one is reused, so a rebuild does not replace it;` +
             ` in dev mode it never exits on idle either. Shut it down to pick up your build: mdbg proxy --shutdown --instance <name>`;
     }

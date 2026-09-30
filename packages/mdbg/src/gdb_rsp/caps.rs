@@ -174,6 +174,88 @@ impl ServerTier {
     }
 }
 
+/// The largest memory read to ask a given gdb-server for in one packet.
+///
+/// **Not derivable from `PacketSize`.** The manual is specific about what that field means -- "the
+/// remote stub can accept packets up to at least bytes length. GDB will send packets up to this size
+/// for bulk transfers, and will never send larger packets" -- so it bounds what the *stub receives*
+/// and says nothing whatever about the size of reply it can produce. ST-LINK is the proof: it
+/// advertises plenty and truncates a reply of exactly 1024 bytes. OpenOCD advertises `PacketSize=4000`
+/// (16 KB) on the same grounds. A read size must therefore be a measured per-server fact, which is
+/// what this is.
+///
+/// **And the hazard is specific sizes, not "large".** A hex `m` reply is `$` + 2n + `#` + 2 = 2n + 4
+/// bytes, so a stub whose reply buffer is a power of two has no room for its NUL terminator at
+/// exactly n = 510, 1022, 2046, 4094 -- one poison value per buffer size. Those are the numbers to
+/// avoid, and staying below the smallest of them is only the cheapest way to do it, not the only one.
+/// 1000 (reply 2004) and 2000 (reply 4004) are both clear of every boundary up to 16 KB.
+///
+/// A too-large value here is self-correcting and a too-small one is silent:
+/// [`crate::gdb_rsp::RspError::ReplyRejected`] retries a refused read at half the size, so a server
+/// that cannot manage the amount asked costs round trips and shows up as `errors` climbing in the RTT
+/// statistics. That asymmetry is the argument for measuring rather than guessing low for ever.
+///
+/// Worth knowing before tuning this: **the target's ring buffer usually binds first.** `defmt-rtt`
+/// defaults to `BUF_SIZE = 1024`, so no drain can ever see more than 1023 bytes and any cap at or
+/// above that is unreachable. Raising this past ~1000 needs `DEFMT_RTT_BUFFER_SIZE` raised too.
+pub fn drain_cap_for_server(server_type: &str) -> usize {
+    match server_type.to_ascii_lowercase().as_str() {
+        // Stays 500, and not from caution: OpenOCD carried a 512-byte memory-request bug for years
+        // (fixed upstream, by the author of this project), and the versions in the wild are whatever
+        // a vendor's IDE installer happens to ship. A macOS update replacing ST's bundled OpenOCD
+        // mid-benchmark is exactly how little control there is over which one runs.
+        "openocd" => 500,
+        // 1000 is measured, not assumed: a 75-second ST-LINK run at this size moved 87.2 KB/s
+        // against 78.0 at 500 -- **+12%** -- with `errors 0` throughout. That also resolved what had
+        // kept it at 500: its known failure at *exactly* 1024 reply bytes could have meant a
+        // 1024-byte reply buffer, in which case a larger read would be worse. Replies above 1024 went
+        // through clean, so it is a boundary bug and not a buffer limit.
+        //
+        // Not raised further, because the *target* binds first: `defmt-rtt` defaults to a 1024-byte
+        // ring, so no drain can see more than 1023 bytes and a 2000-byte cap measured the same 86.4
+        // KB/s as 1000. Going higher needs `DEFMT_RTT_BUFFER_SIZE` raised first, and then this should
+        // be derived from the observed `PacketSize` rather than guessed again.
+        //
+        // J-Link inherits it unmeasured. Defensible now in a way it was not before: `safe_read_len`
+        // keeps every request off the power-of-two reply sizes, and `ReplyRejected` retries a refused
+        // read at half the size, so being wrong here costs round trips and shows up as `errors`
+        // climbing rather than as lost data.
+        // 2000, measured. The sweep on a 4096-byte ring: 87.6 KB/s at 500, 108.8 at 1000, 126.1 at
+        // 2000, 132.4 at 3000, 133.3 at 4000 -- so the curve is flat past 2000 (+5.0%, then +0.6%)
+        // while the reply a single read produces keeps doubling. 4000 bytes is an 8 KB reply, and
+        // §4.2 invariant 2 is that GDB never waits on us: at depth 1 its worst case is one of our
+        // reads, so that is ~15 ms for 0.6%. 2000 keeps the knee and costs GDB ~8 ms.
+        //
+        // On a stock `defmt-rtt` ring this is indistinguishable from 1000 -- `available` cannot
+        // exceed 1023 -- so it is free for the common case and worth +16% for anyone who has raised
+        // `DEFMT_RTT_BUFFER_SIZE`.
+        "stlink" | "jlink" => 2000,
+        // Left at 500: it permits everything and answers in ~20 ms, so bytes per drain are not what
+        // limits it and there is nothing to gain by asking for more.
+        "probe-rs" => 500,
+        _ => 500,
+    }
+}
+
+/// The drain size to use, given what the server advertised.
+///
+/// [`drain_cap_for_server`] is a *performance* choice measured per server; `PacketSize` is applied
+/// here as a **ceiling**, and the distinction matters. That field says what the stub can *receive*
+/// -- "GDB will send packets up to this size ... and will never send larger packets" -- so it is no
+/// evidence at all about the size of reply a server can produce, and treating it as a target would
+/// mean asking ST-LINK for 8184 bytes on the strength of a claim it never made.
+///
+/// As a ceiling it is sound and it is the only signal available: a stub advertising a *small*
+/// `PacketSize` is telling us its buffers are small, and that is worth believing in the conservative
+/// direction. The form is `PacketSize/2 - 8`, which leaves the reply 12 bytes short of the advertised
+/// figure (`2n + 4 = PacketSize - 12`) and, as a side effect, can never land on a power of two when
+/// `PacketSize` is one.
+pub fn drain_cap(server_type: &str, packet_size: usize) -> usize {
+    let preferred = drain_cap_for_server(server_type);
+    let ceiling = (packet_size / 2).saturating_sub(8).max(1);
+    preferred.min(ceiling)
+}
+
 /// Everything the `qSupported` exchange told us.
 #[derive(Debug, Clone, Default)]
 pub struct RspCaps {
@@ -315,6 +397,40 @@ mod tests {
     fn only_a_measured_server_is_claimed_to_answer_while_running() {
         // The bug this exists to stop coming back: a mux started at `Unknown` reads as halted-only,
         // so an Agent-side feature on a running target waits for a gate that never opens. Silently.
+        // A generously advertised PacketSize must not lower the measured per-server choice...
+        assert_eq!(
+            drain_cap("stlink", 0x4000),
+            2000,
+            "16 KB advertised must not override 2000"
+        );
+        // ...but a stingy one must, because that is the only direction the field is evidence in.
+        assert_eq!(drain_cap("stlink", 1024), 1024 / 2 - 8);
+        assert_eq!(drain_cap("openocd", 0x4000), 500, "OpenOCD's claim buys it nothing");
+        // GDB's own no-advertisement default, which a stub predating the field leaves us with.
+        assert_eq!(drain_cap("stlink", DEFAULT_PACKET_SIZE), DEFAULT_PACKET_SIZE / 2 - 8);
+        // Never zero, whatever nonsense is advertised: a zero-length read is not a read.
+        for ps in [0, 1, 2, 16, 20] {
+            assert!(
+                drain_cap("stlink", ps) >= 1,
+                "PacketSize={ps} produced a zero-length read"
+            );
+        }
+        // The ceiling's reply is 12 bytes under the advertised size, so it clears a power-of-two
+        // buffer by construction rather than by luck.
+        for bits in 9..=14 {
+            let ps = 1usize << bits;
+            assert_eq!(2 * (ps / 2 - 8) + 4, ps - 12);
+        }
+        for server in ["openocd", "stlink", "jlink", "probe-rs", "pyocd", "something-new"] {
+            let n = drain_cap_for_server(server);
+            let reply = 2 * n + 4;
+            assert!(
+                !reply.is_power_of_two(),
+                "a drain of {n} for {server} produces a reply of exactly {reply} bytes, which is the \
+                 one size a stub with a {reply}-byte buffer cannot terminate"
+            );
+            assert!((1..=4096).contains(&n), "{server}: {n} is not a sane read size");
+        }
         assert_eq!(ServerTier::from_server_type("openocd"), ServerTier::Full);
         assert_eq!(ServerTier::from_server_type("OpenOCD"), ServerTier::Full);
         // Not yet measured *on the same connection GDB is running on*, which is the narrower

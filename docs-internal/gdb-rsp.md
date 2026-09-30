@@ -1468,16 +1468,18 @@ definite than probing.
 Not with `rsp-probe` in the end, but with the feature itself — 70-second runs of Agent-side RTT on
 real hardware, which asks the narrow question (§12 q2) continuously rather than once. The decisive
 column is "answers on a connection that itself has the `c` outstanding". Only the OpenOCD row has been measured
-cleanly — 74.3 KB/s, 93% of OpenOCD's own RTT server, from a CLI run whose engine-side and consumer-side
-counters agree to 0.1%. The other throughput figures are provisional: every VS Code run was made with
-`"debugServer"` set and so attached to a stale debug adapter, and ST-LINK's older figure predates the
-drain cap. See [rtt-benchmarks.md](./rtt-benchmarks.md) for what is wrong with each.
+The `Agent RTT` column is the stock
+configuration — a 1024-byte `defmt-rtt` ring and a 500-byte drain cap — so it compares _servers_, not
+what any of them can be pushed to. **ST-LINK tuned reaches 126.1 KB/s, 1.57× OpenOCD's own RTT
+server**, and [rtt-benchmarks.md](./rtt-benchmarks.md) has the sweep plus the contention model that
+accounts for the rest: throughput is `153.1 KB/s − 109 bytes per round trip`, whose zero-round-trip
+intercept lands within 0.7% of J-Link's probe-firmware RTT.
 
 | Server   | Verdict                                         | Tier         | Agent RTT | Adapter RTT |
 | -------- | ----------------------------------------------- | ------------ | --------- | ----------- |
 | OpenOCD  | Yes — and from source, no halt gate (§4.2.1)    | `Full`       | 74.3 KB/s | 50.9 KB/s   |
-| ST-LINK  | Yes — a minute, no stall                        | `Full`       | 86.4 ?    | 62.4 KB/s   |
-| J-Link   | Yes — a minute, no stall                        | `Full`       | 80.5 ?    | 68.3 KB/s   |
+| ST-LINK  | Yes — a minute, no stall                        | `Full`       | 78.0 KB/s | 62.4 KB/s   |
+| J-Link   | Yes — a minute, no stall                        | `Full`       | 80.5 KB/s | 68.3 KB/s   |
 | probe-rs | Yes — but at ~20 ms a round trip                | `Full`       | 6.2 KB/s  | —           |
 | pyOCD    | **No — it queues the read until the next halt** | `HaltedOnly` | —         | 24.8 KB/s   |
 

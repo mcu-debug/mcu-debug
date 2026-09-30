@@ -1,263 +1,174 @@
 # RTT throughput results
 
-We will use a Rust STM32 program that streams data via RTT as fast as it can. No sleeps. We can use several gdb-servers. All of these were run under the debugger for both TS and Rust
+Agent-side RTT reads the target's ring buffer over **GDB's own RSP connection**, multiplexed behind
+whatever GDB is doing, using no RTT support from the gdb-server at all. This records what that costs
+and what limits it.
 
-See: /Users/hdm/src/stm32f429-rtt
+Target: a Rust STM32F429 program (180 MHz) that streams `defmt` over RTT as fast as it can, no sleeps
+-- `/Users/hdm/src/stm32f429-rtt`. Every figure is measured at the **same place**: a `pipe` decoder with
+`output: "none"`, so no terminal and no child process are in the data path. Session averages, from the
+steady state; every run has a ~10-second transient at the start which is excluded.
 
-All figures are session averages, computed from the last `total` line of each run rather than from a
-single window. Measured at the same place in every case -- a `pipe` decoder with `output: "none"`, so
-no terminal and no child process are in the data path.
+## Where this ended up
 
-| Server   | builtin (TS)  | builtin (Rust) | Rust vs TS | server RTT |
-| -------- | ------------- | -------------- | ---------- | ---------- |
-| OpenOCD  | 50.9 KB/s     | **74.3** ⁵     | 1.46×      | 80.1       |
-| ST-LINK  | 62.4          | **86.4** ⁶     | 1.38×      | — ²        |
-| JLink    | 68.3          | 80.5           | 1.18×      | 152.1 ³    |
-| pyOCD    | 24.8          | — ⁴            | —          | — ¹        |
-| probe-rs | not attempted | 6.2            | —          | —          |
+| Configuration                                                |      KB/s | vs the best gdb-server RTT |
+| ------------------------------------------------------------ | --------: | -------------------------- |
+| ST-LINK, 4096-byte ring, 2000-byte cap                       | **126.1** | **1.57×** OpenOCD's own    |
+| ST-LINK, same but a 4000-byte cap                            |     133.3 | 1.66×                      |
+| ST-LINK, stock 1024-byte ring, 500-byte cap (where we began) |      78.0 | 0.97×                      |
+| OpenOCD's own RTT server, for reference                      |      80.1 | --                         |
+| J-Link's RTT, polled in **probe firmware**                   |     152.1 | 1.90×                      |
 
-> **Retracted: the `bytes/pass` and `passes/sec` columns this table used to carry.** They were
-> `KB/sec ÷ msgs/sec` off the consumer's stats line, and a `msg` there is **one TCP buffer at the pipe
-> decoder, not one drain** — `ThroughputMonitor.record` is called once per `data` event. On a fast
-> probe several drains arrive coalesced, by an amount that varies per probe, so the derived
-> bytes-per-pass read high and passes-per-second read low. The giveaway is the TypeScript row for
-> JLink: 619 bytes per "msg" when that engine never read more than 512 bytes at a time. Any
-> cross-server comparison built on those two columns was comparing amounts of socket coalescing.
-> `RttStats` now counts reads and writes in the engine itself, and the Agent reports them every five
-> seconds (`RTT stats:` lines) — see _Re-measuring_ below.
+Two numbers in that table are not ours and are worth separating. OpenOCD's 80.1 is the thing to beat,
+because it is host-driven RTT with privileged access -- in-process, no RSP, no packet framing -- and we
+are now 1.57× past it _through_ RSP. J-Link's 152.1 is a different architecture: it polls the ring
+inside the probe and never makes a host round trip. It is the physical ceiling, not a competitor, and
+the section below shows we are within 17% of it and can say exactly where the remainder goes.
 
-¹ needs OpenOCD's `rtt start`/poll dance, which we have not implemented for pyOCD.
-² the ST-LINK gdb-server has no RTT support at all, so builtin is the only option.
-³ J-Link polls RTT in **probe firmware**, with no host round trip per poll. Not the same architecture,
-and not a target to chase.
+## The model: throughput is round trips, and round trips slow the target down
 
-**pyOCD cannot run the Agent engine.** It does not refuse a memory read while the target runs and it
-does not error -- it _queues_ the read and answers when the target next stops. Observed as five
-consecutive two-second timeouts through a run, each answered within a millisecond of the halt that
-followed, while `WrOff` advanced 0 → 0x2f9 the whole time. So the data was there and unreachable. Its
-tier is `HaltedOnly`, and for pyOCD `useBuiltinRTT.implementation: "typescript"` is not a fallback but
-the only option: the adapter's own engine reads over a **second** connection, where pyOCD answers
-happily. See `gdb-rsp.md` §7.
+Each drain that finds data costs **three** round trips -- read the descriptor, read the data, write
+`RdOff` -- plus one more whenever the data wraps the end of the ring. Measured `trips/drain` matched
+`3 + B/drain ÷ SizeOfBuffer` to two decimals at every cap and at both ring sizes, so that part is
+settled.
 
-⁴ pyOCD cannot run the Agent engine at all -- see below.
-
-⁵ measured with a **production VSIX**; 66.2 was the same build run under the node inspector. J-Link's
-80.5 is still a development-build number.
-
-⁶ also a production VSIX, and _lower_ than the 89.5 measured earlier -- which predated the drain cap and
-was pinned against it. The two are not comparable; see _The 12% was the development setup_ below.
-
-### Where the ceiling is, and probe-rs proving it
-
-Not bytes -- round trips. Each drain that finds data costs three (read the descriptor, read the data,
-write `RdOff`), and it is round trips per second that the server and probe latency set.
-
-**probe-rs is the closest thing here to a control experiment**, because its throughput is 10.7× below
-OpenOCD's on the same firmware, the same target and the same design. The bytes-per-pass argument that
-used to stand here is withdrawn -- it rested on the retracted columns above -- but the conclusion does
-not depend on it, because the latency can be measured **without us in the picture at all**. From
-probe-rs's own handshake with GDB, before the Agent had sent a single packet:
+What was not expected is the second half. Fitting delivered throughput against round trips per second
+over seven runs spanning two ring sizes and five cap values gives **one straight line**:
 
 ```text
- 0.322  GDB>SRV  $qSupported:…      →   9.998  SRV>GDB  $PacketSize=1000;…    (~10 ms)
-10.283  GDB>SRV  $vCont?            →  22.149  SRV>GDB  $vCont;c;C;s;S        (~12 ms)
-22.441  GDB>SRV  $vMustReplyEmpty   →  34.664  SRV>GDB  $#00                  (~12 ms)
+KB/s = 153.1 - 109 bytes per round trip
+
+ trips/s   measured    fit    err   ring   cap
+     956       53.0   51.1   -1.9   1024    200
+     715       78.0   76.8   -1.2   1024    500
+     612       87.2   87.8   +0.6   1024   1000
+     605       86.4   88.6   +2.2   1024   2000
+     592       87.6   90.0   +2.4   4096    500
+     404      108.8  110.0   +1.2   4096   1000
+     284      126.1  122.8   -3.3   4096   2000
 ```
 
-~10–12 ms to answer each of GDB's startup packets, with us doing nothing at all. So probe-rs's
-gdb-server has an order of magnitude more per-packet latency than OpenOCD's, and any host-driven
-feature on it inherits that. Its tier is `Full` -- it _permits_ everything -- because the tier is about
-capability, not speed; a slow server should be slow rather than silently featureless.
+**Every debugger round trip costs the firmware about 109 bytes of its own output.** That is AHB
+contention: the AHB-AP steals SRAM cycles from the Cortex-M4 that is filling the ring, so a read does
+not merely take time on the wire, it _slows the producer_. It is why a smaller drain cap loses twice --
+smaller bites, and more of them.
 
-Worth stating plainly, because it is easy to mistake for our bug: **6.2 KB/s on probe-rs is probe-rs's
-round-trip latency, reproduced by its own handshake, not a property of this design.** ~20 ms per round
-trip and three round trips per drain is ~59 ms per drain, and 6.2 KB/s follows from that and a drain
-of a few hundred bytes without any appeal to our own counters.
+The line's intercept is the check worth trusting it for. Extrapolated to **zero** host round trips it
+predicts **153.1 KB/s**, and J-Link's RTT -- which polls in probe firmware and makes no host round trip
+-- measures **152.1 KB/s** on this same firmware. Two independent measurements 0.7% apart. J-Link's
+advantage stopped being mysterious: it is the zero-round-trip case of this line.
 
-It also predicts the _user-visible_ symptom, which is the same fact wearing another hat: a single step
-with a shallow stack trace is 80--100 packets, so ~1 s on probe-rs against ~0.16 s on OpenOCD. That is
-what was observed.
+The agreement holds _because_ both measured the same firmware build, which is also the caveat: see
+_the firmware is the next lever_ below.
 
-So the remaining lever is `set_depth(2)` in no-ack mode, overlapping the `RdOff` write with the next
-descriptor read -- three serialised round trips down to about two. §4.2.1 says the servers are serial
-so it buys nothing server-side, but the latency it hides is exactly what we are bound by.
+## The drain cap, and why 500 was costing 40%
 
-### The 12% was the development setup, and VS Code is not a factor
+`DrainOptions::max_bytes` bounds one drain so a single channel cannot hold the shared connection while
+GDB waits behind it (§4.2 invariant 2). It was 500 everywhere, for a good reason that had been
+generalised too far -- and it was the largest single loss in the whole measurement.
 
-Three runs, same OpenOCD, same firmware, same Agent engine, differing only in how the extension was
-built and hosted:
+| cap  | ring 1024 | ring 4096 | B/drain (4096) | % of cap | trips/s |
+| ---- | --------: | --------: | -------------: | -------: | ------: |
+| 200  |      53.0 |         - |              - |      91% |     956 |
+| 500  |      78.0 |      87.6 |            470 |      94% |     592 |
+| 1000 |      87.2 |     108.8 |            883 |      88% |     404 |
+| 2000 |      86.4 | **126.1** |           1545 |      77% |     284 |
+| 3000 |         - |     132.4 |           1990 |      66% |     239 |
+| 4000 |         - |     133.3 |           2160 |      54% |     221 |
 
-| Run (OpenOCD)                          | KB/s     | msgs/sec | bytes/msg | of OpenOCD's own RTT |
-| -------------------------------------- | -------- | -------- | --------- | -------------------- |
-| development build, VS Code + inspector | 66.2     | 180      | 377       | 82.6%                |
-| **CLI, no debugger -- audited**        | **74.5** | 201      | 378       | **93.0%**            |
-| production VSIX, VS Code -- _suspect_  | 74.3     | 202      | 377       | 92.7%                |
-| OpenOCD's own RTT server               | 80.1     | 162      | 506       | --                   |
+Two things to read off it.
 
-> **The VS Code rows here are provisional and the conclusion below is not yet earned.** Every VS Code run
-> in this section was made with `"debugServer": 4721` set in the firmware project's `launch.json`, which
-> makes VS Code **attach to an already-running debug adapter** instead of starting one. The adapter it
-> attached to had been running for hours, under the debugger, from older code. The proof is in the run
-> itself: no `[RTT engine]` line appeared, although the installed VSIX's bundle and Agent binary both
-> contain that code -- so the adapter serving those sessions was neither.
->
-> The reasoning for why VS Code _should_ cost nothing is still sound -- the debug adapter is an ordinary
-> node program either way, and VS Code sends no DAP traffic worth measuring while the target runs, which
-> is the same fact `gated 0` reports from the other side. But it is reasoning, not measurement, until a
-> clean run confirms it.
->
-> **The CLI row is the trustworthy one**, and it is self-corroborating: its `[RTT engine]` and
-> `[RTT Logs stats]` lines agree to 0.1%, which rules out loss anywhere in the host.
+**The stock ring caps the cap.** `defmt-rtt` defaults to `BUF_SIZE = 1024`, so `available` can never
+exceed 1023 and every cap at or above ~1000 is the same cap. That is why the 1024-ring column flattens
+at 87 and the 4096-ring column keeps climbing. Raising `DEFMT_RTT_BUFFER_SIZE` is a _target-side_ change
+and has to come first; it is worth +46% at cap 2000 on its own.
 
-Two false leads were chased before this was found, and both had the same shape -- _you are talking to an
-older process than you think_:
+**The curve has a knee at 2000**: +24%, +16%, then +5.0%, then +0.6%. Past that the reply a single read
+produces keeps doubling while the return vanishes -- a 4000-byte read is an 8 KB reply, and invariant 2
+means GDB's worst case is waiting behind one of our reads, so that is ~15 ms bought for 0.6%. Hence the
+default sits at the knee.
 
-1. A daemonized Agent for the `dev` instance, started before a rebuild and still serving the replaced
-   binary. `setDevelopmentModeEnvVars` gives the dev instance `MDBG_PROXY_IDLE_TIMEOUT=0`, so it never
-   exits and never picks up a rebuild; `lsof` showed it running an inode that no longer existed on disk.
-   Not the cause here, but real, and it will bite again.
-2. Stale binaries in the VSIX. Ruled out by grepping each `mdbg` and each `adapter.js` bundle for the
-   new symbols -- all five were current.
+### The defaults, and why they are per server
 
-Lockstep versioning cannot catch either: every process involved reported 0.1.18. What differs is the
-_build_, not the version.
-
-**The production VSIX under VS Code and the CLI agree to 0.23% -- they are the same number.** So the
-earlier framing of this as "the host costs 12%" was wrong: VS Code costs nothing measurable. What cost
-12% was the ordinary F5 development loop -- an unoptimised build with the node inspector attached -- and
-the fix was to stop measuring that. Every conclusion drawn from the 66.2 figure about OpenOCD being
-slow was drawn from a development artifact.
-
-**So the Agent's engine reaches 93% of OpenOCD's own RTT server**, reading target memory through GDB's
-own RSP connection, multiplexed, on a server whose RTT support we are not using at all. That is the
-result worth quoting.
-
-The counter runs below are development-build runs too, so the ~1.46 ms round trip is if anything
-pessimistic -- though the ring-buffer size it recovers does not depend on that at all.
-
-#### ST-LINK, production: 86.4 KB/s -- and an extrapolation of ours that was wrong
-
-| Run (ST-LINK)                         | KB/s | msgs/sec | bytes/msg |
-| ------------------------------------- | ---- | -------- | --------- |
-| development build, before the cap     | 89.5 | 182      | 505       |
-| production VSIX, VS Code -- _suspect_ | 86.4 | 232      | 381       |
-
-**ST-LINK has no clean figure at the moment.** The 89.5 predates the drain cap and the 86.4 was measured
-through the attached stale adapter described above. Both are recorded because the _shape_ of the
-difference between them is still informative; neither should be quoted.
-
-**It went slightly _down_, not up by 12% as this section first predicted.** The prediction was unsound,
-and instructively so: the 89.5 run predated `SAFE_DRAIN_BYTES` and sat at 505 bytes/drain, pinned against
-the then-current cap, while the production run sits at 381. Two variables moved between those runs, so
-they were never comparable -- the same mistake as the retracted `bytes/pass` columns, repeated in an
-extrapolation. **Do not scale a figure across a change in the drain cap.**
-
-What is solid: **86.4 KB/s on ST-LINK beats OpenOCD's own RTT server (80.1) by 8%**, and our own OpenOCD
-result by 16%. ST-LINK's gdb-server has no RTT of its own to compare against (footnote 2), so OpenOCD's
-is the only host-side gdb-server RTT in the matrix -- and the Agent's engine is now faster than it, on a
-different probe, through GDB's own connection.
-
-#### The open question for tomorrow
-
-`bytes/msg` is **377 on OpenOCD and 381 on ST-LINK** despite 16% different throughput and quite different
-round-trip costs. Two readings, and the counters decide between them:
-
-- If those are delivery artifacts they mean nothing, and `B/drain` will differ.
-- If they are real drain sizes, then the same ~378 bytes accumulate between visits on both probes while
-  the visit _rate_ differs by 16% -- which would mean the firmware's production rate is not a constant
-  but depends on the probe.
-
-The second is less strange than it sounds: AHB-AP reads contend with the Cortex-M4 for SRAM, so a
-debugger that holds the bus longer per transfer steals more cycles from the firmware filling the ring.
-That predicts something cheap to test -- **raise OpenOCD's `adapter speed`**. A faster SWD clock finishes
-each transfer sooner, so it should raise _both_ `trips/sec` and bytes per drain. If it raises both, bus
-contention is real and OpenOCD's default clock is part of the 16% gap to ST-LINK. One config line and a
-rerun.
-
-The first counter run below shows `gated 0`, so gate contention -- an earlier guess of ours -- was never
-what this was.
-
-**The two lines separate the two possible causes, which is what they are for.** The poll thread hands
-bytes to an _unbounded_ `mpsc` channel (`proxy_server/mod.rs`: `let (event_tx, event_rx) = channel()`),
-so a slow client cannot throttle it -- it can only make the queue grow. Therefore:
-
-| What the two lines show                  | Where the loss is                                             |
-| ---------------------------------------- | ------------------------------------------------------------- |
-| `[RTT engine]` > `[RTT Logs stats]`      | **the host** -- the Agent drained it, node did not deliver it |
-| both low together, `gated`/`errors` at 0 | the Agent genuinely drained less; the probe or the target     |
-| both low together, `gated` climbing      | GDB's traffic on the shared connection                        |
-
-In the CLI run they agree to within 0.1% (74.7 against 74.74), so nothing was lost in the host there --
-and the production VSIX matching the CLI says the same thing a second way.
-
-One consequence of that unbounded channel is worth recording separately: a client that stalls while RTT
-is flowing makes the Agent accumulate at the full RTT rate -- ~75 KB/s here -- with nothing to stop it.
-Not urgent, since a client stalled for long means the session is over anyway, but it is a real unbounded
-queue and the drain cap does not bound it.
-
-**bytes/msg did not budge: 377 -> 378 across a 12% change in rate.** Worth noting for two reasons. It
-is further evidence the figure is an artifact of the delivery path rather than a drain size -- a real
-occupancy number would respond to polling 12% more often. And if it _is_ close to the drain size, then
-at ~378 against a 500-byte cap the ring buffer is **not** staying full, which means we are very nearly
-keeping up with the firmware and raising `SAFE_DRAIN_BYTES` would buy little here. Those two readings
-point in opposite directions for what to do next, which is exactly why the engine's own counters are
-needed before changing anything.
-
-### What the counters said, first run (OpenOCD, CLI)
-
-```text
-[RTT engine] 74.7 KB/sec | 203 drains/sec, 376 B/drain | 684 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0
-[RTT Logs stats] 74.74 KB/sec | 202.9 msgs/sec | window 5.0s, 373.84 KB
+```rust
+"openocd"          => 500,   // and it stays there
+"stlink" | "jlink" => 2000,  // measured on ST-LINK; J-Link inherits it
+"probe-rs"         => 500,   // ~20 ms a round trip; bytes are not its problem
+_                  => 500,   // unmeasured is unmeasured
 ```
 
-**The consumer's line and the engine's agree on OpenOCD** -- 203 drains against 202.9 msgs, 376 B
-against 374. So no coalescing happens on this path and the original OpenOCD figures were sound; the
-retraction above stands as method, not as a correction to that row. The J-Link rows are where the two
-must be expected to diverge.
+OpenOCD stays at 500 and not out of timidity: it carried a 512-byte memory-request bug for years, fixed
+upstream by this project's author, and the version that runs is whatever a vendor's IDE installer
+shipped. A macOS update silently replacing ST's bundled OpenOCD _mid-benchmark_ is how much control
+there is over that.
 
-Four things the counters settle, none of which was knowable before:
+**`PacketSize` cannot supply this number, and the asymmetry is the whole point.** The manual is
+specific -- "the remote stub can accept packets up to at least bytes length. GDB will send packets up to
+this size for bulk transfers, and will never send larger packets" -- so it bounds what the stub
+_receives_ and is no evidence whatever about the size of reply it can produce. ST-LINK advertises
+`PacketSize=4000` (hex: 16384 bytes) and truncates a reply of exactly 1024. So a _large_ advertised
+value buys nothing; a _small_ one is a server telling us its buffers are small, which is worth believing
+in the conservative direction. It is applied as a ceiling only:
 
-**1. A round trip on OpenOCD costs 1.46 ms**, and the loop spends essentially all of its time in them:
-3.37 trips x 1.46 ms = 4.93 ms per drain, against an observed drain period of 4.93 ms. There is no
-slack in the poll loop -- no sleeping, no overhead worth naming. Only fewer or larger round trips can
-help. (probe-rs, for scale, is ~20 ms: 14x.)
+```rust
+drain_cap(server, packet_size) = drain_cap_for_server(server).min(packet_size / 2 - 8)
+```
 
-**2. `trips/drain` measures the target's ring buffer.** A drain of `n` bytes from a uniformly
-distributed `RdOff` in a ring of `S` splits into two reads exactly when `RdOff + n > S`, so the excess
-over the ideal 3.0 _is_ `n / S`:
+`packet_size / 2 - 8` leaves the reply 12 bytes short of the advertised figure (`2n + 4 = PacketSize -
+12`) and, as a side effect, can never land on a power of two when `PacketSize` is one -- which matters
+for the reason below.
 
-    S ~ 376 / 0.37 = 1018 bytes
+### The poison sizes
 
-`defmt-rtt`'s generated `consts.rs` for this firmware says `BUF_SIZE = 1024` -- so the statistic
-recovered the buffer size to within 0.6% without reading a symbol, and corrected a 512-byte guess.
-Settable with `DEFMT_RTT_BUFFER_SIZE`; a larger ring is one of the few levers on the target side.
+A hex `m` reply is `$` + 2n + `#` + 2 = **2n + 4** bytes. A stub whose reply buffer is a power of two
+therefore has no room for its NUL terminator at exactly **one** request length per buffer size:
 
-**3. Nothing is going wrong.** `gated 0` -- the multiplexer never once refused us, so RTT is not
-competing with GDB here, and gate contention is not what the VS Code deficit was. `errors 0` -- no rejected reads, no halved retries. `idle ~1` per five seconds -- the ring is
-essentially never empty when we arrive.
+| n    | reply |                                                         |
+| ---- | ----- | ------------------------------------------------------- |
+| 254  | 512   | OpenOCD's buffer, historically                          |
+| 510  | 1024  | **measured failing on ST-LINK, four times out of four** |
+| 1022 | 2048  |                                                         |
+| 2046 | 4096  |                                                         |
+| 4094 | 8192  |                                                         |
 
-**4. The drain cap is not what binds.** 376 B/drain against a 500-byte cap; if the cap bound us we
-would be seeing 99 KB/s. The ring holds only ~376 bytes when we arrive, which means the firmware is not
-keeping it full at this drain rate.
+Keeping the _default_ below the smallest of them was the first fix and it was incomplete: a read length
+is `min(remaining, budget)`, so it lands wherever the caller's data happens to end. A 1024-byte ring
+reaches `available == 1022` routinely; a 4096-byte ring reaches 2046 routinely. `safe_read_len` in
+`gdb_rsp/chunk.rs` now guards the one place a packet's length is chosen, so every caller is covered at a
+cost of one byte on one length per buffer size. Consecutive replies differ by 2, so a single decrement
+always suffices.
 
-That last point does _not_ yet mean "firmware-limited", and it is worth being careful about why:
-`defmt-rtt` **blocks** when its buffer is full, so the target's output rate is partly set by how fast
-the reader drains. J-Link's own RTT gets 152 KB/s from this same firmware, so the target can clearly
-produce twice what we are taking. 74.7 KB/s is a stable equilibrium between a blocking writer and our
-4.93 ms drain period, not a ceiling either side owns alone.
+ST-LINK's behaviour above 1024 is now settled, incidentally: at cap 4000 individual reads exceeded 2864
+bytes, so replies of **at least 5.7 KB** were served cleanly with `errors 0`. The 1024 failure is a
+boundary bug, not a buffer limit.
 
-### Two levers, in order of cheapness
+## What is left, in order of size
 
-1. **Pipelining, for which `set_depth(2)` is permission and not the mechanism.** The engine never asks
-   for two things at once today, so raising the depth on its own changes nothing at all. What would have
-   to change, and what the floor is, is worked out below.
-2. **Raise `max_bytes_per_drain` and watch `B/drain`.** This is the decisive experiment and it is one
-   session: if `B/drain` stays near 376 the source really is the limit here; if it rises, we were
-   round-trip bound after all. Expect `trips/drain` to rise towards 4.0 as the cap approaches the ring
-   size, since a bigger read wraps more often -- worth it if the bytes more than double.
+**1. The firmware, and it is not close.** 153 KB/s undisturbed at 180 MHz is **1149 CPU cycles per byte
+emitted**, for code whose job is to copy bytes into a ring. The cause is `opt-level = 0` in the
+firmware's own `[profile.release]`. Fixing it moves the intercept of the line above -- and the slope
+too, in opposite directions: contention steals a fixed number of _cycles_, so fewer cycles per byte
+means each round trip costs _more_ bytes. Both parameters move, so the model needs refitting rather than
+rescaling, and every absolute figure in this document is a property of the unoptimized build.
 
-Wrap splits are 11% of every round trip, which is the cost of a ring smaller than four drains. Growing
-`DEFMT_RTT_BUFFER_SIZE` reduces it, but it is the smallest of the three numbers here.
+**2. Pipelining, now worth much less than when it was first costed.** The drain-cap work ate most of it,
+because larger drains already cut round trips per byte:
+
+| scheme                                  | trips/drain |  KB/s |  gain |
+| --------------------------------------- | ----------: | ----: | ----: |
+| today                                   |        3.38 | 123.6 |    -- |
+| overlap the two wrapped data reads      |        3.00 | 126.3 | +2.2% |
+| overlap `RdOff` write / next descriptor |        2.38 | 131.0 | +6.1% |
+| both                                    |        2.00 | 134.1 | +8.5% |
+
+The same table computed when a drain was 500 bytes gave +21% for "both". **That is the correction worth
+keeping**: the value of an optimisation is not a property of the optimisation. It was recorded here as
++68% against a constant-`B/drain` assumption that the contention model has since replaced.
+
+**3. Nothing else is measurable.** `gated 0` in every run -- the multiplexer has never once refused the
+RTT engine, so RTT is not competing with GDB. `errors 0` -- no rejected reads. `idle` is 0--3 per
+five-second window, which at a 1-millisecond interval is 0.02% of the run, so the poll loop does not
+sleep in any sense that matters and `polling_interval` is not a knob.
 
 ### What can actually be pipelined, and the floor
 
@@ -267,8 +178,6 @@ one that matters:
 > A request may go out before an earlier reply arrives **iff formulating it does not require that
 > reply.**
 
-A drain is four steps, and not all of the dependencies between them are real:
-
 | Step                 | What it needs                         | Can overlap with           |
 | -------------------- | ------------------------------------- | -------------------------- |
 | 1. read descriptor   | nothing -- the address is a constant  | --                         |
@@ -276,28 +185,17 @@ A drain is four steps, and not all of the dependencies between them are real:
 | 2b. read data (head) | step 1's reply only, **not** step 2's | **step 2**                 |
 | 3. write `RdOff`     | step 2/2b to have succeeded           | **the next pass's step 1** |
 
-So two overlaps are available, and the wrapped-read one -- the intuitive one -- is the smaller:
-
-| Scheme                                  | trips/drain | per drain | if `B/drain` holds | gain     |
-| --------------------------------------- | ----------- | --------- | ------------------ | -------- |
-| today                                   | 3.37        | 4.92 ms   | 74.6 KB/s          | --       |
-| overlap the two wrapped data reads      | 3.00        | 4.38 ms   | 83.8 KB/s          | +12%     |
-| overlap `RdOff` write / next descriptor | 2.37        | 3.46 ms   | 106.1 KB/s         | **+42%** |
-| both                                    | 2.00        | 2.92 ms   | 125.7 KB/s         | **+68%** |
-
 **Two is the floor, and no amount of depth beats it**, because step 2's _address_ comes out of step 1's
-reply. That one dependency cannot be hidden.
-
-Three things make this cheaper than it looks:
+reply. That one dependency cannot be hidden. Three things make the rest cheaper than it looks:
 
 - **`depth` counts every outstanding packet, GDB's included** (`pending.len() >= depth + open_ended`),
   and GDB sends nothing at all while the target runs. So during a run the whole budget is ours, and the
   moment GDB does speak its entry takes a slot and we fall back to today's behaviour automatically. The
-  cost to invariant 2 is that GDB's worst case becomes waiting for two replies instead of one, ~1.5 ms.
-- The `RdOff` write is **not deferred** by the overlap, only re-timed: it goes out at ~4.4 ms into the
-  pass today and would go out at 0 ms of the next one, which is nearly the same instant. That matters,
-  because `RdOff` is what unblocks a blocking writer like `defmt-rtt` and delaying it would cost real
-  throughput -- the same trade-off `DrainOptions::advance_after_each_run` already records.
+  cost to invariant 2 is that GDB's worst case becomes waiting for two replies instead of one.
+- The `RdOff` write is **not deferred** by the overlap, only re-timed: it would go out at 0 ms of the
+  next pass instead of near the end of this one, which is nearly the same instant. That matters, because
+  `RdOff` is what unblocks a blocking writer like `defmt-rtt` and delaying it would cost real
+  throughput -- the trade-off `DrainOptions::advance_after_each_run` already records.
 - RSP is strictly ordered on one connection, so a write followed by a read is processed in that order;
   the pipelined descriptor read cannot observe a pre-write `RdOff`.
 
@@ -311,70 +209,103 @@ None of this is a redesign. `Consumer::read_memory` is blocking request/reply, s
 a batched primitive of roughly the shape `read_many(&[(addr, len)])` -- issue all, then collect -- and
 the larger one wants `one_pass` to carry "the `RdOff` I still owe" into the next pass.
 
-### Re-measuring
+## The per-server matrix
 
-The numbers in the table are sound -- they are bytes arriving at the last consumer, measured the same
-way for every row. What was never measured is _why_ a row sits where it does, and that is the open
-question: **OpenOCD's own RTT server does 80.1 KB/s while we manage 66.2 through it, yet the same
-engine does 80.5 through JLink.** These are memory reads either way, so one of three things is true,
-and the engine's counters now separate them in a single run:
+Stock firmware -- 1024-byte ring, 500-byte cap -- so these compare _servers_, not configurations. The
+ST-LINK and OpenOCD figures are production-VSIX runs; J-Link's is a development build and understated.
 
-| What the `RTT stats:` line shows               | What it means                                                                     |
-| ---------------------------------------------- | --------------------------------------------------------------------------------- |
-| `idle` climbing                                | the firmware had nothing; throughput is its production rate, not our cost         |
-| `gated` climbing                               | we were forbidden to ask -- GDB's traffic on the shared connection, not the probe |
-| `errors` climbing                              | reads being rejected and retried at half size, which silently doubles the cost    |
-| `B/trip` well under the cap, none of the above | the buffer is not staying full, so we are outrunning the firmware                 |
-| `B/trip` at the cap, `trips/s` low             | round-trip bound, and `SAFE_DRAIN_BYTES` is the lever                             |
+| Server   | builtin (TS)  | builtin (Rust) | Rust vs TS | server RTT |
+| -------- | ------------- | -------------- | ---------- | ---------- |
+| OpenOCD  | 50.9 KB/s     | 74.3           | 1.46×      | 80.1       |
+| ST-LINK  | 62.4          | 78.0           | 1.25×      | — ²        |
+| JLink    | 68.3          | 80.5           | 1.18×      | 152.1 ³    |
+| pyOCD    | 24.8          | — ⁴            | —          | — ¹        |
+| probe-rs | not attempted | 6.2            | —          | —          |
 
-These arrive in the Debug Console with **no debug flag required**, as an `[RTT engine]` line beside the
-consumer's `[RTT Logs stats]` line, on the same window so the two can be read against each other.
+¹ needs OpenOCD's `rtt start`/poll dance, which we have not implemented for pyOCD.
+² the ST-LINK gdb-server has no RTT support at all, so builtin is the only option.
+³ J-Link polls RTT in **probe firmware**, with no host round trip per poll. Not the same architecture;
+see _the model_ above, where it turns out to be the zero-round-trip case of our own fit.
+⁴ pyOCD cannot run the Agent engine at all -- see below.
 
-**They share one switch, which already existed**: the per-decoder `stats` option. A session where no
-decoder asks for statistics gets no `[RTT engine]` lines either -- the Agent is told `stats_interval_ms:
-null` and sends nothing, so this costs a session that did not ask for it exactly nothing. No new
-user-facing flag, and the right coupling besides: `trips/sec` says what the consumer's bytes _cost_, and
-only the pair distinguishes "the Agent drained less" from "the host delivered less". `statsInterval`
-carries across too, so both lines always describe the same window; where several decoders disagree the
-shortest wins.
+**pyOCD cannot run the Agent engine.** It does not refuse a memory read while the target runs and it
+does not error -- it _queues_ the read and answers when the target next stops. Observed as five
+consecutive two-second timeouts through a run, each answered within a millisecond of the halt that
+followed, while `WrOff` advanced 0 → 0x2f9 the whole time. So the data was there and unreachable. Its
+tier is `HaltedOnly`, and for pyOCD `useBuiltinRTT.implementation: "typescript"` is not a fallback but
+the only option: the adapter's own engine reads over a **second** connection, where pyOCD answers
+happily. See `gdb-rsp.md` §7.
+
+**probe-rs permits everything and is an order of magnitude slower at it.** Its latency is its own and
+visible without us in the picture at all -- from its handshake with GDB, before the Agent had sent a
+single packet:
 
 ```text
-[RTT engine]    74.4 KB/sec | 201 drains/sec, 378 B/drain | 603 trips/sec, 3.0 trips/drain | idle 12, gated 0, errors 0 | total 4.38 MB over 60.1s
-[RTT Logs stats] 74.4 KB/sec | 201.5 msgs/sec | window 5.0s, 376.42 KB | total 4.37 MB over 60.1s
+ 0.322  GDB>SRV  $qSupported:…      →   9.998  SRV>GDB  $PacketSize=1000;…    (~10 ms)
+10.283  GDB>SRV  $vCont?            →  22.149  SRV>GDB  $vCont;c;C;s;S        (~12 ms)
+22.441  GDB>SRV  $vMustReplyEmpty   →  34.664  SRV>GDB  $#00                  (~12 ms)
 ```
 
-`trips/drain` is the one to watch for a surprise: a drain costs exactly three round trips (read the
-descriptor, read the data, write `RdOff`), so materially more than 3.0 means wrapped drains splitting
-into two reads, or reads being rejected and retried at half size.
+~10–12 ms per packet with us doing nothing. ~20 ms a round trip and three round trips a drain is ~59 ms
+a drain, and 6.2 KB/s follows without any appeal to our own counters. Its tier stays `Full` because a
+tier is about what a server _permits_; gating it on speed would make a slow server silently featureless
+instead of merely slow. It predicts the user-visible symptom too: a single step with a shallow stack
+trace is 80--100 packets, so ~1 s on probe-rs against ~0.16 s on OpenOCD, which is what was observed.
 
-The counters travel as an `rttStats` funnel event rather than on the Agent's stderr, which
-`ProxyHelper.handleHelperStderr` discards unless `debugFlags.anyFlags` is set -- and that is computed
-_excluding_ the Agent's own flags, so `rspTrace` would not have enabled it. Measuring throughput is a
-feature, not debug noise. The event is **cumulative**; the client subtracts consecutive samples, so a
-dropped one costs one window rather than bytes off the total.
+## Reading the counters
 
-On OpenOCD the CLI run above makes `gated` the leading candidate and the drain cap the least likely,
-since 378 bytes against a 500-byte cap is not a full buffer. The cap is still the cheapest lever
-wherever a server _is_ round-trip bound -- at three round trips per drain, doubling bytes per drain
-very nearly doubles throughput -- and `rttConfig.max_bytes_per_drain` raises it per session, with
-`ReplyRejected` already retrying at half size if a server refuses. Worth a 500 / 1000 / 2000 sweep
-once the counters say which servers those are.
+The engine reports its own numbers as an `[RTT engine]` line beside the consumer's `[RTT Logs stats]`,
+on the same window, with **no debug flag required** -- they share the per-decoder `stats` option, so a
+session that did not ask for statistics gets neither:
 
-### Caveats on these numbers
+```text
+[RTT engine]     126.1 KB/sec | 84 drains/sec, 1545 B/drain | 284 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 9.29 MB over 75.1s
+[RTT Logs stats] 126.19 KB/sec | 84.0 msgs/sec | window 5.0s, 632.06 KB | total 9.31 MB over 75.3s
+```
 
-- ST-LINK's 89.5 predates the 500-byte drain cap (`SAFE_DRAIN_BYTES`), so expect it to move slightly
-  on a re-run.
-- The ST-LINK gdb-server truncates a reply of exactly 1024 bytes, losing its last checksum digit to a
-  NUL terminator. A 510-byte read produces exactly that, and failed 4 times out of 4. Hence the cap;
-  see `SAFE_DRAIN_BYTES` for the arithmetic and the family of bad sizes.
-- `polling_interval: 1` throughout, which is irrelevant at these rates: the loop does not sleep at all
-  while data is flowing.
-- probe-rs needed a framing fix before it worked at all. It is the only server seen to emit `#` or `$`
-  as a run-length **count** byte -- eight spaces of XML indentation in its `target.xml` encode as
-  ` *$` -- which the manual forbids and GDB nonetheless tolerates, because GDB consumes the byte after
-  `*` inline as it scans. Our codec searched for the terminator positionally first, split the reply at
-  the count byte, and then never retired GDB's pending `qXfer` entry, which at depth 1 shut the
-  Agent's send gate for the whole session. See `scan_frame` in `gdb_rsp/frame.rs`.
+| Field                          | What it tells you                                                      |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `trips/sec`                    | the figure throughput is made of; everything else is derived           |
+| `trips/drain`                  | 3 is ideal; the excess is `B/drain ÷ SizeOfBuffer`, i.e. wrap splits   |
+| `B/drain` well under the cap   | production-limited -- but see the cap section; it still tracks the cap |
+| `idle` climbing                | the ring was empty; throughput is the firmware's rate, not our cost    |
+| `gated` climbing               | the multiplexer refused us -- GDB's traffic, not the probe             |
+| `errors` climbing              | reads rejected and retried at half size, silently doubling their cost  |
+| engine line **above** consumer | loss in the **host**: we drained it, node did not deliver it           |
+
+That last row is worth its place. The poll thread hands bytes to an _unbounded_ `mpsc` channel, so a
+slow client cannot throttle the engine -- it can only make the queue grow. The two lines therefore
+separate "the Agent drained less" from "the host delivered less", which no single figure can.
+
+One consequence of that unbounded channel, recorded for whoever meets it: a client that stalls while
+RTT is flowing makes the Agent accumulate at the full RTT rate, and the drain cap does not bound it.
+
+## Four things we got wrong
+
+Kept because each was believed for a while on the strength of a real-looking number.
+
+**1. `bytes/pass` and `passes/sec` columns, derived from the consumer's `msgs/sec`.** A `msg` there is
+one TCP buffer, not one drain -- `ThroughputMonitor.record` fires once per `data` event, and on a fast
+probe several drains arrive coalesced. The giveaway was the TypeScript row for J-Link: 619 bytes per
+"msg" when that engine never read more than 512 bytes at a time. Any cross-server comparison built on
+those columns was comparing amounts of socket coalescing. Fixed by counting in the engine.
+
+**2. "VS Code costs 12%".** It costs nothing measurable. A production VSIX under VS Code and the CLI
+agree to 0.23%. What cost 12% was the ordinary F5 loop -- an unoptimized build with the node inspector
+attached.
+
+**3. Every VS Code figure, for a while, because `"debugServer"` was set in the firmware project's
+launch.json.** That makes VS Code _attach_ to an already-running debug adapter instead of starting one,
+and the one it attached to had been up for hours from older code. The tell was in the runs themselves:
+no `[RTT engine]` line, although the installed VSIX contained that code. Now diagnosed at the top of
+every session by the two identity lines, which name the build and the process age.
+
+**4. "The cap is not what binds", argued from `B/drain` (381) being below the cap (500).**
+Necessary but nowhere near sufficient: with a blocking writer the cap limits the space released per
+cycle, which bounds what accumulates before the next visit, so it sets the level even when the mean sits
+under it. Measured: `B/drain` is 91% of the cap at 200, 76% at 500, 51% at 1000. Raising it from 500 to
+2000 was worth **+46%**. This was the largest single win in the exercise and it was argued away for a
+day on a sufficient-looking inference.
 
 ## Builtin RTT in Typescript
 
@@ -456,6 +387,35 @@ once the counters say which servers those are.
 [RTT Logs stats] 65.89 KB/sec | 180.3 msgs/sec | window 5.0s, 329.65 KB | total 3.89 MB over 60.1s
 [RTT Logs stats] 66.24 KB/sec | 177.1 msgs/sec | window 5.0s, 331.38 KB | total 4.21 MB over 65.1s
 [RTT Logs stats] 65.25 KB/sec | 179.3 msgs/sec | window 5.0s, 326.45 KB | total 4.53 MB over 70.1s
+
+Wed Sep 30 16:34:03 EDT 2026
+
+[RTT engine] 72.9 KB/sec | 201 drains/sec, 372 B/drain | 676 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 364.3 KB over 5.0s
+info: [RTT Logs stats] 72.92 KB/sec | 201.2 msgs/sec | window 5.0s, 364.67 KB | total 364.67 KB over 5.0s
+[RTT engine] 73.4 KB/sec | 200 drains/sec, 375 B/drain | 674 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 731.7 KB over 10.0s
+info: [RTT Logs stats] 73.61 KB/sec | 200.7 msgs/sec | window 5.0s, 368.28 KB | total 732.95 KB over 10.0s
+[RTT engine] 73.8 KB/sec | 200 drains/sec, 379 B/drain | 673 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 1.08 MB over 15.0s
+info: [RTT Logs stats] 73.85 KB/sec | 199.5 msgs/sec | window 5.0s, 369.39 KB | total 1.08 MB over 15.0s
+[RTT engine] 73.1 KB/sec | 197 drains/sec, 379 B/drain | 665 trips/sec, 3.4 trips/drain | idle 3, gated 0, errors 0 | total 1.43 MB over 20.0s
+info: [RTT Logs stats] 73.14 KB/sec | 197.2 msgs/sec | window 5.0s, 366.06 KB | total 1.43 MB over 20.0s
+[RTT engine] 72.8 KB/sec | 196 drains/sec, 381 B/drain | 660 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 1.79 MB over 25.0s
+info: [RTT Logs stats] 72.89 KB/sec | 196.6 msgs/sec | window 5.0s, 364.80 KB | total 1.79 MB over 25.0s
+[RTT engine] 74.2 KB/sec | 199 drains/sec, 381 B/drain | 672 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 2.15 MB over 30.0s
+info: [RTT Logs stats] 74.28 KB/sec | 199.0 msgs/sec | window 5.0s, 371.86 KB | total 2.15 MB over 30.0s
+[RTT engine] 72.8 KB/sec | 199 drains/sec, 376 B/drain | 669 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 2.51 MB over 35.0s
+info: [RTT Logs stats] 72.84 KB/sec | 198.5 msgs/sec | window 5.0s, 364.33 KB | total 2.51 MB over 35.1s
+[RTT engine] 73.8 KB/sec | 198 drains/sec, 382 B/drain | 668 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 2.87 MB over 40.0s
+info: [RTT Logs stats] 73.86 KB/sec | 198.3 msgs/sec | window 5.0s, 369.82 KB | total 2.87 MB over 40.1s
+[RTT engine] 73.2 KB/sec | 199 drains/sec, 376 B/drain | 671 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 3.22 MB over 45.0s
+info: [RTT Logs stats] 73.34 KB/sec | 199.7 msgs/sec | window 5.0s, 366.90 KB | total 3.23 MB over 45.1s
+[RTT engine] 73.1 KB/sec | 198 drains/sec, 377 B/drain | 669 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 3.58 MB over 50.0s
+info: [RTT Logs stats] 73.25 KB/sec | 198.5 msgs/sec | window 5.0s, 366.42 KB | total 3.59 MB over 50.1s
+[RTT engine] 72.9 KB/sec | 196 drains/sec, 381 B/drain | 660 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 3.94 MB over 55.0s
+info: [RTT Logs stats] 72.93 KB/sec | 196.2 msgs/sec | window 5.0s, 364.96 KB | total 3.94 MB over 55.1s
+[RTT engine] 74.2 KB/sec | 198 drains/sec, 384 B/drain | 668 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 4.30 MB over 60.0s
+info: [RTT Logs stats] 74.40 KB/sec | 198.2 msgs/sec | window 5.0s, 372.32 KB | total 4.31 MB over 60.1s
+[RTT engine] 72.7 KB/sec | 199 drains/sec, 375 B/drain | 669 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 4.66 MB over 65.0s
+info: [RTT Logs stats] 72.61 KB/sec | 198.6 msgs/sec | window 5.0s, 363.10 KB | total 4.66 MB over 65.1s
 ```
 
 ### STLink
@@ -477,6 +437,35 @@ once the counters say which servers those are.
 [RTT Logs stats] 90.81 KB/sec | 181.5 msgs/sec | window 5.0s, 454.23 KB | total 6.18 MB over 70.1s
 [RTT Logs stats] 90.14 KB/sec | 184.0 msgs/sec | window 5.0s, 450.77 KB | total 6.62 MB over 75.1s
 [RTT Logs stats] 89.58 KB/sec | 177.6 msgs/sec | window 5.0s, 448.00 KB | total 7.06 MB over 80.1s
+
+Wed Sep 30 16:26:57 EDT 2026
+
+[RTT engine] 86.3 KB/sec | 231 drains/sec, 382 B/drain | 779 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 431.4 KB over 5.0s
+info: [RTT Logs stats] 86.35 KB/sec | 231.3 msgs/sec | window 5.0s, 431.93 KB | total 431.93 KB over 5.0s
+[RTT engine] 85.0 KB/sec | 228 drains/sec, 382 B/drain | 768 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 856.4 KB over 10.0s
+info: [RTT Logs stats] 85.08 KB/sec | 227.8 msgs/sec | window 5.0s, 425.48 KB | total 857.41 KB over 10.0s
+[RTT engine] 78.1 KB/sec | 211 drains/sec, 379 B/drain | 711 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 1.22 MB over 15.0s
+info: [RTT Logs stats] 78.18 KB/sec | 211.4 msgs/sec | window 5.0s, 390.95 KB | total 1.22 MB over 15.0s
+[RTT engine] 79.0 KB/sec | 209 drains/sec, 387 B/drain | 706 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 1.60 MB over 20.0s
+info: [RTT Logs stats] 78.97 KB/sec | 209.0 msgs/sec | window 5.0s, 395.24 KB | total 1.61 MB over 20.0s
+[RTT engine] 78.7 KB/sec | 211 drains/sec, 382 B/drain | 712 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 1.99 MB over 25.0s
+info: [RTT Logs stats] 78.88 KB/sec | 211.5 msgs/sec | window 5.0s, 394.61 KB | total 1.99 MB over 25.0s
+[RTT engine] 78.9 KB/sec | 214 drains/sec, 377 B/drain | 721 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 2.37 MB over 30.0s
+info: [RTT Logs stats] 79.02 KB/sec | 214.4 msgs/sec | window 5.0s, 395.18 KB | total 2.38 MB over 30.0s
+[RTT engine] 77.2 KB/sec | 208 drains/sec, 381 B/drain | 701 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 2.75 MB over 35.0s
+info: [RTT Logs stats] 77.29 KB/sec | 207.8 msgs/sec | window 5.0s, 386.75 KB | total 2.75 MB over 35.0s
+[RTT engine] 78.1 KB/sec | 211 drains/sec, 379 B/drain | 711 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 3.13 MB over 40.0s
+info: [RTT Logs stats] 77.94 KB/sec | 211.1 msgs/sec | window 5.0s, 389.91 KB | total 3.13 MB over 40.1s
+[RTT engine] 77.7 KB/sec | 209 drains/sec, 381 B/drain | 704 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 3.51 MB over 45.0s
+info: [RTT Logs stats] 77.83 KB/sec | 209.0 msgs/sec | window 5.0s, 389.46 KB | total 3.52 MB over 45.1s
+[RTT engine] 78.0 KB/sec | 209 drains/sec, 382 B/drain | 705 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 3.89 MB over 50.0s
+info: [RTT Logs stats] 78.08 KB/sec | 209.3 msgs/sec | window 5.0s, 390.86 KB | total 3.90 MB over 50.1s
+[RTT engine] 77.8 KB/sec | 209 drains/sec, 381 B/drain | 706 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 4.27 MB over 55.0s
+info: [RTT Logs stats] 77.88 KB/sec | 210.0 msgs/sec | window 5.0s, 389.78 KB | total 4.28 MB over 55.1s
+[RTT engine] 78.9 KB/sec | 213 drains/sec, 379 B/drain | 719 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 4.66 MB over 60.0s
+info: [RTT Logs stats] 78.95 KB/sec | 213.0 msgs/sec | window 5.0s, 394.80 KB | total 4.66 MB over 60.1s
+[RTT engine] 77.5 KB/sec | 210 drains/sec, 379 B/drain | 706 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 5.04 MB over 65.0s
+info: [RTT Logs stats] 77.62 KB/sec | 209.9 msgs/sec | window 5.0s, 388.23 KB | total 5.04 MB over 65.1s
 ```
 
 ### JLink
@@ -496,6 +485,35 @@ once the counters say which servers those are.
 [RTT Logs stats] 80.67 KB/sec | 111.3 msgs/sec | window 5.0s, 403.83 KB | total 4.72 MB over 60.2s
 [RTT Logs stats] 80.73 KB/sec | 112.6 msgs/sec | window 5.0s, 404.20 KB | total 5.12 MB over 65.2s
 [RTT Logs stats] 82.06 KB/sec | 113.2 msgs/sec | window 5.0s, 410.88 KB | total 5.52 MB over 70.2s
+
+Wed Sep 30 16:35:52 EDT 2026
+
+[RTT engine] 76.0 KB/sec | 206 drains/sec, 377 B/drain | 696 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 380.4 KB over 5.0s
+info: [RTT Logs stats] 76.14 KB/sec | 206.7 msgs/sec | window 5.0s, 380.92 KB | total 380.92 KB over 5.0s
+[RTT engine] 76.1 KB/sec | 207 drains/sec, 376 B/drain | 698 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 760.8 KB over 10.0s
+info: [RTT Logs stats] 76.11 KB/sec | 207.9 msgs/sec | window 5.0s, 380.77 KB | total 761.68 KB over 10.0s
+[RTT engine] 77.2 KB/sec | 210 drains/sec, 377 B/drain | 706 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 1.12 MB over 15.0s
+info: [RTT Logs stats] 77.40 KB/sec | 209.6 msgs/sec | window 5.0s, 387.06 KB | total 1.12 MB over 15.0s
+[RTT engine] 77.1 KB/sec | 211 drains/sec, 374 B/drain | 711 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 1.50 MB over 20.0s
+info: [RTT Logs stats] 77.13 KB/sec | 211.3 msgs/sec | window 5.0s, 385.81 KB | total 1.50 MB over 20.0s
+[RTT engine] 76.8 KB/sec | 211 drains/sec, 373 B/drain | 709 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 1.87 MB over 25.0s
+info: [RTT Logs stats] 76.87 KB/sec | 211.4 msgs/sec | window 5.0s, 384.43 KB | total 1.87 MB over 25.0s
+[RTT engine] 77.1 KB/sec | 209 drains/sec, 377 B/drain | 705 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 2.25 MB over 30.0s
+info: [RTT Logs stats] 77.27 KB/sec | 209.5 msgs/sec | window 5.0s, 386.79 KB | total 2.25 MB over 30.0s
+[RTT engine] 77.1 KB/sec | 211 drains/sec, 375 B/drain | 709 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 2.63 MB over 35.0s
+info: [RTT Logs stats] 77.19 KB/sec | 210.6 msgs/sec | window 5.0s, 386.03 KB | total 2.63 MB over 35.0s
+[RTT engine] 77.1 KB/sec | 209 drains/sec, 377 B/drain | 705 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 3.00 MB over 40.0s
+info: [RTT Logs stats] 77.13 KB/sec | 209.4 msgs/sec | window 5.0s, 385.74 KB | total 3.01 MB over 40.1s
+[RTT engine] 75.7 KB/sec | 208 drains/sec, 372 B/drain | 700 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 3.37 MB over 45.0s
+info: [RTT Logs stats] 75.76 KB/sec | 208.2 msgs/sec | window 5.0s, 379.10 KB | total 3.38 MB over 45.1s
+[RTT engine] 76.2 KB/sec | 208 drains/sec, 376 B/drain | 699 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 3.74 MB over 50.0s
+info: [RTT Logs stats] 76.17 KB/sec | 208.0 msgs/sec | window 5.0s, 381.16 KB | total 3.75 MB over 50.1s
+[RTT engine] 76.3 KB/sec | 207 drains/sec, 377 B/drain | 698 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 4.12 MB over 55.0s
+info: [RTT Logs stats] 76.44 KB/sec | 207.2 msgs/sec | window 5.0s, 382.50 KB | total 4.12 MB over 55.1s
+[RTT engine] 76.1 KB/sec | 207 drains/sec, 377 B/drain | 696 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 4.49 MB over 60.0s
+info: [RTT Logs stats] 76.15 KB/sec | 207.0 msgs/sec | window 5.0s, 380.84 KB | total 4.49 MB over 60.1s
+[RTT engine] 77.2 KB/sec | 208 drains/sec, 379 B/drain | 702 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 4.87 MB over 65.0s
+info: [RTT Logs stats] 77.35 KB/sec | 208.6 msgs/sec | window 5.0s, 386.83 KB | total 4.87 MB over 65.1s
 ```
 
 # RTT provided by gdb-server

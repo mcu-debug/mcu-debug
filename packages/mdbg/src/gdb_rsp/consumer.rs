@@ -429,12 +429,17 @@ mod tests {
         let caps = RspCaps::parse_reply("PacketSize=4000");
         assert_eq!(caps.max_read_bytes(), 8192, "budget far above the read below");
         let mut asm = ReadAssembler::new(&caps, 0x2000_0103, 510);
-        assert_eq!(asm.next_request().unwrap(), b"m20000103,1fe".to_vec());
+        // 0x1fd = 509, not the 510 asked for: `safe_read_len` shaves one byte off precisely this
+        // length, because a 510-byte read replies in exactly 1024 bytes -- the size the ST-LINK
+        // gdb-server truncates. The two mechanisms meet here by coincidence and both belong: the
+        // guard stops us asking, and `shrink_budget` is what recovers if a server rejects anyway.
+        assert_eq!(asm.next_request().unwrap(), b"m20000103,1fd".to_vec());
         assert!(asm.shrink_budget());
         assert_eq!(
             asm.next_request().unwrap(),
-            b"m20000103,ff".to_vec(),
-            "255 bytes, not 510 again"
+            b"m20000103,fd".to_vec(),
+            "253: half of the 509 actually asked for, then guarded again because 254 replies in \
+             exactly 512 bytes -- which is the size OpenOCD's own buffer was for years"
         );
     }
 

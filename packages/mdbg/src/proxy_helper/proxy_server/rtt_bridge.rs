@@ -191,6 +191,7 @@ impl ProxyServer {
         }
 
         let endian = if config.big_endian { Endian::Big } else { Endian::Little };
+        let rsp_caps = rsp.caps();
         let consumer = Consumer::new(rsp, RTT_REQUEST_TIMEOUT).with_endian(endian);
 
         // One stream per up channel, minted here and reported back. Down channels travel inbound on
@@ -231,12 +232,19 @@ impl ProxyServer {
                 down_channels: config.down_channels.clone(),
                 idle_interval: Duration::from_millis(config.poll_interval_ms.unwrap_or(1).max(1) as u64),
                 drain: DrainOptions {
-                    max_bytes: Some(
-                        config
-                            .max_bytes_per_drain
-                            .unwrap_or(crate::rtt::SAFE_DRAIN_BYTES as u32)
-                            .max(1) as usize,
-                    ),
+                    // The client's value when it sent one -- that is `debugFlags.rttDrainBytes`, a
+                    // measurement knob rather than a user setting -- otherwise this server's measured
+                    // default. Per-server because the limit is a property of the server's reply
+                    // buffer and cannot be read off `PacketSize`; see `caps::drain_cap_for_server`.
+                    max_bytes: Some(match config.max_bytes_per_drain {
+                        Some(n) if n >= 1 => n as usize,
+                        _ => crate::gdb_rsp::drain_cap(
+                            self.server_type.as_deref().unwrap_or(""),
+                            // Observed from GDB's own negotiation, never probed for (§4.5), and used
+                            // only as a ceiling -- see `drain_cap`.
+                            rsp_caps.packet_size(),
+                        ),
+                    }),
                     ..DrainOptions::default()
                 },
                 // The client's interval, taken from the decoder that asked for statistics, so the

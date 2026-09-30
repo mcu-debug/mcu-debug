@@ -48,6 +48,35 @@ pub struct Chunk {
     pub payload: Vec<u8>,
 }
 
+/// Smallest reply a power-of-two buffer is plausible for. Below this the rule would fire on absurd
+/// sizes (a reply of 8 bytes) for no benefit; OpenOCD's historical buffer was 512, so that is the floor.
+const SMALLEST_PLAUSIBLE_REPLY: usize = 512;
+
+/// Never ask for a length whose hex reply lands *exactly* on a power of two.
+///
+/// A hex `m` reply is `$` + 2n + `#` + 2 = **2n + 4** bytes. A stub whose reply buffer is a power of
+/// two therefore has no room for its NUL terminator at exactly one request length per buffer size --
+/// n = 254, 510, 1022, 2046, 4094, 8190 -- and what comes back is a reply with its last checksum
+/// digit overwritten. Measured on the ST-LINK gdb-server at n = 510, which failed four times out of
+/// four; OpenOCD carried a bug of the same family at 512.
+///
+/// Keeping the *default* drain below the smallest of them was the first fix, and it was incomplete:
+/// a read length is `min(remaining, budget)`, so it lands wherever the caller's data happens to end.
+/// An RTT ring of 1024 bytes reaches `available == 1022` routinely, and then asks for exactly that.
+/// Guarding here -- at the one place a packet's length is chosen -- covers every caller instead, and
+/// costs a single byte on the one length in each thousand that would have failed.
+///
+/// One byte less, never more: `n - 1` cannot itself be poison, since consecutive replies differ by 2
+/// and only one of them can be a power of two.
+pub fn safe_read_len(n: usize) -> usize {
+    let reply = 2 * n + 4;
+    if reply >= SMALLEST_PLAUSIBLE_REPLY && reply.is_power_of_two() {
+        n - 1
+    } else {
+        n
+    }
+}
+
 /// Plan the packets for a read of `len` bytes at `addr`.
 ///
 /// Splits at [`RspCaps::max_read_bytes`]. A zero-length read plans nothing rather
@@ -58,7 +87,7 @@ pub fn plan_read(caps: &RspCaps, addr: u64, len: usize) -> Vec<Chunk> {
     let mut chunks = Vec::new();
     let mut offset = 0usize;
     while offset < len {
-        let this = (len - offset).min(budget);
+        let this = safe_read_len((len - offset).min(budget));
         let a = addr.wrapping_add(offset as u64);
         chunks.push(Chunk {
             addr: a,
@@ -120,7 +149,8 @@ impl ReadAssembler {
 
     /// The next packet to send, or `None` when the read is complete.
     pub fn next_request(&self) -> Option<Vec<u8>> {
-        (self.remaining > 0).then(|| packet::mem_read(self.cursor, self.remaining.min(self.budget), self.kind))
+        (self.remaining > 0)
+            .then(|| packet::mem_read(self.cursor, safe_read_len(self.remaining.min(self.budget)), self.kind))
     }
 
     /// Feed the reply to the packet [`ReadAssembler::next_request`] produced.
@@ -161,7 +191,10 @@ impl ReadAssembler {
     /// budget of 8192, so halving the budget would leave `remaining.min(budget)` at 510 and resend
     /// the identical request -- a retry that cannot possibly behave differently.
     pub fn shrink_budget(&mut self) -> bool {
-        let asking = self.remaining.min(self.budget);
+        // The *guarded* length, because that is what actually went on the wire -- this function's
+        // whole point is to measure from the request rather than the ceiling, and `safe_read_len` is
+        // now part of what the request is.
+        let asking = safe_read_len(self.remaining.min(self.budget));
         if asking <= 1 {
             return false;
         }
@@ -467,5 +500,64 @@ mod tests {
             a.accept(hex.as_bytes()).unwrap();
         }
         assert!(a.next_request().is_none());
+    }
+}
+
+#[cfg(test)]
+mod poison_size_tests {
+    use super::*;
+
+    /// The sizes measured to fail, and the reason they are a family rather than one bad number.
+    #[test]
+    fn every_power_of_two_reply_is_avoided() {
+        for bits in 9..=14 {
+            let poison = ((1usize << bits) - 4) / 2;
+            assert_eq!(
+                safe_read_len(poison),
+                poison - 1,
+                "a read of {poison} replies in exactly {} bytes",
+                1usize << bits
+            );
+        }
+        // 510 is the one observed on hardware: four failures out of four on the ST-LINK gdb-server.
+        assert_eq!(safe_read_len(510), 509);
+    }
+
+    #[test]
+    fn a_guarded_length_is_never_itself_poison() {
+        // Consecutive replies differ by 2, so only one of any adjacent pair can be a power of two --
+        // which is what makes a single decrement sufficient rather than a loop.
+        for n in 1..20_000usize {
+            let safe = safe_read_len(n);
+            let reply = 2 * safe + 4;
+            assert!(
+                !(reply >= SMALLEST_PLAUSIBLE_REPLY && reply.is_power_of_two()),
+                "safe_read_len({n}) = {safe} still replies in {reply}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_lengths_are_untouched() {
+        // The cost has to be a single byte on a single length per buffer size, or this would distort
+        // every measurement taken through it.
+        for n in [1, 2, 100, 500, 511, 509, 1000, 1023, 2000, 4096] {
+            assert_eq!(safe_read_len(n), n, "{n} is not poison and must not be altered");
+        }
+    }
+
+    #[test]
+    fn absurdly_small_replies_are_left_alone() {
+        // 2n + 4 is a power of two at n = 2, 6, 14, 30 ... A stub with a 32-byte reply buffer is not
+        // a thing, and shaving those would fire the rule constantly for no benefit. The floor is 512
+        // because that is the smallest buffer actually seen in the wild -- OpenOCD's.
+        for n in [2, 6, 14, 30, 62, 126] {
+            assert_eq!(safe_read_len(n), n, "{n} is below the plausible-buffer floor");
+        }
+        assert_eq!(
+            safe_read_len(254),
+            253,
+            "but 254 -> 512 is real: that was OpenOCD's buffer"
+        );
     }
 }

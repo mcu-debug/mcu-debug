@@ -24,7 +24,7 @@ function agent(over: Partial<Parameters<typeof agentIdentityLine>[0]> = {}) {
 test("a freshly started adapter names itself and says nothing more", () => {
     const line = adapter();
     assert.match(line, /MCU-Debug 0\.1\.18 \(abc1234\)/);
-    assert.match(line, /adapter pid 31022, up 2s\./);
+    assert.match(line, /debug adapter, pid 31022, up 2s\./);
     assert.doesNotMatch(line, /NOTE/, "a normal session must not carry a warning");
 });
 
@@ -53,7 +53,7 @@ test("the first session through a reused adapter is caught by uptime alone", () 
 
 test("an Agent of the same version and build is reported plainly", () => {
     const line = agent();
-    assert.match(line, /Probe Agent 0\.1\.18 \(abc1234\) — pid 24992\./);
+    assert.match(line, /MCU-Debug 0\.1\.18 \(abc1234\) — proxy \(the Probe Agent\), pid 24992\./);
     assert.doesNotMatch(line, /NOTE|MISMATCH/);
 });
 
@@ -61,7 +61,7 @@ test("same version, different build is the reused-daemon signature and says how 
     // Exactly the case the version check cannot see, because both sides are the same release.
     const line = agent({ build: "0011223" });
     assert.match(line, /same version, different build/);
-    assert.match(line, /this adapter is abc1234/);
+    assert.match(line, /the debug adapter is abc1234/);
     assert.match(line, /--shutdown --instance/);
 });
 
@@ -95,4 +95,18 @@ test("durations stay readable at both ends of the range", () => {
     assert.equal(fmtDuration(3600), "1h 0m");
     assert.equal(fmtDuration(15_120), "4h 12m");
     assert.equal(fmtDuration(-5), "0s");
+});
+
+test("the two lines name their roles, so neither can be read as the other", () => {
+    // They are two processes of one product, lockstep-versioned, and the codebase calls the second
+    // "Probe Agent", "Proxy Agent" and "proxy server" in roughly equal measure -- so the role has to
+    // be in the text rather than left to the reader.
+    const a = adapterIdentityLine({ version: "0.1.18", build: "abc1234", pid: 1, uptimeSec: 1, sessionCount: 1 });
+    const p = agentIdentityLine({ version: "0.1.18", build: "abc1234", pid: 2, ourVersion: "0.1.18", ourBuild: "abc1234" });
+    assert.match(a, /debug adapter/);
+    assert.doesNotMatch(a, /proxy/i, "the adapter line must not mention the proxy at all");
+    assert.match(p, /proxy/);
+    assert.doesNotMatch(p, /debug adapter/, "...and vice versa, in the clean case");
+    // Same leading prefix, so a version difference between the two is visible side by side.
+    assert.ok(a.startsWith("MCU-Debug 0.1.18 (abc1234)") && p.startsWith("MCU-Debug 0.1.18 (abc1234)"));
 });
