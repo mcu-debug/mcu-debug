@@ -18,7 +18,8 @@ import { EventEmitter } from "stream";
 import * as crypto from "crypto";
 import { glob, GlobOptions } from "glob";
 import { isUnsafeRelativeSyncPath, resolveSyncRelativePathForFile } from "./sync-files-utils";
-import { pkgJsonVersion } from "../commit-hash";
+import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
+import { agentIdentityLine } from "./session-identity";
 
 type StreamStatus = "starting" | "connected" | "ready" | "timedOut" | "closed";
 
@@ -130,7 +131,25 @@ export class ProxyClient extends EventEmitter {
                     server_type: this.args.servertype ?? null,
                 },
             };
-            await this.sendControlCommand(cmd);
+            const reply = await this.sendControlCommand(cmd);
+            // Said out loud, not merely logged: this is the identity of the process on the other end
+            // of the connection this session will use, which is stronger evidence than the discovery
+            // anchor -- that describes whichever daemon last wrote the file. A matching version with
+            // a differing build is the signature of a singleton that never exited to pick up a
+            // rebuild, and no version check can see it.
+            const agent = (reply as { initialize?: { version?: string; build?: string; pid?: number } } | undefined)?.initialize;
+            if (agent?.version) {
+                this.session.handleMsg(
+                    Stdout,
+                    agentIdentityLine({
+                        version: agent.version,
+                        build: agent.build ?? "",
+                        pid: agent.pid ?? 0,
+                        ourVersion: pkgJsonVersion,
+                        ourBuild: gitCommitHash,
+                    }) + "\n",
+                );
+            }
             this.logDebug(`Proxy session initialized`);
             this.cwd = cwd;
             return true;

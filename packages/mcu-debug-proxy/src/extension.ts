@@ -251,6 +251,9 @@ function traceLaunchOutcome(policy: ProxyLaunchPolicy, result: ProxyLaunchResult
         port: result.serverPort,
         daemonPid: result.pid,
         daemonVersion: daemon ?? "unknown",
+        // The field that catches case 1 in the comment above -- a rebuild that did not take effect.
+        // `version` cannot, because every build between two releases shares it.
+        daemonBuild: result.build ?? "unknown",
         extVersion,
         hosts: result.hosts,
         bindErrors: result.bindErrors ?? [],

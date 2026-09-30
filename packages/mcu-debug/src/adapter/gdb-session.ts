@@ -28,6 +28,7 @@ import { BreakpointManager } from "./breakpoints";
 import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
+import { adapterIdentityLine } from "./session-identity";
 import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse, LiveWatchClientReadyResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
@@ -72,6 +73,14 @@ export class GDBDebugSession extends SeqDebugSession {
     public rttTcpServer: RttTcpServer;
     /** Set only when the Agent's RTT engine is the one running. See `chooseRttEngine`. */
     public rttProxyBridge: RttProxyBridge | null = null;
+    /**
+     * Sessions this adapter *process* has served.
+     *
+     * Static because that is the thing being counted: an adapter started per session never sees
+     * two, so a count above one means this process was reused -- which is what `"debugServer"`
+     * does and what no version string can reveal.
+     */
+    private static sessionsServed = 0;
     public memoryRequests: MemoryRequests;
     public suppressStoppedEvents: boolean = true;
     public continuing: boolean = false;
@@ -1430,7 +1439,20 @@ export class GDBDebugSession extends SeqDebugSession {
             // this.on("configurationDone", async () => {
             //     await this.postInitlizedEvent();
             // });
-            this.handleMsg(Stdout, `MCU-Debug: Embedded MCU debug adapter version ${pkgJsonVersion} (${gitCommitHash}). ` + "Usage info: https://mcu-debug.github.io/mcu-debug/");
+            // First line of the session, and deliberately so: it names the processes this session is
+            // actually made of, which is the question every "my change did not take effect" hunt
+            // starts from. See `session-identity.ts` for the three that cost an evening.
+            GDBDebugSession.sessionsServed++;
+            this.handleMsg(
+                Stdout,
+                adapterIdentityLine({
+                    version: pkgJsonVersion,
+                    build: gitCommitHash,
+                    pid: process.pid,
+                    uptimeSec: process.uptime(),
+                    sessionCount: GDBDebugSession.sessionsServed,
+                }) + " Usage info: https://mcu-debug.github.io/mcu-debug/",
+            );
             if (this.args.debugFlags.anyFlags) {
                 this.handleMsg(Stdout, "Debug Flags Enabled. launch.json after processing by VSCode and MCU-Debug:\n");
                 const jsonStr = JSON.stringify(this.args, null, 2);

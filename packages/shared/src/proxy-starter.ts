@@ -124,6 +124,7 @@ export async function startOrReuseProxyServerOnWslHost(proxyPolicy: ProxyLaunchP
                     hosts: discovery.hosts ?? [],
                     bindErrors: fmtBindErrors(discovery),
                     version: discovery.version,
+                    build: discovery.build,
                     pid: discovery.pid,
                     // The token the RUNNING proxy reports — on reuse this is the
                     // first launcher's token, not our NONCE.
@@ -426,6 +427,7 @@ export function startProxyServerWithPolicy(proxyPolicy: ProxyLaunchPolicy, proxy
                         // The daemon that answered, which on the reuse path is not the binary we
                         // just ran. Callers use it to notice they are on a stale daemon.
                         version: json.version,
+                        build: json.build,
                         pid: json.pid,
                     };
                     resolve(baseResults);

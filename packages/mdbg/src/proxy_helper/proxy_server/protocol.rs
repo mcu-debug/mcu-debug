@@ -626,7 +626,20 @@ pub struct SerialPortInfo {
 #[ts(export, export_to = "proxy-protocol/")]
 pub enum ControlResponseData {
     #[serde(rename = "initialize")]
-    Initialize { version: String, server_cwd: String },
+    Initialize {
+        version: String,
+        /// Which *build* of `version` is answering: short commit hash, plus `+dirty`.
+        ///
+        /// Reported on the connection the session will actually use, which makes it the strongest
+        /// identity available -- stronger than the discovery anchor, which describes whichever
+        /// daemon last wrote the file. `version` cannot answer "did my rebuild take effect",
+        /// because every build between two releases shares it.
+        build: String,
+        /// The Agent process serving this session. A pid that has not changed across a rebuild is
+        /// the signature of a daemon that never exited to pick it up.
+        pid: u32,
+        server_cwd: String,
+    },
 
     #[serde(rename = "allocatePorts")]
     AllocatePorts { ports: Vec<PortReserved> },

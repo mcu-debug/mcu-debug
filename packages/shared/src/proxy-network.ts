@@ -75,6 +75,16 @@ export interface ProxyLaunchResults {
      * answered, or the launch failed.
      */
     version?: string;
+    /**
+     * Which *build* of `version` is answering: short commit hash, plus `+dirty`.
+     *
+     * The field `version` cannot answer "did my rebuild take effect", because every build between
+     * two releases reports the same string -- which is exactly when a reused daemon is most likely.
+     * A daemon started before a rebuild reports the same `version` and a different `build`.
+     *
+     * Undefined from a proxy predating the field, or from one built with no git available.
+     */
+    build?: string;
     /** PID of the daemon serving us. Same caveat as `version`: it may be a reused daemon. */
     pid?: number;
     /** Set when ProxyLaunchPolicy.reverseTunnelSshHost was provided.

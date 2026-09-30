@@ -123,6 +123,14 @@ pub struct Endpoint {
     pub pid: u32,
     /// semver of the running proxy binary (`CARGO_PKG_VERSION`).
     pub version: String,
+    /// Which *build* of that version is running: short commit hash, plus `+dirty`.
+    ///
+    /// `version` cannot answer "am I talking to the binary I just built", because every build
+    /// between two releases reports the same string. This can, and it is the field that matters
+    /// during development -- a daemon started before a rebuild reports the same `version` and a
+    /// different `build`. Empty from a proxy predating the field.
+    #[serde(default)]
+    pub build: String,
     /// Port the funnel/control listener is bound to.
     pub port: u16,
     /// Address the listener is actually bound to (e.g. `127.0.0.1`, `0.0.0.0`, or a
@@ -511,6 +519,15 @@ pub fn self_version() -> String {
     std::env::var("MDBG_PROXY_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
 }
 
+/// This binary's build: the commit it was compiled from, stamped by `build.rs`.
+///
+/// Reported rather than enforced. A build difference between a client and a reused daemon is
+/// ordinary during development and is usually something the developer wants to *see* rather than
+/// be stopped by; `version` remains the compatibility gate.
+pub fn self_build() -> &'static str {
+    env!("MDBG_BUILD")
+}
+
 /// Read and parse `endpoint.json`.
 pub fn read_endpoint(path: &std::path::Path) -> Result<Endpoint> {
     let bytes = std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
@@ -630,6 +647,10 @@ pub struct Discovery {
     /// about, a parse error is not.
     #[serde(default)]
     pub version: String,
+    /// The build behind that version, with the same reuse caveat: on the reuse path this is the
+    /// *running* proxy's build, not ours. Empty from a proxy predating the field.
+    #[serde(default)]
+    pub build: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     /// Every address the proxy accepts on. The caller compares what it asked for
@@ -648,6 +669,7 @@ pub fn print_discovery(
     port: u16,
     pid: u32,
     version: &str,
+    build: &str,
     token: Option<&str>,
     hosts: &[String],
     bind_errors: Vec<BindError>,
@@ -657,6 +679,7 @@ pub fn print_discovery(
         port,
         pid,
         version: version.to_string(),
+        build: build.to_string(),
         token: token.map(|t| t.to_string()),
         hosts: hosts.to_vec(),
         bind_errors,
@@ -669,7 +692,7 @@ pub fn print_discovery(
             log::error!("failed to serialize discovery: {e}");
             let out_token = token.map(|t| format!(", \"token\": \"{t}\"")).unwrap_or_default();
             println!(
-                "{{\"status\": \"ready\", \"port\": {port}, \"pid\": {pid}, \"version\": \"{version}\"{out_token}}}"
+                "{{\"status\": \"ready\", \"port\": {port}, \"pid\": {pid}, \"version\": \"{version}\", \"build\": \"{build}\"{out_token}}}"
             );
         }
     }
@@ -707,6 +730,7 @@ mod discovery_version_tests {
             port: 5689,
             pid: 42,
             version: version.to_string(),
+            build: "abc1234".to_string(),
             token: Some("deadbeef".to_string()),
             hosts: vec!["127.0.0.1".to_string()],
             bind_errors: Vec::new(),
@@ -766,6 +790,7 @@ mod endpoint_bind_host_tests {
                 instance: "default".to_string(),
                 pid: 1,
                 version: "0.1.9".to_string(),
+                build: "abc1234".to_string(),
                 port: 5000,
                 bind_host: host.to_string(),
                 hosts: vec!["127.0.0.1".to_string(), host.to_string()],
@@ -1087,6 +1112,7 @@ mod holder_tests {
             instance: "test".into(),
             pid,
             version: "0.1.16".into(),
+            build: "abc1234".into(),
             port: 5000,
             bind_host: "127.0.0.1".into(),
             hosts: vec!["127.0.0.1".into()],

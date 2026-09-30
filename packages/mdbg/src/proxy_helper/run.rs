@@ -792,6 +792,7 @@ fn reuse_existing(ep: &singleton::Endpoint, args: &ProxyArgs) {
         ep.port,
         ep.pid,
         &ep.version,
+        &ep.build,
         Some(ep.token.as_str()),
         &hosts,
         bind_errors,
@@ -1023,6 +1024,7 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         instance: instance.name.clone(),
         pid: std::process::id(),
         version: singleton::self_version(),
+        build: singleton::self_build().to_string(),
         port: local_port,
         // The address a client most likely wants to dial: what was asked for, if it
         // bound, else the primary. `hosts` below is the complete, authoritative list.
@@ -1160,6 +1162,7 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         local_port,
         std::process::id(),
         &singleton::self_version(),
+        singleton::self_build(),
         Some(token.as_str()),
         &bound_hosts,
         std::mem::take(&mut bind_errors),

@@ -215,9 +215,20 @@ fn test_proxy_server() {
     });
     let response: ControlResponse = serde_json::from_str(&msg).unwrap();
     assert!(response.success);
-    if let Some(ControlResponseData::Initialize { version, server_cwd }) = response.data {
+    if let Some(ControlResponseData::Initialize {
+        version,
+        build,
+        pid,
+        server_cwd,
+    }) = response.data
+    {
         assert_eq!(version, CURRENT_VERSION);
         assert!(server_cwd.contains("test-uid"));
+        // Identity of the process actually answering, so a client can tell a rebuild that took
+        // effect from a daemon that never exited. `build` is a git hash or "unknown"; either way
+        // it must not be empty, because an empty string is what a peer predating the field sends.
+        assert!(!build.is_empty(), "the Agent must name its build");
+        assert_eq!(pid, std::process::id());
     } else {
         panic!("Expected Initialize response data");
     }

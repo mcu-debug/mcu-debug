@@ -7,7 +7,26 @@ import type { SerialPortInfo } from "./SerialPortInfo";
 import type { StreamStatus } from "./StreamStatus";
 
 export type ControlResponseData =
-    | { initialize: { version: string; server_cwd: string } }
+    | {
+          initialize: {
+              version: string;
+              /**
+               * Which *build* of `version` is answering: short commit hash, plus `+dirty`.
+               *
+               * Reported on the connection the session will actually use, which makes it the strongest
+               * identity available -- stronger than the discovery anchor, which describes whichever
+               * daemon last wrote the file. `version` cannot answer "did my rebuild take effect",
+               * because every build between two releases shares it.
+               */
+              build: string;
+              /**
+               * The Agent process serving this session. A pid that has not changed across a rebuild is
+               * the signature of a daemon that never exited to pick it up.
+               */
+              pid: number;
+              server_cwd: string;
+          };
+      }
     | { allocatePorts: { ports: Array<PortReserved> } }
     | { startGdbServer: { pid: number } }
     | { streamStatus: { stream_id: number; status: StreamStatus; msg_seq: number } }
