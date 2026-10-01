@@ -104,10 +104,7 @@
       "outputCapture": "std",
       "args": [
         "-c",
-        "st",
-        "--batch",
-        "--script",
-        "commands.txt",
+        "open",
         "-l",
         "/tmp/mcu-debug.log"
       ],

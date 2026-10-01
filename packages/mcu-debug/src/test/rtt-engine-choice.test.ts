@@ -12,7 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { chooseRttEngine, upChannels, rttAddressLooksUsable, formatRttEngineStats, RttEngineStats, statsIntervalMs } from "../adapter/rtt-proxy-bridge";
-import { RTTConfiguration } from "../adapter/servers/common";
+import { RTTConfiguration, createPortName } from "../adapter/servers/common";
 
 function config(over: Partial<RTTConfiguration> = {}): RTTConfiguration {
     return { enabled: true, decoders: [], ...over } as RTTConfiguration;
@@ -95,7 +95,22 @@ test("an unresolved control block address is refused", () => {
 // for the drain rate, when a `msg` there is one TCP buffer and several drains often share one.
 
 function sample(over: Partial<RttEngineStats> = {}): RttEngineStats {
-    return { bytes_up: 0, bytes_down: 0, drains: 0, idle: 0, gated: 0, errors: 0, reads: 0, writes: 0, elapsed_ms: 0, ...over };
+    return {
+        bytes_up: 0,
+        bytes_down: 0,
+        drains: 0,
+        idle: 0,
+        gated: 0,
+        errors: 0,
+        err_invalid: 0,
+        err_rejected: 0,
+        err_timeout: 0,
+        err_other: 0,
+        reads: 0,
+        writes: 0,
+        elapsed_ms: 0,
+        ...over,
+    };
 }
 
 test("the window is the difference between two cumulative samples", () => {
@@ -138,7 +153,7 @@ test("the three diagnostic counters are reported as window deltas", () => {
     // had the connection, errors means reads are being retried at half size.
     const prev = sample({ idle: 10, gated: 20, errors: 1, elapsed_ms: 5000 });
     const line = formatRttEngineStats(sample({ idle: 15, gated: 26, errors: 4, elapsed_ms: 10_000 }), prev);
-    assert.match(line, /idle 5, gated 6, errors 3/);
+    assert.match(line, /idle 5, gated 6, unusable 0, errors 3/);
 });
 
 test("the running total switches to MB where KB stops being readable", () => {
@@ -194,4 +209,40 @@ test("a decoder that asks for stats without an interval falls back to the defaul
 test("a nonsensical interval is ignored rather than becoming a busy loop", () => {
     const cfg = config({ decoders: [{ type: "pipe", port: 0, stats: true, statsInterval: 0 }] as any });
     assert.equal(statsIntervalMs(cfg), 5000);
+});
+
+test("the error count carries its breakdown, and only when there is one", () => {
+    // One total cannot be acted on: a failed descriptor validation, a mangled reply and a timeout
+    // are three unrelated problems. 76 errors in the first five seconds of a J-Link run were
+    // indistinguishable until this existed, because the reason went to a daemon's /dev/null stderr.
+    const clean = formatRttEngineStats(sample({ errors: 0, elapsed_ms: 5000 }), null);
+    assert.doesNotMatch(clean, /\(/, "no breakdown when nothing failed");
+
+    // `invalid` is deliberately NOT inside `errors`: an unusable control block is the firmware not
+    // having initialised yet, which must survive a coffee break rather than count toward giving up.
+    const unusable = formatRttEngineStats(sample({ err_invalid: 76, elapsed_ms: 5000 }), null);
+    assert.match(unusable, /unusable 76, errors 0/);
+    assert.doesNotMatch(unusable, /\(/, "an unusable block is not an error kind");
+
+    const mixed = formatRttEngineStats(sample({ errors: 5, err_rejected: 3, err_timeout: 2, elapsed_ms: 5000 }), null);
+    assert.match(mixed, /errors 5 \(rejected 3, timeout 2\)/);
+});
+
+test("the breakdown is a window delta like everything else on the line", () => {
+    const prev = sample({ errors: 76, err_invalid: 76, elapsed_ms: 5000 });
+    const now = sample({ errors: 80, err_invalid: 76, err_rejected: 4, elapsed_ms: 10_000 });
+    const line = formatRttEngineStats(now, prev);
+    assert.match(line, /errors 4 \(rejected 4\)/, "the 76 invalid belong to the previous window");
+});
+
+// ── Which gdb stream RTT runs on ──────────────────────────────────────────────
+
+test("the controller stream follows targetProcessor, not core 0", () => {
+    // A 2-core PSoC6 with `targetProcessor: 1`: GDB connects to `gdbPort1`, so that is the stream the
+    // Agent's mux owns. `gdbPort` is allocated and never connected, so it has no multiplexer at all.
+    // Naming it produced "stream 3 has no RSP multiplexer; Agent-side RTT needs debugFlags.rspMux" --
+    // a flag that could not have helped, since the mux was present on a different stream.
+    assert.equal(createPortName(0), "gdbPort");
+    assert.equal(createPortName(1), "gdbPort1");
+    assert.equal(createPortName(2), "gdbPort2");
 });

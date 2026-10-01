@@ -7,6 +7,7 @@ import {
     SWOConfigureEvent,
     parseHexOrDecInt,
     RTTServerHelper,
+    RTTConfiguration,
     genDownloadCommands,
     SessionMode,
     TcpPortDef,
@@ -66,17 +67,7 @@ export class JLinkServerController extends EventEmitter implements GDBServerCont
         }
         if (this.args.rttConfig.enabled && this.args.pvtSessionMode !== SessionMode.Reset) {
             const cfg = this.args.rttConfig;
-            if (this.args.request === "launch" && cfg.clearSearch) {
-                // The RTT control block may contain a valid search string from a previous run
-                // and RTT ends up outputting garbage. Or, the server could read garbage and
-                // misconfigure itself. Following will clear the RTT header which
-                // will cause the server to wait for the server to actually be initialized
-                let addr = parseHexOrDecInt(cfg.address ?? "0");
-                for (let bytes = 0; bytes < (cfg.searchId ?? "").length; bytes += 4) {
-                    commands.push(`interpreter-exec console "monitor exec memU32 0x${addr.toString(16)} = 0"`);
-                    addr += 4;
-                }
-            }
+            commands.push(...RTTServerHelper.clearSearchCommands(this.args));
             commands.push(`interpreter-exec console "monitor exec SetRTTAddr ${cfg.address}"`);
         }
         return commands;

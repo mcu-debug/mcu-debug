@@ -225,6 +225,10 @@ mod tests {
         /// Replies to hand back, in order. A `None` entry means "say nothing", to test a timeout.
         replies: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
         to_channel: Sender<Vec<u8>>,
+        /// When set, the next reply goes out with its **last byte replaced by NUL** -- and is then
+        /// cleared, so exactly one reply is damaged. Reproduces the hardware failure described on
+        /// `corrupted_checksum_is_detected_and_the_read_still_completes`.
+        corrupt_next: Arc<AtomicBool>,
         /// False until the handshake is done. GDB's own packets reach this server too, and while
         /// it was answering them from the script the first two script entries were consumed by
         /// `qSupported` and `?` -- so every test timed out waiting for a reply that had already
@@ -270,7 +274,15 @@ mod tests {
             // An exhausted script and an explicit `None` both mean "say nothing", which is how
             // a timeout is tested.
             if let Some(reply) = next {
-                let _ = self.to_channel.send(encode_packet(&reply));
+                let mut framed = encode_packet(&reply);
+                if self.corrupt_next.swap(false, Ordering::SeqCst) {
+                    // `$...#XY` -> `$...#X\0`. Not a truncation: the byte count is unchanged and
+                    // only the final checksum digit is destroyed, which is what was seen on the wire.
+                    if let Some(last) = framed.last_mut() {
+                        *last = 0;
+                    }
+                }
+                let _ = self.to_channel.send(framed);
             }
             Ok(bytes.len())
         }
@@ -288,14 +300,25 @@ mod tests {
     }
 
     /// A channel whose server answers `replies` in order, already past the handshake.
-    fn scripted(replies: Vec<Option<Vec<u8>>>) -> (RspChannel, Arc<Mutex<Vec<Vec<u8>>>>) {
+    /// What the server was asked, in order.
+    type SeenRequests = Arc<Mutex<Vec<Vec<u8>>>>;
+
+    fn scripted(replies: Vec<Option<Vec<u8>>>) -> (RspChannel, SeenRequests) {
+        let (ch, seen, _corrupt) = scripted_corruptible(replies);
+        (ch, seen)
+    }
+
+    /// As [`scripted`], plus the handle that damages the next reply's checksum.
+    fn scripted_corruptible(replies: Vec<Option<Vec<u8>>>) -> (RspChannel, SeenRequests, Arc<AtomicBool>) {
         let (tx, rx) = channel();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let armed = Arc::new(AtomicBool::new(false));
+        let corrupt_next = Arc::new(AtomicBool::new(false));
         let server = ScriptedServer {
             seen: Arc::clone(&seen),
             replies: Arc::new(Mutex::new(replies)),
             to_channel: tx.clone(),
+            corrupt_next: Arc::clone(&corrupt_next),
             armed: Arc::clone(&armed),
         };
         let reader = ServerReader { rx, buf: Vec::new() };
@@ -336,7 +359,7 @@ mod tests {
         }
         seen.lock_recover().clear(); // GDB's own packets are not what these tests assert on
         armed.store(true, Ordering::SeqCst);
-        (ch, seen)
+        (ch, seen, corrupt_next)
     }
 
     fn consumer(ch: &RspChannel) -> Consumer {
@@ -529,6 +552,7 @@ mod tests {
             seen: Arc::new(Mutex::new(Vec::new())),
             replies: Arc::new(Mutex::new(Vec::new())),
             to_channel: tx,
+            corrupt_next: Arc::new(AtomicBool::new(false)),
             armed: Arc::new(AtomicBool::new(false)),
         };
         let reader = ServerReader { rx, buf: Vec::new() };
@@ -549,6 +573,66 @@ mod tests {
         assert!(c.ready(), "the scripted handshake left the target stopped");
         ch.feed_from_gdb(&encode_packet(b"vCont;c"));
         assert!(!c.ready(), "a resume must shut the gate for a halted-only server");
+        ch.shutdown("test over");
+    }
+    /// The hardware failure this whole family of guards exists for, reproduced without hardware.
+    ///
+    /// A 510-byte read replies in exactly `2n + 4 = 1024` bytes, and ST's bundled OpenOCD returned
+    /// those with the final checksum digit overwritten by a NUL -- `…f4a0f#b\0` -- four times out of
+    /// four. [`crate::gdb_rsp::chunk::safe_read_len`] now keeps every request off 510, which fixes it
+    /// and *also* makes the original unreachable: there is no longer a way to ask a real server for
+    /// the size that provoked it. So this stands in for the board, and keeps the half that matters --
+    /// the recovery -- tested rather than assumed.
+    ///
+    /// What is asserted is that a damaged reply is **detected and recovered from**, not merely
+    /// detected. Returning an error to the caller would be a regression dressed as correctness: a
+    /// read is idempotent, so the only acceptable outcome is the right bytes.
+    ///
+    /// The *other* half -- that 510 never reaches the wire -- is not tested here, deliberately. This
+    /// rig advertises `PacketSize=100`, so reads are capped at 128 bytes and a request for 510 is
+    /// chunked long before any length rule sees it; a test written at this level passed with
+    /// `safe_read_len` stubbed out to a no-op, which is the definition of testing nothing. It lives
+    /// in `chunk.rs` instead, where `poison_size_tests` sweeps every length to 20,000 and
+    /// `shrinking_is_measured_from_the_request_not_the_budget_ceiling` asserts the bytes of the
+    /// emitted packet (`m20000103,1fd` -- 509, not 510) through the real request builder.
+    #[test]
+    fn corrupted_checksum_is_detected_and_the_read_still_completes() {
+        let data: Vec<u8> = (0..128u16).map(|i| (i * 7 + 1) as u8).collect();
+        let hex = |bytes: &[u8]| -> Vec<u8> { bytes.iter().flat_map(|b| format!("{b:02x}").into_bytes()).collect() };
+        // `PacketSize=100` in the rig is 0x100, so 128 bytes per read: the first request asks for all
+        // 128 and is answered with a clobbered checksum; `shrink_budget` then halves to 64, so the
+        // retry takes two packets. Three replies, of which only the first is damaged.
+        let (ch, seen, corrupt) =
+            scripted_corruptible(vec![Some(hex(&data)), Some(hex(&data[..64])), Some(hex(&data[64..]))]);
+        corrupt.store(true, Ordering::SeqCst);
+
+        let got = consumer(&ch)
+            .read_memory(0x2000_0000, 128)
+            .expect("the read must recover");
+        assert_eq!(
+            got, data,
+            "recovery must yield the real bytes, not a truncation of them"
+        );
+
+        let asked = seen.lock_recover().clone();
+        let lens: Vec<String> = asked
+            .iter()
+            .map(|p| {
+                String::from_utf8_lossy(p)
+                    .trim_matches(|c| c == '$' || c == '+')
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            asked.len(),
+            3,
+            "one rejected request and two that replaced it: {lens:?}"
+        );
+        // And the retry asked for a *different length*, which is the point of shrinking: resending
+        // the identical packet is no retry at all when the fault depends on the reply's size.
+        assert!(lens[0].starts_with("m20000000,80"), "{lens:?}");
+        assert!(lens[1].starts_with("m20000000,40"), "{lens:?}");
+        assert!(lens[2].starts_with("m20000040,40"), "{lens:?}");
         ch.shutdown("test over");
     }
 }

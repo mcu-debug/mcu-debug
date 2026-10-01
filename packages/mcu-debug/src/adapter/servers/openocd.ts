@@ -5,6 +5,7 @@ import {
     SWOConfigureEvent,
     createPortName,
     RTTServerHelper,
+    RTTConfiguration,
     genDownloadCommands,
     CTIAction,
     getGDBSWOInitCommands,
@@ -133,13 +134,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
         const usingRtt = this.args.rttConfig.enabled && !this.args.rttConfig.useBuiltinRTT?.enabled;
         if (usingRtt && this.args.pvtSessionMode !== SessionMode.Reset) {
             const cfg = this.args.rttConfig;
-            if (this.args.request === "launch" && cfg.clearSearch) {
-                // The RTT control block may contain a valid search string from a previous run
-                // and RTT ends up outputting garbage. Or, the server could read garbage and
-                // misconfigure itself. Following will clear the RTT header which
-                // will cause the server to wait for the server to actually be initialized
-                commands.push(`interpreter-exec console "monitor mwb ${cfg.address} 0 ${cfg.searchId?.length}"`);
-            }
+            commands.push(...RTTServerHelper.clearSearchCommands(this.args));
             commands.push(`interpreter-exec console "monitor rtt setup ${cfg.address} ${cfg.searchSize} {${cfg.searchId}}"`);
             if ((cfg.polling_interval ?? 0) > 0) {
                 commands.push(`interpreter-exec console "monitor rtt polling_interval ${cfg.polling_interval}"`);

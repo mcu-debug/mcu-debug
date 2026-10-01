@@ -179,57 +179,66 @@ impl ServerTier {
 /// **Not derivable from `PacketSize`.** The manual is specific about what that field means -- "the
 /// remote stub can accept packets up to at least bytes length. GDB will send packets up to this size
 /// for bulk transfers, and will never send larger packets" -- so it bounds what the *stub receives*
-/// and says nothing whatever about the size of reply it can produce. ST-LINK is the proof: it
-/// advertises plenty and truncates a reply of exactly 1024 bytes. OpenOCD advertises `PacketSize=4000`
-/// (16 KB) on the same grounds. A read size must therefore be a measured per-server fact, which is
-/// what this is.
+/// and says nothing whatever about the size of reply it can produce. OpenOCD advertises
+/// `PacketSize=4000` (hex: 16384 bytes) and has historically mishandled a request far below that. So
+/// a read size is a measured per-server fact, which is what this is.
 ///
-/// **And the hazard is specific sizes, not "large".** A hex `m` reply is `$` + 2n + `#` + 2 = 2n + 4
-/// bytes, so a stub whose reply buffer is a power of two has no room for its NUL terminator at
-/// exactly n = 510, 1022, 2046, 4094 -- one poison value per buffer size. Those are the numbers to
-/// avoid, and staying below the smallest of them is only the cheapest way to do it, not the only one.
-/// 1000 (reply 2004) and 2000 (reply 4004) are both clear of every boundary up to 16 KB.
+/// **The hazard is specific sizes, not "large", and it was seen on OpenOCD.** A hex `m` reply is
+/// `$` then 2n hex digits then `#` and two more, i.e. **2n + 4** bytes -- so a stub whose reply
+/// buffer is a power of two has no room for its
+/// NUL terminator at exactly one request length per buffer size: n = 254, 510, 1022, 2046, 4094. The
+/// observed case was a 510-byte read against ST's bundled OpenOCD, whose replies came back with the
+/// last checksum digit replaced by NUL -- `…f4a0f#b\0` -- four times out of four. It is the same
+/// family as the 512-byte memory-request bug OpenOCD carried for years, fixed upstream by this
+/// project's author.
+///
+/// An earlier version of this comment pinned that failure on the **ST-LINK** gdb-server. That was a
+/// misattribution: the run in question was OpenOCD from ST's installation, and ST-LINK has since been
+/// measured serving replies of 3 KB and more without a single rejection. Keeping the note because the
+/// hazard is real and the attribution is what was wrong.
+///
+/// [`crate::gdb_rsp::chunk::safe_read_len`] now keeps every request off those lengths, at the one
+/// place a packet's length is chosen. Which also means the hazard is no longer reproducible through
+/// the normal path -- reproducing it deliberately needs that guard bypassed.
 ///
 /// A too-large value here is self-correcting and a too-small one is silent:
 /// [`crate::gdb_rsp::RspError::ReplyRejected`] retries a refused read at half the size, so a server
-/// that cannot manage the amount asked costs round trips and shows up as `errors` climbing in the RTT
-/// statistics. That asymmetry is the argument for measuring rather than guessing low for ever.
+/// that cannot manage the amount asked costs round trips and shows up as `errors ... (rejected N)` in
+/// the RTT statistics. That asymmetry is the argument for measuring rather than guessing low for ever.
 ///
-/// Worth knowing before tuning this: **the target's ring buffer usually binds first.** `defmt-rtt`
-/// defaults to `BUF_SIZE = 1024`, so no drain can ever see more than 1023 bytes and any cap at or
-/// above that is unreachable. Raising this past ~1000 needs `DEFMT_RTT_BUFFER_SIZE` raised too.
+/// Worth knowing before tuning this: **the target's ring buffer binds first.** `defmt-rtt` defaults
+/// to `BUF_SIZE = 1024`, so no drain can see more than 1023 bytes and any cap at or above that is
+/// unreachable -- on a stock ring, 1000 and 4000 measure the same. The numbers below come from runs
+/// with `DEFMT_RTT_BUFFER_SIZE = 4096`, where the cap is what binds.
 pub fn drain_cap_for_server(server_type: &str) -> usize {
     match server_type.to_ascii_lowercase().as_str() {
-        // Stays 500, and not from caution: OpenOCD carried a 512-byte memory-request bug for years
-        // (fixed upstream, by the author of this project), and the versions in the wild are whatever
-        // a vendor's IDE installer happens to ship. A macOS update replacing ST's bundled OpenOCD
-        // mid-benchmark is exactly how little control there is over which one runs.
+        // Stays 500, and this is the server the poison-size failure was actually seen on. The
+        // versions in the wild are whatever a vendor's IDE installer happens to ship -- a macOS
+        // update replaced ST's bundled OpenOCD mid-benchmark, which is how little control there is
+        // over which one runs. Raising this wants its own sweep against a known-recent build.
         "openocd" => 500,
-        // 1000 is measured, not assumed: a 75-second ST-LINK run at this size moved 87.2 KB/s
-        // against 78.0 at 500 -- **+12%** -- with `errors 0` throughout. That also resolved what had
-        // kept it at 500: its known failure at *exactly* 1024 reply bytes could have meant a
-        // 1024-byte reply buffer, in which case a larger read would be worse. Replies above 1024 went
-        // through clean, so it is a boundary bug and not a buffer limit.
+        // 2000, measured on a 4096-byte ring: 87.6 KB/s at 500, 108.8 at 1000, **126.1 at 2000**,
+        // 132.4 at 3000, 133.3 at 4000. Flat past 2000 (+5.0%, then +0.6%) while the reply a single
+        // read produces keeps doubling, so 2000 is the knee. At 4000 a read replies in 8 KB, and
+        // §4.2 invariant 2 is that GDB never waits on us -- at depth 1 its worst case is one of our
+        // reads, so that is ~15 ms bought for 0.6%; 2000 costs GDB ~8 ms.
         //
-        // Not raised further, because the *target* binds first: `defmt-rtt` defaults to a 1024-byte
-        // ring, so no drain can see more than 1023 bytes and a 2000-byte cap measured the same 86.4
-        // KB/s as 1000. Going higher needs `DEFMT_RTT_BUFFER_SIZE` raised first, and then this should
-        // be derived from the observed `PacketSize` rather than guessed again.
+        // Drains averaged 1545 bytes there, i.e. replies of ~3 KB, with `errors 0` throughout. So
+        // whatever ST-LINK's reply limit is, it is comfortably past 3 KB.
+        "stlink" => 2000,
+        // 2000, and measured the same way: 114.0 KB/s at 1000 against **134.2 at 2000**, +18%, which
+        // makes J-Link the fastest of the four. Drains averaged 1629 bytes -- replies of 3262 -- for
+        // fifty seconds with `errors 0`.
         //
-        // J-Link inherits it unmeasured. Defensible now in a way it was not before: `safe_read_len`
-        // keeps every request off the power-of-two reply sizes, and `ReplyRejected` retries a refused
-        // read at half the size, so being wrong here costs round trips and shows up as `errors`
-        // climbing rather than as lost data.
-        // 2000, measured. The sweep on a 4096-byte ring: 87.6 KB/s at 500, 108.8 at 1000, 126.1 at
-        // 2000, 132.4 at 3000, 133.3 at 4000 -- so the curve is flat past 2000 (+5.0%, then +0.6%)
-        // while the reply a single read produces keeps doubling. 4000 bytes is an 8 KB reply, and
-        // §4.2 invariant 2 is that GDB never waits on us: at depth 1 its worst case is one of our
-        // reads, so that is ~15 ms for 0.6%. 2000 keeps the knee and costs GDB ~8 ms.
-        //
-        // On a stock `defmt-rtt` ring this is indistinguishable from 1000 -- `available` cannot
-        // exceed 1023 -- so it is free for the common case and worth +16% for anyone who has raised
-        // `DEFMT_RTT_BUFFER_SIZE`.
-        "stlink" | "jlink" => 2000,
+        // This replaces a wrong conclusion worth recording. A default-settings run showed 79 errors
+        // in its first five seconds, which was read as J-Link refusing a reply somewhere in
+        // 1788..4004 bytes, and the cap was dropped to 1000 on the strength of it. Splitting the
+        // error counter by cause showed them as `invalid 79` -- failed *descriptor validation*,
+        // nothing to do with reply size -- and the count is identical at cap 1000 and cap 2000. They
+        // were a stale control block left in SRAM by the previous run, which `rttConfig.clearSearch`
+        // now clears before the engine starts. One counter that could not name its own causes cost a
+        // day and a 18% regression.
+        "jlink" => 2000,
         // Left at 500: it permits everything and answers in ~20 ms, so bytes per drain are not what
         // limits it and there is nothing to gain by asking for more.
         "probe-rs" => 500,

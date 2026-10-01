@@ -41,7 +41,8 @@ use crate::common::sync::MutexExt;
 use crate::gdb_rsp::{Endian, RspError};
 
 use super::{
-    drain_up_channel, fill_down_channel, find_control_block, ControlBlock, DrainOptions, RttError, TargetMemory,
+    drain_up_channel, fill_down_channel, find_control_block, read_descriptor, ControlBlock, DrainOptions, RttError,
+    TargetMemory,
 };
 
 /// Where drained RTT bytes go, and how the engine reports on itself.
@@ -93,8 +94,23 @@ pub struct RttConfig {
     pub up_channels: Vec<u32>,
     /// Down channels available for [`RttEngine::send`].
     pub down_channels: Vec<u32>,
-    /// How long to wait after a pass that moved nothing.
+    /// How long to wait after the *first* pass that moved nothing. The floor of the idle backoff.
     pub idle_interval: Duration,
+    /// Ceiling for the idle backoff: each empty pass doubles the wait up to this, and the first pass
+    /// that moves a byte resets it to [`RttConfig::idle_interval`].
+    ///
+    /// Without this an idle channel is expensive and invisibly so. Measured on a PSoC6 sitting at a
+    /// breakpoint: **550 descriptor reads a second for 75 seconds**, delivering nothing. A descriptor
+    /// read is SWD traffic whether or not it returns data, so that is 550 round trips a second
+    /// competing with GDB -- and at ~109 bytes of target output stolen per round trip (the contention
+    /// fit in `docs-internal/rtt-benchmarks.md`), roughly 59 KB/s of the target's own capacity burned
+    /// while producing zero.
+    ///
+    /// Costs nothing in throughput, because the ring buffers while we sleep: the bytes wait in the
+    /// target, not on the wire. It costs *latency* on the first output after a quiet spell -- up to
+    /// this interval -- which for a terminal is imperceptible, and [`RttEngine::send`] wakes the loop
+    /// anyway so typed input does not wait for it.
+    pub max_idle_interval: Duration,
     /// How long to wait between looks for the control block, **before** it has been found.
     ///
     /// Much lazier than `idle_interval`, and deliberately so. The firmware may not initialise RTT
@@ -113,6 +129,18 @@ pub struct RttConfig {
     /// has nothing to do with this.
     pub search_timeout: Option<Duration>,
     pub drain: DrainOptions,
+    /// How long to wait after the search id matches, before reading the channel descriptor.
+    ///
+    /// The id and the descriptor are written by the firmware at different moments, and nothing in the
+    /// protocol says which comes first. SEGGER's convention is id-last, which makes a match proof the
+    /// rest is ready -- but `defmt-rtt` keeps its whole control block in `.data`, so the ordering is
+    /// whatever the startup copy does. A few milliseconds here costs nothing against a search that
+    /// polls every 100 ms and removes a race that otherwise shows up as a burst of `Invalid`.
+    ///
+    /// It does **not** help with a *stale* id from a previous run -- SRAM survives a reset, so no
+    /// delay makes last session's block valid. That is what `rttConfig.clearSearch` is for, and the
+    /// debug adapter now issues it before this engine starts.
+    pub settle_after_found: Duration,
     /// Consecutive failed passes before giving up. Without a bound, a target that has been reset
     /// out from under us produces one error per pass for the rest of the session.
     pub max_consecutive_errors: u32,
@@ -129,9 +157,11 @@ impl Default for RttConfig {
             up_channels: vec![0],
             down_channels: vec![0],
             idle_interval: Duration::from_millis(1),
+            max_idle_interval: Duration::from_millis(100),
             search_interval: Duration::from_millis(100),
             gate_interval: Duration::from_micros(200),
             search_timeout: None,
+            settle_after_found: Duration::from_millis(10),
             drain: DrainOptions::default(),
             max_consecutive_errors: 100,
             stats_interval: None,
@@ -164,10 +194,23 @@ pub struct RttStats {
     /// comparison built on those two numbers meaningless -- see `docs-internal/rtt-benchmarks.md`.
     pub reads: u64,
     pub writes: u64,
+    /// `errors`, split by cause. One total cannot be acted on: a descriptor that fails validation,
+    /// a server that mangled a reply, and a read that timed out are three unrelated problems with
+    /// three unrelated fixes, and the engine is the only place that still knows which happened.
+    ///
+    /// Learned the hard way -- 76 errors in the first five seconds of a J-Link run, reproducible,
+    /// with the reason going to a `eprintln!` that a daemonised Agent sends to `/dev/null`.
+    pub err_invalid: u64,
+    pub err_rejected: u64,
+    pub err_timeout: u64,
+    pub err_other: u64,
 }
 
 struct Inner {
     stop: AtomicBool,
+    /// Set by [`RttEngine::send`] to cut an idle nap short. Without it the backoff would add its own
+    /// interval to the latency of typed input, which is the one case where a human is waiting.
+    wake: AtomicBool,
     stop_reason: Mutex<Option<&'static str>>,
     /// Bytes waiting for each down channel. A queue rather than a blocking write: the firmware may
     /// not be reading, and this thread must not be the one that waits for it.
@@ -190,6 +233,7 @@ impl RttEngine {
     pub fn start(mem: Arc<dyn TargetMemory>, sink: Arc<dyn RttSink>, config: RttConfig) -> Self {
         let inner = Arc::new(Inner {
             stop: AtomicBool::new(false),
+            wake: AtomicBool::new(false),
             stop_reason: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             stats: Mutex::new(RttStats::default()),
@@ -216,6 +260,11 @@ impl RttEngine {
         let room = limit.saturating_sub(queue.len());
         let n = room.min(data.len());
         queue.extend_from_slice(&data[..n]);
+        if n > 0 {
+            // Cut short whatever idle nap is in progress: somebody typed, and the backoff must not
+            // put its own interval in front of their keystroke.
+            self.inner.wake.store(true, Ordering::SeqCst);
+        }
         n
     }
 
@@ -243,6 +292,12 @@ fn nap_with_one_eye_open(inner: &Inner, total: Duration) {
     let deadline = Instant::now() + total;
     while Instant::now() < deadline {
         if inner.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        // Cleared as it is consumed, so one `send` wakes one nap. Checked here rather than only in
+        // the idle branch because a wake during a gate or search nap is harmless and the alternative
+        // is two nearly-identical sleep loops.
+        if inner.wake.swap(false, Ordering::SeqCst) {
             return;
         }
         std::thread::sleep(SLICE.min(deadline - Instant::now()));
@@ -288,11 +343,24 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, config: RttConfig) {
         inner.sink.closed(why);
         return;
     };
+    // Let the firmware finish whatever else it was writing around the id. See
+    // `RttConfig::settle_after_found`; this is not the fix for a stale block, only for a live one
+    // caught mid-initialisation.
+    nap_with_one_eye_open(&inner, config.settle_after_found);
+    if inner.stop.load(Ordering::SeqCst) {
+        let why = inner.stop_reason.lock_recover().unwrap_or("the RTT engine was stopped");
+        inner.sink.closed(why);
+        return;
+    }
     inner.sink.on_ready(&cb, began.elapsed());
 
     let ready_at = Instant::now();
     let mut last_report = ready_at;
     let mut consecutive_errors = 0u32;
+    // The idle backoff's current wait. Doubles per empty pass, resets on the first byte.
+    let mut idle_wait = config.idle_interval;
+    // Said once, not once per pass: an unusable block repeats identically for as long as it lasts.
+    let mut reported_unusable = false;
     while !inner.stop.load(Ordering::SeqCst) {
         if let Some(every) = config.stats_interval {
             if last_report.elapsed() >= every {
@@ -310,16 +378,49 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, config: RttConfig) {
             Ok(0) => {
                 consecutive_errors = 0;
                 inner.stats.lock_recover().idle_passes += 1;
-                nap_with_one_eye_open(&inner, config.idle_interval);
+                nap_with_one_eye_open(&inner, idle_wait);
+                // Back off *after* sleeping, so the first empty pass still waits only
+                // `idle_interval` -- a single gap in otherwise busy output costs nothing.
+                idle_wait = (idle_wait * 2).min(config.max_idle_interval.max(config.idle_interval));
             }
             Ok(_) => {
                 consecutive_errors = 0;
+                reported_unusable = false;
+                // Straight back to the floor: data now means data imminently, which is the whole
+                // reason the loop runs flat out while it is flowing.
+                idle_wait = config.idle_interval;
                 inner.stats.lock_recover().passes += 1;
                 // Straight round again: there was data last time, so there is probably data now,
                 // and the gate is what decides whether we may ask.
             }
+            // A control block that has stopped making sense is **not an error**. The target may have
+            // been reset under us, or halted mid-initialisation, and neither improves by being
+            // reported or given up on -- "halt at main and go for a coffee" has to be survivable.
+            // So it backs off to the *search* interval, which is also the honest description of what
+            // the engine is now doing, and it never reaches `max_consecutive_errors`.
+            //
+            // An error is a **read failure**: the target could not be reached, or the server mangled
+            // the reply. That is ours to report. What the bytes say once we have them is not.
+            Err(RttError::Invalid(ref why)) => {
+                inner.stats.lock_recover().err_invalid += 1;
+                if !reported_unusable {
+                    reported_unusable = true;
+                    inner
+                        .sink
+                        .waiting(&format!("the RTT control block is no longer usable: {why}"));
+                }
+                nap_with_one_eye_open(&inner, config.search_interval);
+            }
             Err(e) => {
-                inner.stats.lock_recover().errors += 1;
+                {
+                    let mut stats = inner.stats.lock_recover();
+                    stats.errors += 1;
+                    match &e {
+                        RttError::Memory(RspError::ReplyRejected) => stats.err_rejected += 1,
+                        RttError::Memory(RspError::Timeout) => stats.err_timeout += 1,
+                        _ => stats.err_other += 1,
+                    }
+                }
                 consecutive_errors += 1;
                 // Reported on the way into a fault only. A target that has been reset produces the
                 // same failure every pass, and one line per pass is not a diagnostic.
@@ -371,7 +472,40 @@ fn search(mem: &dyn TargetMemory, inner: &Inner, config: &RttConfig) -> Option<C
             continue;
         }
         match find_control_block(mem, config.cb_addr, &config.search_id, config.endian) {
-            Ok(cb) => return Some(cb),
+            // The sentinel matching is necessary and not sufficient. Up channel 0's descriptor has to
+            // be usable too, and until it is this is still *searching* -- not an error, and not
+            // something to report. Three separate causes produce a matching sentinel over an unusable
+            // descriptor, and all of them resolve by waiting:
+            //
+            //  - SEGGER's C implementation initialises inside `main`, so a breakpoint before it leaves
+            //    the previous run's sentinel in SRAM for as long as the user sits there. Minutes, if
+            //    they go and make coffee.
+            //  - a previous run's firmware halted somewhere arbitrary, leaving a half-written block.
+            //  - the J-Link firmware itself scans RAM for the sentinel and writes to the fields after
+            //    it, which is the only mechanism that explains 16 bytes of intact ID over garbage
+            //    offsets -- observed as 79 consecutive failures on that board and nowhere else.
+            //
+            // Channel 0 rather than the first *configured* channel on purpose: a configuration naming
+            // only channel 2 on firmware that allocates one channel would otherwise wait for ever.
+            // Per-channel allocation is checked by the drain, where it is already a benign `NotReady`.
+            Ok(cb) => match read_descriptor(mem, cb.up_desc_addr(0), config.endian) {
+                Ok(rb) if rb.validate().is_ok() => return Some(cb),
+                Ok(_) => {
+                    if !explained {
+                        explained = true;
+                        inner.sink.waiting(
+                            "the search id is present but the control block is not usable yet -- the firmware may still be initialising it (SEGGER's C implementation does so inside main), or it is left over from a previous run",
+                        );
+                    }
+                    nap_with_one_eye_open(inner, config.search_interval);
+                }
+                // A *read* failure is a real error, and the only kind here. The block being
+                // unusable is the target's business; not being able to read it is ours.
+                Err(e) => {
+                    inner.sink.on_error(&e);
+                    return None;
+                }
+            },
             Err(RttError::NotReady) => {
                 if let Some(limit) = config.search_timeout {
                     if started.elapsed() >= limit {
@@ -823,5 +957,110 @@ mod tests {
         let _engine = RttEngine::start(Arc::new(DeadTarget), Arc::clone(&rec) as Arc<dyn RttSink>, config());
         wait_for(|| rec.closed.lock_recover().is_some(), "the close report");
         assert_eq!(rec.errors.lock_recover().len(), 1);
+    }
+    #[test]
+    fn an_idle_channel_backs_off_instead_of_polling_flat_out() {
+        // Measured on a PSoC6 sitting at a breakpoint: 550 descriptor reads a second for 75 seconds,
+        // delivering nothing. A descriptor read is SWD traffic whether or not it returns data, so
+        // that competes with GDB throughout -- and by the contention fit each round trip costs the
+        // target ~109 bytes of its own output, so an idle engine burns capacity it exists to harvest.
+        let target = Arc::new(
+            FakeTarget::new()
+                .with_control_block("SEGGER RTT", 1, 1)
+                .with_up_channel(0, 0, b""),
+        );
+        let rec = Arc::new(Recorder::default());
+        let engine = RttEngine::start(
+            Arc::clone(&target) as Arc<dyn TargetMemory>,
+            Arc::clone(&rec) as Arc<dyn RttSink>,
+            RttConfig {
+                idle_interval: Duration::from_millis(1),
+                max_idle_interval: Duration::from_millis(40),
+                ..config()
+            },
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        engine.shutdown("test over");
+        // Flat out at 1 ms this would be ~300 reads. Doubling 1,2,4,8,16,32,40,40... reaches the
+        // ceiling within ~100 ms and costs about a dozen after that.
+        let n = target.read_count();
+        assert!(n < 40, "polled {n} times in 300ms; the backoff is not engaging");
+        assert!(n > 2, "polled {n} times, which is too few to be polling at all");
+    }
+
+    #[test]
+    fn the_backoff_resets_the_moment_data_appears() {
+        // The cost of backing off is latency on the first byte after a quiet spell; the cost of not
+        // resetting would be carrying that latency into a busy stream, which is the case the whole
+        // engine is tuned for.
+        let target = Arc::new(
+            FakeTarget::new()
+                .with_control_block("SEGGER RTT", 1, 1)
+                .with_up_channel(0, 0, b""),
+        );
+        let rec = Arc::new(Recorder::default());
+        let engine = RttEngine::start(
+            Arc::clone(&target) as Arc<dyn TargetMemory>,
+            Arc::clone(&rec) as Arc<dyn RttSink>,
+            RttConfig {
+                idle_interval: Duration::from_millis(1),
+                max_idle_interval: Duration::from_millis(50),
+                ..config()
+            },
+        );
+        wait_for(|| !rec.ready.lock_recover().is_empty(), "the block");
+        std::thread::sleep(Duration::from_millis(200)); // let it reach the ceiling
+
+        // Now the firmware writes. The first drain may wait out the current nap, but everything
+        // after it must run at the floor again.
+        target.put(crate::rtt::fake::BUF_ADDR, b"hello");
+        target.put_u32(CB_ADDR + super::super::CB_HEADER_LEN as u64 + 12, 5);
+        wait_for(|| rec.bytes() == b"hello".to_vec(), "the data after the quiet spell");
+
+        let before = target.read_count();
+        std::thread::sleep(Duration::from_millis(100));
+        engine.shutdown("test over");
+        // Back at the floor the channel is empty again, so this is the backoff restarting from 1 ms:
+        // more polls than the ceiling would allow in 100 ms, which is what proves the reset.
+        assert!(
+            target.read_count() - before > 3,
+            "only {} polls after data; the backoff did not reset",
+            target.read_count() - before
+        );
+    }
+
+    #[test]
+    fn typed_input_does_not_wait_out_the_backoff() {
+        // The one case where a human is on the other end. Without the wake, a keystroke could sit for
+        // the whole ceiling interval before the loop looked at the queue.
+        let target = Arc::new(
+            FakeTarget::new()
+                .with_control_block("SEGGER RTT", 1, 1)
+                .with_up_channel(0, 0, b"")
+                .with_down_channel(0, 0),
+        );
+        let rec = Arc::new(Recorder::default());
+        let engine = RttEngine::start(
+            Arc::clone(&target) as Arc<dyn TargetMemory>,
+            Arc::clone(&rec) as Arc<dyn RttSink>,
+            RttConfig {
+                down_channels: vec![0],
+                idle_interval: Duration::from_millis(1),
+                max_idle_interval: Duration::from_secs(5), // a ceiling a test could never wait out
+                ..config()
+            },
+        );
+        wait_for(|| !rec.ready.lock_recover().is_empty(), "the block");
+        std::thread::sleep(Duration::from_millis(80)); // deep into the backoff
+
+        let began = Instant::now();
+        assert_eq!(engine.send(0, b"go\n", 1024), 3);
+        wait_for(|| engine.stats().bytes_down >= 3, "the write");
+        let took = began.elapsed();
+        engine.shutdown("test over");
+        assert!(
+            took < Duration::from_secs(1),
+            "input waited {took:?} -- the send did not wake the nap"
+        );
     }
 }

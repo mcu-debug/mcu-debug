@@ -194,9 +194,16 @@ if [[ "$mode" == "dev" ]]; then
 
   # No `stop_running_proxies` here any more. A dev rebuild keeps the same version, which
   # `is_newer` cannot see, so a kill used to be the only way to stop the next launch
-  # reusing a daemon running the old bytes. The proxy now compares its executable's mtime
-  # against the running daemon's and asks for a graceful handover instead -- live sessions
-  # finish where they are rather than dying with a signal. See `singleton::decide_handover`.
+  # reusing a daemon running the old bytes. The proxy asks for a graceful handover instead --
+  # live sessions finish where they are rather than dying with a signal.
+  #
+  # It compares two things, and the second exists because the first has a blind spot. The
+  # executable's mtime and content hash catch a binary replaced *in place*, but are treated as
+  # incomparable when the paths differ -- deliberately, since a fresh install can hold an older
+  # file than a dev build. A dev tree has the same version at three paths (`bin/$BIN_NAME`,
+  # `bin/<platform>-<arch>/$BIN_NAME`, `target/debug/$BIN_NAME`), so that blind spot is exactly
+  # the dev case, and a daemon survived a rebuild through it. The commit stamped in by `build.rs`
+  # is compared too, and a commit survives being copied. See `singleton::decide_handover`.
 
   # Copy root binary
   copy_artifact "$dbg_path" "$BINDIR" "$BIN_NAME" || true

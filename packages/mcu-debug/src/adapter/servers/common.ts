@@ -697,6 +697,39 @@ export class RTTServerHelper {
         }
         return ret;
     }
+
+    /**
+     * Zero the RTT search id before anything starts polling for it. Optional; `[]` when a server has
+     * no way to write target memory before the program runs.
+     *
+     * Separate from `rttCommands()` because of *when* it has to happen, not what it does.
+     * `rttCommands()` is issued from `runSessionModeCommands()`, which fires on `configurationDone` --
+     * and the Agent's RTT engine is started by `postInitComplete()`, which is deliberately not
+     * awaited. So the engine is already searching by then. Observed: engine started at 19:33:46.410,
+     * control block "found" at .411, 78 `Invalid` descriptor errors following.
+     *
+     * The search id sits in `.data`, which the target's startup copies from flash to SRAM -- and SRAM
+     * survives a reset. So a launch finds the *previous* run's id at 0 ms, before this run has
+     * initialised anything, and reads a descriptor that is either garbage (an error) or stale and
+     * self-consistent (silently delivers whatever bytes are at those offsets as RTT output).
+     *
+     * This is why the clear cannot move into the Agent, tempting though it is: it is only safe while
+     * the target is halted *before* startup copies `.data` over it. Afterwards it destroys a valid
+     * block the firmware will never rewrite, and RTT is dead for the session. Only this side knows
+     * "we are launching and the image has just been loaded".
+     */
+    public static clearSearchCommands(args: ConfigurationArguments): string[] {
+        const cfg = args.pvtRttConfig ?? args.rttConfig;
+        if (!cfg?.enabled || !cfg.clearSearch || args.request !== "launch" || args.pvtSessionMode === SessionMode.Reset) {
+            return [];
+        }
+        if (!cfg.address || !cfg.address.toLowerCase().startsWith("0x")) {
+            // We expect address and searchId to be valid and defined at this point.
+            throw new Error("RTT clear search requires address to be defined and address must start with 0x.");
+        }
+        // Write 16 bytes of zero to clear the RTT search id.
+        return [`-data-write-memory-bytes ${cfg.address} 00 10`];
+    }
 }
 
 export function calculatePortMask(decoders: any[]) {

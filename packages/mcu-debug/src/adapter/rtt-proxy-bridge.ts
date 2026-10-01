@@ -66,6 +66,10 @@ export interface RttEngineStats {
     idle: number;
     gated: number;
     errors: number;
+    err_invalid: number;
+    err_rejected: number;
+    err_timeout: number;
+    err_other: number;
     reads: number;
     writes: number;
     elapsed_ms: number;
@@ -84,7 +88,21 @@ export interface RttEngineStats {
  * more than 3.0 means wrapped drains splitting into two reads, or reads being rejected and retried.
  */
 export function formatRttEngineStats(now: RttEngineStats, prev: RttEngineStats | null): string {
-    const base: RttEngineStats = prev ?? { bytes_up: 0, bytes_down: 0, drains: 0, idle: 0, gated: 0, errors: 0, reads: 0, writes: 0, elapsed_ms: 0 };
+    const base: RttEngineStats = prev ?? {
+        bytes_up: 0,
+        bytes_down: 0,
+        drains: 0,
+        idle: 0,
+        gated: 0,
+        errors: 0,
+        err_invalid: 0,
+        err_rejected: 0,
+        err_timeout: 0,
+        err_other: 0,
+        reads: 0,
+        writes: 0,
+        elapsed_ms: 0,
+    };
     // Guarded rather than assumed: an Agent restart would reset the counters, and a negative window
     // printed as a rate is worse than a slightly wrong one.
     const secs = Math.max((now.elapsed_ms - base.elapsed_ms) / 1000, 0.001);
@@ -99,9 +117,39 @@ export function formatRttEngineStats(now: RttEngineStats, prev: RttEngineStats |
         `[RTT engine] ${(bytes / 1024 / secs).toFixed(1)} KB/sec | ` +
         `${(drains / secs).toFixed(0)} drains/sec, ${per(bytes, drains).toFixed(0)} B/drain | ` +
         `${(trips / secs).toFixed(0)} trips/sec, ${per(trips, drains).toFixed(1)} trips/drain | ` +
-        `idle ${delta(now.idle, base.idle)}, gated ${delta(now.gated, base.gated)}, errors ${delta(now.errors, base.errors)} | ` +
+        `idle ${delta(now.idle, base.idle)}, gated ${delta(now.gated, base.gated)}, ` +
+        `unusable ${delta(now.err_invalid, base.err_invalid)}, errors ${delta(now.errors, base.errors)}${errorKinds(now, base)} | ` +
         `total ${total} over ${(now.elapsed_ms / 1000).toFixed(1)}s`
     );
+}
+
+/**
+ * The error count's breakdown, shown only when there is one.
+ *
+ * One total cannot be acted on. A rejected reply means the gdb-server mangled one, usually over its
+ * size; a timeout means it never answered. Unrelated problems with unrelated fixes -- and until this
+ * existed the only place the distinction survived was an `eprintln!` in a daemonised Agent, whose
+ * stderr goes to `/dev/null`.
+ *
+ * `unusable` is reported *outside* `errors` and counted separately, because a control block that does
+ * not make sense is not a failure: the firmware may not have initialised it yet. Halting at `main`
+ * and going for a coffee has to be survivable, so the engine backs off to the search interval and
+ * keeps waiting rather than counting toward `max_consecutive_errors`. An error is a **read failure**
+ * -- the target unreachable, or the server mangling a reply. What the bytes say once we have them is
+ * the target's business.
+ */
+function errorKinds(now: RttEngineStats, base: RttEngineStats): string {
+    const parts: string[] = [];
+    const add = (label: string, a: number, b: number) => {
+        const n = Math.max(a - b, 0);
+        if (n > 0) {
+            parts.push(`${label} ${n}`);
+        }
+    };
+    add("rejected", now.err_rejected, base.err_rejected);
+    add("timeout", now.err_timeout, base.err_timeout);
+    add("other", now.err_other, base.err_other);
+    return parts.length > 0 ? ` (${parts.join(", ")})` : "";
 }
 
 export class RttProxyBridge {

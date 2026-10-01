@@ -71,7 +71,7 @@ impl FunnelRttSink {
     /// message loop's. A failed send means the loop is gone, which means the session is over.
     fn report(&self, event: ProxyServerEvents) {
         if self.event_tx.send(ProxyEvent::ServerEvent(event)).is_err() {
-            eprintln!("RTT: the proxy message loop is gone; an RTT event was dropped");
+            log::warn!("RTT: the proxy message loop is gone; an RTT event was dropped");
         }
     }
 }
@@ -81,7 +81,7 @@ impl RttSink for FunnelRttSink {
         let Some(&stream_id) = self.streams.get(&channel) else {
             // A channel we were not asked to serve. The engine only drains what it was configured
             // with, so this cannot happen without a bug -- worth saying so rather than dropping it.
-            eprintln!("RTT: no stream for channel {channel}; {} bytes dropped", data.len());
+            log::warn!("RTT: no stream for channel {channel}; {} bytes dropped", data.len());
             return;
         };
         if self
@@ -93,12 +93,12 @@ impl RttSink for FunnelRttSink {
             .is_err()
         {
             // The loop is gone, so the session is over. Nothing to report it to.
-            eprintln!("RTT: the proxy message loop is gone; stopping delivery on channel {channel}");
+            log::warn!("RTT: the proxy message loop is gone; stopping delivery on channel {channel}");
         }
     }
 
     fn on_ready(&self, cb: &ControlBlock, took: Duration) {
-        eprintln!(
+        log::info!(
             "RTT: control block at {:#x} with {} up and {} down channels, found after {:.1}s",
             cb.addr,
             cb.up_channels,
@@ -115,11 +115,11 @@ impl RttSink for FunnelRttSink {
 
     fn on_error(&self, err: &RttError) {
         // Once per fault, not once per failed poll -- the engine guarantees that.
-        eprintln!("RTT: {err}");
+        log::warn!("RTT: {err}");
     }
 
     fn waiting(&self, why: &str) {
-        eprintln!("RTT: still waiting for the control block -- {why}");
+        log::warn!("RTT: still waiting for the control block -- {why}");
     }
 
     /// The engine's counters, on to the client.
@@ -136,6 +136,10 @@ impl RttSink for FunnelRttSink {
             idle: stats.idle_passes,
             gated: stats.gated_passes,
             errors: stats.errors,
+            err_invalid: stats.err_invalid,
+            err_rejected: stats.err_rejected,
+            err_timeout: stats.err_timeout,
+            err_other: stats.err_other,
             reads: stats.reads,
             writes: stats.writes,
             elapsed_ms: since.as_millis() as u64,
@@ -143,7 +147,7 @@ impl RttSink for FunnelRttSink {
     }
 
     fn closed(&self, why: &str) {
-        eprintln!("RTT: engine stopped -- {why}");
+        log::info!("RTT: engine stopped -- {why}");
         self.report(ProxyServerEvents::RttStopped {
             reason: why.to_string(),
         });
@@ -163,12 +167,29 @@ impl ProxyServer {
         // memory through a `Consumer` on this stream's mux. A session with `rspMux` false has nothing
         // for it to run on.
         let Some(rsp) = self.rsp_channels.get(&stream_id) else {
-            ControlResponse::error(
-                msg_seq,
-                format!("stream {stream_id} has no RSP multiplexer; Agent-side RTT needs debugFlags.rspMux"),
-            )
-            .send(&self.writer)
-            .ok();
+            // Say *which* way it is missing. This used to blame `debugFlags.rspMux` for every case,
+            // which sent a real multi-core bug chasing a flag that could not have helped: on a 2-core
+            // target with `targetProcessor: 1` the client named core 0's stream, which is allocated
+            // but never connected, while the mux sat on core 1's. Three distinguishable states, and
+            // only one of them is about the flag.
+            let why = match self.stream_meta.get(&stream_id) {
+                None => format!("stream {stream_id} was never registered with this proxy"),
+                Some(meta) if !meta.kind.is_rsp_controller() => format!(
+                    "stream {stream_id} ('{}') is not a controller gdb connection, so it has no multiplexer to read through",
+                    meta.name
+                ),
+                Some(meta) if !self.streams.contains_key(&stream_id) => format!(
+                    "stream {stream_id} ('{}') is a controller gdb connection that nothing has connected to, so there is no multiplexer on it yet. On a multi-core target the connected core is the one named by `targetProcessor`",
+                    meta.name
+                ),
+                Some(meta) => format!(
+                    "stream {stream_id} ('{}') is connected but not multiplexed; Agent-side RTT needs debugFlags.rspMux",
+                    meta.name
+                ),
+            };
+            ControlResponse::error(msg_seq, format!("cannot start Agent-side RTT: {why}"))
+                .send(&self.writer)
+                .ok();
             return;
         };
         let cb_addr = match parse_hex_address(&config.cb_address) {
@@ -256,9 +277,11 @@ impl ProxyServer {
                 ..RttConfig::default()
             },
         );
-        eprintln!(
+        log::info!(
             "RTT: engine started on stream {} for channels {:?} (cb {:#x})",
-            stream_id, config.up_channels, cb_addr
+            stream_id,
+            config.up_channels,
+            cb_addr
         );
         self.rtt_engine = Some(engine);
 
@@ -284,7 +307,7 @@ impl ProxyServer {
             let stats = engine.stats();
             // Worth a line: these are the numbers a parity comparison is made of, and a session that
             // has ended is exactly when they are final.
-            eprintln!(
+            log::info!(
                 "RTT: stopping ({why}) -- {} bytes up, {} down, {} drains, {} idle, {} gated, {} errors, \
                  {} reads + {} writes = {} round trips",
                 stats.bytes_up,
@@ -318,14 +341,14 @@ impl ProxyServer {
     /// have no space and the message loop must not be what waits for it.
     pub(super) fn feed_rtt_down(&self, channel: u32, data: &[u8]) {
         let Some(engine) = &self.rtt_engine else {
-            eprintln!("RTT: input for channel {channel} arrived with no engine running; dropped");
+            log::info!("RTT: input for channel {channel} arrived with no engine running; dropped");
             return;
         };
         let accepted = engine.send(channel, data, DOWN_QUEUE_LIMIT);
         if accepted < data.len() {
             // Not an error worth failing the session over: the target is not reading its input and
             // the queue is full. Saying so is better than losing the bytes silently.
-            eprintln!(
+            log::info!(
                 "RTT: down channel {channel} is backed up; dropped {} of {} bytes",
                 data.len() - accepted,
                 data.len()

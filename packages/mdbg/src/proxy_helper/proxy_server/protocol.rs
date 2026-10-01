@@ -820,9 +820,14 @@ pub enum ProxyServerEvents {
         /// Passes skipped because the multiplexer would not let a packet out. Climbing means GDB's
         /// traffic on the shared connection, not the probe.
         gated: u64,
-        /// Failed passes. Climbing means reads being rejected and retried at half the size, which
-        /// silently doubles the round-trip cost of the same bytes.
+        /// Failed passes, and the split by cause -- one total cannot be acted on, because a
+        /// descriptor that failed validation, a server that mangled a reply and a read that timed
+        /// out are three unrelated problems. The Agent is the only side that still knows which.
         errors: u64,
+        err_invalid: u64,
+        err_rejected: u64,
+        err_timeout: u64,
+        err_other: u64,
         /// Memory reads and writes issued. Their sum is round trips.
         reads: u64,
         writes: u64,

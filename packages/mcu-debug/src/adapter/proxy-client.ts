@@ -4,7 +4,7 @@ import * as path from "path";
 import * as os from "os";
 import { GDBDebugSession } from "./gdb-session";
 import { GDBServerSession } from "./server-session";
-import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, processEnvForConfig, HostConfig, needsProxySync } from "./servers/common";
+import { canonicalizePath, ConfigurationArguments, TcpPortDef, TcpPortDefMap, processEnvForConfig, HostConfig, needsProxySync, createPortName } from "./servers/common";
 import { Stderr, Stdout } from "./gdb-mi/mi-types";
 import { DefaultPortBase } from "@mcu-debug/shared";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
@@ -861,12 +861,28 @@ export class ProxyClient extends EventEmitter {
      * The stream id of this session's controller gdb connection.
      *
      * Needed by `startRtt`, which names it rather than an RTT stream: it is whose multiplexer the
-     * Agent's RTT engine reads target memory through. Found by name because that is what the Agent
-     * classifies streams by -- `gdbPort` for core 0, which is the only core RTT applies to.
+     * Agent's RTT engine reads target memory through. Found by name, because that is what the Agent
+     * classifies streams by.
+     *
+     * **It is `targetProcessor`'s port, not core 0's.** This used to look for `"gdbPort"`
+     * unconditionally, with a comment asserting core 0 "is the only core RTT applies to" -- true for
+     * a single-core target and wrong for every other one. On a 2-core PSoC6 with
+     * `targetProcessor: 1`, GDB connects to `gdbPort1` and that is the stream the mux owns; `gdbPort`
+     * is allocated, never connected, and therefore has no multiplexer. `startRtt` named it anyway and
+     * the session failed with "stream 3 has no RSP multiplexer; Agent-side RTT needs
+     * debugFlags.rspMux" -- a flag that could not have helped, because the mux was present on a
+     * different stream.
+     *
+     * To be clear about *why* `targetProcessor`, because it is not an RTT question at all: RTT may
+     * well be running on a core nobody is debugging, and that is fine -- every core reaches the
+     * control block through the same memory interface, so any mux can read it. What is not
+     * interchangeable is the stream: only the one GDB connected to has a socket, and only a socket
+     * can have a multiplexer. `targetProcessor` names that stream, and that is the whole reason.
      */
     public controllerGdbStreamId(): number | undefined {
+        const wanted = createPortName(this.args.targetProcessor ?? 0);
         for (const [stream_id, pInfo] of this.streamIdToPortInfo) {
-            if (pInfo.stream_id_str === "gdbPort") {
+            if (pInfo.stream_id_str === wanted) {
                 return stream_id;
             }
         }

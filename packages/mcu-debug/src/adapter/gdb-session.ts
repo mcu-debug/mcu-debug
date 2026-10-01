@@ -11,6 +11,7 @@ import {
     canonicalizePath,
     SWOConfigureEvent,
     PostInitializedEvent,
+    RTTServerHelper,
 } from "./servers/common";
 import os from "os";
 import fs from "fs";
@@ -1558,6 +1559,32 @@ export class GDBDebugSession extends SeqDebugSession {
 
             // Get the disassembly adapter initialized, wait for it to finish asynchronously
             await this.sendCommandsWithWait(this.getConnectCommandsPost()); // Can throw
+
+            // Zero the RTT search id **before** anything starts looking for it, and awaited, because
+            // `postInitComplete()` below is deliberately not. It starts the Agent's RTT engine, which
+            // finds a control block within a millisecond -- and on a launch the id it finds is the
+            // *previous* run's, because the block lives in `.data` and SRAM survives a reset. The
+            // server-RTT path clears inside `rttCommands()`, which is issued far later from
+            // `runSessionModeCommands()`; that is late enough for the server and much too late for us.
+            //
+            // **This placement depends on the core still being halted here**, which is what makes the
+            // clear safe: zeroing the block after startup has copied `.data` over it destroys a valid
+            // one that the firmware never rewrites, and RTT is dead for the session. `launchCommands()`
+            // ends halted on both servers that implement this -- OpenOCD with `monitor reset halt`,
+            // J-Link with `monitor reset`, which resets *and halts* per SEGGER's GDB Server
+            // documentation. A server whose launch sequence leaves the core running must not implement
+            // `clearSearchCommands`, or must clear before its final reset.
+            const clearRtt = RTTServerHelper.clearSearchCommands(this.args);
+            if (clearRtt.length > 0) {
+                try {
+                    await this.sendCommandsWithWait(clearRtt);
+                } catch (e) {
+                    // Not fatal: a stale block costs a burst of `Invalid` errors and possibly some
+                    // garbage at the top of the terminal, which is worse than this warning and much
+                    // better than failing the session over it.
+                    this.handleMsg(Stderr, `WARNING: could not clear the RTT search id; RTT may report errors at startup. ${formatThrown(e)}\n`);
+                }
+            }
 
             const postInitPromise = this.postInitComplete();
 
