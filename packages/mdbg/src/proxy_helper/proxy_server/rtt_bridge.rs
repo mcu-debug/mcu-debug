@@ -139,6 +139,7 @@ impl RttSink for FunnelRttSink {
             err_invalid: stats.err_invalid,
             err_rejected: stats.err_rejected,
             err_timeout: stats.err_timeout,
+            err_target: stats.err_target,
             err_other: stats.err_other,
             reads: stats.reads,
             writes: stats.writes,

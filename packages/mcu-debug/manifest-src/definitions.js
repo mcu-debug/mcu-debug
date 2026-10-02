@@ -678,44 +678,57 @@ module.exports = {
         description: "SEGGER's Real Time Trace (RTT) and supported by JLink, OpenOCD and perhaps others in the future",
         default: {
             enabled: true,
+            engine: "auto",
             address: "auto",
-            useBuiltinRTT: { enabled: true },
-            decoders: [{ label: "", port: 0, type: "console" }],
+            decoders: [{ label: "RTT Log", port: 0, type: "console" }],
         },
         properties: {
             enabled: { type: "boolean", description: "Enable/Disable RTT", default: false },
             address: { type: "string", description: "Address to start searching for the RTT control block.", default: "auto" },
             searchSize: { type: "number", description: "Number of bytes to search for the RTT control block.", multipleOf: 1, minimum: 16, default: 16 },
             searchId: { type: "string", description: "A string to search for to find the RTT control block.", default: "SEGGER RTT" },
-            useBuiltinRTT: {
-                type: ["boolean", "object"],
+            engine: {
+                type: "string",
+                enum: ["auto", "builtin-rust", "builtin-typescript", "gdb-server"],
+                enumDescriptions: [
+                    "Our own engine, running inside the Probe Agent. Falls back to the debug adapter's engine when this session has no Agent, or when the RSP multiplexer is off. Recommended, and the default.",
+                    "RTT inside the Probe Agent, on the multiplexed gdb connection. The fastest option: it takes GDB and the MI text layer out of every memory read, which is where RTT throughput goes. Requires a Probe Agent and the multiplexer; the session reports an error and disables RTT if either is missing.",
+                    "The debug adapter's own engine, polling target memory through GDB. Slower, but the only option for an external gdb-server, and the fallback when the multiplexer is off.",
+                    "The gdb-server's own RTT support. Available for 'openocd' and 'jlink' only, and needs server-side setup; may be faster than 'builtin-typescript' but harder to get working.",
+                ],
+                default: "auto",
                 description:
-                    "Use the built-in RTT support (recommended) especially with servers no native RTT support. If false, use gdb-server's RTT support, which may have better performance, but harder to setup.",
+                    "Which implementation reads RTT out of the target. Never two at once: each keeps its own idea of " +
+                    "the ring buffer's read pointer, so a pair of them would consume each other's bytes and corrupt " +
+                    "the channel. Same ports, same decoders and same terminals whichever one runs. 'auto' never " +
+                    "selects 'gdb-server'.",
+            },
+            serve: {
+                type: "object",
+                description: "Where the built-in RTT server listens. Ignored when 'engine' is 'gdb-server', which serves on " + "ports of its own choosing.",
                 properties: {
-                    enabled: { type: "boolean", description: "Enable/Disable built-in RTT support", default: true },
-                    hostName: { type: "string", description: "Host name to use for built-in RTT server.", default: "127.0.0.1" },
+                    hostName: { type: "string", description: "Host name or address to bind the built-in RTT server to.", default: "127.0.0.1" },
                     tcpPort: {
                         type: ["number", "null"],
-                        description: "Optional fixed port number to use for built-in RTT server. If not set, a free port is chosen automatically.",
+                        description:
+                            "Where to start looking for a free port. The lowest RTT channel lands here when the port " +
+                            "is free, and the remaining channels follow. A busy port yields the next free one rather " +
+                            "than failing the session -- use 'tcpPorts' to insist on an exact port.",
                         default: null,
                         minimum: 1024,
                         maximum: 65535,
                         multipleOf: 1,
                     },
-                    implementation: {
-                        type: "string",
-                        enum: ["rust", "typescript"],
-                        default: "rust",
+                    tcpPorts: {
+                        type: "object",
                         description:
-                            "Which engine reads the target. 'rust' runs RTT inside the Probe Agent on the multiplexed gdb " +
-                            "connection, which takes GDB and the MI text layer out of every memory read -- that is where RTT " +
-                            "throughput goes. 'typescript' is the debug adapter's own engine, polling through GDB. Never both: " +
-                            "each keeps its own idea of the ring buffer's read pointer, and two of them would corrupt the " +
-                            "channel. Same ports, same decoders and same terminals either way. 'rust' needs the multiplexer, " +
-                            "so a session with debugFlags.rspMux false falls back to 'typescript' and says so.",
+                            'Exact TCP port per RTT channel, keyed by channel number -- for example { "0": 19021, "1": 19022 }. ' +
+                            "Wins over 'tcpPort' for any channel it names. Channels not named here are allocated normally.",
+                        additionalProperties: { type: "number", minimum: 1024, maximum: 65535, multipleOf: 1 },
+                        default: {},
                     },
                 },
-                default: { enabled: true },
+                default: { hostName: "127.0.0.1" },
             },
             pre_decoder: {
                 type: "object",

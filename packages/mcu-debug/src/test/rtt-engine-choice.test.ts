@@ -11,52 +11,151 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { chooseRttEngine, upChannels, rttAddressLooksUsable, formatRttEngineStats, RttEngineStats, statsIntervalMs } from "../adapter/rtt-proxy-bridge";
-import { RTTConfiguration, createPortName } from "../adapter/servers/common";
+import { upChannels, rttAddressLooksUsable, formatRttEngineStats, RttEngineStats, statsIntervalMs } from "../adapter/rtt-proxy-bridge";
+import { RTTConfiguration, createPortName, rttBuiltinServes, rttServerServes, resolveRttEngine } from "../adapter/servers/common";
 
 function config(over: Partial<RTTConfiguration> = {}): RTTConfiguration {
     return { enabled: true, decoders: [], ...over } as RTTConfiguration;
 }
 
-/** Stands in for a live ProxyClient; nothing here calls it. */
-const aProxy = {} as any;
+const EXTERNAL = "external";
+const OPENOCD = "openocd";
 
 test("the Agent's engine is the default", () => {
-    const { engine, why } = chooseRttEngine(config(), aProxy, undefined);
-    assert.equal(engine, "rust");
-    assert.equal(why, undefined, "the default needs no explanation");
+    const r = resolveRttEngine(config(), OPENOCD, undefined)!;
+    assert.equal(r.engine, "builtin-rust");
+    assert.equal(r.why, undefined, "the default needs no explanation");
 });
 
 test("asking for the debug adapter's engine gets it, with no complaint", () => {
-    const cfg = config({ useBuiltinRTT: { enabled: true, implementation: "typescript" } });
-    const { engine, why } = chooseRttEngine(cfg, aProxy, undefined);
-    assert.equal(engine, "typescript");
-    assert.equal(why, undefined, "an explicit choice is not a fallback");
+    const r = resolveRttEngine(config({ engine: "builtin-typescript" }), OPENOCD, undefined)!;
+    assert.equal(r.engine, "builtin-typescript");
+    assert.equal(r.why, undefined, "an explicit choice is not a fallback");
 });
 
-test("no proxy means the debug adapter's engine, and says so", () => {
-    // An external gdb-server, or one matched by regex: there is no Agent to run anything in.
-    const { engine, why } = chooseRttEngine(config(), null, undefined);
-    assert.equal(engine, "typescript");
-    assert.match(why!, /no Probe Agent/);
+test("auto on an external server means the debug adapter's engine, and says so", () => {
+    // `servertype: "external"` is the one case with no Probe Agent, which is what makes this
+    // decidable from the configuration alone rather than needing a live ProxyClient.
+    const r = resolveRttEngine(config(), EXTERNAL, undefined)!;
+    assert.equal(r.engine, "builtin-typescript");
+    assert.match(r.why!, /Probe Agent/);
+    assert.ok(!r.error, "auto is the default, so nobody is refused for having no opinion");
 });
 
-test("rspMux false falls back rather than losing RTT, and is reported", () => {
+test("auto with rspMux false falls back rather than losing RTT, and is reported", () => {
     // rspMux is normally set false to isolate a problem. Silently changing the RTT engine at the
     // same time would make that experiment meaningless, so the fallback has to be stated.
-    const { engine, why } = chooseRttEngine(config(), aProxy, false);
-    assert.equal(engine, "typescript");
-    assert.match(why!, /rspMux/);
+    const r = resolveRttEngine(config(), OPENOCD, false)!;
+    assert.equal(r.engine, "builtin-typescript");
+    assert.match(r.why!, /rspMux/);
+    assert.ok(!r.error);
 });
 
 test("rspMux left unset is the multiplexer's default, which is on", () => {
-    assert.equal(chooseRttEngine(config(), aProxy, undefined).engine, "rust");
-    assert.equal(chooseRttEngine(config(), aProxy, true).engine, "rust");
+    assert.equal(resolveRttEngine(config(), OPENOCD, undefined)!.engine, "builtin-rust");
+    assert.equal(resolveRttEngine(config(), OPENOCD, true)!.engine, "builtin-rust");
 });
 
-test("an explicit typescript choice wins even where rust would have worked", () => {
-    const cfg = config({ useBuiltinRTT: { enabled: true, implementation: "typescript" } });
-    assert.equal(chooseRttEngine(cfg, aProxy, true).engine, "typescript");
+// Only `auto` substitutes. Naming an engine is how a user asks *not* to be handed a different one,
+// which is the entire reason the setting exists -- so an explicit ask that cannot be met is an
+// error, not a downgrade. These are the whole difference between `auto` and `builtin-rust`, which
+// otherwise resolve identically.
+test("an explicit builtin-rust is refused rather than downgraded where there is no Agent", () => {
+    const r = resolveRttEngine(config({ engine: "builtin-rust" }), EXTERNAL, undefined)!;
+    assert.ok(r.error, "explicit asks are refused, not substituted");
+    assert.match(r.why!, /Probe Agent/);
+});
+
+test("an explicit builtin-rust is refused when the multiplexer is off", () => {
+    const r = resolveRttEngine(config({ engine: "builtin-rust" }), OPENOCD, false)!;
+    assert.ok(r.error);
+    assert.match(r.why!, /rspMux/);
+});
+
+test("gdb-server is refused for servertypes that cannot serve RTT", () => {
+    for (const st of ["stlink", "pyocd", "probe-rs", "external", "bmp"]) {
+        const r = resolveRttEngine(config({ engine: "gdb-server" }), st, undefined)!;
+        assert.ok(r.error, `${st} has no RTT of its own`);
+    }
+    for (const st of ["openocd", "jlink"]) {
+        const r = resolveRttEngine(config({ engine: "gdb-server" }), st, undefined)!;
+        assert.ok(!r.error, st);
+        assert.equal(r.engine, "gdb-server");
+    }
+});
+
+test("every refusal carries its own remedy", () => {
+    // A refusal is delivered as a notification and nothing else: the resolver returns `undefined`,
+    // VS Code never starts the debug adapter, and there is no Debug Console to elaborate in. So a
+    // message that names only the cause leaves the user with no way forward.
+    const refusals = [
+        resolveRttEngine(config({ engine: "builtin-rust" }), EXTERNAL, undefined)!,
+        resolveRttEngine(config({ engine: "builtin-rust" }), OPENOCD, false)!,
+        resolveRttEngine(config({ engine: "gdb-server" }), "stlink", undefined)!,
+    ];
+    for (const r of refusals) {
+        assert.ok(r.error, "these are all refusals");
+        assert.ok(r.why, `${r.engine}: a cause`);
+        assert.ok(r.remedy, `${r.why}: and something to do about it`);
+    }
+});
+
+test("a fallback explains itself but does not prescribe", () => {
+    // The opposite case: `auto` already did the thing, so telling the user to do it would be noise.
+    // This is why cause and remedy are separate fields rather than one string.
+    for (const r of [resolveRttEngine(config(), EXTERNAL, undefined)!, resolveRttEngine(config(), OPENOCD, false)!]) {
+        assert.ok(!r.error);
+        assert.ok(r.why, "it still says why");
+        assert.equal(r.remedy, undefined, "but asks nothing of the user");
+    }
+});
+
+test("resolution is idempotent, because the CLI resolves a configuration twice", () => {
+    // cli-config-loader runs both resolvers, and its own override runs them again. A written-back
+    // value is seen as an *explicit* ask on the second pass, where `auto` would have substituted --
+    // so a fallback must not turn into an error just because it already happened once.
+    for (const [servertype, rspMux] of [
+        [OPENOCD, undefined],
+        [OPENOCD, false],
+        [EXTERNAL, undefined],
+        [EXTERNAL, false],
+    ] as const) {
+        const cfg = config();
+        const first = resolveRttEngine(cfg, servertype, rspMux)!;
+        assert.ok(!first.error, `${servertype}/${rspMux}: auto never errors`);
+        cfg.engine = first.engine;
+        const second = resolveRttEngine(cfg, servertype, rspMux)!;
+        assert.ok(!second.error, `${servertype}/${rspMux}: re-resolving must not error`);
+        assert.equal(second.engine, first.engine, `${servertype}/${rspMux}: and must not move`);
+    }
+});
+
+test("a disabled RTT config resolves to nothing at all", () => {
+    assert.equal(resolveRttEngine(config({ enabled: false }), OPENOCD, undefined), null);
+    assert.equal(resolveRttEngine(undefined, OPENOCD, undefined), null);
+});
+
+test("rttBuiltinServes and rttServerServes are exact complements while RTT is enabled", () => {
+    // The load-bearing property: every caller picks a side from one of these, and a configuration
+    // that answered yes to both would allocate two sources per channel on one socket.
+    for (const engine of [undefined, "auto", "builtin-rust", "builtin-typescript", "gdb-server"] as const) {
+        const cfg = config(engine === undefined ? {} : { engine });
+        assert.notEqual(rttBuiltinServes(cfg), rttServerServes(cfg), `engine ${engine}`);
+    }
+});
+
+test("neither side serves when RTT is disabled", () => {
+    const cfg = config({ enabled: false, engine: "gdb-server" });
+    assert.equal(rttBuiltinServes(cfg), false);
+    assert.equal(rttServerServes(cfg), false);
+});
+
+test("auto never selects the gdb-server's own RTT", () => {
+    // Arriving from cortex-debug with no `engine` at all should land on our engine: it is the one we
+    // measure, and the one that needs no server-side setup.
+    assert.equal(rttBuiltinServes(config()), true);
+    assert.equal(rttBuiltinServes(config({ engine: "auto" })), true);
+    assert.equal(resolveRttEngine(config(), OPENOCD, undefined)!.engine, "builtin-rust");
 });
 
 test("channels come from the decoders, deduplicated and ordered", () => {
@@ -105,6 +204,7 @@ function sample(over: Partial<RttEngineStats> = {}): RttEngineStats {
         err_invalid: 0,
         err_rejected: 0,
         err_timeout: 0,
+        err_target: 0,
         err_other: 0,
         reads: 0,
         writes: 0,

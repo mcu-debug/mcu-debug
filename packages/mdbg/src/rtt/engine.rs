@@ -203,6 +203,14 @@ pub struct RttStats {
     pub err_invalid: u64,
     pub err_rejected: u64,
     pub err_timeout: u64,
+    /// `E xx` -- the gdb-server was asked and said no.
+    ///
+    /// Split out from `err_other` because it is the most diagnostic failure there is and the least
+    /// ambiguous: the server reached its own conclusion and reported it. Observed in the field as a
+    /// probe that had lost the target, answering `E01` to every read while reporting every register
+    /// as the same sentinel value -- 100 of them in 340 ms. Counted as "other", that run ended with
+    /// no indication of what had happened.
+    pub err_target: u64,
     pub err_other: u64,
 }
 
@@ -391,6 +399,10 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, mut config: RttConfig) {
     let ready_at = Instant::now();
     let mut last_report = ready_at;
     let mut consecutive_errors = 0u32;
+    // When the current run of failures began, so the give-up message can say how fast they came.
+    // 100 failures in 340 ms and 100 failures in four minutes are different faults: the first is a
+    // server refusing instantly, the second is reads timing out.
+    let mut first_error_at: Option<Instant> = None;
     // The idle backoff's current wait. Doubles per empty pass, resets on the first byte.
     let mut idle_wait = config.idle_interval;
     // Said once, not once per pass: an unusable block repeats identically for as long as it lasts.
@@ -411,6 +423,7 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, mut config: RttConfig) {
         match one_pass(mem, &inner, &config, &cb) {
             Ok(0) => {
                 consecutive_errors = 0;
+                first_error_at = None;
                 inner.stats.lock_recover().idle_passes += 1;
                 nap_with_one_eye_open(&inner, idle_wait);
                 // Back off *after* sleeping, so the first empty pass still waits only
@@ -419,6 +432,7 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, mut config: RttConfig) {
             }
             Ok(_) => {
                 consecutive_errors = 0;
+                first_error_at = None;
                 reported_unusable = false;
                 // Straight back to the floor: data now means data imminently, which is the whole
                 // reason the loop runs flat out while it is flowing.
@@ -452,6 +466,7 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, mut config: RttConfig) {
                     match &e {
                         RttError::Memory(RspError::ReplyRejected) => stats.err_rejected += 1,
                         RttError::Memory(RspError::Timeout) => stats.err_timeout += 1,
+                        RttError::Memory(RspError::Target(_)) => stats.err_target += 1,
                         _ => stats.err_other += 1,
                     }
                 }
@@ -459,10 +474,21 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, mut config: RttConfig) {
                 // Reported on the way into a fault only. A target that has been reset produces the
                 // same failure every pass, and one line per pass is not a diagnostic.
                 if consecutive_errors == 1 {
+                    first_error_at = Some(Instant::now());
                     inner.sink.on_error(&e);
                 }
                 if consecutive_errors >= config.max_consecutive_errors {
-                    inner.sink.closed("too many consecutive RTT failures");
+                    // Named here, not merely counted. `on_error` above reaches only the Agent's log
+                    // file, so a session that died this way used to tell the user "too many
+                    // consecutive RTT failures" and nothing else -- while the cause, the rate and
+                    // the remedy were all in hand. Reporting a failure without its cause is most of
+                    // the way to not reporting it.
+                    let span = first_error_at.map(|t| t.elapsed()).unwrap_or_default();
+                    inner.sink.closed(&format!(
+                        "{consecutive_errors} consecutive read failures in {} -- {e}. {}",
+                        fmt_duration(span),
+                        advice(&e)
+                    ));
                     inner.stop.store(true, Ordering::SeqCst);
                     return;
                 }
@@ -472,6 +498,43 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, mut config: RttConfig) {
     }
     let why = inner.stop_reason.lock_recover().unwrap_or("the RTT engine was stopped");
     inner.sink.closed(why);
+}
+
+/// How long a run of failures took, in units a person can act on.
+///
+/// Sub-second matters here: it is what separates a server refusing instantly from reads timing out,
+/// and those are different faults with different causes.
+fn fmt_duration(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", d.as_secs_f64())
+    }
+}
+
+/// What to try, for the failures where there is something specific to try.
+///
+/// Deliberately a sentence aimed at whoever is holding the board, not a restatement of the error.
+/// The error itself is already in the message; this is the part that was missing.
+fn advice(err: &RttError) -> &'static str {
+    match err {
+        RttError::Memory(RspError::Target(_)) => {
+            "The gdb-server was asked and refused, so it could not reach the target. A probe that \
+             has lost its target reports this for every read -- try \"monitor reset\", and re-seat \
+             or power-cycle the board if that does not recover it."
+        }
+        RttError::Memory(RspError::Timeout) => {
+            "Reads are going unanswered. The gdb-server may be busy or wedged rather than the target \
+             being unreachable."
+        }
+        RttError::Memory(RspError::Closed) => "The connection to the gdb-server is gone.",
+        RttError::Memory(RspError::Unsupported) => {
+            "This gdb-server does not implement the memory read RTT needs; use rttConfig.engine \
+             \"builtin-typescript\"."
+        }
+        _ => "RTT has stopped; the session itself is unaffected.",
+    }
 }
 
 /// Poll for the control block until the firmware has initialised it.
@@ -897,8 +960,30 @@ mod tests {
         *target.fail_reads_at.lock_recover() = Some(CB_ADDR + super::super::CB_HEADER_LEN as u64 + 4);
         wait_for(|| rec.closed.lock_recover().is_some(), "giving up");
         assert_eq!(rec.errors.lock_recover().len(), 1, "reported once, not once per pass");
-        assert!(rec.closed.lock_recover().as_deref().unwrap().contains("consecutive"));
         assert!(!engine.is_running());
+
+        // The give-up message has to stand on its own. `on_error` above reaches only the Agent's
+        // log file, so this one line is everything the user is told -- and a field run that ended
+        // this way said "too many consecutive RTT failures" while the cause, the rate and the
+        // remedy were all in hand.
+        let why = rec.closed.lock_recover().clone().unwrap();
+        assert!(why.contains("3 consecutive read failures"), "how many: {why}");
+        assert!(why.contains("ms") || why.contains("s "), "how fast: {why}");
+        assert!(
+            why.contains("E05") || why.contains("error 5"),
+            "what the server said: {why}"
+        );
+        assert!(why.contains("monitor reset"), "what to try: {why}");
+
+        // And `E xx` is counted under its own name. Folded into `err_other` it was the one failure
+        // that could have named the fault and did not.
+        let stats = engine.stats();
+        assert_eq!(
+            stats.err_target, stats.errors,
+            "every failure here was an explicit refusal"
+        );
+        assert_eq!(stats.err_other, 0);
+        assert_eq!(stats.err_timeout, 0);
     }
 
     #[test]

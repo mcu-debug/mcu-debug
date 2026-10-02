@@ -88,13 +88,14 @@ Add one thing at a time and watch where the number drops:
 ### Comparing gdb-servers
 
 To compare the RTT services of OpenOCD, pyOCD, the ST-LINK gdb-server and J-Link, use
-`"output": "none"` with no program, and set `useBuiltinRTT` to `false` so the data comes from the
-server:
+`"output": "none"` with no program, and set `engine` to `"gdb-server"` so the data comes from the
+server. Note that only OpenOCD and J-Link can do this; pyOCD and the ST-LINK gdb-server have no RTT
+we can drive, so there is nothing to compare for those two:
 
 ```jsonc
 "rttConfig": {
     "enabled": true,
-    "useBuiltinRTT": { "enabled": false },
+    "engine": "gdb-server",
     "decoders": [{ "type": "pipe", "port": 0, "output": "none", "stats": true }]
 }
 ```

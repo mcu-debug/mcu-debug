@@ -12,6 +12,8 @@ import {
     ConfigurationArguments,
     substituteEnvVarsInConfig,
     HostConfig,
+    RttEngine,
+    resolveRttEngine,
 } from "../adapter/servers/common";
 import { IHostAdapter } from "./host-adapter";
 import { logger } from "./logger";
@@ -154,13 +156,6 @@ export class McuDebugConfigurationProviderBase {
         } else if (!config.rttConfig.decoders) {
             config.rttConfig.decoders = [];
         }
-        if (config.rttConfig?.enabled && typeof config.rttConfig.useBuiltinRTT === "boolean") {
-            if (config.rttConfig.useBuiltinRTT) {
-                config.rttConfig.useBuiltinRTT = { enabled: true };
-            } else {
-                delete config.rttConfig.useBuiltinRTT;
-            }
-        }
 
         if (!config.graphConfig) {
             config.graphConfig = [];
@@ -271,6 +266,69 @@ export class McuDebugConfigurationProviderBase {
         return config;
     }
 
+    /**
+     * Refuse `useBuiltinRTT`, then resolve `rttConfig.engine` to a concrete engine.
+     *
+     * Runs from `resolveDebugConfigurationWithSubstitutedVariables`, the later of the two resolvers,
+     * so `servertype` and `debugFlags` are final. Everything the choice depends on is in the
+     * configuration -- see `resolveRttEngine` -- so this is the one place that decides, and the
+     * debug adapter only reports what it finds. Two sites deciding independently is what once
+     * attached a second GDB connection to probe-rs, which permits one.
+     *
+     * `useBuiltinRTT` is not aliased on purpose. It packed two independent decisions into one field
+     * -- who serves the ports, and which builtin reads the target -- and had to be typed
+     * `boolean | object` to stay compatible with cortex-debug. Guessing which of the two a given
+     * config meant would sometimes guess wrong, and someone who wrote `useBuiltinRTT: false`
+     * deliberately chose the server's own RTT. A config that quietly means something else is worse
+     * than one that fails with a sentence saying what to write instead.
+     *
+     * Returns a message to abort the launch with, or null. Every failure here is static -- wrong in
+     * the file, wrong on every machine and every run -- which is why they abort rather than degrade.
+     */
+    private verifyRttConfiguration(config: ConfigOptions): string | null {
+        const cfg = config.rttConfig;
+        if (!cfg) {
+            return null;
+        }
+        if ("useBuiltinRTT" in cfg) {
+            const was = (cfg as any).useBuiltinRTT;
+            const off = was === false || (was && typeof was === "object" && was.enabled === false);
+            const ts = was && typeof was === "object" && was.implementation === "typescript";
+            const replacement = off ? '"gdb-server"' : ts ? '"builtin-typescript"' : '"auto", or simply omit it';
+            return (
+                'launch.json: "rttConfig.useBuiltinRTT" has been replaced by "rttConfig.engine". ' +
+                `For this configuration use "engine": ${replacement}. ` +
+                'Any "hostName" or "tcpPort" under it moves to "rttConfig.serve".'
+            );
+        }
+        const valid: RttEngine[] = ["auto", "builtin-rust", "builtin-typescript", "gdb-server"];
+        if (cfg.engine !== undefined && !valid.includes(cfg.engine)) {
+            return `launch.json: "rttConfig.engine" must be one of ${valid.map((v) => `"${v}"`).join(", ")}, not "${cfg.engine}".`;
+        }
+
+        const resolved = resolveRttEngine(cfg, config.servertype, config.debugFlags?.rspMux);
+        if (!resolved) {
+            return null;
+        }
+        if (resolved.error) {
+            // This notification is the whole conversation. Returning a message from here makes the
+            // resolver return `undefined`, which stops VS Code starting the debug adapter at all --
+            // so there is no Debug Console, no session, and no second chance to explain. Hence the
+            // remedy travels with the cause.
+            return `launch.json: "rttConfig.engine": "${cfg.engine}" cannot be used -- ${resolved.why}. ${resolved.remedy}`;
+        }
+        // Written back, so the adapter, the frontend and the CLI all read one concrete value, and so
+        // `get-arguments` shows what actually ran. Safe to re-run: see `resolveRttEngine`.
+        cfg.engine = resolved.engine;
+        if (resolved.why) {
+            // Only ever set, never cleared. The CLI resolves a configuration twice, and the second
+            // pass sees the concrete value this one wrote -- an explicit ask, which needs no
+            // explanation and would otherwise wipe the explanation the first pass produced.
+            cfg.pvtEngineNote = resolved.why;
+        }
+        return null;
+    }
+
     public async resolveDebugConfigurationWithSubstitutedVariables(folderPath: string | undefined, config: ConfigOptions): Promise<ConfigOptions | undefined> {
         const remoteName = this.hostAdapter.getRemoteName();
         if (!remoteName) {
@@ -346,6 +404,11 @@ export class McuDebugConfigurationProviderBase {
                 /* config.servertype was already checked in resolveDebugConfiguration */
                 validationResponse = null;
                 break;
+        }
+        // Resolved here, the later of the two resolvers, so `servertype` and `debugFlags` are final
+        // and this is the one place that decides which RTT engine runs. See `resolveRttEngine`.
+        if (!validationResponse) {
+            validationResponse = this.verifyRttConfiguration(config);
         }
         if (validationResponse) {
             this.hostAdapter.showError(validationResponse);

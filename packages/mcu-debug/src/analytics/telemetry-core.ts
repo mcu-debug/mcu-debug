@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ConfigurationArguments } from "../adapter/servers/common";
+import { rttBuiltinServes } from "../adapter/servers/common";
 
 // ---------------------------------------------------------------------------
 // PostHog project configuration
@@ -108,7 +109,7 @@ export function buildSessionProps(origin: string, cfg: ConfigurationArguments): 
     if (cfg.chainedConfigurations?.enabled) props.multicore = true;
     if (cfg.swoConfig?.enabled) props.swo = true;
     if (cfg.rttConfig?.enabled) props.rtt = true;
-    if (cfg.pvtRttConfig || cfg.rttConfig?.useBuiltinRTT?.enabled) props.builtinRtt = true;
+    if (rttBuiltinServes(cfg.rttConfig)) props.builtinRtt = true;
     if (cfg.graphConfig && cfg.graphConfig.length > 0) props.graphing = true;
     if (cfg.serialConfig?.enabled) props.serial = true;
     if (cfg.liveWatch?.enabled) props.liveWatch = true;

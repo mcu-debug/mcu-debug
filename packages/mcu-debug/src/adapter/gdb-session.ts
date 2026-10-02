@@ -12,6 +12,7 @@ import {
     SWOConfigureEvent,
     PostInitializedEvent,
     RTTServerHelper,
+    rttBuiltinServes,
 } from "./servers/common";
 import os from "os";
 import fs from "fs";
@@ -34,7 +35,7 @@ import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } fro
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse, LiveWatchClientReadyResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
-import { chooseRttEngine, RttProxyBridge } from "./rtt-proxy-bridge";
+import { RttProxyBridge } from "./rtt-proxy-bridge";
 import { TcpPortScanner, formatThrown } from "@mcu-debug/shared";
 import { DisassemblyAdapter } from "./disassebly-gdb";
 import { DebugHelper, withTimeout } from "./helper";
@@ -1278,14 +1279,6 @@ export class GDBDebugSession extends SeqDebugSession {
                 return dec as RTTCommonDecoderOpts;
             });
         }
-        if (args.rttConfig?.enabled && args.rttConfig.useBuiltinRTT?.enabled) {
-            args.pvtRttConfig = args.rttConfig;
-            args.rttConfig = {
-                enabled: false,
-                decoders: [],
-            };
-        }
-
         if (args.chainedConfigurations && args.chainedConfigurations.enabled && args.chainedConfigurations.launches) {
             for (const config of args.chainedConfigurations.launches) {
                 let folder = config.folder || args.cwd || process.cwd();
@@ -1332,27 +1325,43 @@ export class GDBDebugSession extends SeqDebugSession {
     }
 
     /** Memoised so the fallback is reported once; see `rttEngineChoice`. */
-    private rttChoiceCache: { engine: "rust" | "typescript"; why?: string } | null | undefined;
+    private rttChoiceCache: "builtin-rust" | "builtin-typescript" | null | undefined;
 
     /**
-     * Which built-in RTT engine this session uses, or `null` when RTT is off.
+     * Which built-in RTT engine this session uses, or `null` when no built-in engine runs.
      *
-     * Asked at two points in the launch sequence -- deciding whether a live GDB is needed at all, and
-     * later starting whichever engine won -- so it has to be one answer, not two conditions that can
-     * drift apart. They did drift: the earlier site tested `pvtRttConfig` alone, which was right when
-     * built-in RTT always meant the adapter's engine reading through the live GDB, and wrong once the
-     * Agent's engine existed. It attached a second GDB for sessions that had not asked for live watch
-     * and did not need one -- visible on probe-rs, which allows a single connection and refuses it.
+     * **This does not decide anything.** `resolveRttEngine` already did, in the config resolver,
+     * where everything the choice depends on lives. This reads the result and checks the one thing
+     * the resolver asserted rather than observed -- that a session which is not `servertype:
+     * "external"` really does have a Probe Agent.
      *
-     * Memoised from the first call, which happens after the proxy client exists, so the answer cannot
-     * change underneath the two callers.
+     * Kept as an assertion rather than a fallback on purpose. Silently substituting here would make
+     * this a second decider, and two deciders drifting is what once attached a second GDB connection
+     * to probe-rs, which permits one and refused it.
+     *
+     * Asked at two points in the launch sequence -- deciding whether a live GDB is needed at all,
+     * and later starting whichever engine won -- so it is memoised from the first call, which
+     * happens after the proxy client exists.
      */
-    private rttEngineChoice(): { engine: "rust" | "typescript"; why?: string } | null {
+    private rttEngineChoice(): "builtin-rust" | "builtin-typescript" | null {
         if (this.rttChoiceCache === undefined) {
-            const cfg = this.args.pvtRttConfig;
-            this.rttChoiceCache = cfg ? chooseRttEngine(cfg, this.serverSession?.proxy ?? null, this.args.debugFlags?.rspMux) : null;
-            if (this.rttChoiceCache?.why) {
-                this.handleMsg(Stderr, `WARNING: built-in RTT is using the debug adapter's engine -- ${this.rttChoiceCache.why}\n`);
+            const cfg = this.args.rttConfig;
+            if (cfg?.pvtEngineNote) {
+                this.handleMsg(Stderr, `WARNING: built-in RTT is using the debug adapter's engine -- ${cfg.pvtEngineNote}\n`);
+            }
+            if (!rttBuiltinServes(cfg)) {
+                this.rttChoiceCache = null;
+            } else if (cfg.engine === "builtin-typescript") {
+                this.rttChoiceCache = "builtin-typescript";
+            } else if (!this.serverSession?.proxy) {
+                // The resolver ruled out the known no-Agent case, so reaching here means a session
+                // that should have had one does not. Reported rather than worked around: it is the
+                // kind of thing we want to hear about.
+                this.handleMsg(Stderr, "ERROR: built-in RTT needs the Probe Agent and this session has none. RTT is disabled. Please report this.\n");
+                cfg.enabled = false;
+                this.rttChoiceCache = null;
+            } else {
+                this.rttChoiceCache = "builtin-rust";
             }
         }
         return this.rttChoiceCache;
@@ -1362,19 +1371,21 @@ export class GDBDebugSession extends SeqDebugSession {
     private needsLiveGdb(): boolean {
         // The Agent's RTT engine reads target memory over the multiplexed gdb connection and has no
         // use for a live GDB. Only the adapter's own engine does.
-        return !!this.args.liveWatch?.enabled || this.rttEngineChoice()?.engine === "typescript";
+        return !!this.args.liveWatch?.enabled || this.rttEngineChoice() === "builtin-typescript";
     }
 
     private postInitComplete(): Promise<void> {
         return new Promise(async (resolve) => {
-            const rttConfig = this.args.pvtRttConfig;
             const choice = this.rttEngineChoice();
+            // Read *after* `rttEngineChoice()`, which clears `enabled` when an explicit engine could
+            // not be honoured. Reading it first would start an engine the session has just refused.
+            const rttConfig = rttBuiltinServes(this.args.rttConfig) ? this.args.rttConfig : null;
 
             // The Agent's engine reads target memory over the multiplexed RSP connection, so it has
             // no need of the live GDB the debug adapter's engine polls through. This is still the
             // right *moment* to start -- symbols are loaded, so the control block address is known,
             // and the target is about to run -- but the dependency is gone, so it does not wait.
-            if (choice?.engine === "rust" && rttConfig) {
+            if (choice === "builtin-rust" && rttConfig) {
                 const proxy = this.serverSession!.proxy!;
                 this.rttProxyBridge = new RttProxyBridge(this, proxy);
                 try {
@@ -1389,7 +1400,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 }
             }
 
-            const doBuiltinRtt = !!rttConfig && choice?.engine === "typescript";
+            const doBuiltinRtt = !!rttConfig && choice === "builtin-typescript";
             const doStart = this.needsLiveGdb();
             if (doStart) {
                 this.liveWatchMonitor
@@ -1572,8 +1583,9 @@ export class GDBDebugSession extends SeqDebugSession {
             // one that the firmware never rewrites, and RTT is dead for the session. `launchCommands()`
             // ends halted on both servers that implement this -- OpenOCD with `monitor reset halt`,
             // J-Link with `monitor reset`, which resets *and halts* per SEGGER's GDB Server
-            // documentation. A server whose launch sequence leaves the core running must not implement
-            // `clearSearchCommands`, or must clear before its final reset.
+            // documentation. ST-LINK, probe-rs and pyOCD are unverified on this point -- if one of
+            // them leaves the core running here, the clear lands after `.data` has been copied and
+            // destroys a block the firmware will never rewrite.
             const clearRtt = RTTServerHelper.clearSearchCommands(this.args);
             if (clearRtt.length > 0) {
                 try {
@@ -1646,7 +1658,7 @@ export class GDBDebugSession extends SeqDebugSession {
             } else {
                 await this.symbolTable.loadSymbols();
             }
-            const rttConfig = this.args.pvtRttConfig || this.args.rttConfig;
+            const rttConfig = this.args.rttConfig;
             if (rttConfig?.enabled) {
                 const symName = this.symbolTable.rttSymbolName;
                 if (!rttConfig.address) {

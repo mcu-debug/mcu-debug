@@ -69,6 +69,8 @@ export interface RttEngineStats {
     err_invalid: number;
     err_rejected: number;
     err_timeout: number;
+    /** `E xx`: the gdb-server was asked and said no. Kept apart from `err_other` because it names a cause. */
+    err_target: number;
     err_other: number;
     reads: number;
     writes: number;
@@ -98,6 +100,7 @@ export function formatRttEngineStats(now: RttEngineStats, prev: RttEngineStats |
         err_invalid: 0,
         err_rejected: 0,
         err_timeout: 0,
+        err_target: 0,
         err_other: 0,
         reads: 0,
         writes: 0,
@@ -148,6 +151,9 @@ function errorKinds(now: RttEngineStats, base: RttEngineStats): string {
     };
     add("rejected", now.err_rejected, base.err_rejected);
     add("timeout", now.err_timeout, base.err_timeout);
+    // Named before "other" and never merged with it: "the server refused" is the one error kind
+    // that tells you where to look, and a field run ended with 100 of these reported as "other".
+    add("refused", now.err_target, base.err_target);
     add("other", now.err_other, base.err_other);
     return parts.length > 0 ? ` (${parts.join(", ")})` : "";
 }
@@ -313,33 +319,6 @@ export function upChannels(config: RTTConfiguration): number[] {
         }
     }
     return [...found].sort((a, b) => a - b);
-}
-
-/**
- * Which built-in RTT engine this session should use, and why.
- *
- * Kept as one function returning a reason so that the fallback is reported once, in words, rather
- * than being inferred from RTT quietly behaving like the old implementation.
- */
-export function chooseRttEngine(config: RTTConfiguration, proxy: ProxyClient | null, rspMux: boolean | undefined): { engine: "rust" | "typescript"; why?: string } {
-    const asked = config.useBuiltinRTT?.implementation ?? "rust";
-    if (asked === "typescript") {
-        return { engine: "typescript" };
-    }
-    if (!proxy) {
-        return {
-            engine: "typescript",
-            why: "this session has no Probe Agent (an external gdb-server, or one matched by regex)",
-        };
-    }
-    if (rspMux === false) {
-        // The engine reads target memory through the multiplexer, so without it there is nothing to
-        // run on. Falling back beats losing RTT, but it must be said out loud -- `rspMux: false` is
-        // normally set to isolate a problem, and silently changing a second thing at the same time
-        // would make the result meaningless.
-        return { engine: "typescript", why: "debugFlags.rspMux is false, and Agent-side RTT needs the multiplexer" };
-    }
-    return { engine: "rust" };
 }
 
 /** Guard against a control-block address that would make the engine poll address 0 for ever. */

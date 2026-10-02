@@ -14,6 +14,7 @@ import {
     TcpPortDefMap,
     addSyncFileIfNeeded,
     needsProxySync,
+    rttServerServes,
 } from "./common";
 import * as os from "os";
 import * as fs from "fs";
@@ -131,8 +132,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
 
     public rttCommands(): string[] {
         const commands: string[] = [];
-        const usingRtt = this.args.rttConfig.enabled && !this.args.rttConfig.useBuiltinRTT?.enabled;
-        if (usingRtt && this.args.pvtSessionMode !== SessionMode.Reset) {
+        if (rttServerServes(this.args.rttConfig) && this.args.pvtSessionMode !== SessionMode.Reset) {
             const cfg = this.args.rttConfig;
             commands.push(...RTTServerHelper.clearSearchCommands(this.args));
             commands.push(`interpreter-exec console "monitor rtt setup ${cfg.address} ${cfg.searchSize} {${cfg.searchId}}"`);
@@ -324,7 +324,7 @@ export class OpenOCDServerController extends EventEmitter implements GDBServerCo
     // established an RTT TCP port already
     private readonly rttSearchStr = "Control block found at";
     public rttPoll(): void {
-        if (!this.args.rttConfig.enabled || this.args.rttConfig.useBuiltinRTT?.enabled) {
+        if (!rttServerServes(this.args.rttConfig)) {
             return;
         }
         OpenOCDLog("RTT Poll requested");

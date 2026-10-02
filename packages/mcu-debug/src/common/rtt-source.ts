@@ -1,4 +1,4 @@
-import { RTTCommonDecoderOpts, RTTConsoleDecoderOpts } from "../adapter/servers/common";
+import { RTTCommonDecoderOpts, RTTConsoleDecoderOpts, rttBuiltinServes } from "../adapter/servers/common";
 import { getHostAdapter, IDebugSession } from "./host-adapter";
 import { CDebugSession } from "./cli-session";
 import { JLinkSocketRTTSource, SocketRTTSource } from "./swo/sources/socket";
@@ -51,15 +51,15 @@ export function createRTTSource(mySession: CDebugSession, tcpPort: string, chann
             resolve(src);
             return;
         }
-        // **`pvtRttConfig ?? rttConfig`, and the order matters.** When built-in RTT is enabled the
-        // adapter moves the real configuration to `pvtRttConfig` and leaves `rttConfig` as a disabled
-        // stub, so that the gdb-server's own RTT setup is skipped. The VS Code frontend maps it back
-        // when it fetches the arguments; **the CLI does not**. So reading `rttConfig` directly here
-        // sees `{ enabled: false }` under the CLI and every `useBuiltinRTT` test below silently
-        // inverts -- which is how the J-Link channel-select string came to be sent to our own RTT
-        // server, and how `rtt-poll` is still requested for a server that is not serving RTT.
-        const rttCfg = mySession.config.pvtRttConfig ?? mySession.config.rttConfig;
-        const builtin = !!rttCfg?.useBuiltinRTT?.enabled;
+        // `rttConfig` is the one source of truth in both hosts, and `rttBuiltinServes` answers
+        // "are we serving this port, or is the gdb-server" from the configuration alone -- no probe,
+        // no Probe Agent, no host. That is deliberate. This used to read `pvtRttConfig ?? rttConfig`
+        // because the adapter moved the real config aside and the VS Code frontend mapped it back
+        // while the CLI did not, so every test here silently inverted under the CLI -- which is how
+        // J-Link's channel-select string came to be written into target memory through our own RTT
+        // server, and how `rtt-poll` was requested of a server that was not serving RTT.
+        const rttCfg = mySession.config.rttConfig;
+        const builtin = rttBuiltinServes(rttCfg);
         let decoderSpec = rttCfg?.enabled && rttCfg?.pre_decoder;
         if (decoderSpec && builtin) {
             // Built-in RTT applies the pre-decoder itself, in the debug adapter, where it also
@@ -104,7 +104,7 @@ export function handleRTTConfigureEvent(body: any, session: CDebugSession, creat
     if (body.type === "socket") {
         const decoder: RTTCommonDecoderOpts = body.decoder;
         if (decoder.type === "console" || decoder.type === "binary") {
-            createRTTSource(session, decoder.tcpPort, decoder.port).then((src: SocketRTTSource) => {
+            createRTTSource(session, decoder.pvtTcpPort, decoder.port).then((src: SocketRTTSource) => {
                 if ((decoder as any).stats) {
                     attachStats(decoder, src);
                 }
@@ -113,7 +113,7 @@ export function handleRTTConfigureEvent(body: any, session: CDebugSession, creat
         } else if (decoder.type === "pipe") {
             // A decorator over the channel's source, not a consumer of it, so the host's own
             // terminal can be built from it unchanged -- see `RTTPipeSource`.
-            createRTTSource(session, decoder.tcpPort, decoder.port).then((src: SocketRTTSource) => {
+            createRTTSource(session, decoder.pvtTcpPort, decoder.port).then((src: SocketRTTSource) => {
                 const opts = substituteDecoderVars({ ...(decoder as unknown as RTTPipeDecoderOpts) }, session.config);
                 const pipe = new RTTPipeSource(src, opts);
                 pipe.start()
@@ -130,11 +130,11 @@ export function handleRTTConfigureEvent(body: any, session: CDebugSession, creat
             });
         } else {
             if (!decoder.ports) {
-                createRTTSource(session, decoder.tcpPort, decoder.port);
+                createRTTSource(session, decoder.pvtTcpPort, decoder.port);
             } else {
                 for (let ix = 0; ix < decoder.ports.length; ix = ix + 1) {
                     // Hopefully ports and tcpPorts are a matched set
-                    createRTTSource(session, decoder.tcpPorts[ix], decoder.ports[ix]);
+                    createRTTSource(session, decoder.pvtTcpPorts[ix], decoder.ports[ix]);
                 }
             }
         }

@@ -236,9 +236,11 @@ see _the model_ above, where it turns out to be the zero-round-trip case of our 
 does not error -- it _queues_ the read and answers when the target next stops. Observed as five
 consecutive two-second timeouts through a run, each answered within a millisecond of the halt that
 followed, while `WrOff` advanced 0 → 0x2f9 the whole time. So the data was there and unreachable. Its
-tier is `HaltedOnly`, and for pyOCD `useBuiltinRTT.implementation: "typescript"` is not a fallback but
+tier is `HaltedOnly`, and for pyOCD `engine: "builtin-typescript"` is not a fallback but
 the only option: the adapter's own engine reads over a **second** connection, where pyOCD answers
-happily. See `gdb-rsp.md` §7.
+happily. `engine: "gdb-server"` is refused for pyOCD outright -- it has a `monitor rtt` command set,
+but OpenOCD's RTT is driven over its tcl interface and pyOCD has no equivalent, so the commands were
+issued and then waited on for ever. See `gdb-rsp.md` §7.
 
 **probe-rs permits everything and is an order of magnitude slower at it.** Its latency is its own and
 visible without us in the picture at all -- from its handshake with GDB, before the Agent had sent a

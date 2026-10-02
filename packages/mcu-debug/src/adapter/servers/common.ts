@@ -110,11 +110,11 @@ export interface SWOCommonDecoderOpts {
 
 export interface RTTCommonDecoderOpts {
     type: string; // 'console', 'graph', 'pipe', ...
-    tcpPort: string; // [hostname:]port
+    pvtTcpPort: string; // [hostname:]port
     port: number; // RTT Channel number
 
     // Following two used for 'Advanced' category
-    tcpPorts: string[];
+    pvtTcpPorts: string[];
     ports: number[];
 
     /** Report byte rates for this decoder to the debug console. See `ThroughputMonitor`. */
@@ -214,19 +214,152 @@ export interface SWOConfiguration {
     swoPath?: string;
 }
 
-export interface RttBuiltinConfig {
-    enabled?: boolean;
+/**
+ * Which implementation reads RTT out of the target.
+ *
+ * Two of these are ours and one is the gdb-server's, and the distinction that matters to most of
+ * the code is not which engine runs but **who serves the TCP ports the decoders connect to** --
+ * see `rttBuiltinServes`. `"auto"` deliberately never resolves to `"gdb-server"`: arriving from
+ * cortex-debug with no `engine` at all should land on our own engine, which is the one we measure
+ * and the one that needs no server-side setup.
+ *
+ * Never two engines at once. Each keeps its own idea of the ring buffer's read pointer, so a pair
+ * of them would consume each other's bytes and corrupt the channel.
+ */
+export type RttEngine = "auto" | "builtin-rust" | "builtin-typescript" | "gdb-server";
+
+/**
+ * Where a *builtin* engine serves the decoded channels.
+ *
+ * Meaningless for `"gdb-server"`, which serves on ports of its own choosing -- one telnet port for
+ * J-Link, one per channel for OpenOCD.
+ *
+ * `tcpPorts` is keyed by RTT channel rather than being a second array parallel to the decoder's
+ * `ports`, because the parallel-array version could be misaligned and the code that consumed it
+ * said so out loud: "Hopefully ports and tcpPorts are a matched set".
+ */
+export interface RTTServerConfig {
     hostName?: string;
+    /** Port for the lowest channel; any others are chosen free from there. */
     tcpPort?: number;
+    /** Exact port per channel. Wins over `tcpPort` for any channel it names. */
+    tcpPorts?: { [channel: number]: number };
+}
+
+/**
+ * True when *we* serve the RTT TCP ports for this configuration, false when the gdb-server does.
+ *
+ * Deliberately answerable from the configuration alone -- no probe, no Probe Agent, no host. That
+ * is what lets the debug adapter, the VS Code frontend and the CLI all reach the same answer
+ * without anything being passed between them, and it is the whole reason the `pvtRttConfig` swap
+ * could be deleted. The swap existed only to make the gdb-server's RTT setup skip itself, and cost
+ * us a J-Link channel-select string written into target memory when the CLI read the stub.
+ *
+ * Which *builtin* engine reads the target is a separate question, asked only inside the debug
+ * adapter, because only it knows whether a Probe Agent exists. Nothing out here needs the answer:
+ * both builtins serve the same ports and feed the same decoders.
+ */
+export function rttBuiltinServes(cfg: RTTConfiguration | undefined): boolean {
+    return !!cfg?.enabled && (cfg.engine ?? "auto") !== "gdb-server";
+}
+
+/** Servertypes whose gdb-server can serve RTT itself, i.e. the ones with a working `rttCommands()`. */
+export const RTT_SERVER_CAPABLE = ["openocd", "jlink"];
+
+/** The outcome of resolving `rttConfig.engine` against the rest of the configuration. */
+export interface RttEngineResolution {
+    /** Concrete, never `"auto"`. */
+    engine: Exclude<RttEngine, "auto">;
+    /** Why the answer differs from what was asked. Worth printing; not a failure on its own. */
+    why?: string;
     /**
-     * Which built-in RTT engine reads the target: the Probe Agent's (`"rust"`, the default) or the
-     * debug adapter's own (`"typescript"`). Never both -- they would each keep their own idea of
-     * the ring buffer's read pointer and corrupt the channel between them.
+     * What to write instead. Always set when `error` is -- and that is a requirement, not a habit.
      *
-     * `"rust"` needs the RSP multiplexer, which is on by default; a session with
-     * `debugFlags.rspMux` false falls back to `"typescript"` with a warning rather than losing RTT.
+     * A refusal reaches the user as a notification from the config resolver and nothing else: the
+     * resolver returns `undefined`, so the debug adapter never starts and there is no Debug Console
+     * to explain anything in. The message is read once, out of context, so it has to carry its own
+     * remedy. Kept apart from `why` because the fallback path prints `why` alone -- there, telling
+     * someone what to write would be wrong, since it has already been done for them.
      */
-    implementation?: "rust" | "typescript";
+    remedy?: string;
+    /** The ask was explicit and impossible. A static configuration error. */
+    error?: boolean;
+}
+
+/**
+ * Turn `rttConfig.engine` into a concrete engine, or say why it cannot be.
+ *
+ * **Everything this needs is in the configuration**, which is the point: it runs in the config
+ * resolver, before the debug adapter starts, so one place decides and the adapter only reports.
+ * That was not obvious -- the decision used to take a live `ProxyClient` -- but a session gets a
+ * Probe Agent for every servertype except `"external"`, and a client that fails to start throws the
+ * session rather than leaving a null behind. So "is there an Agent" is `servertype !== "external"`,
+ * and `debugFlags.rspMux` was always just a config field.
+ *
+ * Having two deciders is the specific failure this avoids. Two sites once tested the engine
+ * independently, drifted, and attached a second GDB connection to probe-rs -- which permits one and
+ * refused it.
+ *
+ * **Only `"auto"` substitutes.** Naming an engine is how a user asks *not* to be handed a different
+ * one, which is the reason the setting exists, so an explicit ask that cannot be met is an error.
+ * `"auto"` is the default, so nobody is refused for having no opinion.
+ *
+ * **Idempotent**, because the CLI resolves a configuration twice. Re-resolving a written-back value
+ * sees an explicit ask rather than `"auto"`, and that is safe only because nothing it tests changes
+ * between the passes: a value this function chose is a value it would accept.
+ */
+export function resolveRttEngine(cfg: RTTConfiguration | undefined, servertype: string, rspMux: boolean | undefined): RttEngineResolution | null {
+    if (!cfg?.enabled) {
+        return null;
+    }
+    const asked = cfg.engine ?? "auto";
+    if (asked === "gdb-server") {
+        if (!RTT_SERVER_CAPABLE.includes(servertype)) {
+            return {
+                engine: "gdb-server",
+                error: true,
+                why: `servertype "${servertype}" has no RTT of its own -- only ${RTT_SERVER_CAPABLE.map((v) => `"${v}"`).join(" and ")} can serve it`,
+                remedy: 'Remove "engine" to use our own RTT, which works with every supported gdb-server.',
+            };
+        }
+        return { engine: "gdb-server" };
+    }
+    if (asked === "builtin-typescript") {
+        return { engine: "builtin-typescript" };
+    }
+
+    // `"auto"` and `"builtin-rust"` want the Agent's engine and differ only in what happens when it
+    // cannot run: `"auto"` falls back, `"builtin-rust"` refuses. Both branches below serve both
+    // outcomes, which is why `remedy` is conditional -- a fallback has already done the thing, so
+    // prescribing it would be noise, and a field set where it must not be printed is an invitation
+    // to print it.
+    const explicit = asked === "builtin-rust";
+    if (servertype === "external") {
+        return {
+            engine: "builtin-typescript",
+            error: explicit,
+            why: 'servertype "external" does not start a Probe Agent, and Agent-side RTT needs one',
+            remedy: explicit ? 'Use "builtin-typescript", or remove "engine" to fall back automatically.' : undefined,
+        };
+    }
+    if (rspMux === false) {
+        // The engine reads target memory through the multiplexer, so without it there is nothing to
+        // run on. For `"auto"`, falling back beats losing RTT -- but it must be said out loud:
+        // `rspMux: false` is normally set to isolate a problem, and silently changing a second thing
+        // at the same time would make the result meaningless.
+        return {
+            engine: "builtin-typescript",
+            error: explicit,
+            why: '"debugFlags.rspMux" is false, and Agent-side RTT reads target memory through the multiplexer',
+            remedy: explicit ? 'Remove "debugFlags.rspMux": false, or use "builtin-typescript" instead.' : undefined,
+        };
+    }
+    return { engine: "builtin-rust" };
+}
+
+/** True when the gdb-server serves the RTT TCP ports. The exact complement of `rttBuiltinServes`. */
+export function rttServerServes(cfg: RTTConfiguration | undefined): boolean {
+    return !!cfg?.enabled && (cfg.engine ?? "auto") === "gdb-server";
 }
 
 export interface PreDecoder extends DecoderSpec {
@@ -234,15 +367,22 @@ export interface PreDecoder extends DecoderSpec {
 }
 export interface RTTConfiguration {
     enabled: boolean;
+    engine?: RttEngine;
     address?: string;
     searchSize?: number;
     searchId?: string;
-    useBuiltinRTT?: RttBuiltinConfig;
+    /** Builtins only. See `RTTServerConfig`. */
+    serve?: RTTServerConfig;
     clearSearch?: boolean;
     polling_interval?: number;
     rtt_start_retry?: number;
     pre_decoder?: PreDecoder;
     decoders: RTTCommonDecoderOpts[];
+    /**
+     * Why `engine` differs from what was configured, written by `resolveRttEngine` for the debug
+     * adapter to print once. A diagnostic, never an input -- the resolver has already decided.
+     */
+    pvtEngineNote?: string;
 }
 
 export interface ElfSection {
@@ -306,8 +446,8 @@ export interface DebugFlags {
     // it opens. rspMux defaults to on; set it false to take the multiplexer out of the path
     // for this session only. Both are per session because one Agent serves many.
     //
-    // Which built-in RTT engine to use is *not* here: it belongs to the feature it configures,
-    // `rttConfig.useBuiltinRTT.implementation`.
+    // Which RTT engine to use is *not* here: it belongs to the feature it configures,
+    // `rttConfig.engine`.
     rspTrace?: string;
     rspMux?: boolean;
     // What the Agent may assume this gdb-server can do: "full" | "haltedOnly" | "unsupported".
@@ -461,7 +601,6 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     svdAddrGapThreshold: number;
     ctiOpenOCDConfig: CTIOpenOCDConfig;
     rttConfig: RTTConfiguration;
-    pvtRttConfig: RTTConfiguration;
     swoConfig: SWOConfiguration;
     serialConfig?: SerialConfig;
     liveWatch: LiveWatchConfig;
@@ -606,84 +745,108 @@ export class RTTServerHelper {
     // For openocd, you cannot have have duplicate ports and neither can
     // a multiple clients connect to the same channel. Perhaps in the future
     // it wil
-    public allocateRTTPorts(cfg: RTTConfiguration, isBuiltin = false, startPort: number = DefaultPortBase.rtt): Promise<any> {
+    /**
+     * Resolve one TCP port per RTT channel any decoder looks at, into `rttLocalPortMap`.
+     *
+     * `isBuiltin` is the *caller's* intent -- "allocate the ports we will serve" from
+     * `RttTcpServer`, versus "allocate the ports the gdb-server will serve" from a server
+     * controller. Exactly one of those is right for a given configuration, so the other returns
+     * without doing anything.
+     *
+     * Multiple decoders may watch the same channel (a `console` and a `binary` on channel 0, say);
+     * they share its port, which is why the channel set is deduplicated before any port is sought.
+     */
+    public allocateRTTPorts(cfg: RTTConfiguration, isBuiltin = false, startPort: number = DefaultPortBase.rtt): Promise<void> {
         this.allocDone = true;
         if (!cfg || !cfg.enabled || !cfg.decoders || cfg.decoders.length === 0) {
             return Promise.resolve();
         }
-
-        if (!isBuiltin && cfg.useBuiltinRTT?.enabled) {
-            // This is for external rtt server usage but the config says to use built-in RTT
+        if (isBuiltin !== rttBuiltinServes(cfg)) {
+            // Asked to allocate for the side that is not serving this session.
             return Promise.resolve();
         }
 
-        // Remember that you can have duplicate decoder ports. ie, multiple decoders looking at the same port
-        // while mostly not allowed, it could be in the future. Handle it here but disallow on a case by case
-        // basis depending on the gdb-server type
-        const dummy = "??";
+        const channels: number[] = [];
         for (const dec of cfg.decoders) {
-            if (dec.ports && dec.ports.length > 0) {
-                dec.tcpPorts = [];
-                for (const p of dec.ports) {
-                    this.rttLocalPortMap[p] = dummy;
+            for (const ch of dec.ports && dec.ports.length > 0 ? dec.ports : [dec.port]) {
+                if (typeof ch === "number" && !channels.includes(ch)) {
+                    channels.push(ch);
                 }
-            } else {
-                this.rttLocalPortMap[dec.port] = dummy;
             }
         }
-        const count = Object.keys(this.rttLocalPortMap).length;
+        channels.sort((a, b) => a - b);
+
+        // `serve` describes ports *we* bind, so it means nothing on the gdb-server path -- J-Link
+        // picks its own telnet port and OpenOCD is told ports by `rttCommands()`.
+        const named: { [channel: number]: number } = (isBuiltin && cfg.serve?.tcpPorts) || {};
+        const needFree: number[] = [];
+        for (const ch of channels) {
+            if (typeof named[ch] === "number") {
+                this.rttLocalPortMap[ch] = named[ch].toString();
+            } else {
+                needFree.push(ch);
+            }
+        }
+
+        if (needFree.length === 0) {
+            this.assignPorts(cfg);
+            return Promise.resolve();
+        }
+
         // The RTT base already sits in its own band clear of the gdb-server ports (see
         // DefaultPortBase), so no nudge is needed. J-Link passes its own base, 19021, which is
         // the port its documentation tells users to expect for RTT telnet.
-
-        if (isBuiltin && typeof cfg.useBuiltinRTT?.tcpPort === "number") {
-            const specifiedPort = cfg.useBuiltinRTT.tcpPort;
-            if (count <= 1) {
-                // Use specified port
-                const specifiedPort = cfg.useBuiltinRTT.tcpPort;
-                const ports: number[] = [specifiedPort];
-                this.assignPorts(cfg, dummy, ports);
-                // Need more ports
-                return Promise.resolve();
-            } else {
-                // Check if we can use the specified port as a starting point since we need more than one port
-                startPort = specifiedPort;
-            }
+        //
+        // `serve.tcpPort` names where to *start looking*, not a port to insist on: a single channel
+        // lands exactly there whenever it is free, and a busy port yields the next one rather than
+        // an unbindable session. Insisting is what `serve.tcpPorts` is for.
+        if (isBuiltin && typeof cfg.serve?.tcpPort === "number") {
+            startPort = cfg.serve.tcpPort;
         }
 
-        return TcpPortScanner.findFreePorts(count, { start: startPort, consecutive: false, avoid: undefined }).then((ports) => {
-            this.assignPorts(cfg, dummy, ports);
+        return TcpPortScanner.findFreePorts(needFree.length, { start: startPort, consecutive: false, avoid: undefined }).then((ports) => {
+            needFree.forEach((ch, ix) => {
+                this.rttLocalPortMap[ch] = ports[ix].toString();
+            });
+            this.assignPorts(cfg);
         });
     }
 
-    private assignPorts(cfg: RTTConfiguration, dummy: string, ports: number[]) {
+    /**
+     * Copy the resolved ports from `rttLocalPortMap` onto the decoders that asked for them.
+     *
+     * Every channel in `rttLocalPortMap` has a real port by the time this runs. The version this
+     * replaced had two faults that the channel-keyed map removes rather than fixes: it handed
+     * `ports[0]` to *every* channel needing one, so two console decoders on different channels
+     * collided on one TCP port; and on the `ports[]` (advanced) path it used the channel number
+     * itself as the TCP port, so channel 0 became port 0.
+     */
+    private assignPorts(cfg: RTTConfiguration) {
         for (const dec of cfg.decoders) {
             if (dec.ports && dec.ports.length > 0) {
-                dec.tcpPorts = [];
-                for (const p of dec.ports) {
-                    let str = this.rttLocalPortMap[p];
-                    if (str === dummy) {
-                        str = p.toString();
-                        this.rttLocalPortMap[p] = str;
-                    }
-                    dec.tcpPorts.push(str);
-                }
+                dec.pvtTcpPorts = dec.ports.map((p) => this.rttLocalPortMap[p]);
             } else {
-                let str = this.rttLocalPortMap[dec.port];
-                if (str === dummy) {
-                    str = ports[0].toString();
-                    this.rttLocalPortMap[dec.port] = str;
-                }
-                dec.tcpPort = str;
+                dec.pvtTcpPort = this.rttLocalPortMap[dec.port];
             }
         }
     }
 
-    public emitConfigures(cfg: RTTConfiguration, obj: EventEmitter): boolean {
+    /**
+     * Announce each decoder's resolved port, so the host connects a source to it.
+     *
+     * Guarded by `isBuiltin` for the same reason as `allocateRTTPorts`, and more sharply: with the
+     * `pvtRttConfig` swap gone there is one `rttConfig` object and one set of decoder objects, so
+     * the side that is not serving would otherwise emit the ports the serving side had just written
+     * onto those same decoders -- two sources per channel, both reading the one socket.
+     */
+    public emitConfigures(cfg: RTTConfiguration, obj: EventEmitter, isBuiltin = false): boolean {
         let ret = false;
+        if (isBuiltin !== rttBuiltinServes(cfg)) {
+            return false;
+        }
         if (cfg.enabled) {
             for (const dec of cfg.decoders) {
-                if (dec.tcpPort || dec.tcpPorts) {
+                if (dec.pvtTcpPort || dec.pvtTcpPorts) {
                     obj.emit(
                         "event",
                         new RTTConfigureEvent({
@@ -719,7 +882,7 @@ export class RTTServerHelper {
      * "we are launching and the image has just been loaded".
      */
     public static clearSearchCommands(args: ConfigurationArguments): string[] {
-        const cfg = args.pvtRttConfig ?? args.rttConfig;
+        const cfg = args.rttConfig;
         if (!cfg?.enabled || !cfg.clearSearch || args.request !== "launch" || args.pvtSessionMode === SessionMode.Reset) {
             return [];
         }

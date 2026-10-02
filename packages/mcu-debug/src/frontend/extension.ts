@@ -393,10 +393,6 @@ export class MCUDebugExtension {
         this.functionSymbols = [];
         session.customRequest("get-arguments").then(
             (args) => {
-                if (args.pvtRttConfig) {
-                    args.rttConfig = args.pvtRttConfig;
-                    delete args.pvtRttConfig;
-                }
                 newSession.config = args;
                 let svdfile = args.svdFile;
                 if (!svdfile) {
@@ -814,7 +810,7 @@ export class MCUDebugExtension {
         handleRTTConfigureEvent(e.body, mySession, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
             const newTerminal = new IOTerminal(decoder, src);
             if (vscode.debug.activeDebugConsole) {
-                vscode.debug.activeDebugConsole.appendLine(`Created RTT terminal for channel ${decoder.port} on tcp port ${decoder.tcpPort}`);
+                vscode.debug.activeDebugConsole.appendLine(`Created RTT terminal for channel ${decoder.port} on tcp port ${decoder.pvtTcpPort}`);
             }
         });
     }

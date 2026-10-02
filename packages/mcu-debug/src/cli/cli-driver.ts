@@ -1176,7 +1176,7 @@ export class CliSessionDriver {
             rtts: this.rtts.map((rtt) => ({
                 status: rtt.getStatus(),
                 prefix: rtt.getPrefix(),
-                tcpPort: rtt.options.tcpPort,
+                tcpPort: rtt.options.pvtTcpPort,
                 channel: rtt.options.port,
                 type: rtt.options.type,
             })),

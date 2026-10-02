@@ -140,7 +140,7 @@ export class DebugHelper {
             if (this.session.args.debugFlags?.anyFlags) {
                 args.push("--debug");
             }
-            const rttConfig = this.session.args.pvtRttConfig ?? this.session.args.rttConfig;
+            const rttConfig = this.session.args.rttConfig;
             const needRtt = rttConfig?.enabled && (rttConfig.address === "auto" || !rttConfig.address);
             if (needRtt) {
                 args.push(`--rtt-search`);

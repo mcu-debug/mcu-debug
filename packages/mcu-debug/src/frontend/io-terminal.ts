@@ -92,7 +92,7 @@ export class IOTerminal extends EventEmitter {
             this.startOfNewLine = true;
         }
         this.terminal?.send(AnsiHelpers.reset());
-        this.terminal?.send(AnsiHelpers.redFormat(`RTT connection on TCP port ${this.options.tcpPort} ended. Waiting for next connection...`));
+        this.terminal?.send(AnsiHelpers.redFormat(`RTT connection on TCP port ${this.options.pvtTcpPort} ended. Waiting for next connection...`));
         this.terminal?.setState({ kind: "inactive" });
         this.terminal?.removeAllListeners();
         this.terminal = null;

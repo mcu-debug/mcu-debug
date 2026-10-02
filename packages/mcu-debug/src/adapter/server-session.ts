@@ -88,9 +88,14 @@ export class GDBServerSession extends EventEmitter {
      * The session's proxy client, for the few things outside this class that need to talk to the
      * Agent directly rather than through a stream.
      *
-     * `null` when there is no proxy -- an external server matched by `matchRegex`, or a session that
-     * never started one -- so every caller has to decide what to do without it. Agent-side RTT falls
-     * back to the debug adapter's own engine, for instance.
+     * `null` exactly when `servertype` is `"external"`, which returns from `startServer()` before a
+     * client is made. Nothing else leaves a null behind: a client is created unconditionally for
+     * every other servertype, and one that fails to `start()` throws out of `startServer()` and
+     * fails the session. `matchRegex` has nothing to do with it -- every servertype has an
+     * `initMatch()`.
+     *
+     * That equivalence is what lets `resolveRttEngine` choose the RTT engine in the config resolver,
+     * from the configuration alone, long before this exists.
      */
     public get proxy(): ProxyClient | null {
         return this.proxyClient;

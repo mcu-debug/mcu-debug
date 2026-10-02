@@ -91,7 +91,11 @@ impl std::fmt::Display for RttError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RttError::NotReady => write!(f, "the RTT control block is not initialised yet"),
-            RttError::Memory(e) => write!(f, "target memory access failed: {e:?}"),
+            // `{e}`, not `{e:?}`. `RspError` has a Display that names the fault -- "gdb-server
+            // returned error E01" -- and the Debug form replaced it with `Target(Some(1))`. That is
+            // the text a field failure was reported as, and it reached the user via a log line that
+            // was the only record of why RTT had stopped.
+            RttError::Memory(e) => write!(f, "target memory access failed: {e}"),
             RttError::Invalid(why) => write!(f, "invalid RTT control block: {why}"),
         }
     }

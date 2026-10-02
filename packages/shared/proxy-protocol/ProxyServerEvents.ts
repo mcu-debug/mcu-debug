@@ -65,6 +65,11 @@ export type ProxyServerEvents =
               err_invalid: number;
               err_rejected: number;
               err_timeout: number;
+              /**
+               * `E xx`: the gdb-server was asked and said no. The most diagnostic of the four, which is
+               * why it is not folded into `err_other`.
+               */
+              err_target: number;
               err_other: number;
               /**
                * Memory reads and writes issued. Their sum is round trips.

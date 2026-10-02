@@ -12,6 +12,7 @@ import {
     SessionMode,
     TcpPortDef,
     TcpPortDefMap,
+    rttServerServes,
 } from "./common";
 import * as os from "os";
 import { EventEmitter } from "events";
@@ -62,10 +63,10 @@ export class JLinkServerController extends EventEmitter implements GDBServerCont
 
     public rttCommands(): string[] {
         const commands: string[] = [];
-        if (!this.args.rttConfig.enabled || this.args.rttConfig.useBuiltinRTT?.enabled) {
+        if (!rttServerServes(this.args.rttConfig)) {
             return commands;
         }
-        if (this.args.rttConfig.enabled && this.args.pvtSessionMode !== SessionMode.Reset) {
+        if (this.args.pvtSessionMode !== SessionMode.Reset) {
             const cfg = this.args.rttConfig;
             commands.push(...RTTServerHelper.clearSearchCommands(this.args));
             commands.push(`interpreter-exec console "monitor exec SetRTTAddr ${cfg.address}"`);
@@ -148,7 +149,17 @@ export class JLinkServerController extends EventEmitter implements GDBServerCont
             this.args.device,
         ];
 
-        if (this.args.rttConfig.enabled) {
+        // `rttServerServes`, not `enabled`: this asks the gdb-server to read the target's RTT and
+        // serve it, which must not happen when one of our own engines is doing that. Two readers
+        // each keep their own idea of the ring buffer's read pointer and would consume each other's
+        // bytes.
+        //
+        // This was previously gated on `rttConfig.enabled` and happened to be right, because the
+        // `pvtRttConfig` swap left `rttConfig` as a disabled stub whenever a builtin served. Removing
+        // the swap made `enabled` true in both cases and this line started asking J-Link to serve RTT
+        // for every session -- with `-rtttelnetport 19021`, the fallback below, since the port map is
+        // empty on the builtin path.
+        if (rttServerServes(this.args.rttConfig)) {
             const keys = Object.keys(this.rttHelper.rttLocalPortMap);
             let tcpPort = this.defaultRttPort.toString();
             if (keys && keys.length > 0) {

@@ -827,6 +827,9 @@ pub enum ProxyServerEvents {
         err_invalid: u64,
         err_rejected: u64,
         err_timeout: u64,
+        /// `E xx`: the gdb-server was asked and said no. The most diagnostic of the four, which is
+        /// why it is not folded into `err_other`.
+        err_target: u64,
         err_other: u64,
         /// Memory reads and writes issued. Their sum is round trips.
         reads: u64,

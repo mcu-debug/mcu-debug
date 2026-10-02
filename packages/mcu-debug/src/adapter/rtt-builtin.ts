@@ -117,7 +117,7 @@ export class RttBufferManager extends EventEmitter {
 
     async start(transport: RttTransport) {
         try {
-            this.config = this.mainSession.args.pvtRttConfig;
+            this.config = this.mainSession.args.rttConfig;
             if (!this.config || !this.config.enabled) {
                 throw new Error("RTT is not enabled in the configuration. This method should not have been called.");
             }
@@ -507,7 +507,7 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
 
     // Im the future, we may support multiple channels
     async setPort(channels: number[]): Promise<void> {
-        this.config = this.mainSession.args.pvtRttConfig;
+        this.config = this.mainSession.args.rttConfig;
         if (!this.config || !this.config.enabled) {
             throw new Error("RTT configuration not found or not enabled. This method should not have been called.");
         }
@@ -524,14 +524,14 @@ export class RttTcpServer extends EventEmitter implements RttTransport {
             }
             this.ports.set(channel, portNum);
         }
-        const host = this.config?.useBuiltinRTT?.hostName || "127.0.0.1";
+        const host = this.config?.serve?.hostName || "127.0.0.1";
         // Unlike the gdb-server RTT ports, these are bound by us. A reservation is a live listening
         // socket, so it has to be handed back before start() can bind. Everything else was already
         // released at 'ports-done', and no allocation happens after this point.
         await TcpPortScanner.releaseHeldPorts();
         await this.start(host, helper);
         setTimeout(() => {
-            helper.emitConfigures(this.config!, this);
+            helper.emitConfigures(this.config!, this, true);
         }, 20);
     }
 

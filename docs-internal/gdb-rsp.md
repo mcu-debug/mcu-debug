@@ -1502,7 +1502,7 @@ of the halt that followed. The target was running throughout — `WrOff` advance
 the data was there and unreachable. Its late replies then matched nothing and were forwarded to GDB,
 which reported `Unknown remote qXfer reply` against our RTT descriptor; that consequence is fixed
 (`MuxCore::abandoned_replies`), but the tier is what stops it arising. For pyOCD,
-`useBuiltinRTT.implementation: "typescript"` is not a fallback but the only option, because the
+`engine: "builtin-typescript"` is not a fallback but the only option, because the
 adapter's own engine reads over a **second** connection where pyOCD answers happily.
 
 **`ServerTier::Unknown` still gates as `HaltedOnly`, and the case for that has weakened.** Three of
