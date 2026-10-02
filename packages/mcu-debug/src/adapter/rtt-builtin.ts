@@ -270,7 +270,15 @@ export class RttBufferManager extends EventEmitter {
         }
     }
 
+    private badChannels: Set<number> = new Set();
     private async drainWriteBuffer(channel: number): Promise<void> {
+        if (channel < 0 || channel >= this.numRdChannels) {
+            if (!this.badChannels.has(channel)) {
+                this.mainSession.handleMsg(Stderr, `Invalid RTT channel: ${channel}. Writes not allowed to this channel\n`);
+                this.badChannels.add(channel);
+            }
+            return;
+        }
         const chInfo = this.channels[channel];
         // 1. Calculate the start of this channel's descriptor
         // Control Block = ID (16) + MaxUp (4) + MaxDown (4) = 24 bytes header
