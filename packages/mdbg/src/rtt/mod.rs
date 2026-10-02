@@ -330,6 +330,23 @@ pub fn fill_down_channel(
     if data.is_empty() {
         return Ok(0);
     }
+    // **A channel the firmware did not allocate has no descriptor, and the arithmetic does not
+    // know that.** `down_desc_addr` is `cb + 24 + (up_channels + channel) * 24`, which for a
+    // firmware reporting 0 down channels lands immediately after the up descriptors -- and that is
+    // where `pBuffer` points. So the read returns *ring buffer contents*, which are then read as
+    // `SizeOfBuffer`/`WrOff`/`RdOff`.
+    //
+    // Found on hardware, and it looked like anything but this: a handful of unusable control blocks
+    // per session, with byte-identical garbage across runs because the ring held a deterministic
+    // counter pattern. `WrOff = 0x7F790103` turned out to be the firmware's own `03 01 NN 7f`.
+    // "1 up and 0 down channels" is the ordinary case -- `defmt-rtt` reports exactly that -- so this
+    // is not an edge.
+    //
+    // `NotReady` rather than an error: the firmware may allocate it later, and a caller offering
+    // input for a channel that does not exist is not a failure, just nowhere to put it.
+    if channel >= cb.down_channels {
+        return Err(RttError::NotReady);
+    }
     let desc_addr = cb.down_desc_addr(channel);
     let rb = read_descriptor(mem, desc_addr, endian)?;
     let Some(plan) = plan_fill(&rb, data.len())? else {
@@ -442,6 +459,12 @@ pub fn drain_up_channel(
     endian: Endian,
     opts: &DrainOptions,
 ) -> Result<Option<Vec<u8>>, RttError> {
+    // As in `fill_down_channel`: a channel beyond what the control block declares has no descriptor,
+    // and the address arithmetic would read whatever follows the array -- for the last up channel,
+    // the ring buffer itself.
+    if channel >= cb.up_channels {
+        return Err(RttError::NotReady);
+    }
     let desc_addr = cb.up_desc_addr(channel);
     let rb = read_descriptor(mem, desc_addr, endian)?;
     let Some(plan) = plan_drain(&rb, opts.max_bytes)? else {
@@ -877,6 +900,86 @@ mod tests {
         t.put(CB_ADDR + 20, &1u32.to_be_bytes());
         let cb = find_control_block(&t, CB_ADDR, "SEGGER RTT", Endian::Big).unwrap();
         assert_eq!((cb.up_channels, cb.down_channels), (2, 1));
+    }
+
+    #[test]
+    fn a_channel_the_firmware_never_allocated_is_not_read_at_all() {
+        // The bug this exists for, found on hardware and mis-diagnosed three times on the way.
+        //
+        // `defmt-rtt` reports "1 up and 0 down channels", which is the ordinary case. The client
+        // asked for down channel 0 anyway, on the belief that a channel the firmware had not
+        // allocated would be skipped. Nothing skipped it: `down_desc_addr(0)` is
+        // `cb + 24 + (up_channels + 0) * 24`, which lands immediately past the up descriptors --
+        // exactly where `pBuffer` points. So the "descriptor" read returned **ring buffer bytes**,
+        // and `WrOff` came back as 0x7F790103, which is the firmware's own `03 01 NN 7f` payload.
+        //
+        // The tell was that the garbage was byte-identical across runs: a race cannot do that, a
+        // deterministic counter in the ring can.
+        let t = FakeTarget::new()
+            .with_control_block("SEGGER RTT", 1, 0) // one up channel, NO down channels
+            .with_up_channel(0, 0, b"");
+        let cb = find_control_block(&t, CB_ADDR, "SEGGER RTT", Endian::Little).unwrap();
+        assert_eq!(cb.down_channels, 0);
+        let before = t.read_count();
+
+        // Offering input for a channel that does not exist is not a failure -- there is simply
+        // nowhere to put it, and the firmware may allocate it later.
+        assert_eq!(
+            fill_down_channel(&t, &cb, 0, b"hello", Endian::Little),
+            Err(RttError::NotReady)
+        );
+        assert_eq!(
+            t.read_count(),
+            before,
+            "it must not read a descriptor that does not exist"
+        );
+
+        // And nothing may be written either: `WrOff` for a non-existent channel is somebody's data.
+        assert_eq!(t.write_count(), 0);
+    }
+
+    #[test]
+    fn an_up_channel_beyond_the_control_blocks_count_is_not_read_either() {
+        // Same arithmetic, same hazard: the last up channel's descriptor is followed by the ring.
+        let t = FakeTarget::new()
+            .with_control_block("SEGGER RTT", 1, 1)
+            .with_up_channel(0, 0, b"");
+        let cb = find_control_block(&t, CB_ADDR, "SEGGER RTT", Endian::Little).unwrap();
+        let before = t.read_count();
+        assert_eq!(
+            drain_up_channel(&t, &cb, 1, Endian::Little, &DrainOptions::default()),
+            Err(RttError::NotReady)
+        );
+        assert_eq!(
+            t.read_count(),
+            before,
+            "channel 1 does not exist; do not go looking for it"
+        );
+    }
+
+    #[test]
+    fn no_read_ever_lands_past_the_descriptor_array() {
+        // The property rather than the instance: whatever a caller asks for, every address we read
+        // has to be inside the control block, a descriptor, or a channel's own buffer. The original
+        // failure was a read at `cb + 0x34` on a block whose descriptors end at `cb + 0x2f`.
+        let t = FakeTarget::new()
+            .with_control_block("SEGGER RTT", 1, 0)
+            .with_up_channel(0, 5, b"hello");
+        let cb = find_control_block(&t, CB_ADDR, "SEGGER RTT", Endian::Little).unwrap();
+        let _ = drain_up_channel(&t, &cb, 0, Endian::Little, &DrainOptions::default());
+        let _ = fill_down_channel(&t, &cb, 0, b"x", Endian::Little);
+        let _ = drain_up_channel(&t, &cb, 7, Endian::Little, &DrainOptions::default());
+
+        let descriptors_end =
+            CB_ADDR + CB_HEADER_LEN as u64 + (cb.up_channels + cb.down_channels) as u64 * DESC_LEN as u64;
+        for (addr, len) in t.reads() {
+            let in_control_block = addr >= CB_ADDR && addr + len as u64 <= descriptors_end;
+            let in_buffer = addr >= BUF_ADDR && addr + len as u64 <= BUF_ADDR + BUF_SIZE as u64;
+            assert!(
+                in_control_block || in_buffer,
+                "read of {len} bytes at {addr:#x} is neither control block (..{descriptors_end:#x}) nor buffer"
+            );
+        }
     }
 
     #[test]

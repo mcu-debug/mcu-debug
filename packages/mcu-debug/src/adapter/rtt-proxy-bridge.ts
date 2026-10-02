@@ -196,8 +196,13 @@ export class RttProxyBridge {
             search_id: config.searchId || "SEGGER RTT",
             big_endian: (TargetInfo.Instance?.endianness ?? "little") === "big",
             up_channels: channels,
-            // Every up channel may also take input. A channel the firmware did not allocate is
-            // skipped by the engine rather than failing, so asking for all of them costs nothing.
+            // Every up channel may also take input. Asking for one the firmware did not allocate
+            // costs nothing *now* -- the engine checks the control block's `MaxNumDownBuffers` before
+            // touching a descriptor. It did not always: this comment used to assert the same thing on
+            // faith, and the engine instead computed an address past the descriptor array, read the
+            // ring buffer, and reported the payload as a corrupt control block. See
+            // `fill_down_channel`. "1 up and 0 down channels" is what `defmt-rtt` reports, so the
+            // unallocated case is the common one, not an edge.
             down_channels: channels,
             poll_interval_ms: config.polling_interval ?? null,
             // Unset means "use the Agent's measured default for this gdb-server", which is where the

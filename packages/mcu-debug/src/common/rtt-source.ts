@@ -51,8 +51,17 @@ export function createRTTSource(mySession: CDebugSession, tcpPort: string, chann
             resolve(src);
             return;
         }
-        let decoderSpec = mySession.config.rttConfig?.enabled && mySession.config.rttConfig?.pre_decoder;
-        if (decoderSpec && mySession.config.rttConfig?.useBuiltinRTT?.enabled) {
+        // **`pvtRttConfig ?? rttConfig`, and the order matters.** When built-in RTT is enabled the
+        // adapter moves the real configuration to `pvtRttConfig` and leaves `rttConfig` as a disabled
+        // stub, so that the gdb-server's own RTT setup is skipped. The VS Code frontend maps it back
+        // when it fetches the arguments; **the CLI does not**. So reading `rttConfig` directly here
+        // sees `{ enabled: false }` under the CLI and every `useBuiltinRTT` test below silently
+        // inverts -- which is how the J-Link channel-select string came to be sent to our own RTT
+        // server, and how `rtt-poll` is still requested for a server that is not serving RTT.
+        const rttCfg = mySession.config.pvtRttConfig ?? mySession.config.rttConfig;
+        const builtin = !!rttCfg?.useBuiltinRTT?.enabled;
+        let decoderSpec = rttCfg?.enabled && rttCfg?.pre_decoder;
+        if (decoderSpec && builtin) {
             // Built-in RTT applies the pre-decoder itself, in the debug adapter, where it also
             // honours `pre_decoder.channels`. Running it here as well would decode twice.
             decoderSpec = undefined;
@@ -60,7 +69,17 @@ export function createRTTSource(mySession: CDebugSession, tcpPort: string, chann
         if (decoderSpec) {
             substituteDecoderVars(decoderSpec, mySession.config);
         }
-        if (mySession.config.servertype === "jlink") {
+        // `servertype` answers "which probe is attached". The question here is **who is serving this
+        // TCP port**, and with built-in RTT the answer is `RttTcpServer` -- us. J-Link's gdb-server
+        // has a single RTT telnet port and selects the channel with a magic string sent within the
+        // first few milliseconds of connecting; that string is meaningless to our own server.
+        //
+        // Sending it anyway was not merely useless. It arrived as ordinary client input, went down the
+        // funnel as RTT *input*, and `fill_down_channel` wrote its 35 bytes to an address derived from
+        // memory that was never a descriptor -- `X804a1c,23:$$SEGGER_TELNET_ConfigStr=RTTCh;0$$`, to
+        // which the gdb-server replied `OK`. Observed on hardware as a mysterious "35 down" on a
+        // firmware with no down channels at all.
+        if (mySession.config.servertype === "jlink" && !builtin) {
             src = new JLinkSocketRTTSource(channel, tcpPort, decoderSpec);
         } else {
             src = new SocketRTTSource(channel, tcpPort, decoderSpec);
@@ -71,7 +90,7 @@ export function createRTTSource(mySession: CDebugSession, tcpPort: string, chann
         src.start()
             .then(() => {
                 getHostAdapter().debugConsoleMessage(`Connected to RTT TCP port ${tcpPort} for channel ${channel}`);
-                if (!mySession.config.rttConfig?.useBuiltinRTT?.enabled) {
+                if (!builtin) {
                     mySession.session.customRequest("rtt-poll");
                 }
             })

@@ -274,9 +274,18 @@ export class JLinkSocketRTTSource extends SocketRTTSource {
         // within 100ms to configure the RTT channel.  See
         // https://wiki.segger.com/RTT#SEGGER_TELNET_Config_String for more information
         // on the config string format.
-        this.on("connected", () => {
-            this.write(`$$SEGGER_TELNET_ConfigStr=RTTCh;${channel}$$`);
-        });
+        //
+        // **Only for a non-zero channel.** J-Link's single RTT telnet port already serves channel 0,
+        // so `RTTCh;0` selects what is already selected. Sending it anyway is 35 bytes written *into*
+        // an RTT channel for no reason -- and when the port is served by our own built-in RTT rather
+        // than J-Link, those 35 bytes become RTT input and are written to the target. Seen on
+        // hardware as `X804a1c,23:$$SEGGER_TELNET_ConfigStr=RTTCh;0$$`, to an address derived from
+        // memory that was never a descriptor, acknowledged `OK` by the gdb-server.
+        if (channel !== 0) {
+            this.on("connected", () => {
+                this.write(`$$SEGGER_TELNET_ConfigStr=RTTCh;${channel}$$`);
+            });
+        }
     }
 }
 

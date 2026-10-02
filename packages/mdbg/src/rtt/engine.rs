@@ -328,7 +328,7 @@ impl TargetMemory for Counted {
     }
 }
 
-fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, config: RttConfig) {
+fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, mut config: RttConfig) {
     let counted = Counted {
         mem,
         inner: Arc::clone(&inner),
@@ -351,6 +351,40 @@ fn run(mem: Arc<dyn TargetMemory>, inner: Arc<Inner>, config: RttConfig) {
         let why = inner.stop_reason.lock_recover().unwrap_or("the RTT engine was stopped");
         inner.sink.closed(why);
         return;
+    }
+    // Drop channels the firmware did not allocate, now that the control block says how many there
+    // are. The client cannot know this when it asks -- the block has not been read yet -- so it sends
+    // what the configuration implies, which for down channels is "the same list as up".
+    //
+    // Reported rather than filtered quietly, because the down case is user-visible: somebody typing
+    // into a terminal whose channel does not exist would otherwise see their input vanish. And
+    // `defmt-rtt` reports 0 down channels, so that is the common case, not an edge.
+    let dropped_up: Vec<u32> = config
+        .up_channels
+        .iter()
+        .copied()
+        .filter(|c| *c >= cb.up_channels)
+        .collect();
+    let dropped_down: Vec<u32> = config
+        .down_channels
+        .iter()
+        .copied()
+        .filter(|c| *c >= cb.down_channels)
+        .collect();
+    config.up_channels.retain(|c| *c < cb.up_channels);
+    config.down_channels.retain(|c| *c < cb.down_channels);
+    if !dropped_up.is_empty() {
+        inner.sink.waiting(&format!(
+            "up channel(s) {dropped_up:?} were requested but the firmware allocated only {} (0..{}); they will produce nothing",
+            cb.up_channels,
+            cb.up_channels.saturating_sub(1)
+        ));
+    }
+    if !dropped_down.is_empty() {
+        inner.sink.waiting(&format!(
+            "down channel(s) {dropped_down:?} were requested but the firmware allocated {} down channels; input to them is discarded",
+            cb.down_channels
+        ));
     }
     inner.sink.on_ready(&cb, began.elapsed());
 
@@ -1061,6 +1095,55 @@ mod tests {
         assert!(
             took < Duration::from_secs(1),
             "input waited {took:?} -- the send did not wake the nap"
+        );
+    }
+    #[test]
+    fn input_for_a_channel_the_firmware_has_not_allocated_is_dropped_and_reported() {
+        // The real defect, at its source. The client sends `down_channels` equal to the up-channel
+        // list, because at request time the control block has not been read and nothing better is
+        // known. On firmware reporting `MaxNumDownBuffers = 0` -- which is what `defmt-rtt` reports --
+        // the engine then entered the down loop for channel 0, computed a descriptor address past the
+        // array, and `validate()` *passed* on ring-buffer bytes that happened to look plausible.
+        //
+        // What followed was not a bad read but a bad **write**: 35 bytes to `buf_addr + wr_off` taken
+        // from padding, then a `WrOff` word into the first word of the ring buffer. Seen on hardware
+        // as "35 down" and two writes more than there were drains.
+        let target = Arc::new(
+            FakeTarget::new()
+                .with_control_block("SEGGER RTT", 1, 0) // one up channel, NO down channels
+                .with_up_channel(0, 0, b""),
+        );
+        let rec = Arc::new(Recorder::default());
+        let engine = RttEngine::start(
+            Arc::clone(&target) as Arc<dyn TargetMemory>,
+            Arc::clone(&rec) as Arc<dyn RttSink>,
+            RttConfig {
+                down_channels: vec![0], // what the client asks for today
+                ..config()
+            },
+        );
+        wait_for(|| !rec.ready.lock_recover().is_empty(), "the block");
+
+        // Said out loud: input vanishing silently is the part a user would report as a bug.
+        assert!(
+            rec.errors.lock_recover().is_empty(),
+            "an unallocated channel is not an error: {:?}",
+            rec.errors.lock_recover()
+        );
+
+        assert_eq!(engine.send(0, b"typed input\n", 1024), 12, "queued, as before");
+        std::thread::sleep(Duration::from_millis(60));
+        engine.shutdown("test over");
+
+        assert_eq!(
+            engine.stats().bytes_down,
+            0,
+            "nothing may be written for a channel that does not exist"
+        );
+        assert_eq!(
+            target.write_count(),
+            0,
+            "and no write of any kind should have reached the target"
         );
     }
 }

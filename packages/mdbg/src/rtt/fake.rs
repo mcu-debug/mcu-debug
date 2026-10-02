@@ -113,6 +113,13 @@ impl FakeTarget {
         self.reads.lock_recover().len()
     }
 
+    /// Every read as `(addr, len)`, so a test can assert on *where* we looked and not merely how
+    /// often. Added for the channel-bounds tests: reading a descriptor for a channel the firmware
+    /// never allocated is only visible as an address, because the read itself succeeds.
+    pub fn reads(&self) -> Vec<(u64, usize)> {
+        self.reads.lock_recover().clone()
+    }
+
     pub fn write_count(&self) -> usize {
         self.writes.lock_recover().len()
     }

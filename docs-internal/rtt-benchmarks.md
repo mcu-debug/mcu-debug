@@ -222,7 +222,11 @@ ST-LINK and OpenOCD figures are production-VSIX runs; J-Link's is a development 
 | pyOCD    | 24.8          | — ⁴            | —          | — ¹        |
 | probe-rs | not attempted | 6.2            | —          | —          |
 
-¹ needs OpenOCD's `rtt start`/poll dance, which we have not implemented for pyOCD.
+¹ pyOCD copied OpenOCD's one-shot `rtt start`: it reports "not found" and does not poll. Driving that
+loop needs a side channel to re-issue the command, which for OpenOCD is its tcl interface. pyOCD has
+none, and there are **no plans to implement** one. So `engine: 'gdb-server'` is refused for pyOCD in the
+config resolver rather than attempted -- and `rtt_start_retry` is an OpenOCD-only property, not a
+general one.
 ² the ST-LINK gdb-server has no RTT support at all, so builtin is the only option.
 ³ J-Link polls RTT in **probe firmware**, with no host round trip per poll. Not the same architecture;
 see _the model_ above, where it turns out to be the zero-round-trip case of our own fit.
