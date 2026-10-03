@@ -90,9 +90,9 @@
       "request": "launch",
       // "cwd": "${workspaceFolder}",
       // "cwd": "/Users/hdm/mtw37/Hello_World",
-      // "cwd": "/Users/hdm/rtt/Hello_RTT",
+      "cwd": "/Users/hdm/rtt/Hello_RTT",
       // "cwd": "/Users/hdm/test/mtb37-p6h",
-      "cwd": "/Users/hdm/src/stm32f429-rtt",
+      // "cwd": "/Users/hdm/src/stm32f429-rtt",
       "runtimeArgs": [
         "--nolazy",
         "--trace-warnings"

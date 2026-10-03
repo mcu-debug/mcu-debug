@@ -30,6 +30,7 @@ export class GDBServerConsoleInstance {
     }
 
     public newBackendConnection(socket: net.Socket) {
+        socket.setEncoding("utf-8");
         this.createAndShowTerminal();
         this.toBackend = socket;
         if (!this.terminal) {

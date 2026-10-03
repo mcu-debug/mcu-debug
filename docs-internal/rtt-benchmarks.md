@@ -258,6 +258,110 @@ tier is about what a server _permits_; gating it on speed would make a slow serv
 instead of merely slow. It predicts the user-visible symptom too: a single step with a shallow stack
 trace is 80--100 packets, so ~1 s on probe-rs against ~0.16 s on OpenOCD, which is what was observed.
 
+## The writer's mode decides what you measured
+
+Two rigs, both Cortex-M4, both OpenOCD, both a 4096-byte up buffer -- and they are not measuring the
+same thing:
+
+|                            | writer            | mode                 | B/drain | cap ceiling | observed | % of ceiling |
+| -------------------------- | ----------------- | -------------------- | ------- | ----------- | -------- | ------------ |
+| NUCLEO-F429ZI, 180 MHz     | `defmt-rtt`       | **blocks** when full | 471     | 89.8 KB/s   | 84.2     | 93.7%        |
+| PSoC6 CY8CKIT-062, 150 MHz | SEGGER, `putchar` | **skips** when full  | 500     | 95.1 KB/s   | 94.4     | 99.3%        |
+
+The ceiling is `cap × drains/sec`, i.e. what the 500-byte cap allows at the round-trip rate actually
+achieved.
+
+**Blocking couples the firmware to the host.** The writer stalls until space frees, so production
+rate _is_ drain rate and every measurement is a fixed point of the two together. A host-side
+improvement then shows up partly as the firmware speeding up rather than as throughput, which makes
+attribution harder. It also costs about **6%**: the writer does not refill the instant space appears,
+so `available` is usually below the cap and a drain takes what is there.
+
+**Skip mode is an unlimited source.** The firmware runs at a constant rate and discards what will not
+fit, so the host takes everything it can and the number is purely the host's. `B/drain` then pins
+exactly at the cap, which makes "cap-limited" directly readable from the counter instead of inferred.
+At 99.3% of ceiling you are measuring the engine; at 93.7% you are partly measuring the handshake.
+
+So **skip mode is the better benchmark rig** -- but defmt cannot use it. defmt needs a lossless
+stream, because bytes dropped mid-frame desynchronise the decoder; it would produce garbage rather
+than less data. Blocking is a requirement of the format, not a configuration choice, so any
+defmt-based figure is inherently a coupled one.
+
+### What this does and does not invalidate
+
+Comparisons **within** one target and firmware are unaffected, which is nearly everything worth
+knowing: F429 OpenOCD gives 84.2 (Agent), 82.3 (TypeScript) and 105.2 (OpenOCD's own RTT) on one
+firmware and one probe. The invalid comparison is F429 against PSoC6, and the fix is not to change
+PSoC6 -- that would spend the one uncoupled rig to make an unnecessary comparison valid. The fix is
+not to make that comparison, or to build a non-defmt skip-mode writer for a second target and compare
+those.
+
+Core clock is unlikely to confound a skip-mode comparison: 95 KB/s leaves over a thousand cycles per
+byte at 150 MHz, and a ring-buffer write costs tens, so both cores outpace the host by orders of
+magnitude. Note also that the **slower** core showed the **lower** per-trip cost (1.66 ms against
+1.75 ms), so core clock does not explain that figure -- probe hardware and SWD clock do, and those are
+what a cross-target rig has to hold constant.
+
+## OpenOCD: faster per trip, slower overall
+
+The surprise in the OpenOCD numbers is not that its own RTT wins by 25%. It is why:
+
+|         | ms per trip | B/drain | KB/s |
+| ------- | ----------- | ------- | ---- |
+| OpenOCD | **1.75**    | 471     | 84.2 |
+| J-Link  | 3.38        | 1613    | 137  |
+
+OpenOCD services a round trip in **half** J-Link's time and still delivers 40% less, entirely because
+its reply cap is four times tighter. Throughput is bytes per trip; the cap sets that, and per-trip
+latency barely matters once it does.
+
+**OpenOCD's own RTT does not go through RSP at all.** It reads the target through its internal API --
+no `PacketSize`, no reply-size ceiling, no RSP round trip -- and ships 902 bytes per TCP write against
+our 471-byte drains. So the 25% is not a verdict on engine quality; it is the cost of reading through
+a 500-byte RSP window, and any engine on our side of that window lands where we did.
+
+Two consequences:
+
+- The Agent's engine and the TypeScript one come within **2.2%** of each other here (84.2 vs 82.3),
+  against a large margin on J-Link and ST-LINK. The Rust engine's advantage is removing GDB and the
+  MI text layer _per read_; at 471 bytes that saving is a rounding error beside 1.75 ms of server
+  time. The convergence is that advantage being measured, not contradicted.
+- **Pipelining is the only lever left for OpenOCD**, since the cap cannot move. At 3.1 trips/drain
+  against a floor of 2, reaching 2.1 is **+48%** -- about 125 KB/s, past OpenOCD's own 105. Its low
+  per-trip latency is exactly the profile where pipelining pays best.
+
+### SWD clock barely matters at a 500-byte cap, and that is the model confirming itself
+
+PSoC6 refuses to go above 2000 kHz; the ST boards sit comfortably at 4000 kHz. Doubling the clock
+made almost no difference to throughput, which looks wrong until the arithmetic is done.
+
+A 500-byte AP read is 125 word transactions, and a SWD word read is roughly 56 bits (8-bit request,
+turnaround, 3-bit ack, turnaround, 33 bits of data and parity, idle):
+
+|                       | SWD clock | 500 B transfer | drain period | residual |
+| --------------------- | --------- | -------------- | ------------ | -------- |
+| PSoC6 / KitProg3      | 2000 kHz  | 3.50 ms        | 5.14 ms      | 1.64 ms  |
+| F429 / on-board probe | 4000 kHz  | 1.75 ms        | 5.44 ms      | 3.69 ms  |
+
+**The F429 has twice the clock and a longer drain period.** That conclusion needs no estimate of
+bits-per-word to hold -- it follows from the two measured drain periods alone. So SWD bit time is not
+what sets the drain rate at this size; fixed per-request overhead is, and it differs by 2.3x between
+the two probes. Likely USB: a request-response through a full-speed link costs on the order of a
+millisecond in frame scheduling alone, before the probe firmware does anything.
+
+This is the central claim of the model -- _throughput is round trips, not bytes_ -- arriving from a
+direction the model was not fitted to. It also says where the levers are:
+
+- **At OpenOCD's 500-byte cap, raising the SWD clock is nearly free of effect.** Reducing trips is
+  the only thing that helps, which is the pipelining argument again.
+- **At a 2000-byte cap it inverts.** The same read becomes 7.0 ms at 4000 kHz and 14.0 ms at
+  2000 kHz, so SWD time overtakes the fixed overhead and clock starts to matter. J-Link bears this
+  out: 1613 B/drain at an 11.5 ms drain period splits roughly half SWD, half overhead.
+
+So pin the clock in every rig and record it -- not because it moves these numbers much, but because
+it will move them once the cap does, and a figure whose clock was not recorded cannot be compared
+afterwards.
+
 ## Reading the counters
 
 The engine reports its own numbers as an `[RTT engine]` line beside the consumer's `[RTT Logs stats]`,
@@ -269,15 +373,15 @@ session that did not ask for statistics gets neither:
 [RTT Logs stats] 126.19 KB/sec | 84.0 msgs/sec | window 5.0s, 632.06 KB | total 9.31 MB over 75.3s
 ```
 
-| Field                          | What it tells you                                                      |
-| ------------------------------ | ---------------------------------------------------------------------- |
-| `trips/sec`                    | the figure throughput is made of; everything else is derived           |
-| `trips/drain`                  | 3 is ideal; the excess is `B/drain ÷ SizeOfBuffer`, i.e. wrap splits   |
-| `B/drain` well under the cap   | production-limited -- but see the cap section; it still tracks the cap |
-| `idle` climbing                | the ring was empty; throughput is the firmware's rate, not our cost    |
-| `gated` climbing               | the multiplexer refused us -- GDB's traffic, not the probe             |
-| `errors` climbing              | reads rejected and retried at half size, silently doubling their cost  |
-| engine line **above** consumer | loss in the **host**: we drained it, node did not deliver it           |
+| Field                          | What it tells you                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------- |
+| `trips/sec`                    | the figure throughput is made of; everything else is derived                      |
+| `trips/drain`                  | 3 is ideal; the excess is `B/drain ÷ SizeOfBuffer`, i.e. wrap splits              |
+| `B/drain` well under the cap   | a **blocking** writer refilling slowly, not spare capacity -- see the cap section |
+| `idle` climbing                | the ring was empty; throughput is the firmware's rate, not our cost               |
+| `gated` climbing               | the multiplexer refused us -- GDB's traffic, not the probe                        |
+| `errors` climbing              | reads rejected and retried at half size, silently doubling their cost             |
+| engine line **above** consumer | loss in the **host**: we drained it, node did not deliver it                      |
 
 That last row is worth its place. The poll thread hands bytes to an _unbounded_ `mpsc` channel, so a
 slow client cannot throttle the engine -- it can only make the queue grow. The two lines therefore
@@ -286,7 +390,7 @@ separate "the Agent drained less" from "the host delivered less", which no singl
 One consequence of that unbounded channel, recorded for whoever meets it: a client that stalls while
 RTT is flowing makes the Agent accumulate at the full RTT rate, and the drain cap does not bound it.
 
-## Four things we got wrong
+## Five things we got wrong
 
 Kept because each was believed for a while on the strength of a real-looking number.
 
@@ -313,25 +417,46 @@ under it. Measured: `B/drain` is 91% of the cap at 200, 76% at 500, 51% at 1000.
 2000 was worth **+46%**. This was the largest single win in the exercise and it was argued away for a
 day on a sufficient-looking inference.
 
+**5. A wrap-truncation model for `B/drain` sitting below the cap, which fitted to 0.3%.** The claim
+was that a drain crossing the ring end is truncated to the remainder, giving
+`E[B] = (1 - C/S)·C + (C/S)·(C/2)` = 469.5 against an observed 470.8 on the F429. The fit was a
+coincidence on the wrong mechanism, and the PSoC6 run discriminates: same 4096-byte ring, so
+truncation would apply there too, and it does not -- `B/drain` is exactly 500 in every window. The
+real reason is the one already written in mistake 4 above: a **blocking** writer releases space only
+as the host frees it, so `available` is usually below the cap and there is nothing to truncate. Worth
+recording because the answer was already in this document, and a three-decimal agreement was enough to
+stop the check.
+
+## A note on comparing results across sections
+
+The three OpenOCD blocks below were taken in one sitting on one build, one firmware and one probe, so
+they are comparable with each other. The figures they replaced are not comparable with them: the
+**gdb-server's own** number moved from 80.3 to 105.2 KB/s, and nothing on our side could do that. The
+firmware's up buffer had grown to 4096 bytes in between, which lets OpenOCD's RTT take more per poll
+and costs us fewer wrap splits.
+
+So a block replaced in this document records a _measurement_, not a regression or an improvement.
+Where the gain is ours, the section says so.
+
 ## Builtin RTT in Typescript
 
 ### OpenOCD
 
 ```
-[RTT Logs stats] 53.42 KB/sec | 195.9 msgs/sec | window 5.0s, 267.18 KB | total 267.18 KB over 5.0s
-[RTT Logs stats] 52.52 KB/sec | 196.0 msgs/sec | window 5.0s, 262.67 KB | total 529.85 KB over 10.0s
-[RTT Logs stats] 50.54 KB/sec | 192.9 msgs/sec | window 5.0s, 252.87 KB | total 782.72 KB over 15.0s
-[RTT Logs stats] 53.06 KB/sec | 200.3 msgs/sec | window 5.0s, 265.74 KB | total 1.02 MB over 20.0s
-[RTT Logs stats] 49.70 KB/sec | 191.6 msgs/sec | window 5.0s, 248.76 KB | total 1.27 MB over 25.0s
-[RTT Logs stats] 50.80 KB/sec | 193.0 msgs/sec | window 5.0s, 254.31 KB | total 1.52 MB over 30.1s
-[RTT Logs stats] 51.29 KB/sec | 192.8 msgs/sec | window 5.0s, 256.69 KB | total 1.77 MB over 35.1s
-[RTT Logs stats] 51.26 KB/sec | 190.9 msgs/sec | window 5.0s, 256.41 KB | total 2.02 MB over 40.1s
-[RTT Logs stats] 48.91 KB/sec | 189.3 msgs/sec | window 5.0s, 244.72 KB | total 2.26 MB over 45.1s
-[RTT Logs stats] 51.45 KB/sec | 193.5 msgs/sec | window 5.0s, 257.37 KB | total 2.51 MB over 50.1s
-[RTT Logs stats] 49.78 KB/sec | 191.9 msgs/sec | window 5.0s, 249.00 KB | total 2.75 MB over 55.1s
-[RTT Logs stats] 49.98 KB/sec | 192.0 msgs/sec | window 5.0s, 250.14 KB | total 2.99 MB over 60.1s
-[RTT Logs stats] 50.10 KB/sec | 191.6 msgs/sec | window 5.0s, 250.78 KB | total 3.24 MB over 65.1s
+[RTT builtin stats] 85.30 KB/sec | 208.2 msgs/sec | window 5.0s, 426.59 KB | total 426.59 KB over 5.0s
+[RTT builtin stats] 83.04 KB/sec | 204.2 msgs/sec | window 5.0s, 415.59 KB | total 842.18 KB over 10.0s
+[RTT builtin stats] 80.92 KB/sec | 197.1 msgs/sec | window 5.0s, 404.82 KB | total 1.22 MB over 15.0s
+[RTT builtin stats] 81.72 KB/sec | 200.0 msgs/sec | window 5.0s, 408.93 KB | total 1.62 MB over 20.0s
+[RTT builtin stats] 81.59 KB/sec | 198.2 msgs/sec | window 5.0s, 408.02 KB | total 2.02 MB over 25.0s
+[RTT builtin stats] 81.74 KB/sec | 199.0 msgs/sec | window 5.0s, 409.03 KB | total 2.42 MB over 30.0s
+[RTT builtin stats] 81.31 KB/sec | 199.0 msgs/sec | window 5.0s, 407.02 KB | total 2.81 MB over 35.1s
+[RTT builtin stats] 82.64 KB/sec | 201.2 msgs/sec | window 5.0s, 413.71 KB | total 3.22 MB over 40.1s
+[RTT builtin stats] 83.67 KB/sec | 204.1 msgs/sec | window 5.0s, 418.96 KB | total 3.63 MB over 45.1s
+[RTT builtin stats] 81.25 KB/sec | 199.2 msgs/sec | window 5.0s, 406.67 KB | total 4.02 MB over 50.1s
 ```
+
+Mean **82.3 KB/s** -- within 2.2% of the Agent's engine. See "OpenOCD: faster per trip, slower
+overall" for why the two converge here and not elsewhere.
 
 ### pyOCD
 
@@ -379,50 +504,20 @@ day on a sufficient-looking inference.
 ### OpenOCD
 
 ```
-[RTT Logs stats] 66.05 KB/sec | 183.0 msgs/sec | window 5.0s, 330.58 KB | total 330.58 KB over 5.0s
-[RTT Logs stats] 66.40 KB/sec | 182.1 msgs/sec | window 5.0s, 332.25 KB | total 662.83 KB over 10.0s
-[RTT Logs stats] 66.57 KB/sec | 179.3 msgs/sec | window 5.0s, 333.07 KB | total 995.90 KB over 15.0s
-[RTT Logs stats] 66.65 KB/sec | 180.3 msgs/sec | window 5.0s, 333.54 KB | total 1.30 MB over 20.0s
-[RTT Logs stats] 66.12 KB/sec | 181.8 msgs/sec | window 5.0s, 330.94 KB | total 1.62 MB over 25.0s
-[RTT Logs stats] 65.26 KB/sec | 179.3 msgs/sec | window 5.0s, 326.77 KB | total 1.94 MB over 30.1s
-[RTT Logs stats] 65.65 KB/sec | 179.4 msgs/sec | window 5.0s, 328.63 KB | total 2.26 MB over 35.1s
-[RTT Logs stats] 66.52 KB/sec | 181.0 msgs/sec | window 5.0s, 332.91 KB | total 2.59 MB over 40.1s
-[RTT Logs stats] 66.29 KB/sec | 179.2 msgs/sec | window 5.0s, 331.80 KB | total 2.91 MB over 45.1s
-[RTT Logs stats] 67.05 KB/sec | 181.7 msgs/sec | window 5.0s, 335.45 KB | total 3.24 MB over 50.1s
-[RTT Logs stats] 66.91 KB/sec | 178.6 msgs/sec | window 5.0s, 334.64 KB | total 3.57 MB over 55.1s
-[RTT Logs stats] 65.89 KB/sec | 180.3 msgs/sec | window 5.0s, 329.65 KB | total 3.89 MB over 60.1s
-[RTT Logs stats] 66.24 KB/sec | 177.1 msgs/sec | window 5.0s, 331.38 KB | total 4.21 MB over 65.1s
-[RTT Logs stats] 65.25 KB/sec | 179.3 msgs/sec | window 5.0s, 326.45 KB | total 4.53 MB over 70.1s
-
-Wed Sep 30 16:34:03 EDT 2026
-
-[RTT engine] 72.9 KB/sec | 201 drains/sec, 372 B/drain | 676 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 364.3 KB over 5.0s
-info: [RTT Logs stats] 72.92 KB/sec | 201.2 msgs/sec | window 5.0s, 364.67 KB | total 364.67 KB over 5.0s
-[RTT engine] 73.4 KB/sec | 200 drains/sec, 375 B/drain | 674 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 731.7 KB over 10.0s
-info: [RTT Logs stats] 73.61 KB/sec | 200.7 msgs/sec | window 5.0s, 368.28 KB | total 732.95 KB over 10.0s
-[RTT engine] 73.8 KB/sec | 200 drains/sec, 379 B/drain | 673 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 1.08 MB over 15.0s
-info: [RTT Logs stats] 73.85 KB/sec | 199.5 msgs/sec | window 5.0s, 369.39 KB | total 1.08 MB over 15.0s
-[RTT engine] 73.1 KB/sec | 197 drains/sec, 379 B/drain | 665 trips/sec, 3.4 trips/drain | idle 3, gated 0, errors 0 | total 1.43 MB over 20.0s
-info: [RTT Logs stats] 73.14 KB/sec | 197.2 msgs/sec | window 5.0s, 366.06 KB | total 1.43 MB over 20.0s
-[RTT engine] 72.8 KB/sec | 196 drains/sec, 381 B/drain | 660 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 1.79 MB over 25.0s
-info: [RTT Logs stats] 72.89 KB/sec | 196.6 msgs/sec | window 5.0s, 364.80 KB | total 1.79 MB over 25.0s
-[RTT engine] 74.2 KB/sec | 199 drains/sec, 381 B/drain | 672 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 2.15 MB over 30.0s
-info: [RTT Logs stats] 74.28 KB/sec | 199.0 msgs/sec | window 5.0s, 371.86 KB | total 2.15 MB over 30.0s
-[RTT engine] 72.8 KB/sec | 199 drains/sec, 376 B/drain | 669 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 2.51 MB over 35.0s
-info: [RTT Logs stats] 72.84 KB/sec | 198.5 msgs/sec | window 5.0s, 364.33 KB | total 2.51 MB over 35.1s
-[RTT engine] 73.8 KB/sec | 198 drains/sec, 382 B/drain | 668 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 2.87 MB over 40.0s
-info: [RTT Logs stats] 73.86 KB/sec | 198.3 msgs/sec | window 5.0s, 369.82 KB | total 2.87 MB over 40.1s
-[RTT engine] 73.2 KB/sec | 199 drains/sec, 376 B/drain | 671 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 3.22 MB over 45.0s
-info: [RTT Logs stats] 73.34 KB/sec | 199.7 msgs/sec | window 5.0s, 366.90 KB | total 3.23 MB over 45.1s
-[RTT engine] 73.1 KB/sec | 198 drains/sec, 377 B/drain | 669 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 3.58 MB over 50.0s
-info: [RTT Logs stats] 73.25 KB/sec | 198.5 msgs/sec | window 5.0s, 366.42 KB | total 3.59 MB over 50.1s
-[RTT engine] 72.9 KB/sec | 196 drains/sec, 381 B/drain | 660 trips/sec, 3.4 trips/drain | idle 0, gated 0, errors 0 | total 3.94 MB over 55.0s
-info: [RTT Logs stats] 72.93 KB/sec | 196.2 msgs/sec | window 5.0s, 364.96 KB | total 3.94 MB over 55.1s
-[RTT engine] 74.2 KB/sec | 198 drains/sec, 384 B/drain | 668 trips/sec, 3.4 trips/drain | idle 2, gated 0, errors 0 | total 4.30 MB over 60.0s
-info: [RTT Logs stats] 74.40 KB/sec | 198.2 msgs/sec | window 5.0s, 372.32 KB | total 4.31 MB over 60.1s
-[RTT engine] 72.7 KB/sec | 199 drains/sec, 375 B/drain | 669 trips/sec, 3.4 trips/drain | idle 1, gated 0, errors 0 | total 4.66 MB over 65.0s
-info: [RTT Logs stats] 72.61 KB/sec | 198.6 msgs/sec | window 5.0s, 363.10 KB | total 4.66 MB over 65.1s
+[RTT engine] 86.7 KB/sec | 188 drains/sec, 472 B/drain | 587 trips/sec, 3.1 trips/drain | idle 1, gated 0, unusable 0, errors 0 | total 433.8 KB over 5.0s
+[RTT engine] 85.0 KB/sec | 185 drains/sec, 471 B/drain | 575 trips/sec, 3.1 trips/drain | idle 0, gated 0, unusable 0, errors 0 | total 858.8 KB over 10.0s
+[RTT engine] 83.4 KB/sec | 182 drains/sec, 468 B/drain | 568 trips/sec, 3.1 trips/drain | idle 0, gated 0, unusable 0, errors 0 | total 1.25 MB over 15.0s
+[RTT engine] 83.4 KB/sec | 182 drains/sec, 470 B/drain | 566 trips/sec, 3.1 trips/drain | idle 1, gated 0, unusable 0, errors 0 | total 1.65 MB over 20.0s
+[RTT engine] 83.1 KB/sec | 180 drains/sec, 472 B/drain | 561 trips/sec, 3.1 trips/drain | idle 1, gated 0, unusable 0, errors 0 | total 2.06 MB over 25.0s
+[RTT engine] 83.9 KB/sec | 183 drains/sec, 469 B/drain | 572 trips/sec, 3.1 trips/drain | idle 1, gated 0, unusable 0, errors 0 | total 2.47 MB over 30.0s
+[RTT engine] 83.0 KB/sec | 181 drains/sec, 469 B/drain | 565 trips/sec, 3.1 trips/drain | idle 1, gated 0, unusable 0, errors 0 | total 2.88 MB over 35.0s
+[RTT engine] 85.6 KB/sec | 186 drains/sec, 471 B/drain | 579 trips/sec, 3.1 trips/drain | idle 0, gated 0, unusable 0, errors 0 | total 3.29 MB over 40.0s
+[RTT engine] 83.6 KB/sec | 181 drains/sec, 473 B/drain | 564 trips/sec, 3.1 trips/drain | idle 0, gated 0, unusable 0, errors 0 | total 3.70 MB over 45.0s
+[RTT engine] 83.8 KB/sec | 181 drains/sec, 473 B/drain | 565 trips/sec, 3.1 trips/drain | idle 0, gated 0, unusable 0, errors 0 | total 4.11 MB over 50.0s
 ```
+
+Mean **84.2 KB/s**, 1.75 ms per round trip. `B/drain` 471 against a cap of 500 -- a blocking writer
+refilling as space frees, not spare capacity.
 
 ### STLink
 
@@ -527,16 +622,18 @@ info: [RTT Logs stats] 77.35 KB/sec | 208.6 msgs/sec | window 5.0s, 386.83 KB | 
 ## Openocd
 
 ```
-[RTT Logs stats] 81.62 KB/sec | 162.6 msgs/sec | window 5.0s, 408.68 KB | total 408.68 KB over 5.0s
-[RTT Logs stats] 81.17 KB/sec | 161.9 msgs/sec | window 5.0s, 406.02 KB | total 814.69 KB over 10.0s
-[RTT Logs stats] 80.77 KB/sec | 160.8 msgs/sec | window 5.0s, 403.95 KB | total 1.19 MB over 15.0s
-[RTT Logs stats] 80.12 KB/sec | 162.5 msgs/sec | window 5.0s, 400.77 KB | total 1.58 MB over 20.0s
-[RTT Logs stats] 79.54 KB/sec | 161.7 msgs/sec | window 5.0s, 398.04 KB | total 1.97 MB over 25.0s
-[RTT Logs stats] 79.46 KB/sec | 163.7 msgs/sec | window 5.0s, 397.92 KB | total 2.36 MB over 30.1s
-[RTT Logs stats] 78.12 KB/sec | 159.2 msgs/sec | window 5.0s, 391.15 KB | total 2.74 MB over 35.1s
-[RTT Logs stats] 80.68 KB/sec | 163.2 msgs/sec | window 5.0s, 403.48 KB | total 3.13 MB over 40.1s
-[RTT Logs stats] 81.02 KB/sec | 162.5 msgs/sec | window 5.0s, 405.26 KB | total 3.53 MB over 45.1s
+[RTT Logs stats] 111.50 KB/sec | 125.3 msgs/sec | window 5.0s, 558.04 KB | total 558.04 KB over 5.0s
+[RTT Logs stats] 106.27 KB/sec | 120.5 msgs/sec | window 5.0s, 531.68 KB | total 1.06 MB over 10.0s
+[RTT Logs stats] 101.43 KB/sec | 116.3 msgs/sec | window 5.0s, 507.76 KB | total 1.56 MB over 15.0s
+[RTT Logs stats] 101.58 KB/sec | 116.3 msgs/sec | window 5.0s, 508.32 KB | total 2.06 MB over 20.0s
+[RTT Logs stats] 103.84 KB/sec | 117.9 msgs/sec | window 5.0s, 519.52 KB | total 2.56 MB over 25.1s
+[RTT Logs stats] 104.04 KB/sec | 117.5 msgs/sec | window 5.0s, 520.83 KB | total 3.07 MB over 30.1s
+[RTT Logs stats] 105.84 KB/sec | 120.8 msgs/sec | window 5.0s, 530.16 KB | total 3.59 MB over 35.1s
+[RTT Logs stats] 107.08 KB/sec | 120.4 msgs/sec | window 5.0s, 536.14 KB | total 4.11 MB over 40.1s
 ```
+
+Mean **105.2 KB/s** at 902 bytes per TCP write. OpenOCD's own RTT does not go through RSP, so the
+500-byte reply cap that bounds our engine does not apply to it.
 
 ## pyOCD
 

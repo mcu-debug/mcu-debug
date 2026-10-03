@@ -8,3 +8,4 @@ export * from "./cockpit-protocol";
 export * from "./proxy-starter";
 export * from "./line-splitter";
 export * from "./utils";
+export * from "./filter-dup-lines";

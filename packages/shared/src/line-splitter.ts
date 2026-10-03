@@ -38,6 +38,7 @@ export class LineSplitter {
                 }
                 this.timer = null;
             }, this.flushTimerMs);
+            this.timer.unref();
         }
     }
 

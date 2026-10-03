@@ -13,7 +13,7 @@ import { ExternalServerController } from "./servers/external";
 import { GDBDebugSession } from "./gdb-session";
 import { createPortName, GDBServerController, GenericCustomEvent, quoteShellCmdLine, TcpPortDef, TcpPortDefMap } from "./servers/common";
 import { GdbEventNames, Stderr } from "./gdb-mi/mi-types";
-import { DefaultPortBase, TcpPortScanner } from "@mcu-debug/shared";
+import { DefaultPortBase, TcpPortScanner, FilterLineDupsMultiple } from "@mcu-debug/shared";
 import { AnsiHelpers } from "../common/ansi-helpers";
 import { ProxyClient } from "./proxy-client";
 import { ProbeRsServerController } from "./servers/probe-rs";
@@ -318,6 +318,7 @@ export class GDBServerSession extends EventEmitter {
                     this.emit("server-exited", code, signal);
                 }
                 this.process = null;
+                this.disposeFilters();
                 if (this.consoleSocket) {
                     this.consoleSocket.destroy();
                     this.consoleSocket = null;
@@ -362,12 +363,44 @@ export class GDBServerSession extends EventEmitter {
         return remaining;
     }
 
-    public writeToConsole(data: Buffer, isStdErr = false) {
-        if (this.session.args.routeGdbServerOutputToDebugConsole) {
-            this.session.handleMsg(isStdErr ? GdbEventNames.Stderr : GdbEventNames.Stdout, data.toString());
-        }
+    private static createLineFilter(flush: (line: string) => void) {
+        return new FilterLineDupsMultiple(flush, 500, 5_000);
+    }
+
+    private conSocketWrite(data: string) {
         if (this.consoleSocket && !this.consoleSocket.destroyed) {
             this.consoleSocket.write(data);
+        }
+    }
+
+    // console socket will go to a either the CLI stdout or a MCU Debug Panel in VSCode
+    private socketFilter = GDBServerSession.createLineFilter(this.conSocketWrite.bind(this));
+    // This goes to the Debug Console in VSCode
+    private stdOutFilter = GDBServerSession.createLineFilter((line: string) => {
+        this.session.handleMsg(GdbEventNames.Stdout, line);
+    });
+    // This goes to the Debug Console in VSCode
+    private stdErrFilter = GDBServerSession.createLineFilter((line: string) => {
+        this.session.handleMsg(GdbEventNames.Stderr, line);
+    });
+
+    // Flush pending partial lines and repeat counts. Safe to call more than once.
+    private disposeFilters() {
+        this.socketFilter.dispose();
+        this.stdOutFilter.dispose();
+        this.stdErrFilter.dispose();
+    }
+
+    public writeToConsole(data: Buffer, isStdErr = false) {
+        const str = data.toString();
+        this.socketFilter.addChunk(str);
+        if (this.session.args.routeGdbServerOutputToDebugConsole) {
+            // This is hopefully always disabled for CLI
+            if (isStdErr) {
+                this.stdErrFilter.addChunk(str);
+            } else {
+                this.stdOutFilter.addChunk(str);
+            }
         }
     }
 
@@ -393,6 +426,7 @@ export class GDBServerSession extends EventEmitter {
                 this.session.handleMsg(Stderr, `Error stopping gdb-server via proxy: ${e.message}\n`);
             }
         }
+        this.disposeFilters();
         if (this.consoleSocket) {
             this.consoleSocket.destroy();
             this.consoleSocket = null;
