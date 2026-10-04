@@ -26,6 +26,10 @@ const OFF_FLAGS = 20 - 4; // uint32_t       // We ignore flags for now
 
 const SIZEOF_RTT_BUFFER_DESC = 16; // Total size of one buffer descriptor, after name pointer, and ignore flags
 
+/// Default polling interval for the RTT poll thread.
+/// Don't forget to update definition.js if you change this value.
+const DEFAULT_POLLING_INTERVAL_MS = 100;
+
 export interface RttBufferDescriptor {
     // nameAddr: number;
     bufAddr: number;
@@ -70,7 +74,7 @@ export class RttBufferManager extends EventEmitter {
     private transport: RttTransport | null = null;
     private cbAddr: bigint = 0n; // Address of _SEGGER_RTT (RTT Control Block)
     private searchStr: string = "SEGGER RTT";
-    private intervalMs = 100; // ms
+    private intervalMs = DEFAULT_POLLING_INTERVAL_MS; // ms
     private measureThroughput = true;
     private throughputMonitor: ThroughputMonitor | undefined;
 
@@ -121,7 +125,7 @@ export class RttBufferManager extends EventEmitter {
             if (!this.config || !this.config.enabled) {
                 throw new Error("RTT is not enabled in the configuration. This method should not have been called.");
             }
-            this.intervalMs = this.config?.polling_interval ?? 100;
+            this.intervalMs = this.config?.polling_interval ?? DEFAULT_POLLING_INTERVAL_MS;
             if (this.intervalMs < this.minIntervalMs) {
                 // Something less than 20, allow it, but warn
                 this.mainSession.handleMsg(Stderr, `Warning: RTT polling interval ${this.intervalMs} too low (< ${this.minIntervalMs}ms). Text windows may not be able to keep up\n`);
@@ -437,6 +441,8 @@ export class RttBufferManager extends EventEmitter {
             clearTimeout(this.onStoppedTimer);
             this.onStoppedTimer = null;
         }
+        // Don't change internal status immediately; wait for the debounce timer to elapse.
+        // We want to drain any pending RTT data before fully acknowledging the stop.
         this.onStoppedTimer = setTimeout(() => {
             if (this.onStoppedTimer) {
                 clearTimeout(this.onStoppedTimer);

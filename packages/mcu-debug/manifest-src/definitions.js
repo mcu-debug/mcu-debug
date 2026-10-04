@@ -754,7 +754,9 @@ module.exports = {
             polling_interval: {
                 type: ["number", "null"],
                 description:
-                    "Only for openocd & builtin RTT handlers. Number of milliseconds (> 0) to wait for check for data on out channels. Setting it lower than 50 may cause issues depending on your probe.",
+                    "Only for openocd & builtin RTT handlers. Number of milliseconds (> 0) to wait for check for data on out channels. Setting to < 10ms, can cause excessing bus-traffic." +
+                    "For built-in typescript RTT handler, this can cause the debugger unresponsive. For rust/gdb-servers, it will generate lots of reads on the MCU, potentially impacting MCU performance." +
+                    "default is 100ms for built-in RTT TypeScript handler, 50ms for built-in Rust handler. Gdb-servers may have different defaults. Feel free to experiment with this value.",
                 default: null,
                 minimum: 1,
             },

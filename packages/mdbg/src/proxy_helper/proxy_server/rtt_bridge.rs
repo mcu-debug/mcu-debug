@@ -53,6 +53,12 @@ const RTT_REQUEST_TIMEOUT: Duration = Duration::from_millis(2000);
 /// of typing is orders of magnitude less.
 const DOWN_QUEUE_LIMIT: usize = 64 * 1024;
 
+/// Default polling interval for the RTT poll thread.
+///
+/// Setting this too low can cause excessive bus traffic and impact MCU performance.
+/// Don't forget to update definition.js if you change this value.
+const DEFAULT_POLLING_INTERVAL_MS: u32 = 50;
+
 /// The engine's output, expressed as funnel frames.
 ///
 /// Sends on the session's event channel rather than writing the funnel directly, so the write
@@ -252,7 +258,9 @@ impl ProxyServer {
                 endian,
                 up_channels: config.up_channels.clone(),
                 down_channels: config.down_channels.clone(),
-                idle_interval: Duration::from_millis(config.poll_interval_ms.unwrap_or(1).max(1) as u64),
+                idle_interval: Duration::from_millis(
+                    config.poll_interval_ms.unwrap_or(DEFAULT_POLLING_INTERVAL_MS).max(1) as u64,
+                ),
                 drain: DrainOptions {
                     // The client's value when it sent one -- that is `debugFlags.rttDrainBytes`, a
                     // measurement knob rather than a user setting -- otherwise this server's measured
