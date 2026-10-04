@@ -175,6 +175,22 @@ fn sweep_with(
 /// [`LOG_MAX_AGE`], so a live proxy's log is never close to looking stale.
 pub const HEARTBEAT: Duration = Duration::from_secs(6 * 60 * 60);
 
+/// How often the heartbeat thread wakes to *check* whether a beat is due.
+///
+/// Much shorter than [`HEARTBEAT`] on purpose, because the two sides of this invariant would
+/// otherwise read different clocks. `thread::sleep` is a relative sleep whose countdown, on at least
+/// some platforms, does not advance while the machine is suspended -- Linux's `CLOCK_MONOTONIC`
+/// excludes suspend, and Windows' `Sleep` is driven by a tick that stops in S3. The sweep, meanwhile,
+/// compares mtime against `SystemTime::now()`, which is wall clock and kept advancing.
+///
+/// So a single `sleep(HEARTBEAT)` would beat every six hours *of awake time*: suspend a laptop for
+/// three weeks with a proxy running and its open log carries a three-week-old mtime on resume, with
+/// no beat missed. Waking often and testing elapsed **wall** time instead means a resume produces a
+/// beat within this interval, and both sides of the invariant read the clock the sweep actually uses.
+///
+/// 144 wakeups a day of a sleeping thread is not a measurable cost.
+const HEARTBEAT_CHECK: Duration = Duration::from_secs(10 * 60);
+
 /// Hours and minutes. Enough to see at a glance how long a daemon has been up.
 fn uptime(d: Duration) -> String {
     let mins = d.as_secs() / 60;
@@ -196,10 +212,17 @@ fn heartbeat_line(up: Duration) -> String {
 /// A detached thread, like the lifetime watchers: it only sleeps, and the process exiting takes it.
 pub fn spawn_heartbeat() {
     std::thread::spawn(|| {
-        let started = std::time::Instant::now();
+        let started = SystemTime::now();
+        let mut last_beat = started;
         loop {
-            std::thread::sleep(HEARTBEAT);
-            log::info!("{}", heartbeat_line(started.elapsed()));
+            std::thread::sleep(HEARTBEAT_CHECK);
+            // Wall clock on both sides -- see `HEARTBEAT_CHECK`. `duration_since` fails only if the
+            // clock went backwards, and a zero there just brings the next beat forward.
+            let now = SystemTime::now();
+            if now.duration_since(last_beat).unwrap_or_default() >= HEARTBEAT {
+                log::info!("{}", heartbeat_line(now.duration_since(started).unwrap_or_default()));
+                last_beat = now;
+            }
         }
     });
 }
@@ -382,6 +405,17 @@ mod tests {
         assert!(
             HEARTBEAT.as_secs() * 56 <= LOG_MAX_AGE.as_secs(),
             "and the margin should be large, not marginal"
+        );
+    }
+
+    #[test]
+    fn a_beat_is_due_again_well_inside_the_age_limit_even_across_a_suspend() {
+        // The check interval is what bounds how stale a live log can look: a resume produces a beat
+        // within one check, so the worst case is HEARTBEAT + HEARTBEAT_CHECK of wall time.
+        assert!(HEARTBEAT_CHECK < HEARTBEAT, "checking must be finer than beating");
+        assert!(
+            HEARTBEAT + HEARTBEAT_CHECK < LOG_MAX_AGE,
+            "the worst-case staleness of a live log must stay inside the age limit"
         );
     }
 
