@@ -35,6 +35,7 @@ use std::{
 use crate::proxy_helper::admin::{self, AdminContext};
 use crate::proxy_helper::lifetime::Lifetime;
 use crate::proxy_helper::listeners;
+use crate::proxy_helper::log_cleanup;
 use crate::proxy_helper::proxy_server::SerialPortRegistry;
 use crate::proxy_helper::serial_available::{start_serial_available_watcher, SerialAvailabilityHub};
 use crate::proxy_helper::singleton;
@@ -237,6 +238,10 @@ fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
         }
     }
     .format(flexi_logger::detailed_format)
+    // Collapse a repeating message into one line plus a count. A gdb-server that has lost its USB
+    // connection fails identically as fast as it can be asked -- OpenOCD in that state fills a log
+    // faster than it can be read -- and the count plus the span is the part worth keeping.
+    .filter(Box::new(crate::common::log_dedup::DedupFilter::new()))
     .log_to_file(
         FileSpec::default()
             .directory(log_dir)
@@ -244,6 +249,11 @@ fn init_logging(args: &ProxyArgs) -> Option<LoggerHandle> {
             .discriminant(launch_id)
             .suffix("log"),
     )
+    // Rotation and cleanup act *within* one launch's family of files, which is what the unique
+    // `discriminant` above scopes them to -- so this bounds a proxy that stays up for weeks and
+    // rotates nightly, and does nothing at all about the far more common case of many short
+    // launches each writing one line. `log_cleanup::sweep` handles *across* launches; neither
+    // covers the other.
     .rotate(Criterion::Age(Age::Day), Naming::Timestamps, Cleanup::KeepLogFiles(14))
     .duplicate_to_stderr(if args.log_stderr {
         Duplicate::All
@@ -996,6 +1006,15 @@ pub fn run(mut args: ProxyArgs) -> Result<()> {
         Some(guard) => Some(guard),
         None => return Ok(()),
     };
+
+    // Here, and only here: we won the election, so we are the long-lived instance. A launch that
+    // deferred to a running proxy has already returned above -- and those are the launches that
+    // create most of the files, each one a single line, so sweeping on that path would be both
+    // frequent and pointless.
+    log_cleanup::sweep_and_report(&resolve_log_dir(&args));
+    // Keeps this process's log mtime fresh, which is what lets the sweep above treat mtime as
+    // "last sign of life" and nothing else. See `log_cleanup`.
+    log_cleanup::spawn_heartbeat();
 
     // TODO: Maybe allow Ipv6 in the future, but for now we can just require IPv4 for simplicity
     let requested_host = parse_host_arg(args.host.as_deref())?;

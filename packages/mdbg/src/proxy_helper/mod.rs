@@ -18,6 +18,7 @@
 pub mod admin;
 pub mod lifetime;
 pub mod listeners;
+pub mod log_cleanup;
 pub mod port_monitor;
 pub mod proxy_server;
 pub mod run;
