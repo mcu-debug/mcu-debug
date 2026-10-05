@@ -9,13 +9,6 @@ This file captures architectural facts that are not obvious from reading the cod
 - Always provide a code summary and wait for explicit confirmation before committing.
 - Commit messages must be strictly concise (one-line summaries) using Conventional Commits. No paragraphs or conversational filler.
 
-## Custom Commands
-- `/commit`: Use this command to review staged changes and create a commit. 
-  1. Print a high-level, bulleted summary of staged modifications for user review.
-  2. Draft a single-line commit message following the Conventional Commits style guide (e.g., `feat(auth): add JWT expiration handling`).
-  3. Ask the user for confirmation: "Ready to commit with this message? (y/n)".
-  4. Only execute `git commit -m "<message>"` if the user explicitly types 'y' or approves.
-
 ## Key Reference Documents
 
 | Document                                                       | What it covers                                                                                                    |
@@ -241,8 +234,13 @@ part of the compiler. This repo surfaces clippy in three places, all running the
 - **Manual**: `npm run lint:rust` from the repo root, or the "rust: cargo clippy" VS Code task
   (Run Task), runs it on demand.
 - **CI**: the `rust` job in `.github/workflows/ci.yml` runs `npm run test:rust` and `npm run lint:rust` on every
-  push/PR (a parallel `ts` job type-checks, unit-tests and prettier-checks the TS side) — the identical commands available locally, so a CI failure is always reproducible on a
-  laptop without needing to guess what CI is actually doing.
+  push/PR (a parallel `ts` job type-checks, unit-tests and prettier-checks the TS side) — the
+  identical commands available locally, so a CI failure is always reproducible on a laptop
+  without needing to guess what CI is actually doing.
+- **Pre-push hook**: `scripts/git-hooks/pre-push` runs the Rust and TS suites before every push,
+  and fails if the ts-rs generated TS in `packages/shared` is out of date (it checks rather than
+  syncs, so a push never goes out without the regenerated files). Not installed by cloning —
+  run `npm run hooks:install` once per clone; it leaves the Git LFS hooks in place.
 
 **How to apply:** if you add or change Rust code, run `npm run lint:rust` (or trust the live
 rust-analyzer diagnostics) before considering the change done — don't rely on CI to catch it first.

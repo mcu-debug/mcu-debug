@@ -29,6 +29,8 @@
     "fmt:rust:check": "cargo fmt --manifest-path packages/mdbg/Cargo.toml -- --check",
     "fmt:ts": "prettier --write \"**/*.{ts,tsx,js,mjs,cjs}\"",
     "fmt:ts:check": "prettier --check \"**/*.{ts,tsx,js,mjs,cjs}\"",
+    "test:all": "npm run test:rust && npm test",
+    "hooks:install": "node scripts/install-git-hooks.js",
     "publish": "node scripts/prepare-release.js --publish",
     "publish:dryrun": "node scripts/prepare-release.js --publish --dryrun",
     "push-artifacts": "node scripts/sync-artifacts.mjs --push",

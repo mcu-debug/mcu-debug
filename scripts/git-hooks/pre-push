@@ -1,0 +1,16 @@
+#!/bin/sh
+# Runs the Rust and TS test suites before a push. Installed by `npm run hooks:install`, which
+# adds a call to this script to .git/hooks/pre-push next to the Git LFS hook already there.
+#
+# Same suites as `npm run test:all`, with one difference: the ts-rs generated TS in
+# packages/shared is *checked*, not synced. Syncing here would rewrite files after the commits
+# being pushed were made, so they would go out without the regenerated TS.
+#
+# It tests the working tree, not the commits being pushed, so uncommitted edits count.
+# Skip in a hurry with `git push --no-verify`; CI runs the same suites anyway.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-push: running Rust and TS tests (skip with --no-verify)..."
+node scripts/test-rust.js --check-ts
+npm test --silent

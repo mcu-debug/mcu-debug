@@ -5,6 +5,7 @@
 // Usage:
 //   node scripts/sync-ts-exports.js clean              empty the staging dir (before exporting)
 //   node scripts/sync-ts-exports.js [--report-stale]   format + sync staged files into shared
+//   node scripts/sync-ts-exports.js --check [...]      write nothing; exit 1 if shared is out of date
 //
 // packages/mdbg/.cargo/config.toml points TS_RS_EXPORT_DIR at packages/mdbg/target/ts-rs, so
 // `cargo test` never writes the committed files directly. That matters for two reasons:
@@ -46,7 +47,7 @@ function listTs(dir, base = dir) {
     return out;
 }
 
-async function sync(reportStale) {
+async function sync(reportStale, check) {
     const staged = listTs(STAGING);
     if (staged.length === 0) {
         console.error(`Error: no generated TypeScript in ${STAGING}.`);
@@ -63,14 +64,25 @@ async function sync(reportStale) {
         const options = (await prettier.resolveConfig(dest)) ?? {};
         const formatted = await prettier.format(raw, { ...options, printWidth: PRINT_WIDTH, filepath: dest });
         const current = fs.existsSync(dest) ? fs.readFileSync(dest, "utf8") : null;
-        if (current !== formatted) {
+        if (current !== formatted && check) {
+            console.error(`Out of date: packages/shared/${rel.split(path.sep).join("/")}`);
+            updated++;
+        } else if (current !== formatted) {
             fs.mkdirSync(path.dirname(dest), { recursive: true });
             fs.writeFileSync(dest, formatted, "utf8");
             console.log(`${current === null ? "Added" : "Updated"}: packages/shared/${rel.split(path.sep).join("/")}`);
             updated++;
         }
     }
-    console.log(`TypeScript exports: ${staged.length} generated, ${updated} changed.`);
+    if (check && updated > 0) {
+        // --check exists for the pre-push hook: syncing there would rewrite files after the
+        // commits being pushed were made, so they would go out without the regenerated TS.
+        console.error(`${updated} generated TypeScript file(s) in packages/shared do not match the Rust types.`);
+        console.error("Run `npm run test:rust` to regenerate them, then commit the result.");
+        process.exitCode = 1;
+        return;
+    }
+    console.log(`TypeScript exports: ${staged.length} generated, ${updated} ${check ? "out of date" : "changed"}.`);
 
     if (reportStale) {
         const stagedSet = new Set(staged);
@@ -89,7 +101,7 @@ const args = process.argv.slice(2);
 if (args[0] === "clean") {
     fs.rmSync(STAGING, { recursive: true, force: true });
 } else {
-    sync(args.includes("--report-stale")).catch((e) => {
+    sync(args.includes("--report-stale"), args.includes("--check")).catch((e) => {
         console.error(`Error syncing TypeScript exports: ${e.message}`);
         process.exit(1);
     });
