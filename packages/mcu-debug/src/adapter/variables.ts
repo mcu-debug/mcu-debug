@@ -471,6 +471,7 @@ export class VariableManager {
     private registerInfoMap = new Map<number, RegisterInfo>();
     private registerValuesMap: Map<number, GdbMiOutput> = new Map<number, GdbMiOutput>();
     private registerNames = new Map<number, string>();
+    private scopeHandles = new Map<number, number>();
 
     constructor(
         gdbInstance_: GdbInstance, // Should never need thhis directly, kept in respective containers
@@ -491,6 +492,21 @@ export class VariableManager {
         createContainer(VariableScope.Local, "L-", false);
         createContainer(VariableScope.Watch, "W-", false); // These hold all watch/hover variables
         createContainer(VariableScope.Registers, "R-", false);
+    }
+
+    public addScopeHandle(handle: number, threadId: number, frameId: number, scope: VariableScope): void {
+        this.scopeHandles.set(handle, encodeScopeReference(threadId, frameId, scope));
+    }
+    public hasScopeHandle(handle: number): boolean {
+        return this.scopeHandles.has(handle);
+    }
+    public getScopeHandle(handle: number): [number, number, VariableScope] | undefined {
+        const encoded = this.scopeHandles.get(handle);
+        if (encoded === undefined) {
+            return undefined;
+        }
+        const [threadId, frameId, scope] = decodeReference(encoded);
+        return [threadId, frameId, scope];
     }
 
     // All containers are created in the constructor. Then are make for the
@@ -561,6 +577,7 @@ export class VariableManager {
     }
 
     public async clearForContinue() {
+        this.scopeHandles.clear();
         const err = (str: string) => {
             if (this.debugSession.args.debugFlags.anyFlags) {
                 this.debugSession.handleMsg(GdbEventNames.Stderr, `mcu-debug: Error deleting GDB variable ${str} on stop/continue\n`);
@@ -595,26 +612,32 @@ export class VariableManager {
     }
 
     public getVariables(args: DebugProtocol.VariablesArguments, container?: VariableContainer): Promise<GdbProtocolVariable[]> {
-        const [threadId, frameId, scope] = this.getVarOrFrameInfo(args.variablesReference, container);
-        if (scope === VariableScope.Local) {
-            return this.getLocalVariables(threadId, frameId);
-        } else if (scope === VariableScope.Registers) {
-            return this.getRegisterVariables(threadId, frameId);
-        } else if (scope === VariableScope.Global) {
-            return this.getGlobalVariables();
-        } else if (scope === VariableScope.Static) {
-            return this.getStaticVariables(threadId, frameId);
-        } else if (scope & VariableTypeMask) {
-            const isClientVSCode = container === undefined;
-            // If this is a variable, we need to get is thread/frame ids from the variable itself
-            container = container ?? this.getContainer(scope);
-            const variable = container.getVariableByRef(args.variablesReference);
-            if (variable === undefined) {
-                Promise.reject(new Error(`No variable found for reference ${args.variablesReference}`));
+        const decodedScope = this.getScopeHandle(args.variablesReference); // Is this a scope variable
+        if (decodedScope) {
+            const [threadId, frameId, scope] = decodedScope;
+            if (scope === VariableScope.Local) {
+                return this.getLocalVariables(threadId, frameId);
+            } else if (scope === VariableScope.Registers) {
+                return this.getRegisterVariables(threadId, frameId);
+            } else if (scope === VariableScope.Global) {
+                return this.getGlobalVariables();
+            } else if (scope === VariableScope.Static) {
+                return this.getStaticVariables(threadId, frameId);
             }
-            return this.getVariableChildren(container, variable!, isClientVSCode);
+        } else {
+            const [_threadId, _frameId, hScope] = this.getVarOrFrameInfo(args.variablesReference, container);
+            if (hScope & VariableTypeMask) {
+                const isClientVSCode = container === undefined;
+                // If this is a variable, we need to get is thread/frame ids from the variable itself
+                container = container ?? this.getContainer(hScope);
+                const variable = container.getVariableByRef(args.variablesReference);
+                if (variable === undefined) {
+                    Promise.reject(new Error(`No variable found for reference ${args.variablesReference}`));
+                }
+                return this.getVariableChildren(container, variable!, isClientVSCode);
+            }
         }
-        return Promise.reject(new Error(`Invalid variablesReference ${args.variablesReference}`));
+        return Promise.reject(new Error(`Internal error: Invalid variablesReference ${args.variablesReference}`));
     }
 
     private async gdbVarListChildren(gdbInstance: GdbInstance, gdbName: string): Promise<any[]> {

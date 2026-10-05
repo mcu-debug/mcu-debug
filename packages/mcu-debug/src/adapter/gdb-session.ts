@@ -31,7 +31,7 @@ import { LiveWatchMonitor } from "./live-watch-monitor";
 import { MemoryRequests } from "./memory";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { adapterIdentityLine } from "./session-identity";
-import { ScopeMask, VariableScope, getScopeFromReference, getVariableClass } from "./var-scopes";
+import { ScopeMask, VariableScope, getVariableClass } from "./var-scopes";
 import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse, LiveWatchClientReadyResponse } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
@@ -599,7 +599,9 @@ export class GDBDebugSession extends SeqDebugSession {
         }
         try {
             const add = (t: number, f: number, s: VariableScope): number => {
-                return this.varManager.addFrameInfo(t, f, s);
+                const ret = this.varManager.addFrameInfo(t, f, s);
+                this.varManager.addScopeHandle(ret, t, f, s);
+                return ret;
             };
             const [threadId, frameId, scope] = this.varManager.getFrameInfo(args.frameId);
             const thread = this.lastThreadsInfo?.threadMap.get(threadId);
@@ -794,7 +796,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 this.sendResponse(response);
                 return;
             }
-            const scope = getScopeFromReference(ref);
+            const scope = getVariableClass(ref);
             if (scope === VariableScope.Registers) {
                 response.body.description = "Data breakpoints are not supported on registers.";
                 this.sendResponse(response);
