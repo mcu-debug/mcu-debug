@@ -153,7 +153,7 @@ packages/
 
 Some directories in the `packages/shared` dir. are generated files and the script `scripts/build-binaries.sh` contains the code to generate and prettify them
 
-The `mdbg` binary is pre-built and checked in under `packages/mcu-debug/bin/` and `packages/mcu-debug-proxy/bin` for each platform. It is also built locally via the `Build Helper` task.
+The `mdbg` binary is built into `packages/mcu-debug/bin/` (and mirrored to `packages/mcu-debug-proxy/bin/`); both are gitignored. It is also built locally via the `Build Helper` task.
 
 ## Building
 
@@ -161,11 +161,22 @@ The `mdbg` binary is pre-built and checked in under `packages/mcu-debug/bin/` an
 | ---------------------- | ------------------------- |
 | Rust only build (dev)  | npm run build:rust:dev   |
 | Rust only build (prod) | npm run build:rust:prod  |
-| Compile all (dev)      | npm run compile          |
-| Compile all (prod)     | npm run package          |
+| Build all (dev)        | npm run compile          |
+| Build all (prod)       | npm run build            |
+| Package both VSIXs     | npm run package          |
 
-prod - production builds builds all OSes and archictures (optimized and stripped)
-dev  - development builds builds just the current OS+arch for
+The words mean the same thing in every package:
+
+- `compile` — development: Rust for the host only (debug), unminified bundles.
+- `build` — production: Rust for all OSes and architectures (release), minified bundles.
+- `package` — root only: builds the prod Rust binaries once, then runs `vsce package` for each
+  extension.
+
+`vsce package` always runs `vscode:prepublish`, which deliberately does **not** build Rust — it
+builds `shared` and the production TS bundle, and fails via `scripts/check-release-bins.js` if a
+platform binary is missing. Building Rust there too is what used to compile every target twice.
+Both extensions bundle `@mcu-debug/shared` from its compiled `lib/`, not `src/`, which is why
+prepublish builds `shared` first.
 
 `npm run build:rust:dev` / `build:rust:prod` (runnable from the repo root) delegate to
 `packages/mcu-debug`'s scripts of the same name, which wrap `./scripts/build-binaries.sh dev|prod`:
@@ -177,27 +188,15 @@ manifest generation, the cockpit webview, esbuild bundling of the extension — 
 heavier than a Rust-only build. Reach for `npm run build:rust:dev`/`build:rust:prod` instead
 when you only touched Rust code.
 
-**How to apply:** When Rust structs change, prefer `npm run build:rust:dev` to regenerate and
-reformat the generated TS files in one step. For tests, use **`npm run test:rust`** (not bare
-`cargo test`): it wraps the suite and runs the same prettier pass afterwards, so a test run
-never leaves whitespace-only churn behind. Note the print width is **120**, deliberately
-narrower than the project's 200 — formatting these files with the default collapses the
-generated type literals onto one line and *creates* drift rather than removing it.
+**How to apply:** When Rust structs change, run `npm run build:rust:dev` or **`npm run test:rust`**
+(not bare `cargo test`) to update the generated TS files in `packages/shared`.
 
-If you instead run the underlying cargo tests directly for speed:
-
-```bash
-  cd packages/mdbg && cargo test --lib da_helper::helper_requests::tests::ensure_ts_exports --quiet
-  cd packages/mdbg && cargo test --lib proxy_helper::proxy_server::tests::ensure_ts_exports --quiet
-```
-
-this regenerates the files but **skips the prettier pass**. The raw ts-rs output differs
-cosmetically from the committed (prettier-formatted) files in
-`packages/shared/{dasm-helper,proxy-protocol,serial-helper}`, so `git diff` will show noisy
-whitespace-only changes there that aren't real edits — before treating them as something to fix
-or commit, check whether they're just this formatting drift (`git checkout -- packages/shared/...`
-to discard, or run prettier to match: `node_modules/.bin/prettier --write --print-width 120
-packages/shared/dasm-helper packages/shared/proxy-protocol packages/shared/serial-helper`).
+ts-rs never writes those files directly. `TS_RS_EXPORT_DIR` (in `packages/mdbg/.cargo/config.toml`)
+points at a staging dir, `packages/mdbg/target/ts-rs`, and `scripts/sync-ts-exports.js` formats the
+staged files with prettier (width **120**, deliberately narrower than the project's 200) and writes
+only the ones whose content changed. Both npm commands run that sync; a bare `cargo test` does not.
+So a bare `cargo test` is harmless — it leaves `packages/shared` alone — but after a Rust type
+change it also leaves the TS side stale, and the TS type-check will not see the change.
 
 There is no `npm run build:types` — an earlier version of this repo had one, but it was leftover
 from a defunct Go-based codegen pipeline (`packages/proxy-server` + `tygo`) that no longer exists,
@@ -241,8 +240,8 @@ part of the compiler. This repo surfaces clippy in three places, all running the
   violations show up live as you type, the same as any other diagnostic.
 - **Manual**: `npm run lint:rust` from the repo root, or the "rust: cargo clippy" VS Code task
   (Run Task), runs it on demand.
-- **CI**: `.github/workflows/rust-ci.yml` runs `npm run test:rust` and `npm run lint:rust` on every
-  push/PR — the identical commands available locally, so a CI failure is always reproducible on a
+- **CI**: the `rust` job in `.github/workflows/ci.yml` runs `npm run test:rust` and `npm run lint:rust` on every
+  push/PR (a parallel `ts` job type-checks, unit-tests and prettier-checks the TS side) — the identical commands available locally, so a CI failure is always reproducible on a
   laptop without needing to guess what CI is actually doing.
 
 **How to apply:** if you add or change Rust code, run `npm run lint:rust` (or trust the live
@@ -319,13 +318,14 @@ type turns that into a compile error in the editor instead.
    types do not implement `TS`.
 2. Register it in the relevant `ensure_ts_exports` test
    (`proxy_helper/proxy_server/tests.rs` or `da_helper/helper_requests.rs`). Nothing is
-   generated by the derive alone; these tests are what write the files.
-3. Run **`npm run test:rust`**. That is the postprocess: it runs the exports *and* reformats
-   them with prettier at width 120. A bare `cargo test` regenerates them in raw ts-rs style and
-   leaves a dozen whitespace-only diffs that look like real edits. (`ts-rs --format` is
-   deliberately unused — it is a different formatter and fights this one.) It also has to run
+   generated by the derive alone outside a full test run: the derive adds a per-type test, but
+   `build:rust:*` runs only these two tests, so an unregistered type is never refreshed there.
+   `npm run test:rust` (unfiltered) warns about any `packages/shared` file nothing generated.
+3. Run **`npm run test:rust`**. A bare `cargo test` only writes the staging dir; the script
+   then syncs it into `packages/shared`, prettier-formatted at width 120. (`ts-rs --format` is
+   deliberately unused — it is dprint, a different formatter, and fights this one.) It also has to run
    from the crate directory, which the script does; from the repo root the bindings land in
-   `packages/mdbg/bindings/` instead and the shared types are silently never updated.
+   `packages/mdbg/bindings/` instead, and the sync fails saying nothing was staged.
 4. Import by path: `import { StatusInfo } from "@mcu-debug/shared/proxy-protocol/StatusInfo";`
    There is no barrel file.
 

@@ -1,47 +1,39 @@
 #!/usr/bin/env node
-// Run the Rust test suite, then reformat the ts-rs generated TypeScript.
+// Run the Rust test suite, then sync the ts-rs generated TypeScript into packages/shared.
 //
-// `cargo test` runs the `ensure_ts_exports` tests as part of the suite, which rewrite
-// packages/shared/{dasm-helper,proxy-protocol,serial-helper} in raw ts-rs style. The
-// committed files are prettier-formatted, so a bare `cargo test` always leaves a dozen
-// whitespace-only modifications behind that look like real edits in `git diff`.
+// `cargo test` runs the ts-rs export tests as part of the suite. They write to a staging dir
+// (TS_RS_EXPORT_DIR in packages/mdbg/.cargo/config.toml), not to packages/shared, so a bare
+// `cargo test` leaves the committed files alone -- but it also does not update them. This
+// script is the step that does: scripts/sync-ts-exports.js formats the staged files with
+// prettier and copies over only the ones that changed.
 //
-// Formatting here means the obvious command to reach for is also the safe one. The
-// width must match build-binaries.sh's `format_ts_exports` (120, narrower than the
-// project's 200) or the files churn between the two settings instead of settling.
-//
-// Formatting runs whether or not the tests passed: the files were regenerated either
-// way, and leaving them dirty on failure is exactly when it is most confusing.
+// Syncing runs whether or not the tests passed: the export tests are independent of the
+// rest, and a Rust type change should reach the TS side even while another test is failing.
 const { spawnSync } = require("child_process");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
-const SHARED = path.join(ROOT, "packages", "shared");
-const GENERATED = ["dasm-helper", "proxy-protocol", "serial-helper"].map((d) => path.join(SHARED, d));
-const PRINT_WIDTH = "120"; // keep in sync with scripts/build-binaries.sh
+const SYNC = path.join(ROOT, "scripts", "sync-ts-exports.js");
 
 // Run from the crate directory, NOT the repo root with --manifest-path. Cargo
 // discovers .cargo/config.toml by walking up from the *current directory*; the manifest
 // path does not affect it. packages/mdbg/.cargo/config.toml sets TS_RS_EXPORT_DIR, so
 // running from elsewhere silently exports the bindings into packages/mdbg/bindings/
-// instead of packages/shared/ — tests pass, nothing looks wrong, and the shared types
-// are simply never regenerated.
+// instead of the staging dir -- tests pass, nothing looks wrong, and the shared types
+// are simply never regenerated (the sync below then fails, saying so).
 const args = process.argv.slice(2);
+spawnSync(process.execPath, [SYNC, "clean"], { stdio: "inherit" });
 const test = spawnSync("cargo", ["test", "--lib", ...args], {
     cwd: path.join(ROOT, "packages", "mdbg"),
     stdio: "inherit",
     shell: false,
 });
 
-const prettier = path.join(ROOT, "node_modules", ".bin", process.platform === "win32" ? "prettier.cmd" : "prettier");
-const fmt = spawnSync(prettier, ["--write", "--print-width", PRINT_WIDTH, "--log-level", "warn", ...GENERATED], {
-    stdio: "inherit",
-    shell: false,
-});
-if (fmt.status !== 0) {
-    // Never mask a test result behind a formatting problem — say so and move on.
-    console.error(`\nWarning: could not format generated TypeScript (prettier exited ${fmt.status ?? "null"}).`);
-    console.error(`Run: ${prettier} --write --print-width ${PRINT_WIDTH} ${GENERATED.join(" ")}`);
+// A filtered run exports only some types, so only an unfiltered one can tell what is stale.
+const sync = spawnSync(process.execPath, [SYNC, ...(args.length === 0 ? ["--report-stale"] : [])], { stdio: "inherit" });
+if (sync.status !== 0) {
+    // Never mask a test result behind a sync problem — say so and move on.
+    console.error(`\nWarning: could not sync generated TypeScript (exited ${sync.status ?? "null"}).`);
 }
 
 process.exit(test.status ?? 1);

@@ -367,7 +367,8 @@ function main() {
     }
 
     log("Packaging extensions (npm run package)...");
-    runCmd(["npm", "run", "package"]);
+    // The `npm run build` above already built the prod Rust binaries from this same HEAD.
+    runCmd(["npm", "run", "package"], { MCU_DEBUG_RUST_PREBUILT: "1" });
 
     const distDir = path.join(__dirname, "../dist");
     const mainVsix = path.join(distDir, `mcu-debug-${version}.vsix`);

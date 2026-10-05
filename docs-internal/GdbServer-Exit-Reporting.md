@@ -82,7 +82,7 @@ Either way, introduce a **solicited-shutdown flag** (`AtomicBool` or a small `Sh
 - **Wire protocol change:** the current `{ pid, exit_code: i32 }` is too thin. Extend to carry:
   - `exit_code: Option<i32>` and `signal: Option<i32>` (Unix distinguishes these; `ExitStatus` gives both), and
   - `reason: "client_shutdown" | "crashed" | "proxy_error"` (the A/B/C provenance).
-  - This is a `ts-rs`-generated type — regenerate the bindings (`cargo test ensure_ts_exports`) and update the TS handler in lockstep. Keep it backward-tolerant if any older client may connect.
+  - This is a `ts-rs`-generated type — regenerate the bindings (`npm run test:rust`) and update the TS handler in lockstep. Keep it backward-tolerant if any older client may connect.
 
 ### 4.3 Event ordering — flush the cause before the obituary
 

@@ -217,7 +217,7 @@ function updatePackageJson() {
     // `vsce package` always runs `vscode:prepublish`; if that script calls `npm run package`,
     // and `package` itself calls `vsce package`, packaging recurses indefinitely.
     if (pkg.scripts) {
-        pkg.scripts["vscode:prepublish"] = "npm run build-all";
+        pkg.scripts["vscode:prepublish"] = "npm --prefix ../shared run build && node ../../scripts/check-release-bins.js bin && npm run build:ts";
         pkg.scripts["package"] = "vsce package --no-dependencies";
 
         // Unified VSIX is the default packaging strategy.

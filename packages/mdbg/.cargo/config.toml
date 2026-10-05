@@ -1,5 +1,7 @@
 [env]
-TS_RS_EXPORT_DIR = { value = "../shared", relative = true }
+# Staging only: scripts/sync-ts-exports.js formats these with prettier and copies the ones that
+# changed into packages/shared. A bare `cargo test` therefore never touches the committed files.
+TS_RS_EXPORT_DIR = { value = "target/ts-rs", relative = true }
 TS_RS_LARGE_INT = "number"
 
 # Cross-compilation linker configuration for building on macOS/Linux

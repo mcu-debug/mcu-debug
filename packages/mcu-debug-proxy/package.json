@@ -59,13 +59,12 @@
   },
   "scripts": {
     "compile": "npm run check-types && node esbuild.js",
-    "build": "npm run package",
+    "build": "node ../../scripts/require-macos.js && npm run check-types && node esbuild.js --production",
     "check-types": "tsc --noEmit",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "vscode:prepublish": "npm run package",
-    "package": "node ../../scripts/require-macos.js && npm run check-types && node esbuild.js --production"
+    "vscode:prepublish": "npm --prefix ../shared run build && node ../../scripts/check-release-bins.js bin && npm run build"
   },
   "devDependencies": {
     "@mcu-debug/shared": "*",

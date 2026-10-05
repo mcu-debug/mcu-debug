@@ -16,30 +16,17 @@ mkdir -p "$BINDIR"
 
 mode="${1:-dev}"
 
-PRETTIER="$ROOT_DIR/node_modules/.bin/prettier"
-SHARED_DIR="$ROOT_DIR/packages/shared"
+SYNC_TS="$ROOT_DIR/scripts/sync-ts-exports.js"
 
+# ts-rs writes to a staging dir (TS_RS_EXPORT_DIR in packages/mdbg/.cargo/config.toml);
+# sync-ts-exports.js prettier-formats it into packages/shared, touching only changed files.
+# The two ensure_ts_exports tests between them export every type, so stale files are reportable.
 function ensure_ts_exports() {
   echo "Generating TypeScript exports..."
+  node "$SYNC_TS" clean
   cargo test --lib da_helper::helper_requests::tests::ensure_ts_exports --quiet
   cargo test --lib proxy_helper::proxy_server::tests::ensure_ts_exports --quiet
-}
-
-# Run prettier on the ts-rs generated TypeScript files.
-# ts-rs --format is intentionally avoided; it uses a different formatter.
-function format_ts_exports() {
-  if [[ -x "$PRETTIER" ]]; then
-    echo "Formatting generated TypeScript exports..."
-    # Use a narrower print width than the project default (200) so that
-    # generated type literals with many fields are broken across lines.
-    "$PRETTIER" --write --print-width 120 \
-      "$SHARED_DIR/dasm-helper" \
-      "$SHARED_DIR/proxy-protocol" \
-      "$SHARED_DIR/serial-helper" \
-      2>/dev/null || true
-  else
-    echo "Warning: prettier not found at $PRETTIER, skipping format"
-  fi
+  node "$SYNC_TS" --report-stale
 }
 
 function host_platform() {
@@ -165,7 +152,6 @@ if [[ "$mode" == "dev" ]]; then
 
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   ensure_ts_exports
-  format_ts_exports
 
   target=$(native_rust_target)
   if [[ -n "$target" ]]; then
@@ -340,7 +326,19 @@ if [[ "$mode" == "prod" ]]; then
 
   # Generate TypeScript exports via ts_rs (requires test execution in v12.0+)
   ensure_ts_exports
-  format_ts_exports
+
+  # Stamp every target with one exact value, computed after the export sync since that can
+  # change the tree. build.rs then reruns -- and recompiles the crate -- only when this value
+  # changes, instead of whenever git rewrote .git/index. Same format as build.rs and
+  # packages/mcu-debug/scripts/commit-hash.js. An MDBG_BUILD already set by the caller wins.
+  if [[ -z "${MDBG_BUILD:-}" ]]; then
+    MDBG_BUILD="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    if [[ "$MDBG_BUILD" != "unknown" && -n "$(git status --short 2>/dev/null)" ]]; then
+      MDBG_BUILD="$MDBG_BUILD+dirty"
+    fi
+  fi
+  export MDBG_BUILD
+  echo "Build stamp: $MDBG_BUILD"
 
   # platform|target_triple|exe_ext|method
   # Linux targets use MUSL for static-friendly binaries.

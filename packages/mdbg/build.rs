@@ -17,20 +17,50 @@
 use std::process::Command;
 
 fn main() {
-    // Rerun when the commit moves or the index changes. A working-tree edit does not retrigger
-    // this script, so `+dirty` can lag by one build -- acceptable, because any such edit rebuilds
-    // the crate anyway and the hash it is compared against is the one that matters.
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/index");
     println!("cargo:rerun-if-env-changed=MDBG_BUILD");
 
     // An explicit value wins, so a release pipeline building from an exported tree (no `.git`)
-    // can still stamp something meaningful.
-    let build = std::env::var("MDBG_BUILD")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(git_describe);
-    println!("cargo:rustc-env=MDBG_BUILD={build}");
+    // can still stamp something meaningful. `build-binaries.sh prod` always sets it, which also
+    // keeps release builds incremental: with only the env trigger, cargo reruns this script --
+    // and so recompiles the crate -- only when the stamp itself changes.
+    if let Some(build) = std::env::var("MDBG_BUILD").ok().filter(|s| !s.is_empty()) {
+        println!("cargo:rustc-env=MDBG_BUILD={build}");
+        return;
+    }
+
+    // Rerun when the commit moves: HEAD (branch switch), the branch refs (commit, reset), and
+    // packed-refs. Deliberately NOT `.git/index`. Git rewrites the index whenever any command
+    // refreshes its stat cache -- `git status` here and in commit-hash.js, the editor's git
+    // integration, a file merely touched with identical content -- so watching it recompiled the
+    // crate on nearly every build while the stamp stayed the same.
+    //
+    // The cost: `+dirty` is the tree's state when the commit last moved, so it can lag. That is
+    // harmless -- both sides compare builds with `+dirty` stripped (`singleton::strip_dirty`,
+    // `session-identity.ts`) -- and npm-driven release builds get an exact value via MDBG_BUILD.
+    for git_path in ["HEAD", "refs/heads", "packed-refs"] {
+        if let Some(path) = git_path_of(git_path) {
+            // A path that does not exist would make cargo rerun this script on every build.
+            if std::path::Path::new(&path).exists() {
+                println!("cargo:rerun-if-changed={path}");
+            }
+        }
+    }
+
+    println!("cargo:rustc-env=MDBG_BUILD={}", git_describe());
+}
+
+/// Where git keeps `rel`, resolved by git itself so linked worktrees (where `.git` is a file)
+/// work too. `None` without a usable git.
+fn git_path_of(rel: &str) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-path", rel])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
 }
 
 /// Short hash plus `+dirty`, or `"unknown"` when there is no usable git.

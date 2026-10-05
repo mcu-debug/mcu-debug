@@ -27,8 +27,6 @@ const binDir = path.join(root, "packages", "mcu-debug", "bin");
 const proxyBinDir = path.join(root, "packages", "mcu-debug-proxy", "bin");
 const target = "x86_64-pc-windows-msvc";
 const binName = "mdbg.exe";
-const prettier = path.join(root, "node_modules", ".bin", "prettier.cmd");
-const sharedDir = path.join(root, "packages", "shared");
 
 function run(cmd, args, opts) {
     const result = spawnSync(cmd, args, { cwd: rustDir, stdio: "inherit", shell: false, ...opts });
@@ -41,19 +39,14 @@ function run(cmd, args, opts) {
 
 console.log("Dev build (Windows native): building for host platform (debug)");
 
-// Generate TypeScript exports via ts_rs
+// Generate TypeScript exports via ts_rs into the staging dir, then sync them into packages/shared
+// (prettier-formatted, only changed files written) -- see scripts/sync-ts-exports.js
+const syncTs = path.join(root, "scripts", "sync-ts-exports.js");
 console.log("Generating TypeScript exports...");
+run(process.execPath, [syncTs, "clean"]);
 run("cargo", ["test", "--lib", "da_helper::helper_requests::tests::ensure_ts_exports", "--quiet"]);
 run("cargo", ["test", "--lib", "proxy_helper::proxy_server::tests::ensure_ts_exports", "--quiet"]);
-
-// Format generated TS files with prettier (best-effort)
-if (fs.existsSync(prettier)) {
-    console.log("Formatting generated TypeScript exports...");
-    spawnSync(prettier, ["--write", "--print-width", "120", path.join(sharedDir, "dasm-helper"), path.join(sharedDir, "proxy-protocol"), path.join(sharedDir, "serial-helper")], {
-        stdio: "inherit",
-        shell: true, // .cmd files require shell:true on Windows
-    });
-}
+run(process.execPath, [syncTs, "--report-stale"]);
 
 // Ensure the rustup target is installed
 const targetCheck = spawnSync("rustup", ["target", "list", "--installed"], { cwd: rustDir, shell: false });

@@ -1617,8 +1617,8 @@ on them.
 - **Capture real traffic.** `set debug remote 1` in GDB produces a usable transcript; capture one
   per server (OpenOCD, J-Link, pyOCD, ST-LINK, probe-rs, QEMU) and commit them as fixtures. They
   pay for themselves the first time a server does something unexpected.
-- Run with **`npm run test:rust`**, not bare `cargo test` (AGENTS.md — the wrapper runs the
-  prettier pass, so a test run leaves no whitespace churn in generated TS).
+- Run with **`npm run test:rust`**, not bare `cargo test` (AGENTS.md — only the wrapper syncs
+  the ts-rs generated TS into `packages/shared`).
 
 ---
 

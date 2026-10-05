@@ -41,8 +41,15 @@ else
 fi
 echo ""
 
-echo "==> Building Rust helper binaries (prod, all platforms)..."
-bash ./scripts/build-binaries.sh prod
+# This is the one place packaging builds Rust: `vscode:prepublish` (run by `vsce package` below)
+# only checks the binaries exist. MCU_DEBUG_RUST_PREBUILT=1 skips it when the caller has just
+# built them -- prepare-release.js does, since its `npm run build` already ran a prod Rust build.
+if [[ "${MCU_DEBUG_RUST_PREBUILT:-}" == "1" ]]; then
+	echo "==> Skipping Rust build (MCU_DEBUG_RUST_PREBUILT=1)"
+else
+	echo "==> Building Rust helper binaries (prod, all platforms)..."
+	bash ./scripts/build-binaries.sh prod
+fi
 
 echo "==> Syncing helper binaries for both extensions..."
 bash ./scripts/sync-helper-binaries.sh

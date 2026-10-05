@@ -41,6 +41,8 @@ fn ensure_ts_exports() {
     crate::proxy_helper::admin::StatusInfo::export(&config).unwrap();
     crate::proxy_helper::singleton::ExeStatus::export(&config).unwrap();
     SerialStatus::export(&config).unwrap();
+    // Nested in a request, so (like RttStartConfig) not reached by exporting ControlRequest.
+    SessionDebugFlags::export(&config).unwrap();
 }
 
 /// `StreamConn` replaced an `Option<TcpStream>` whose `is_some()` meant "connected".
