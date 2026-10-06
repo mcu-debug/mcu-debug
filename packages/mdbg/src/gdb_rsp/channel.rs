@@ -842,11 +842,15 @@ mod tests {
         worker.join().unwrap().unwrap();
         srv.from_client.send(encode_packet(b"T05")).unwrap();
 
-        // Let the trace writer catch up.
+        // Let the trace writer thread catch up: wait for the *final* stop reply, `$T05#b9`. It is
+        // the last record queued, and the writer is FIFO, so once it is written everything is.
+        // Not just `$T05` -- the handshake's `$T05thread:01;` already matches that, so the wait
+        // ended early and the assertions raced a writer still a record or two behind (failed
+        // under load during the v0.1.18 release).
         let mut text = String::new();
         for _ in 0..400 {
             text = String::from_utf8_lossy(&traced.lock_recover()).to_string();
-            if text.contains("SRV>GDB  $T05") {
+            if text.contains("SRV>GDB  $T05#") {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));

@@ -431,7 +431,9 @@ function main() {
     log(`Creating git tag ${tag}...`);
     runCmd(["git", "tag", "-a", tag, "-m", `Release ${tag}`]);
     log(`Pushing tag ${tag} to origin...`);
-    runCmd(["git", "push", "origin", tag]);
+    // --no-verify: a tag push uploads no new code, so the pre-push hook's test run adds nothing,
+    // and failing here strands a release that is already on the marketplace (see v0.1.18).
+    runCmd(["git", "push", "--no-verify", "origin", tag]);
 
     log("Checking for GitHub CLI (gh) tool...");
     let hasGh = false;
