@@ -2,14 +2,22 @@
 
 > **Pre-release:** there is no release version yet. Install via the dropdown beside **Install**
 > and pick *Install Pre-Release Version*; see the README for why the plain button complains.
+> Please report any issues to https://github.com/mcu-debug/mcu-debug/issues
 
 ## [Unreleased]
 
-## [v0.1.18] - 2026-09-??
+## [v0.1.18] - 2026-10-05
+
+This release has a **LOT** of changes, fixes and enhancements.
 
 ## General
 
 - **Fixed**: The pause button did not work if there was no breakOnReset, no runToEntryPoint and have not stopped for some other brakpoint
+- **Fixed**: Regisers were not displayed properly on non top-level frames
+- The proxy is now used for local gdb server launches as well. All debug sessions (remote and local) now use the proxy helper but this does not require the mcu-debug-proxy extension installation. Use of the proxy server has the following benefits
+  - Gdb-servers (openocd, pyocd, etc) lauched by the debugger are always terminated thereby freeing up the USB port. Before, sometimes VSCode killed our debugger before we had a chance to complete cleanuo
+  - We no longer need to search for a regex pattern on gdb-server stdout/stderr to know that the server started properly. The proxy server waits for the gdb port to open.
+  - We can now provide RTT services without a need for a second gdb-connection (some gdb-servers like probe-rs do not allow a second gdb-server).
 
 ## CLI
 
@@ -21,6 +29,9 @@
 
 ## RTT
 
+- There is now a Rust based builtin RTT provider. It is high performance and is the default where applicable (all gdb-servers execept pyOCD). pyOCD will continue to use our builtin Typescript based provider
+- THe `rttConfig` is a little bit different from the previous release. It adds a field `engine` where you can chose which implementation you would like. [`"auto"`, `"builtin-rust"`, `"builtin-typescript"`, `"gdb-server"`]. `"gdb-server"` is only applicable for OpenoCD and JLink, but we still recommend our builtin RTT service
+- RTT is now supported for all gdb-servers even they do not provide an RTT facility natively
 - Add a 'pipe' RTT decoder: You can use this to send RTT data to any program
   and use stdio to process the data. The data output from your program is displayed
   back in a terminal (or CLI output). So it works similar to a "console" but your
