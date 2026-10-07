@@ -66,6 +66,57 @@ Use it at the top of a script when the configuration has `runToEntryPoint`: the 
 
 ---
 
+### !!watch and !!live-watch
+
+Watch expressions from the CLI. The two share their commands and their output, and differ in when and how values are read:
+
+|                 | `!!watch`                           | `!!live-watch`                                                     |
+| --------------- | ----------------------------------- | ------------------------------------------------------------------ |
+| Values are read | at every stop, in the stopped frame | while the target runs, `liveWatch.samplesPerSecond` times a second |
+| Locals          | yes                                 | no — there is no frame while running, so globals only              |
+| Needs           | nothing                             | a gdb-server that accepts a second GDB connection                  |
+| Changes         | reported at the next stop           | reported as they are sampled                                       |
+
+Live watch is sampled: a value that changes and changes back between two samples is never seen. It observes; it is not a watchpoint.
+
+```
+!!watch add [--depth N] [--hex] [--quiet] <expr>   prints the new watch's id
+!!watch list [--tree]
+!!watch delete <id|all>
+!!watch depth <id> <N>
+!!watch format <id> hex|natural
+!!watch help
+```
+
+`!!live-watch` takes the same subcommands.
+
+- **Structs, arrays and pointers** are expanded `--depth` levels (default 1, at most 8). Each watch tracks at most 64 values; a member with more children than that is left unexpanded, so watch a slice instead: `buf[16]@8`.
+- **`--hex`**, or a trailing `,x` as in the VS Code panel, shows integers in hex. Floats, enums and pointers are unchanged.
+- **`--quiet`** tracks a watch without printing it when the target stops (or, for live watch, when it changes). `list` still shows it.
+- **When the target stops**, the watches are printed before the next command runs — what is printed is set by [`cliOptions.watch.onStop` and `cliOptions.liveWatch.onStop`](./launch-properties.md): `tree`, `roots`, `changes` (the default for `!!watch`: only values that changed since the previous stop) or `none`.
+- **`up`, `down`, `frame N`** move `!!watch` to the selected frame until the next stop; `list` then starts with a `frame N: …` line. Whether the watches are also printed right away is set by `cliOptions.watch.onFrameChange` (`tree`, `roots`, or the default `none`).
+- **Every value is marked**: `current`, `stale` (`!!watch` while running: the last stop's value, shown as `(at last stop)`), `unavailable` (never read, or the read failed) or `out-of-scope` (a local the stopped frame does not have, shown as `<not in scope>` and kept for later stops).
+- **Watches are saved** in `.mcu-debug/<config>.watch.json`, keyed by the launch configuration's name, and restored by the next session. Renaming a configuration orphans its file; rename the file to match.
+
+Each value is one record on the socket and in the log, with the fields `kind` (`watch` or `liveWatch`), `watchId`, `path`, `value`, `state`, and `prev` for a change:
+
+```json
+{
+    "level": "info",
+    "message": "motor.speed = 120  (was 100)",
+    "source": "WATCH",
+    "kind": "watch",
+    "watchId": 1,
+    "path": "motor.speed",
+    "value": "120",
+    "state": "current",
+    "prev": "100",
+    "timestamp": "2026-10-07T09:12:44.512Z"
+}
+```
+
+---
+
 ### !!send
 
 Write a line to one of the target's own I/O streams — a serial port or an RTT channel. stdin belongs to GDB, so this is the only way to answer firmware that prompts for input ("Press 'Enter' to continue", a serial menu, a command shell on UART).
@@ -87,7 +138,7 @@ The prefix is the same tag that labels that stream's output, and `status` lists 
 
 A line terminator is always appended, which is why `!!send` on its own answers a bare "press Enter" prompt.
 
-Everything after the address is sent verbatim, leading spaces included. Extra spaces *before* the address are ignored, so `!!send   [ttyACM0] hi` addresses the stream rather than sending its name as text.
+Everything after the address is sent verbatim, leading spaces included. Extra spaces _before_ the address are ignored, so `!!send   [ttyACM0] hi` addresses the stream rather than sending its name as text.
 
 Unbracketed text is never matched against the stream list. That keeps a command's meaning fixed: `!!send status` sends the word `status` to the target whether or not a stream happens to be named `status`, and it will not change meaning if a second stream appears later in the session.
 
@@ -191,13 +242,15 @@ process.stdin.flush()
 
 ## Meta-Command vs GDB Command Comparison
 
-| Task                     | Meta-command        | GDB equivalent       | Notes                                                              |
-| ------------------------ | ------------------- | -------------------- | ------------------------------------------------------------------ |
-| Interrupt running target | `!!SIGINT`          | `interrupt`          | Meta preferred in remote topologies                                |
-| Reset target             | `!!RESET`           | `monitor reset halt` | Builtin/Custom command per gdb-server                              |
-| Answer a firmware prompt | `!!send [port] y`   | —                    | stdin goes to GDB; this is the only route to the target's UART/RTT |
-| Update notes             | `!!NOTE: [...]`     | —                    | No GDB equivalent                                                  |
-| Request human input      | `!!AI-REQUEST: ...` | —                    | No GDB equivalent                                                  |
-| Message the AI           | `!!ai <text>`       | —                    | Human → AI, stdin only                                            |
-| Pause a script           | `!!sleep <ms>`      | —                    | For batch scripts                                                  |
-| Wait for a halt          | `!!wait-stop [ms]`  | —                    | For batch scripts; a timeout is a failure                          |
+| Task                     | Meta-command              | GDB equivalent       | Notes                                                              |
+| ------------------------ | ------------------------- | -------------------- | ------------------------------------------------------------------ |
+| Interrupt running target | `!!SIGINT`                | `interrupt`          | Meta preferred in remote topologies                                |
+| Reset target             | `!!RESET`                 | `monitor reset halt` | Builtin/Custom command per gdb-server                              |
+| Answer a firmware prompt | `!!send [port] y`         | —                    | stdin goes to GDB; this is the only route to the target's UART/RTT |
+| Update notes             | `!!NOTE: [...]`           | —                    | No GDB equivalent                                                  |
+| Request human input      | `!!AI-REQUEST: ...`       | —                    | No GDB equivalent                                                  |
+| Message the AI           | `!!ai <text>`             | —                    | Human → AI, stdin only                                             |
+| Pause a script           | `!!sleep <ms>`            | —                    | For batch scripts                                                  |
+| Wait for a halt          | `!!wait-stop [ms]`        | —                    | For batch scripts; a timeout is a failure                          |
+| Watch at stops           | `!!watch add <expr>`      | `display <expr>`     | Structured, per-value records; depth, hex, saved across sessions   |
+| Watch while running      | `!!live-watch add <expr>` | —                    | Globals only, sampled; needs a second GDB connection               |

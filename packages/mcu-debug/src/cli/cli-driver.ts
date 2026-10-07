@@ -19,7 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import find from "find-process";
-import { ConfigurationArguments, RTTConsoleDecoderOpts } from "../adapter/servers/common";
+import { ConfigurationArguments, CustomFrameSelectedEvent, RTTConsoleDecoderOpts } from "../adapter/servers/common";
 import { CLISessionType, IDebugConfiguration, IDebugSession, IHostAdapter } from "../common/host-adapter";
 import { CustomTransport, logger } from "../common/logger";
 import { GDBDebugSession } from "../adapter/gdb-session";
@@ -35,6 +35,8 @@ import { generateNonce, LineSplitter } from "@mcu-debug/shared";
 import { NotesManager } from "./notes";
 import { CliTelemetry } from "../analytics/telemetry-cli";
 import { CliLiveWatchProvider } from "./cli-live-watch";
+import { CliWatchProvider } from "./cli-watch";
+import { WatchStore } from "./cli-watch-store";
 import { EventEmitter } from "node:stream";
 
 /**
@@ -119,7 +121,13 @@ export class CliSessionDriver extends EventEmitter {
     private server: net.Server | null = null;
     private socketPath: string | null = null;
     private rtts: CLIRTTTerminal[] = [];
-    private liveWatchProvider: CliLiveWatchProvider | null = null;
+    private liveWatchProvider: CliLiveWatchProvider;
+    private watchProvider: CliWatchProvider;
+    /**
+     * Watch output still being produced: at a stop, or after the user selected another frame. Every
+     * command awaits it before running, so a batch's next command prints after that output.
+     */
+    private watchUpdates: Promise<void> = Promise.resolve();
 
     constructor(
         private cliArgs: any,
@@ -140,9 +148,11 @@ export class CliSessionDriver extends EventEmitter {
         config.pvtIsCli = true; // inform the DA that we are running in CLI mode
         config.pvtCliOptions = { ...cliArgs }; // pass along CLI options to the DA via the config
         this.notesManager = new NotesManager(this.customTransport.timeCreated);
-        // Created up front, not on the first `!!live-watch`: the DA's live-watch events start
-        // arriving as soon as the session does, and a provider made later would have missed them.
-        this.liveWatchProvider = new CliLiveWatchProvider(this);
+        // Created up front, not on the first command: the DA's live-watch events start arriving as
+        // soon as the session does, and both restore their watches from the watch file at once.
+        const watchStore = new WatchStore(config.name);
+        this.liveWatchProvider = new CliLiveWatchProvider(this, watchStore, config.cliOptions?.liveWatch);
+        this.watchProvider = new CliWatchProvider(this, watchStore, config.cliOptions?.watch);
 
         // This is already routed to the CLI, no need to also route it terminal again
         this.config.routeGdbServerOutputToDebugConsole = false;
@@ -712,7 +722,8 @@ export class CliSessionDriver extends EventEmitter {
         const inputExhausted = this.stdinIsPilot ? this.stdinEnded : !!this.cliArgs.script && this.scriptQueued;
         if (inputExhausted && this.inputOpen && !this.draining && this.inputQueue.length === 0) {
             this.batchFinished = true;
-            this.doExit(true);
+            // A batch ending in `c` exits at the stop; let that stop's watch output finish first.
+            void this.watchUpdates.then(() => this.doExit(true));
         }
     }
 
@@ -744,6 +755,7 @@ export class CliSessionDriver extends EventEmitter {
         if (!trimmedInput) {
             return true;
         }
+        await this.watchUpdates; // a stop's watch output comes before the next command's
         // One record per command: the structured stream (log file, socket clients) always gets it,
         // whatever its source. The console echoes it too -- as it runs, not as it arrives, so each
         // command sits directly above its own output in a batch -- except where it is already on
@@ -953,7 +965,9 @@ export class CliSessionDriver extends EventEmitter {
             return done();
         } else if (/^!!live-watch(\s|$)/.test(lower)) {
             // Sliced from `trimmedInput`, not `lower`: the arguments include C expressions.
-            return this.liveWatchProvider!.handleCommand(trimmedInput.substring("!!live-watch".length).trim());
+            return this.liveWatchProvider.handleCommand(trimmedInput.substring("!!live-watch".length).trim());
+        } else if (/^!!watch(\s|$)/.test(lower)) {
+            return this.watchProvider.handleCommand(trimmedInput.substring("!!watch".length).trim());
         } else if (lower.startsWith("!!")) {
             // An unrecognised meta-command from a socket client. This is the agent's only signal
             // that it got the spelling wrong, so it is reported rather than dropped.
@@ -1039,9 +1053,6 @@ export class CliSessionDriver extends EventEmitter {
     }
 
     private getBreakpointsFileName() {
-        if (this.cliArgs.breakpointsFile) {
-            return this.cliArgs.breakpointsFile;
-        }
         const configNameSafe = this.config.name.replace(/[^a-zA-Z0-9-_]/g, "_");
         return `${process.cwd()}/.mcu-debug/${configNameSafe}.bkpts`;
     }
@@ -1305,11 +1316,13 @@ export class CliSessionDriver extends EventEmitter {
                 this.isPaused = true;
                 this.stopCount++;
                 this.setState("paused", reason);
-                this.setReadlineState(true);
+                const threadId: number = event.body?.threadId ?? 1;
+                this.watchUpdates = this.runStopActions(threadId).then(() => this.setReadlineState(true));
                 this.releaseStopWaiters();
                 break;
             }
             case "continued":
+                this.watchProvider.onRunning();
                 this.isPaused = false;
                 this.setState("running");
                 this.setReadlineState(false);
@@ -1361,10 +1374,24 @@ export class CliSessionDriver extends EventEmitter {
                 });
                 break;
             case "custom-live-watch-updates":
-                this.liveWatchProvider?.receivedVariableUpdates(event);
+                this.liveWatchProvider.receivedVariableUpdates(event);
+                break;
+            case "custom-frame-selected":
+                // `up`/`down`/`frame N` at the gdb console. Only meaningful while stopped; chained so
+                // its output, if any, comes before the next command's.
+                if (this.isPaused) {
+                    const body = (event as CustomFrameSelectedEvent).body;
+                    this.watchUpdates = this.watchUpdates.then(async () => {
+                        try {
+                            await this.watchProvider.onFrameChange(body);
+                        } catch (e: any) {
+                            logger.warn(`Watch update after frame change failed: ${e?.message ?? e}`);
+                        }
+                    });
+                }
                 break;
             case "custom-live-watch-connected":
-                this.liveWatchProvider?.liveWatchConnected(event);
+                this.liveWatchProvider.liveWatchConnected(event);
                 break;
             default:
                 // Custom events (custom-event-ports-done, SWOConfigure, etc.)
@@ -1401,6 +1428,16 @@ export class CliSessionDriver extends EventEmitter {
         }
         this.inputOpen = true;
         void this.drainQueue();
+    }
+
+    /** Print the watches for this stop. Never throws: a failure here must not wedge the input queue. */
+    private async runStopActions(threadId: number): Promise<void> {
+        try {
+            await this.liveWatchProvider.onStop();
+            await this.watchProvider.onStop(threadId);
+        } catch (e: any) {
+            logger.warn(`Watch update at stop failed: ${e?.message ?? e}`);
+        }
     }
 
     private releaseStopWaiters() {

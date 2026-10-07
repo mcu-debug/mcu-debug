@@ -5,6 +5,7 @@ import {
     ConfigurationArguments,
     RTTCommonDecoderOpts,
     CustomStoppedEvent,
+    CustomFrameSelectedEvent,
     GenericCustomEvent,
     SymbolFile,
     defSymbolFile,
@@ -2085,7 +2086,35 @@ export class GDBDebugSession extends SeqDebugSession {
             if (id) {
                 this.sendEvent(this.createThreadEvent(id, "selected"));
             }
+            this.notifyFrameSelected(record);
         }
+    }
+
+    // gdb sends `=thread-selected,id="1",frame={level="1",func=...,file=...,line=...}` when a console
+    // command (`up`, `down`, `frame N`, `thread N`) changes the selected frame. Only trusted while
+    // stopped: thread events have been seen with ids that are not valid until the target stops.
+    private notifyFrameSelected(record: GdbMiRecord) {
+        if (this.isBusy()) {
+            return;
+        }
+        const result = record.result as any;
+        const threadId = parseInt(result?.id);
+        const level = parseInt(result?.frame?.level);
+        if (!Number.isInteger(threadId) || !Number.isInteger(level) || level < 0) {
+            return;
+        }
+        const frameId = this.varManager.addFrameInfo(threadId, level, VariableScope.Local);
+        const line = parseInt(result.frame.line);
+        this.sendEvent(
+            new CustomFrameSelectedEvent({
+                threadId,
+                level,
+                frameId,
+                func: result.frame.func,
+                file: result.frame.file,
+                line: Number.isInteger(line) ? line : undefined,
+            }),
+        );
     }
     handleThreadGroupExited() {
         // throw new Error("Not yet implemented");

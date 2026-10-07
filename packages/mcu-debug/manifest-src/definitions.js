@@ -1,6 +1,47 @@
 const { type } = require("node:os");
 const path = require("node:path");
 
+/** `cliOptions.watch` and `cliOptions.liveWatch`: the same shape, different defaults. */
+function cliWatchOptions(command, onStop, what, withFrameChange) {
+    const frameChange = {
+        onFrameChange: {
+            type: "string",
+            enum: ["tree", "roots", "none"],
+            enumDescriptions: ["Every watch with all its tracked values", "One line per watch", "Nothing; `!!watch list` shows the selected frame's values"],
+            default: "none",
+            description:
+                "What to print when you select another frame or thread while stopped (`up`, `down`, `frame N`). Watches are evaluated in the selected frame either way, until the next stop. There is no `changes`: another frame's values are not changes.",
+        },
+    };
+    return {
+        type: "object",
+        description: `CLI only (ignored by VS Code): how ${what} behave.`,
+        properties: {
+            onStop: {
+                type: "string",
+                enum: ["tree", "roots", "changes", "none"],
+                enumDescriptions: ["Every watch with all its tracked values", "One line per watch", "Only values that changed since the previous stop", "Nothing"],
+                default: onStop,
+                description: "What to print when the target stops. Watches added with --quiet are not printed at a stop.",
+            },
+            defaultDepth: {
+                type: "integer",
+                minimum: 0,
+                maximum: 8,
+                default: 1,
+                description: `How many levels of a struct, array or pointer \`${command} add\` expands when --depth is not given.`,
+            },
+            defaultFormat: {
+                type: "string",
+                enum: ["natural", "hex"],
+                default: "natural",
+                description: `Format for \`${command} add\` without --hex or ',x'. Hex applies to integers only; floats, enums and pointers are unchanged.`,
+            },
+            ...(withFrameChange ? frameChange : {}),
+        },
+    };
+}
+
 module.exports = {
     servertype: {
         type: "string",
@@ -456,6 +497,8 @@ module.exports = {
                     "the CLI will use this path before it can perform substitutions, so the path is taken as-is. Absolute or relative " +
                     "to $cwd pf the CLI program.",
             },
+            watch: cliWatchOptions("!!watch", "changes", "`!!watch` watches (evaluated at every stop, through the main GDB; locals work)", true),
+            liveWatch: cliWatchOptions("!!live-watch", "roots", "`!!live-watch` watches (sampled while running, through the live GDB; globals only)"),
         },
     },
     hostConfig: {

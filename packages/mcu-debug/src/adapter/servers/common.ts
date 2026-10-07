@@ -52,6 +52,27 @@ export class CustomStoppedEvent extends Event implements DebugProtocol.Event {
     }
 }
 
+/**
+ * The user selected another frame or thread while stopped (`up`, `down`, `frame N`, `thread N` typed
+ * at the gdb console), from gdb's `=thread-selected`. `frameId` is the same kind of handle `stackTrace`
+ * hands out, so a client can evaluate in that frame without mapping the level itself. Sent only while
+ * the target is stopped; clients should still treat it as advisory.
+ */
+export class CustomFrameSelectedEvent extends Event implements DebugProtocol.Event {
+    public readonly body: {
+        threadId: number;
+        level: number;
+        frameId: number;
+        func?: string;
+        file?: string;
+        line?: number;
+    };
+    constructor(body: CustomFrameSelectedEvent["body"]) {
+        super("custom-frame-selected");
+        this.body = body;
+    }
+}
+
 export const SocketTimout = 1000 * 60 * 5;
 export interface SWOConfigureBody {
     type: string;
@@ -561,8 +582,25 @@ export interface SerialConfig {
     ports: SerialParams[];
 }
 
+export type CliWatchOnStop = "tree" | "roots" | "changes" | "none";
+
+/** CLI behaviour for `!!watch` or `!!live-watch`; the same shape for both. */
+export interface CliWatchOptions {
+    /** What to print when the target stops. */
+    onStop?: CliWatchOnStop;
+    /**
+     * `!!watch` only: what to print when the user selects another frame or thread while stopped
+     * (`up`, `down`, `frame N`). No "changes": a different frame's values are not changes.
+     */
+    onFrameChange?: "tree" | "roots" | "none";
+    defaultDepth?: number;
+    defaultFormat?: "natural" | "hex";
+}
+
 export interface CliLaunchJasonOptions {
     logFile?: string;
+    watch?: CliWatchOptions;
+    liveWatch?: CliWatchOptions;
 }
 
 export type TcpPortDefMap = { [name: string]: TcpPortDef };
@@ -673,6 +711,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     windows: any;
 
     pvtIsCli?: boolean; // Whether this configuration is being used in the CLI (as opposed to the DA); set by the CLI session driver
+    cliOptions?: CliLaunchJasonOptions; // launch.json `cliOptions`: read by the CLI, ignored by VS Code
     pvtCliOptions?: CliLaunchJasonOptions; // CLI-specific options; set by the CLI session driver
 }
 
