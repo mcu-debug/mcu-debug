@@ -363,6 +363,15 @@ export abstract class WatchProviderBase {
         return node;
     }
 
+    /**
+     * The DA session is going away (a restart). Saves the list -- already saved on every change, so
+     * this only guards against a change that failed to save -- and drops nothing else: a provider is
+     * never reused after this; the next session makes its own from the file.
+     */
+    public dispose(): void {
+        this.persist();
+    }
+
     protected persist() {
         const specs = [...this.roots.values()].map(({ id, expr, depth, format, quiet }) => ({ id, expr, depth, format, quiet }));
         try {
@@ -477,8 +486,9 @@ export abstract class WatchProviderBase {
     protected emitValue(root: WatchRoot, node: WatchNode, level: number) {
         const shown = this.show(root, node);
         let text = `${node.path} = ${shown}`;
-        if (level === 0 && node.variablesReference > 0) {
-            text += `  [${countNodes(node) - 1} tracked]`;
+        const tracked = countNodes(node) - 1;
+        if (level === 0 && tracked > 0) {
+            text += `  [${tracked} tracked]`; // not for depth 0, or a pointer left unexpanded
         }
         if (node.notExpanded) {
             text += `   (${node.numchild} values, not tracked; watch a slice, e.g. ${node.path}[0]@8, or a member)`;

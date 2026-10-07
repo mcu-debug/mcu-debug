@@ -121,8 +121,10 @@ export class CliSessionDriver extends EventEmitter {
     private server: net.Server | null = null;
     private socketPath: string | null = null;
     private rtts: CLIRTTTerminal[] = [];
-    private liveWatchProvider: CliLiveWatchProvider;
-    private watchProvider: CliWatchProvider;
+    // One pair per DA session: created in startSession(), disposed by doRestart(), which tears the DA
+    // (and both GDBs) down. Null before the first session.
+    private liveWatchProvider: CliLiveWatchProvider | null = null;
+    private watchProvider: CliWatchProvider | null = null;
     /**
      * Watch output still being produced: at a stop, or after the user selected another frame. Every
      * command awaits it before running, so a batch's next command prints after that output.
@@ -148,11 +150,6 @@ export class CliSessionDriver extends EventEmitter {
         config.pvtIsCli = true; // inform the DA that we are running in CLI mode
         config.pvtCliOptions = { ...cliArgs }; // pass along CLI options to the DA via the config
         this.notesManager = new NotesManager(this.customTransport.timeCreated);
-        // Created up front, not on the first command: the DA's live-watch events start arriving as
-        // soon as the session does, and both restore their watches from the watch file at once.
-        const watchStore = new WatchStore(config.name);
-        this.liveWatchProvider = new CliLiveWatchProvider(this, watchStore, config.cliOptions?.liveWatch);
-        this.watchProvider = new CliWatchProvider(this, watchStore, config.cliOptions?.watch);
 
         // This is already routed to the CLI, no need to also route it terminal again
         this.config.routeGdbServerOutputToDebugConsole = false;
@@ -177,6 +174,20 @@ export class CliSessionDriver extends EventEmitter {
             customRequest: async (command: string, args?: any) => {},
         };
         this.debugSession = CDebugSession.GetSession(dbgSession, this.config);
+    }
+
+    private createWatchProviders() {
+        const watchStore = new WatchStore(this.config.name);
+        this.liveWatchProvider = new CliLiveWatchProvider(this, watchStore, this.config.cliOptions?.liveWatch);
+        this.watchProvider = new CliWatchProvider(this, watchStore, this.config.cliOptions?.watch);
+    }
+
+    /** Everything they hold refers to the DA session being torn down: its GDBs, varobjs and frame ids. */
+    private disposeWatchProviders() {
+        this.liveWatchProvider?.dispose();
+        this.watchProvider?.dispose();
+        this.liveWatchProvider = null;
+        this.watchProvider = null;
     }
 
     private removeCDebugSession() {
@@ -263,6 +274,9 @@ export class CliSessionDriver extends EventEmitter {
 
         // Create and start the debug session
         logger.info("Creating debug session...");
+        // Before the DA exists, so no live-watch event can arrive ahead of its provider. Both restore
+        // their watches from the watch file; after a restart that is how the watches come back.
+        this.createWatchProviders();
         this.createCDebugSession();
         this.session = new GDBDebugSession();
 
@@ -965,9 +979,9 @@ export class CliSessionDriver extends EventEmitter {
             return done();
         } else if (/^!!live-watch(\s|$)/.test(lower)) {
             // Sliced from `trimmedInput`, not `lower`: the arguments include C expressions.
-            return this.liveWatchProvider.handleCommand(trimmedInput.substring("!!live-watch".length).trim());
+            return this.watchCommand(this.liveWatchProvider, trimmedInput.substring("!!live-watch".length).trim());
         } else if (/^!!watch(\s|$)/.test(lower)) {
-            return this.watchProvider.handleCommand(trimmedInput.substring("!!watch".length).trim());
+            return this.watchCommand(this.watchProvider, trimmedInput.substring("!!watch".length).trim());
         } else if (lower.startsWith("!!")) {
             // An unrecognised meta-command from a socket client. This is the agent's only signal
             // that it got the spelling wrong, so it is reported rather than dropped.
@@ -975,6 +989,15 @@ export class CliSessionDriver extends EventEmitter {
             return done(false);
         }
         return undefined;
+    }
+
+    private watchCommand(provider: CliWatchProvider | CliLiveWatchProvider | null, args: string): Promise<boolean> {
+        if (!provider) {
+            // Only between sessions: before the first one starts, or during a restart.
+            this.stdoutLogger.warn("No debug session yet; try again once it has started");
+            return Promise.resolve(false);
+        }
+        return provider.handleCommand(args);
     }
 
     private handleNotes(message: string) {
@@ -1064,6 +1087,7 @@ export class CliSessionDriver extends EventEmitter {
     private async doRestart(isTerminal: boolean) {
         const bkptFile = this.getBreakpointsFileName();
         await this.doReplCommand(`save breakpoints ${bkptFile}`);
+        this.disposeWatchProviders(); // startSession() below makes new ones, which reload the watch file
         for (const rtt of this.rtts) {
             try {
                 rtt.dispose();
@@ -1322,7 +1346,7 @@ export class CliSessionDriver extends EventEmitter {
                 break;
             }
             case "continued":
-                this.watchProvider.onRunning();
+                this.watchProvider?.onRunning();
                 this.isPaused = false;
                 this.setState("running");
                 this.setReadlineState(false);
@@ -1374,7 +1398,7 @@ export class CliSessionDriver extends EventEmitter {
                 });
                 break;
             case "custom-live-watch-updates":
-                this.liveWatchProvider.receivedVariableUpdates(event);
+                this.liveWatchProvider?.receivedVariableUpdates(event);
                 break;
             case "custom-frame-selected":
                 // `up`/`down`/`frame N` at the gdb console. Only meaningful while stopped; chained so
@@ -1383,7 +1407,7 @@ export class CliSessionDriver extends EventEmitter {
                     const body = (event as CustomFrameSelectedEvent).body;
                     this.watchUpdates = this.watchUpdates.then(async () => {
                         try {
-                            await this.watchProvider.onFrameChange(body);
+                            await this.watchProvider?.onFrameChange(body);
                         } catch (e: any) {
                             logger.warn(`Watch update after frame change failed: ${e?.message ?? e}`);
                         }
@@ -1391,7 +1415,7 @@ export class CliSessionDriver extends EventEmitter {
                 }
                 break;
             case "custom-live-watch-connected":
-                this.liveWatchProvider.liveWatchConnected(event);
+                this.liveWatchProvider?.liveWatchConnected(event);
                 break;
             default:
                 // Custom events (custom-event-ports-done, SWOConfigure, etc.)
@@ -1433,8 +1457,8 @@ export class CliSessionDriver extends EventEmitter {
     /** Print the watches for this stop. Never throws: a failure here must not wedge the input queue. */
     private async runStopActions(threadId: number): Promise<void> {
         try {
-            await this.liveWatchProvider.onStop();
-            await this.watchProvider.onStop(threadId);
+            await this.liveWatchProvider?.onStop();
+            await this.watchProvider?.onStop(threadId);
         } catch (e: any) {
             logger.warn(`Watch update at stop failed: ${e?.message ?? e}`);
         }

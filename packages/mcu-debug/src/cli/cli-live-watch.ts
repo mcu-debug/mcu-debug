@@ -60,12 +60,20 @@ export class CliLiveWatchProvider extends WatchProviderBase {
         options: CliWatchOptions | undefined,
     ) {
         super("!!live-watch", "liveWatch", store, options, LIVE_WATCH_DEFAULTS, "LIVE-WATCH");
-        this.sessionDriver.on("stateChanged", (state: CLISessionType) => {
-            this.sessionStatus = state;
-            if (state === "terminated") {
-                this.forgetLiveState();
-            }
-        });
+        this.sessionDriver.on("stateChanged", this.onStateChanged);
+    }
+
+    private readonly onStateChanged = (state: CLISessionType) => {
+        this.sessionStatus = state;
+        if (state === "terminated") {
+            this.forgetLiveState();
+        }
+    };
+
+    /** The driver outlives us across a restart, so the listener must go with us. */
+    public dispose(): void {
+        this.sessionDriver.off("stateChanged", this.onStateChanged);
+        super.dispose();
     }
 
     // ---- the core's transport -----------------------------------------------------------------
