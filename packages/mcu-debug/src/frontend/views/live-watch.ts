@@ -32,6 +32,7 @@ import {
 } from "../../adapter/custom-requests";
 import { VarUpdateRecord } from "../../adapter/gdb-mi/mi-types";
 import { ConfigurationArguments } from "../../adapter/servers/common";
+import { formatLiveValue, LiveWatchFormat } from "../../common/live-watch-format";
 
 // Configuration interfaces
 interface LiveWatchConfig {
@@ -56,7 +57,7 @@ interface GdbMapUpdater {
     getLiveSessionId: () => string | undefined;
 }
 
-type NodeFormat = "natural" | "hex" | "decimal" | "binary" | "octal";
+type NodeFormat = LiveWatchFormat;
 
 export class LiveVariableNode {
     public parent: LiveVariableNode | undefined;
@@ -236,38 +237,11 @@ export class LiveVariableNode {
     }
 
     public getDisplayValue(): string {
-        let displayValue = this.value;
-        if (this.isComposite() || this.format === "natural" || this.value.startsWith("<") || !this.gdbVarName) {
-            return displayValue;
+        if (this.isComposite() || !this.gdbVarName) {
+            return this.value;
         }
-        if (this.format) {
-            const size = this.sizeof || 4;
-            switch (this.format) {
-                case "hex":
-                    displayValue =
-                        "0x" +
-                        BigInt(this.value)
-                            .toString(16)
-                            .padStart(size * 2, "0");
-                    break;
-                case "binary":
-                    displayValue =
-                        "0b" +
-                        BigInt(this.value)
-                            .toString(2)
-                            .padStart(size * 8, "0");
-                    break;
-                case "octal":
-                    displayValue = "0o" + BigInt(this.value).toString(8);
-                    break;
-                case "decimal":
-                    displayValue = BigInt(this.value).toString(10);
-                    break;
-                default:
-                    break;
-            }
-        }
-        return displayValue;
+        // Integers only; floats, enums, chars' text and errors pass through (see live-watch-format).
+        return formatLiveValue(this.value, this.format, this.sizeof);
     }
 
     // Convert to Webview Tree Item

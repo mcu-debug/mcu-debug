@@ -27,6 +27,9 @@ export interface GdbProtocolVariable extends DebugProtocol.Variable {
     addressOf?: string;
     sizeof?: number;
     editable?: "true" | "false" | undefined;
+    // gdb's child count. Lets a client decline to expand a node before listing its children:
+    // listing creates a varobj per child, and only roots are ever '-var-delete'd.
+    numchild?: number;
 }
 
 // TODO: use copyInterfaceProperties utility, or similar, to create a template object,
@@ -47,6 +50,7 @@ export const GdbProtocolVariableTemplate: GdbProtocolVariable = {
     sizeof: 0,
     editable: "true",
     addressOf: "",
+    numchild: 0,
 };
 
 export interface VariablesLiveResponse extends DebugProtocol.VariablesResponse {

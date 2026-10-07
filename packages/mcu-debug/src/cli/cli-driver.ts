@@ -1,3 +1,18 @@
+// Copyright (c) 2026 MCU-Debug Authors.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import * as net from "node:net";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -19,6 +34,8 @@ import { CliAdapter } from "./cli-adapter";
 import { generateNonce, LineSplitter } from "@mcu-debug/shared";
 import { NotesManager } from "./notes";
 import { CliTelemetry } from "../analytics/telemetry-cli";
+import { CliLiveWatchProvider } from "./cli-live-watch";
+import { EventEmitter } from "node:stream";
 
 /**
  * We are the driver for the gdb-session. It is like we are VSCode asking the DebugAdapter to do something
@@ -52,7 +69,9 @@ interface QueuedLine {
     source: InputSource;
 }
 
-export class CliSessionDriver {
+// Events
+export type CliSessionDriverEvents = "stateChanged";
+export class CliSessionDriver extends EventEmitter {
     private session: GDBDebugSession | null = null;
     private rl: readline.Interface | null = null;
     private inRedraw = false;
@@ -100,6 +119,7 @@ export class CliSessionDriver {
     private server: net.Server | null = null;
     private socketPath: string | null = null;
     private rtts: CLIRTTTerminal[] = [];
+    private liveWatchProvider: CliLiveWatchProvider | null = null;
 
     constructor(
         private cliArgs: any,
@@ -107,6 +127,7 @@ export class CliSessionDriver {
         private adapter: IHostAdapter,
         private config: ConfigurationArguments,
     ) {
+        super();
         // Initialize session driver
         this.gdbLogger = logger.child({ source: "GDB", isConsole: true });
         this.stdoutLogger = logger.child({ source: "DA", isConsole: true });
@@ -119,6 +140,9 @@ export class CliSessionDriver {
         config.pvtIsCli = true; // inform the DA that we are running in CLI mode
         config.pvtCliOptions = { ...cliArgs }; // pass along CLI options to the DA via the config
         this.notesManager = new NotesManager(this.customTransport.timeCreated);
+        // Created up front, not on the first `!!live-watch`: the DA's live-watch events start
+        // arriving as soon as the session does, and a provider made later would have missed them.
+        this.liveWatchProvider = new CliLiveWatchProvider(this);
 
         // This is already routed to the CLI, no need to also route it terminal again
         this.config.routeGdbServerOutputToDebugConsole = false;
@@ -157,6 +181,7 @@ export class CliSessionDriver {
             return;
         }
         this.status = state;
+        this.emit("stateChanged", state, reason);
         const infoMsg = `status: ${state}` + (reason ? `: Reason — ${reason}` : "");
         if (!this.isTTY) {
             process.stderr.write(infoMsg + os.EOL);
@@ -926,6 +951,9 @@ export class CliSessionDriver {
             logger.info(request, { skipConsole: true, source: "USER-REQUEST" });
             this.stdoutLogger.info(`Sent to any connected AI: ${request}`);
             return done();
+        } else if (/^!!live-watch(\s|$)/.test(lower)) {
+            // Sliced from `trimmedInput`, not `lower`: the arguments include C expressions.
+            return this.liveWatchProvider!.handleCommand(trimmedInput.substring("!!live-watch".length).trim());
         } else if (lower.startsWith("!!")) {
             // An unrecognised meta-command from a socket client. This is the agent's only signal
             // that it got the spelling wrong, so it is reported rather than dropped.
@@ -1240,7 +1268,7 @@ export class CliSessionDriver {
      *     const r = await this.sendRequest(...);
      *     if (!r.success) { logger.warn(...); return; }
      */
-    private sendRequest<T extends DebugProtocol.Response>(req: DebugProtocol.Request): Promise<T> {
+    public sendRequest<T extends DebugProtocol.Response>(req: DebugProtocol.Request): Promise<T> {
         const seq = this.nextSeq++;
         req.seq = seq;
         req.type = "request";
@@ -1331,6 +1359,12 @@ export class CliSessionDriver {
                 handleRTTConfigureEvent(event.body, this.debugSession!, (decoder: RTTConsoleDecoderOpts, src: SocketRTTSource) => {
                     this.rtts.push(new CLIRTTTerminal(decoder, src));
                 });
+                break;
+            case "custom-live-watch-updates":
+                this.liveWatchProvider?.receivedVariableUpdates(event);
+                break;
+            case "custom-live-watch-connected":
+                this.liveWatchProvider?.liveWatchConnected(event);
                 break;
             default:
                 // Custom events (custom-event-ports-done, SWOConfigure, etc.)
