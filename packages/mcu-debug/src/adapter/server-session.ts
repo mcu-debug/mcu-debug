@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { terminateProcessTree } from "../common/process-tree";
 import * as child_process from "child_process";
 import * as net from "net";
 import { JLinkServerController } from "./servers/jlink";
@@ -274,7 +275,7 @@ export class GDBServerSession extends EventEmitter {
                             if (this.session.args.debugFlags.anyFlags) {
                                 this.session.handleMsg(Stderr, "Stopping gdb-server process...\n");
                             }
-                            this.process.kill();
+                            terminateProcessTree(this.process);
                             this.process = null;
                         }
                         if (!this.resolved) {
@@ -411,7 +412,8 @@ export class GDBServerSession extends EventEmitter {
             if (this.session.args.debugFlags.anyFlags) {
                 this.session.handleMsg(Stderr, "Stopping gdb-server process...\n");
             }
-            this.process.kill();
+            // The whole tree: a gdb-server's own children (pyavrocd's simavr) outlived a plain kill.
+            terminateProcessTree(this.process);
             this.process = null;
         } else if (this.proxyClient) {
             try {

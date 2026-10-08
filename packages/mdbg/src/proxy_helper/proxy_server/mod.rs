@@ -412,8 +412,9 @@ impl ProxyServer {
             // server it just stopped has stopped.
             self.intentional_stop.store(true, Ordering::SeqCst);
             let mut child = child.lock_recover();
-            let _ = child.kill();
-            let _ = child.wait();
+            // The whole group, SIGTERM first: a gdb-server gets to release the probe and stop
+            // what it started (simavr), and anything left after a second is killed.
+            crate::common::process::terminate_process_tree(&mut child, std::time::Duration::from_secs(1));
         }
     }
 

@@ -389,6 +389,9 @@ impl ProxyServer {
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
             crate::common::process::suppress_console_window(&mut command);
+            // Its own process group, so `end_process` can stop whatever it launches too
+            // (pyavrocd's simavr outlived it, holding the gdb port).
+            crate::common::process::own_process_group(&mut command);
             let child = match command.spawn() {
                 Ok(child) => child,
                 Err(e) => {

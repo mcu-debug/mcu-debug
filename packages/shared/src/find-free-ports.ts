@@ -1,4 +1,5 @@
 import * as net from "net";
+import * as os from "os";
 import { EventEmitter } from "events";
 
 /**
@@ -140,6 +141,61 @@ function tryListen(port: number, host: string): Promise<net.Server | null> {
     });
 }
 
+/**
+ * This machine's IPv4 addresses other than `127.0.0.1` (which every claim takes anyway). Read once
+ * per allocation, not per port.
+ */
+function interfaceAddrs(): string[] {
+    const addrs = new Set<string>();
+    for (const list of Object.values(os.networkInterfaces())) {
+        for (const iface of list ?? []) {
+            // `family` is "IPv4" on current Node; it was the number 4 on some older releases.
+            if ((iface.family === "IPv4" || (iface.family as unknown) === 4) && iface.address !== TcpPortScanner.LoopbackAddr) {
+                addrs.add(iface.address);
+            }
+        }
+    }
+    return [...addrs];
+}
+
+/**
+ * Is anyone listening on `port` at one specific interface address? Like `tryListen`, but releases at
+ * once and tells "taken" apart from "this address is gone" (EADDRNOTAVAIL: a VPN or tunnel interface
+ * that went away), which says nothing about the port.
+ */
+function probeAddress(port: number, host: string): Promise<"free" | "taken" | "gone"> {
+    return new Promise((resolve) => {
+        const server = net.createServer((c) => c.destroy());
+        server.once("error", (e: NodeJS.ErrnoException) => {
+            server.removeAllListeners();
+            resolve(e.code === "EADDRNOTAVAIL" ? "gone" : "taken");
+        });
+        server.listen(port, host, () => {
+            server.removeAllListeners("error");
+            server.on("error", () => {});
+            server.close(() => resolve("free"));
+        });
+    });
+}
+
+/**
+ * Is `port` free on every interface address? A listener on one specific address -- our own proxy on a
+ * WSL gateway, RTT's `serve.hostName`, anything else -- is invisible to the loopback and wildcard
+ * claims on macOS and Windows, which treat each address as an independent endpoint, yet it can stop a
+ * gdb-server from later binding the wildcard. (On Linux the wildcard already conflicts with every
+ * address, so this finds nothing new there.) Must run *before* the claim holds anything: Linux will not
+ * let us bind a specific address under our own wildcard. The Rust allocator (mdbg common/tcpports.rs)
+ * applies the same rule.
+ */
+async function interfacesFree(port: number, addrs: string[]): Promise<boolean> {
+    for (const addr of addrs) {
+        if ((await probeAddress(port, addr)) === "taken") {
+            return false;
+        }
+    }
+    return true;
+}
+
 function closeServer(server: net.Server): Promise<void> {
     return new Promise((resolve) => server.close(() => resolve()));
 }
@@ -167,8 +223,11 @@ async function claimHosts(): Promise<string[]> {
  * Claim a single port. Returns the sockets holding it, or `null` if it could not be claimed.
  * Any host we cannot take means the port is not ours -- we never settle for a partial claim.
  */
-async function claimPort(port: number, avoid: Set<number> | undefined): Promise<net.Server[] | null> {
+async function claimPort(port: number, avoid: Set<number> | undefined, addrs: string[]): Promise<net.Server[] | null> {
     if (avoid?.has(port) || TcpPortScanner.AvoidPorts.has(port)) {
+        return null;
+    }
+    if (!(await interfacesFree(port, addrs))) {
         return null;
     }
     const servers: net.Server[] = [];
@@ -262,8 +321,9 @@ export class TcpPortScanner {
      *
      * @param port port to use. Must be > 0 and <= 65535
      * @param avoid if port is in this list, it is considered "in use"
-     * @param hosts host ip address(es) to use. These should be aliases of localhost. (Default: check both
-     * 127.0.0.1 and 0.0.0.0 -- covers all interfaces, needed for macOS)
+     * @param hosts host ip address(es) to use. These should be aliases of localhost. (Default: every
+     * local IPv4 interface address, then 127.0.0.1 and 0.0.0.0 -- needed on macOS and Windows, where
+     * each address is an independent endpoint)
      * @returns Promise that resolves to true if the port is unusable for any reason. It never rejects:
      * a port we cannot bind is a port we cannot use, whatever the errno says.
      */
@@ -272,7 +332,11 @@ export class TcpPortScanner {
             return true;
         }
 
-        const hostsToCheck = hosts && hosts.length ? hosts : [TcpPortScanner.LoopbackAddr, TcpPortScanner.AllInterfaces];
+        const explicitHosts = !!hosts?.length;
+        if (!explicitHosts && !(await interfacesFree(port, interfaceAddrs()))) {
+            return true;
+        }
+        const hostsToCheck = explicitHosts ? hosts! : [TcpPortScanner.LoopbackAddr, TcpPortScanner.AllInterfaces];
         for (const h of hostsToCheck) {
             const server = await tryListen(port, h);
             if (!server) {
@@ -318,11 +382,12 @@ export async function findAvailablePortRange(count: number, preferredStart: numb
     // Never wander into the ephemeral range under our own steam. A caller that deliberately starts
     // inside it -- an explicit port from launch.json -- is taken at its word and may scan to the top.
     const ceiling = start >= EphemeralPortStart ? MaxPort : EphemeralPortStart - 1;
+    const addrs = interfaceAddrs();
     let servers: net.Server[] = [];
     let ports: number[] = [];
 
     for (let port = start; port <= ceiling; port++) {
-        const claimed = await claimPort(port, avoid);
+        const claimed = await claimPort(port, avoid, addrs);
         if (claimed) {
             servers.push(...claimed);
             ports.push(port);

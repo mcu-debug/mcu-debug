@@ -43,6 +43,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # in through `object`, so this only makes an existing dependency direct.
 crc32fast = "1.5"
 getrandom = "0.2"
+# Local interface addresses, so the port allocator can see a listener on one specific address
+# (common/tcpports.rs). Only libc + windows-sys, both already in the tree.
+if-addrs = "0.15.0"
 
 [profile.release]
 strip = "symbols"
