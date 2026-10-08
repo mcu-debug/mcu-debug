@@ -59,14 +59,20 @@ module.exports = {
         type: "array",
         items: { type: "string" },
     },
-    preLaunchCommands: {
+    preConnectCommands: {
         default: [],
         type: "array",
         items: { type: "string" },
         description:
-            "Additional GDB commands to be executed at the start of the launch sequence, before GDB connects to the " +
-            "gdb-server. There is no connection to the target yet, so these cannot read or write target memory or " +
-            "registers and 'monitor' commands are not available — use postLaunchCommands for anything target-related.",
+            "Additional GDB commands to be executed before GDB connects to the gdb-server. There is no " +
+            "connection to the target yet, so these cannot read or write target memory or registers and " +
+            "'monitor' commands are not available",
+    },
+    preLaunchCommands: {
+        default: [],
+        type: "array",
+        items: { type: "string" },
+        description: "Additional GDB commands to be executed at the start of the launch sequence, right after " + "GDB connects to the gdb-server, but before a reset or flash download.",
     },
     postLaunchCommands: {
         default: [],
@@ -80,10 +86,7 @@ module.exports = {
         default: [],
         type: "array",
         items: { type: "string" },
-        description:
-            "Additional GDB commands to be executed at the start of the attach sequence, before GDB connects to the " +
-            "gdb-server. There is no connection to the target yet, so these cannot read or write target memory or " +
-            "registers and 'monitor' commands are not available — use postAttachCommands for anything target-related.",
+        description: "Additional GDB commands to be executed at the start of the attach sequence, right after GDB connects to the gdb-server.",
     },
     postAttachCommands: {
         default: [],

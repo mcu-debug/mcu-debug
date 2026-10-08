@@ -170,8 +170,8 @@ pub struct ObjectInfo {
     pub static_file_mapping: StaticFileMapping,
 
     pub global_symbols: Vec<Arc<Symbol>>, // List of global symbols for quick access
-
-    pub rtt_symbol_address: Option<u64>, // Address of RTT control block if found
+    pub orphaned_statics: Vec<Arc<Symbol>>, // List of static symbols that have no file associated with them
+    pub rtt_symbol_address: Option<u64>,  // Address of RTT control block if found
 }
 
 impl ObjectInfo {
@@ -184,6 +184,7 @@ impl ObjectInfo {
             elf_symbols: crate::da_helper::symbols::SymbolTable::new(),
             static_file_mapping: StaticFileMapping::new(),
             global_symbols: Vec::new(),
+            orphaned_statics: Vec::new(),
             rtt_symbol_address: None,
         }
     }

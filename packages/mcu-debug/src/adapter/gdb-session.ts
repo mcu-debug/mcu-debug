@@ -1516,7 +1516,7 @@ export class GDBDebugSession extends SeqDebugSession {
             this.sendEvent(new GenericCustomEvent("post-start-server", this.args)); // if SWO launch was requested by the server controller, we wait for it to connect before starting actual debug
 
             // Let gdb connect to the server
-            await this.sendCommandsWithWait(this.getConnectCommandsPre()); // Can throw
+            await this.sendCommandsWithWait(this.getConnectCommands()); // Can throw
             this.sendEvent(new GenericCustomEvent("post-connect-server", this.args)); // if SWO launch was requested by the server controller, we wait for it to connect before starting actual debug
             // Once connected, we can initialize arch details, this is as early as possible to ensure that any architecture-specific settings are correctly applied
             const tInfo = new TargetInfo(this.gdbInstance, this);
@@ -1776,15 +1776,19 @@ export class GDBDebugSession extends SeqDebugSession {
         ];
         return cmds;
     }
-    protected getConnectCommandsPre(): string[] {
+
+    protected getConnectCommands(): string[] {
         const commands: string[] = [];
+        commands.push(...(this.args.preConnectCommands?.map(COMMAND_MAP) ?? []));
+
+        commands.push(...this.getServerConnectCommands());
+
         if (this.args.pvtSessionMode === SessionMode.Attach) {
             commands.push(...(this.args.preAttachCommands?.map(COMMAND_MAP) ?? []));
         } else {
             commands.push(...(this.args.preLaunchCommands?.map(COMMAND_MAP) ?? []));
         }
 
-        commands.push(...this.getServerConnectCommands());
         return commands;
     }
 

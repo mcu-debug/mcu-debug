@@ -25,7 +25,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::{borrow::Cow, fs, rc::Rc};
 
-use crate::common::debug;
 use crate::common::transport::{StdioTransport, Transport};
 use crate::common::utils::{is_absolute_path, CanonicalPath};
 use crate::da_helper::disasm_worker;
@@ -34,6 +33,7 @@ use crate::da_helper::memory::MemoryRegion;
 use crate::da_helper::protocol::{self, rtt_found_notification};
 use crate::da_helper::request_handler;
 use crate::da_helper::symbols::{Symbol, SymbolScope, SymbolType};
+use crate::{debug, debug_println};
 
 #[derive(Args, Debug)]
 pub struct DaHelperArgs {
@@ -105,6 +105,7 @@ fn process_dwarf_entry(
     unit: &gimli::Unit<gimli::EndianRcSlice<gimli::RunTimeEndian>>,
     info: &mut ObjectInfo,
     unit_file_name: &CanonicalPath,
+    is_compiler_generated: bool,
     stats: &mut ProcessingStats,
 ) -> Result<()> {
     match entry.tag() {
@@ -213,7 +214,13 @@ fn process_dwarf_entry(
                 let arc_sym = info.dwarf_symbols.insert(existing_sym.clone());
                 if arc_sym.kind == SymbolType::Data {
                     if arc_sym.scope == SymbolScope::Static {
-                        info.static_file_mapping.insert(unit_file_name, arc_sym);
+                        if is_compiler_generated {
+                            debug_println!("Found elevated static variable {}, unit: {} ", name, unit_file_name);
+                            info.orphaned_statics.push(arc_sym);
+                            // Should we change the scope of the symbol to global?
+                        } else {
+                            info.static_file_mapping.insert(unit_file_name, arc_sym);
+                        }
                         stats.local_or_global += 1;
                     } else if arc_sym.scope == SymbolScope::Global {
                         info.global_symbols.push(arc_sym);
@@ -305,7 +312,7 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
                 info.rtt_symbol_address = Some(symbol.address());
                 let notify = rtt_found_notification("local-session", &format!("0x{:x}", symbol.address()));
                 transport.write_message(&notify).map_err(|e| anyhow::anyhow!("{}", e))?;
-                eprintln!("Found RTT symbol '{}' at address 0x{:x}", dname, symbol.address());
+                debug_println!("Found RTT symbol '{}' at address 0x{:x}", dname, symbol.address());
             }
         }
     }
@@ -354,7 +361,12 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
             .map(|cow| cow.into_owned())
             .unwrap_or_else(|| "<unknown CU>".to_string());
 
-        if !is_absolute_path(&unit_file_name) {
+        // debug_println!("********* Processing compilation unit: {}", unit_file_name);
+        // Compiler generates synthetic units with names like "<...>", that may have static variables now not associated
+        // with any file -- essentially become global
+        let is_compiler_generated = unit_file_name.starts_with("<") && unit_file_name.ends_with(">");
+
+        if !is_compiler_generated && !is_absolute_path(&unit_file_name) {
             if let Some(comp_dir_attr) = unit.comp_dir.as_ref() {
                 if let Ok(comp_dir_cow) = comp_dir_attr.to_string_lossy() {
                     let comp_dir = comp_dir_cow.as_ref();
@@ -429,7 +441,15 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
                 gimli::DW_TAG_subprogram | gimli::DW_TAG_variable => {
                     // Process this first entry
                     stats.total_entries += 1;
-                    process_dwarf_entry(entry, &dwarf, &unit, &mut info, &canonical_unit_file_name, &mut stats)?;
+                    process_dwarf_entry(
+                        entry,
+                        &dwarf,
+                        &unit,
+                        &mut info,
+                        &canonical_unit_file_name,
+                        is_compiler_generated,
+                        &mut stats,
+                    )?;
                     first_entry_found = true;
                     break;
                 }
@@ -441,10 +461,36 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
         if first_entry_found {
             while let Some(entry) = entries.next_sibling()? {
                 stats.total_entries += 1;
-                process_dwarf_entry(entry, &dwarf, &unit, &mut info, &canonical_unit_file_name, &mut stats)?;
+                process_dwarf_entry(
+                    entry,
+                    &dwarf,
+                    &unit,
+                    &mut info,
+                    &canonical_unit_file_name,
+                    is_compiler_generated,
+                    &mut stats,
+                )?;
             }
         }
         stats.total_entries_time += entries_start.elapsed();
+    }
+
+    let mut global_set = info
+        .global_symbols
+        .iter()
+        .map(|s| s.name.clone())
+        .collect::<std::collections::HashSet<_>>();
+    for elevated_static in &info.orphaned_statics {
+        if !global_set.contains(&elevated_static.name) {
+            info.global_symbols.push(elevated_static.clone());
+            global_set.insert(elevated_static.name.clone());
+            debug_println!("Elevated static symbol: {}", elevated_static.name);
+        } else {
+            debug_println!(
+                "Elevated static symbol {} already exists as a global symbol",
+                elevated_static.name
+            );
+        }
     }
     if timing {
         eprintln!("  ⏱️  Process {} compilation units: {:.2?}", unit_count, step.elapsed());

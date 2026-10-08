@@ -376,7 +376,7 @@ export class DebugHelper {
             this.stderrBuffer = this.stderrBuffer.substring(newlineIndex + 1);
 
             if (line.length > 0) {
-                this.session.handleMsg(Stderr, `mcu-debug stderr: ${line}`);
+                this.session.handleMsg(Stderr, `mcu-debug da-helper stderr: ${line}`);
             }
         }
     }
@@ -453,6 +453,9 @@ export class DebugHelper {
 
     async getGlobalsNames(): Promise<string[]> {
         const response = await this.getGlobals();
+        for (const [name, _type] of response.globals) {
+            this.session.handleMsg(Stdout, `Global variable: ${name}, type: ${_type}\n`);
+        }
         return response.globals.map(([name, _type]) => name);
     }
 
@@ -465,6 +468,9 @@ export class DebugHelper {
 
     async getStaticsNames(fileName: string): Promise<string[]> {
         const response = await this.getStatics(fileName);
+        for (const [name, _type] of response.statics) {
+            this.session.handleMsg(Stdout, `Static variable: ${name}, type: ${_type}\n`);
+        }
         return response.statics.map(([name, _type]) => name);
     }
 

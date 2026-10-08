@@ -160,6 +160,9 @@ export class McuDebugConfigurationProviderBase {
         if (!config.graphConfig) {
             config.graphConfig = [];
         }
+        if (!config.preConnectCommands) {
+            config.preConnectCommands = [];
+        }
         if (!config.preLaunchCommands) {
             config.preLaunchCommands = [];
         }

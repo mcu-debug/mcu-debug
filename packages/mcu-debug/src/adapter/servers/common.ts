@@ -622,6 +622,7 @@ export interface ConfigurationArguments extends DebugProtocol.LaunchRequestArgum
     debuggerArgs: string[];
     routeGdbServerOutputToDebugConsole: boolean;
     overridePreEndSessionCommands: null | string[];
+    preConnectCommands: string[];
     preLaunchCommands: string[];
     postLaunchCommands: string[];
     overrideLaunchCommands: string[];

@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [v0.1.19] - 2026-10-??
+
+### General
+
+- Fixed a compatibility issue with cortex-debug. The `preLaunchCommands`/`preAttachCommands` was done before gdb connected to the gdb-server. This prevented any `monitor` commands to be used. They are poorly named but now behave the same as cortex-debug. They are run right after gdb connects to the gdb-server
+- Added `preConnectCommands` which is for running any commands just before gdb connects to the gdb-server. So, no monitor commands allowed and no commands that require access to the targer
+- Fixed an issue reported https://github.com/Marus/cortex-debug/issues/1243. The fix is experimental and we may have to back it out if it causes issues like symbol table collision
+
+## CLI
+
+- **Support for `!!watch` and `!!liveWatch` added.** These are the equivalent of VSCode `Watch` window and our own `MCU Debug Live Watch` window. See https://mcu-debug.github.io/mcu-debug/docs/reference/meta-commands. This brings much of the functionality of the GUI version and they are presistent across CLI sessions.
+
 ## [v0.1.18] - 2026-10-05
 
 This release has a **LOT** of changes, fixes and enhancements.
@@ -19,7 +31,7 @@ This release has a **LOT** of changes, fixes and enhancements.
   - We no longer need to search for a regex pattern on gdb-server stdout/stderr to know that the server started properly. The proxy server waits for the gdb port to open.
   - We can now provide RTT services without a need for a second gdb-connection (some gdb-servers like probe-rs do not allow a second gdb-server).
 
-## CLI
+### CLI
 
 - `--batch` option added to the CLI command so that an pipe/reidrect a set of gdb/meta commands from a file
 - Also added meta commands `!!sleep ms` to sleep for the said duration, and `!!wait-stop [ms]` to wait for the
@@ -27,7 +39,7 @@ This release has a **LOT** of changes, fixes and enhancements.
 - There is now a `c&` command to continue the FW in background so you can add additional commands
 - See http://localhost:3000/mcu-debug/docs/reference/meta-commands
 
-## RTT
+### RTT
 
 - There is now a Rust based builtin RTT provider. It is high performance and is the default where applicable (all gdb-servers execept pyOCD). pyOCD will continue to use our builtin Typescript based provider
 - THe `rttConfig` is a little bit different from the previous release. It adds a field `engine` where you can chose which implementation you would like. [`"auto"`, `"builtin-rust"`, `"builtin-typescript"`, `"gdb-server"`]. `"gdb-server"` is only applicable for OpenoCD and JLink, but we still recommend our builtin RTT service
