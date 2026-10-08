@@ -11,7 +11,7 @@ extension's
 
 ## [Unreleased]
 
-## [v0.1.18] - 2026-10-05
+## [v0.1.19] - 2026-10-09
 
 No changes. The version is kept in step with the main extension so that the two always install
 as a matched pair.
