@@ -18,7 +18,7 @@ import * as os from "os";
 import path from "path";
 import * as winston from "winston";
 import JSONC from "jsonc-simple-parser";
-import { ConfigurationArguments, substituteEnvVarsInConfig } from "../adapter/servers/common";
+import { ConfigurationArguments, mapConfigStrings, substituteEnvVarsInConfig } from "../adapter/servers/common";
 import { McuDebugConfigurationProviderBase } from "../common/config-provider";
 import { processVarSubstitution } from "../adapter/servers/common";
 import { getHostAdapter } from "../common/host-adapter";
@@ -125,22 +125,25 @@ export class CLIConfigLoader {
         }
     }
 
-    private processConfigVars(strConfig: string): string {
-        const patterhn = /\$\{config:([^}]+)\}/g;
+    /** `${config:NAME}` from the settings file, in every string value of `config`. */
+    private processConfigVars(config: any): any {
+        const pattern = /\$\{config:([^}]+)\}/g;
         const adapter = getHostAdapter();
         const unmatched = new Set<string>();
-        const substitutedConfig = strConfig.replace(patterhn, (match, varName) => {
-            let value = adapter.getSetting("", varName, undefined);
-            if (value === undefined) {
-                unmatched.add(varName);
-                return match;
-            }
-            return value;
-        });
+        const substituted = mapConfigStrings(config, (str) =>
+            str.replace(pattern, (match, varName) => {
+                const value = adapter.getSetting("", varName, undefined);
+                if (value === undefined) {
+                    unmatched.add(varName);
+                    return match;
+                }
+                return value;
+            }),
+        );
         if (unmatched.size > 0) {
             this.logger.warn(`The following config variables were not found in settings and have no value: ${Array.from(unmatched).join(", ")}. They will not be substituted.`);
         }
-        return substitutedConfig;
+        return substituted;
     }
 
     private printConfigs(configurations: any[], args: ConfigLoaderArgs): void {
@@ -217,15 +220,25 @@ export class CLIConfigLoader {
         // This is a special built-in variable that we want to make available for substitution because we allow that in rttConfig
         builtins.executable = config.executable ?? "";
         const fileName = args.json;
-        const jsonContent = JSON.stringify(config);
+        // In each string *value*, never in the config's JSON text. Substituting in the text applied the
+        // escape rules to JSON's own escapes -- a regex `\d+` or a path `C:\Users` is `\\d+` / `C:\\Users`
+        // there, came out as `\d` / `\U`, and failed to parse -- and pasted values containing `\` or `"`
+        // into the text unescaped. In a value nothing is an escape, as in VS Code.
         // built-ins go first as they may be referenced by envFile or other values we need
-        let substitutedContent = processVarSubstitution(jsonContent, builtins, "", (msg) => {
-            this.logger.warn(`In built-in variable substitution for ${fileName}: ${msg}`);
-        });
+        config = mapConfigStrings(config, (str) =>
+            processVarSubstitution(
+                str,
+                builtins,
+                "",
+                (msg) => {
+                    this.logger.warn(`In built-in variable substitution for ${fileName}: ${msg}`);
+                },
+                "none",
+            ),
+        );
         // If we have a settings file, we allow its values to be used in launch.json with ${config:VAR_NAME}
-        substitutedContent = this.processConfigVars(substitutedContent);
+        config = this.processConfigVars(config);
         try {
-            config = JSON.parse(substitutedContent) as ConfigurationArguments;
             config = substituteEnvVarsInConfig(config, (msg) => {
                 this.logger.warn(`In environment variable substitution for ${fileName}: ${msg}`);
             }) as any;
@@ -234,7 +247,7 @@ export class CLIConfigLoader {
             // of them might be intended to be substituted later by the debug adapter or by the user during
             // the debug session, but we want to warn about any that look like they should have been substituted
             // but weren't.
-            substitutedContent = JSON.stringify(config);
+            const substitutedContent = JSON.stringify(config);
             const varRegex = /\$\{[^\}]+\}/g;
             const unsubstitutedVars = substitutedContent.match(varRegex);
             if (unsubstitutedVars) {

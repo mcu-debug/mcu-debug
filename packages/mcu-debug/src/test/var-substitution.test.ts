@@ -13,8 +13,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
-import { processVarSubstitution, resolveVarMap } from "../adapter/servers/common";
+import { mapConfigStrings, processVarSubstitution, resolveVarMap, substituteEnvVarsInConfig } from "../adapter/servers/common";
 
 test("a value that is itself a template resolves in one pass", () => {
     // The reported bug, reduced. `${executable}` expands to a value containing `${workspaceFolder}`,
@@ -112,4 +115,69 @@ test("a prefix confines both the document pass and the value pass", () => {
     assert.equal(processVarSubstitution("${env:FOO}", { FOO: "prefixed" }, "env:"), "prefixed");
     const vars = resolveVarMap({ A: "${env:B}/a", B: "/b" }, "env:");
     assert.equal(vars.A, "/b/a");
+});
+
+// ---- launch.json values (the CLI's config loader) ------------------------------------------------
+
+test("in a value nothing is an escape, as in VS Code: regexes and Windows paths survive", () => {
+    const vars = { VAR: "VALUE" };
+    const value = (s: string) => processVarSubstitution(s, vars, "", undefined, "none");
+    assert.equal(value("Listening on port \\d+ for gdb connection"), "Listening on port \\d+ for gdb connection");
+    assert.equal(value("C:\\Users\\me\\new\\${VAR}"), "C:\\Users\\me\\new\\VALUE");
+    assert.equal(value("\\\\server\\share"), "\\\\server\\share");
+    // A path separator right before a reference is just a separator, not an escape.
+    assert.equal(value("${VAR}\\build\\${VAR}"), "VALUE\\build\\VALUE");
+    // An unknown name stays as written: the only way to keep a literal `${...}`, as in VS Code.
+    assert.equal(value("${NOT_A_VAR}"), "${NOT_A_VAR}");
+});
+
+test("a whole config: substituting values, not JSON text, keeps escapes and inserts any value safely", () => {
+    // The cortex-debug#1243 config failed to load: `\d` in the readiness regex is `\\d` in the JSON
+    // text, which the text-level pass turned into the invalid escape `\d`.
+    const config = {
+        overrideGDBServerStartedRegex: "Listening on port \\d+ for gdb connection",
+        cwd: "${workspaceFolder}",
+        serverArgs: ["-s", "${workspaceFolder}\\bin\\simavr"],
+        nested: { quote: 'say "${VAR}"' },
+        port: 3333,
+    };
+    const vars = { workspaceFolder: 'C:\\Users\\me\\"proj"', VAR: "hi" };
+    const out = mapConfigStrings(config, (s) => processVarSubstitution(s, vars, "", undefined, "none"));
+    assert.deepEqual(out, {
+        overrideGDBServerStartedRegex: "Listening on port \\d+ for gdb connection",
+        cwd: 'C:\\Users\\me\\"proj"',
+        serverArgs: ["-s", 'C:\\Users\\me\\"proj"\\bin\\simavr'],
+        nested: { quote: 'say "hi"' },
+        port: 3333,
+    });
+});
+
+// ---- env / envFile (the DA, so VS Code too) ------------------------------------------------------
+
+test("env and envFile substitution keeps every backslash and reports no error", () => {
+    // Used to stringify the whole config and re-parse it: any backslash anywhere -- this regex, a
+    // Windows path -- made it unparsable, and VS Code refused to launch.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "envfile-"));
+    const envFile = path.join(dir, ".env");
+    fs.writeFileSync(envFile, 'SDK=C:\\sdk\\new\nQUOTED="say \\"hi\\""\n');
+    const errors: string[] = [];
+    const out = substituteEnvVarsInConfig(
+        {
+            overrideGDBServerStartedRegex: "Listening on port \\d+",
+            env: { TOOLS: "C:\\tools\\${env:SDK_HOME_UNSET}" },
+            envFile,
+            serverpath: "${env:SDK}\\bin\\openocd.exe",
+            serverArgs: ["--tools", "${env:TOOLS}", "${env:QUOTED}"],
+        },
+        (m) => errors.push(m),
+    );
+    assert.equal(out.overrideGDBServerStartedRegex, "Listening on port \\d+");
+    assert.equal(out.serverpath, "C:\\sdk\\new\\bin\\openocd.exe");
+    // An unknown reference stays as written, as in VS Code; the backslashes around it are literal.
+    assert.deepEqual(out.serverArgs, ["--tools", "C:\\tools\\${env:SDK_HOME_UNSET}", 'say "hi"']);
+    assert.equal(out.envFile, envFile, "envFile itself is restored, untouched");
+    assert.deepEqual(
+        errors.filter((e) => !e.includes("SDK_HOME_UNSET")),
+        [],
+    );
 });

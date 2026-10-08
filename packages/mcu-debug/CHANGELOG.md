@@ -13,6 +13,7 @@
 - Fixed a compatibility issue with cortex-debug. The `preLaunchCommands`/`preAttachCommands` was done before gdb connected to the gdb-server. This prevented any `monitor` commands to be used. They are poorly named but now behave the same as cortex-debug. They are run right after gdb connects to the gdb-server
 - Added `preConnectCommands` which is for running any commands just before gdb connects to the gdb-server. So, no monitor commands allowed and no commands that require access to the targer
 - Fixed an issue reported https://github.com/Marus/cortex-debug/issues/1243. The fix is experimental and we may have to back it out if it causes issues like symbol table collision
+- Fixed bug with `envFile` substitions where it could ruin Windows path backslashes, it could also affect any backslashes used in regex entries. Was more of a problem in CLI launch.json processing
 
 ## CLI
 

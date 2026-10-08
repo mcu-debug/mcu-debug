@@ -17,7 +17,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import { SerialParams } from "@mcu-debug/shared/serial-helper/SerialParams";
-import { HostConfig, ChainedConfig, ConfigurationArguments, processVarSubstitution, getAnyFreePort } from "../adapter/servers/common";
+import { HostConfig, ChainedConfig, ConfigurationArguments, processVarSubstitution, getAnyFreePort, mapConfigStrings } from "../adapter/servers/common";
 import { SymbolInformation } from "../adapter/symbols";
 import { IDebugSession, IHostAdapter, IOutputChannel, ISerialPortView, ISWORTTView } from "../common/host-adapter";
 import { logger } from "../common/logger";
@@ -214,30 +214,28 @@ export class CliAdapter implements IHostAdapter {
         const settingsFiles = [os.homedir() + "/.mcu-debug/settings.json", settingsFile].filter((f) => f !== undefined) as string[];
         for (const file of settingsFiles) {
             if (fs.existsSync(file)) {
-                let content: string;
-                let newSettings = {};
+                let newSettings: { [key: string]: any } = {};
                 try {
-                    content = fs.readFileSync(file, "utf8");
-                    newSettings = JSONC.parse(content) as { [key: string]: any };
-                    if (this.replacePlatformSpecificSettings(newSettings)) {
-                        content = JSONC.stringify(newSettings);
-                    }
+                    newSettings = JSONC.parse(fs.readFileSync(file, "utf8")) as { [key: string]: any };
+                    this.replacePlatformSpecificSettings(newSettings);
                 } catch (error) {
                     logger.error("Failed to load configuration from settings file: " + (error instanceof Error ? error.message : String(error)));
                     process.exit(1);
                 }
-                // Replace any variable that is referenced in the configuration with a value from the previous settings
-                const substitutedContent = processVarSubstitution(content, this.settings, "config:", (msg) => {
-                    logger.warn(`In config: variable substitution for ${file}: ${msg}`);
-                });
-                if (substitutedContent !== content) {
-                    try {
-                        newSettings = JSONC.parse(substitutedContent) as { [key: string]: any };
-                    } catch (error) {
-                        logger.error("Failed to parse configuration after variable substitution: " + (error instanceof Error ? error.message : String(error)));
-                        // process.exit(1);
-                    }
-                }
+                // Replace any variable that is referenced in the configuration with a value from the previous
+                // settings -- in the parsed values, not the file's text, where the escape rules mangled JSON's
+                // own escapes (a Windows path `C:\\tools` came back with a tab in it).
+                newSettings = mapConfigStrings(newSettings, (str) =>
+                    processVarSubstitution(
+                        str,
+                        this.settings,
+                        "config:",
+                        (msg) => {
+                            logger.warn(`In config: variable substitution for ${file}: ${msg}`);
+                        },
+                        "none",
+                    ),
+                );
                 // Merge the old and new settings
                 this.settings = { ...this.settings, ...newSettings };
             } else if (file !== settingsFiles[0]) {

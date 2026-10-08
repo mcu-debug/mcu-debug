@@ -1765,7 +1765,36 @@ export function resolveVarMap(vars: { [key: string]: string }, prefix: string, e
     return resolved;
 }
 
-export function processVarSubstitution(str: string, vars: { [key: string]: string }, prefix: string, errFn?: (msg: string) => void): string {
+/**
+ * `fn` applied to every string in a JSON-like value (a launch configuration); objects and arrays are
+ * rebuilt, anything else is kept as is. Keys are left alone. This is how variables are substituted in
+ * a configuration: in its values, never in its JSON text, where escape rules collide with JSON's own.
+ */
+export function mapConfigStrings(value: any, fn: (str: string) => string): any {
+    if (typeof value === "string") {
+        return fn(value);
+    }
+    if (Array.isArray(value)) {
+        return value.map((v) => mapConfigStrings(v, fn));
+    }
+    if (value && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, mapConfigStrings(v, fn)]));
+    }
+    return value;
+}
+
+/**
+ * Replace `${<prefix>NAME}` references in `str` with values from `vars`.
+ *
+ * `escapes` decides what a backslash means:
+ * - `"all"` (default) -- for free text: `\\` is one backslash, `\n` `\r` `\t` are control characters,
+ *   `\${...}` is a literal reference, and any other `\x` is just `x`.
+ * - `"none"` -- for a value that is already a decoded string, such as one from a parsed launch.json.
+ *   Every backslash is literal and every reference is substituted, as in VS Code: a regex `\d+` or a
+ *   Windows path `C:\Users\${VAR}` comes through intact. (A reference to an unknown name is left as is,
+ *   which is the only way to keep a literal `${...}` -- VS Code has no escape for it either.)
+ */
+export function processVarSubstitution(str: string, vars: { [key: string]: string }, prefix: string, errFn?: (msg: string) => void, escapes: "all" | "none" = "all"): string {
     // Values first, document second. See `resolveVarMap` for why one pass over the document is then
     // sufficient, and why running this whole function twice instead is not a substitute for it.
     vars = resolveVarMap(vars, prefix, errFn);
@@ -1773,7 +1802,8 @@ export function processVarSubstitution(str: string, vars: { [key: string]: strin
     // When prefix is empty, exclude ':' from variable names so that ${env:FOO} and ${config:BAR}
     // are not matched as bare variables named "env:FOO" / "config:BAR".
     const varNamePat = prefix === "" ? "[^}:]+" : "[^}]+";
-    const re = new RegExp(`\\\\(\\\\|\\$\\{${esc}${varNamePat}\\}|[\\s\\S])|(\\$\\{${esc}(${varNamePat})\\})`, "g");
+    const reference = `(\\$\\{${esc}(${varNamePat})\\})`;
+    const re = escapes === "all" ? new RegExp(`\\\\(\\\\|\\$\\{${esc}${varNamePat}\\}|[\\s\\S])|${reference}`, "g") : new RegExp(`((?!))?${reference}`, "g"); // that first group can never match: no escapes
     return str.replace(re, (match, escaped, _varRef, varName) => {
         if (escaped !== undefined) {
             if (escaped === "\\") {
@@ -1796,19 +1826,6 @@ export function processVarSubstitution(str: string, vars: { [key: string]: strin
         errFn?.(`Variable "\${${prefix}${varName}}" not found"`);
         return match;
     });
-}
-
-export function escapeStringLiteral(str: string): string {
-    const escapeMap: { [key: string]: string } = {
-        "\n": "\\n",
-        "\r": "\\r",
-        "\t": "\\t",
-        '"': '\\"',
-        "'": "\\'",
-        "\\": "\\\\",
-    };
-
-    return str.replace(/[\n\r\t"'\\]/g, (match) => escapeMap[match]);
 }
 
 // Parses one line from an envFile.  Returns { key, value } or null for blank/comment lines.
@@ -1886,7 +1903,8 @@ export function processEnvForConfig(args: ConfigurationArguments, errFn?: (msg: 
     if (args.env) {
         for (const key in args.env) {
             if (Object.prototype.hasOwnProperty.call(args.env, key)) {
-                env[key] = processVarSubstitution(args.env[key], envMap, "env:", errFn);
+                // A decoded string from launch.json: backslashes are literal (`C:\\tools`, not a tab).
+                env[key] = processVarSubstitution(args.env[key], envMap, "env:", errFn, "none");
             }
         }
     }
@@ -1896,9 +1914,8 @@ export function processEnvForConfig(args: ConfigurationArguments, errFn?: (msg: 
             for (const raw of contents.split(/\r?\n/)) {
                 const parsed = parseEnvFileLine(raw);
                 if (parsed) {
-                    // escapeStringLiteral makes the value safe for insertion into the
-                    // JSON string during the substitution pass in substituteEnvVarsInConfig.
-                    env[parsed.key] = escapeStringLiteral(parsed.value);
+                    // As parsed: substitution works on values, so nothing needs escaping for JSON text.
+                    env[parsed.key] = parsed.value;
                 }
             }
         } catch (e: any) {
@@ -1920,16 +1937,10 @@ export function substituteEnvVarsInConfig(args: any, errFn?: (msg: string) => vo
     processEnvForConfig(args, errFn); // resolves args.env (merging envFile entries) and clears args.envFile
 
     const env = args.env || {};
-    const jsonStr = JSON.stringify(args); // envFile is absent here, preventing it from being mangled by substitution
-    const substitutedStr = processVarSubstitution(jsonStr, env, "env:", errFn);
-    let substitutedArgs: any;
-    try {
-        substitutedArgs = JSON.parse(substitutedStr);
-    } catch (e) {
-        // An env var value containing JSON-special characters (quotes, backslashes) can corrupt the JSON.
-        errFn?.(`Failed to parse config after environment variable substitution: ${e}`);
-        substitutedArgs = args; // fall back to the pre-substitution config
-    }
+    // In each string value, not in the config's JSON text (envFile is absent here, so it is not
+    // touched). The text version applied escape rules to JSON's own escapes: any backslash anywhere in
+    // the config -- a regex `\\d+`, a Windows path -- made the result unparsable, and the launch failed.
+    const substitutedArgs = mapConfigStrings(args, (str) => processVarSubstitution(str, env, "env:", errFn, "none"));
     if (savedEnvFile !== undefined) {
         substitutedArgs.envFile = savedEnvFile;
     }
