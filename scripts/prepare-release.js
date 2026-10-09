@@ -148,6 +148,7 @@ function usage(code) {
     console.log("  --publish     Also publish both extensions to the VS Code Marketplace.");
     console.log("                Without this, only package + tag + GitHub release are done.");
     console.log("  --vsx-also    Additionally publish to Open VSX. Ignored for pre-releases.");
+    console.log("  --vsx-force   Additionally publish to Open VSX. pre-releases flag ignored.");
     console.log("  --dryrun      Print every mutating command instead of running it.");
     console.log("  -h, --help    Show this help.");
     console.log("");
@@ -158,7 +159,7 @@ function usage(code) {
 }
 
 function parseArgs() {
-    const opts = { notesPath: null, doPublish: false, vsxAlso: false };
+    const opts = { notesPath: null, doPublish: false, vsxAlso: false, vsxForce: false };
     for (const arg of process.argv.slice(2)) {
         switch (arg) {
             case "-h":
@@ -170,6 +171,9 @@ function parseArgs() {
                 break;
             case "--vsx-also":
                 opts.vsxAlso = true;
+                break;
+            case "--vsx-force":
+                opts.vsxForce = true;
                 break;
             case "--dryrun":
             case "--dry-run":
@@ -292,6 +296,14 @@ function main() {
 
     const changelogUrl = `https://github.com/mcu-debug/mcu-debug/blob/${tag}/packages/mcu-debug/CHANGELOG.md`;
     const bodyParts = [];
+    const vsxAlso = opts.vsxAlso ? " and OpenVSX" : "";
+    bodyParts.push(
+        `This release is also available on the VSCode Marketplace${vsxAlso}.\n\n` +
+            "- https://marketplace.visualstudio.com/items?itemName=mcu-debug.mcu-debug\n" +
+            "- https://marketplace.visualstudio.com/items?itemName=mcu-debug.mcu-debug-proxy\n" +
+            "- https://open-vsx.org/extension/mcu-debug/mcu-debug\n" +
+            "- https://open-vsx.org/extension/mcu-debug/mcu-debug-proxy\n",
+    );
     if (section) {
         bodyParts.push(section);
     }
@@ -349,7 +361,7 @@ function main() {
                 error(msg);
             }
         }
-        if (opts.vsxAlso && preRelease) {
+        if (opts.vsxAlso && preRelease && !opts.vsxForce) {
             log("Note: skipping Open VSX — it has no pre-release channel.");
             opts.vsxAlso = false;
         }
