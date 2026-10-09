@@ -445,7 +445,9 @@ function main() {
     log(`Pushing tag ${tag} to origin...`);
     // --no-verify: a tag push uploads no new code, so the pre-push hook's test run adds nothing,
     // and failing here strands a release that is already on the marketplace (see v0.1.18).
-    runCmd(["git", "push", "--no-verify", "origin", tag]);
+    // The full ref, not the bare name: a release-prep *branch* named like the tag (v0.1.19) made
+    // `git push origin v0.1.19` ambiguous, and the push failed after the marketplace publish.
+    runCmd(["git", "push", "--no-verify", "origin", `refs/tags/${tag}`]);
 
     log("Checking for GitHub CLI (gh) tool...");
     let hasGh = false;
