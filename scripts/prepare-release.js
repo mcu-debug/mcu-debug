@@ -318,33 +318,49 @@ function main() {
     notesAreTemporary = true;
     console.log(`\nGitHub release body for ${tag}:\n---\n${body}\n---`);
 
-    // A tag that already points at HEAD means this commit was released to GitHub earlier (a
-    // `npm run release` test build) and we are now publishing that same build. Re-tagging and
-    // re-creating the GitHub release would fail, so skip both and go straight to publishing.
-    // A tag pointing at a *different* commit is a real conflict.
-    let alreadyReleased = false;
-    if (capture(`git tag -l ${tag}`) === tag) {
-        const tagCommit = capture(`git rev-parse ${tag}^{commit}`);
-        const headCommit = capture("git rev-parse HEAD");
-        if (tagCommit === headCommit) {
-            alreadyReleased = true;
-            log(`Tag ${tag} already exists and points at HEAD — this commit was released to GitHub already.`);
-            if (!opts.doPublish) {
-                error(`Nothing to do: ${tag} is already released and --publish was not given.`);
-            }
-            console.log("Skipping tag and GitHub release; will publish this existing release to the marketplace.");
-        } else {
+    // Where the tag stands decides what is left to do -- all of it settled here, before anything is
+    // published, because every failure after the marketplace step strands a half-done release.
+    // The tag is always named by its full ref: a local *branch* named like the tag (a release-prep
+    // branch, as for v0.1.19) makes the bare name ambiguous.
+    const localTag = capture(`git tag -l ${tag}`) === tag;
+    let remoteTag = false;
+    try {
+        remoteTag = capture(`git ls-remote --tags origin refs/tags/${tag}`) !== "";
+    } catch (e) {
+        precondition(`Failed to check remote tags: ${e.message}`);
+    }
+    let tagAtHead = false;
+    if (localTag) {
+        const tagCommit = capture(`git rev-parse refs/tags/${tag}^{commit}`);
+        tagAtHead = tagCommit === capture("git rev-parse HEAD");
+        if (!tagAtHead) {
             precondition(`Tag ${tag} already exists locally and points at ${tagCommit.slice(0, 8)}, not HEAD.`);
         }
+    } else if (remoteTag) {
+        precondition(`Tag ${tag} already exists on the remote repository.`);
     }
-    if (!alreadyReleased) {
-        try {
-            if (capture(`git ls-remote --tags origin refs/tags/${tag}`) !== "") {
-                precondition(`Tag ${tag} already exists on the remote repository.`);
-            }
-        } catch (e) {
-            precondition(`Failed to check remote tags: ${e.message}`);
+
+    // Tag on the remote and at HEAD: this commit was released to GitHub earlier (a `npm run release`
+    // test build) and we are now publishing that same build. Re-tagging and re-creating the GitHub
+    // release would fail, so skip both and go straight to publishing.
+    const alreadyReleased = remoteTag && tagAtHead;
+    if (alreadyReleased) {
+        log(`Tag ${tag} already exists and points at HEAD — this commit was released to GitHub already.`);
+        if (!opts.doPublish) {
+            error(`Nothing to do: ${tag} is already released and --publish was not given.`);
         }
+        console.log("Skipping tag and GitHub release; will publish this existing release to the marketplace.");
+    } else if (tagAtHead) {
+        // Tagged here but never pushed: an earlier run failed after tagging (v0.1.19). Treating it as
+        // released skipped the push and the GitHub release, so a rerun could not finish the job.
+        log(`Tag ${tag} exists locally at HEAD but is not on the remote — an earlier run stopped after tagging.`);
+        console.log("Resuming: the tag will be pushed and the GitHub release created.");
+    }
+
+    if (capture(`git branch --list ${tag}`) !== "") {
+        // Harmless now that the tag is pushed by its full ref, but any other git command given the
+        // bare name is ambiguous -- which is how the v0.1.19 push failed.
+        warn(`A local branch is also named ${tag}. Consider renaming it, e.g. git branch -m ${tag} ${tag}-prep`);
     }
 
     // Token preflight happens before anything is published, so a missing PAT fails early
@@ -440,8 +456,10 @@ function main() {
         return;
     }
 
-    log(`Creating git tag ${tag}...`);
-    runCmd(["git", "tag", "-a", tag, "-m", `Release ${tag}`]);
+    if (!tagAtHead) {
+        log(`Creating git tag ${tag}...`);
+        runCmd(["git", "tag", "-a", tag, "-m", `Release ${tag}`]);
+    }
     log(`Pushing tag ${tag} to origin...`);
     // --no-verify: a tag push uploads no new code, so the pre-push hook's test run adds nothing,
     // and failing here strands a release that is already on the marketplace (see v0.1.18).

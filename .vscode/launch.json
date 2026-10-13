@@ -195,7 +195,41 @@
       "sourceLanguages": [
         "rust"
       ]
-    }
+    },
+    {
+      "name": "Debug Desktop Rust (GDB)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceRoot}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    },
+    {
+      "name": "Attach to Proxy Daemon (GDB)",
+      "type": "cppdbg",
+      "request": "attach",
+      "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
+      "processId": "${command:pickProcess}", // VS Code will prompt you with a searchable list of running PIDs
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    },
   ],
   "compounds": [
     {

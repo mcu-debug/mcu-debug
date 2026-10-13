@@ -236,9 +236,8 @@ Runs after config resolution — `remoteConfig` field in resolved config may ove
 - [ ] Detect SSH server: `SSH_CLIENT` env var set → probe is local to this machine → treat as `Local`
 - [x] Default: `Local` — no proxy, GDB connects directly
 - [x] `hostConfig` in launch config overrides detection:
-  - [ ] `{ type: "auto" }` — use detection above
-  - [ ] `{ type: "ssh", host: "..." }` — explicit LAB host, SSH auto-deploy flow
-  - [ ] `{ type: "direct", address: "...", port: N }` — proxy already running
+  - [x] `{ type: "auto" }` — use detection above
+  - [x] `{ type: "ssh", host: "..." }` — explicit LAB host, SSH auto-deploy flow
 
 ---
 
@@ -246,15 +245,14 @@ Runs after config resolution — `remoteConfig` field in resolved config may ove
 
 Only needed if topology is not `Local`.
 
-- [ ] **LAB / SSH** (`remoteConfig.type == "ssh"`):
-  - [ ] SSH to host, check `~/.mcu-debug/bin/mcu-debug` version
-  - [ ] Deploy binary via SCP if missing or outdated
-  - [ ] Start `mcu-debug proxy` on host, capture port from discovery JSON on stdout
-  - [ ] Establish SSH `-L` tunnel to proxy port
+- [ x **LAB / SSH** (`remoteConfig.type == "ssh"`):
+  - [x] SSH to host, check `~/.mcu-debug/bin/mcu-debug` version
+  - [x] Deploy binary via SCP if missing or outdated
+  - [x] Start `mcu-debug proxy` on host, capture port from discovery JSON on stdout
+  - [x] Establish SSH `-L` tunnel to proxy port
 - [ ] **WSL / Docker** (`remoteConfig.type == "direct"` or auto-detected):
-  - [ ] Proxy assumed pre-running; connect directly to resolved address:port
-  - [ ] Clear error if connection refused: "Start `mcu-debug proxy` on the host first"
-- [ ] Heartbeat: detect proxy death, surface to user, clean shutdown
+  - [x] Proxy assumed pre-running; connect directly to resolved address:port; Not applicable
+  - [x] Clear error if connection refused: "Start `mcu-debug proxy` on the host first"
 
 ---
 
@@ -275,8 +273,6 @@ Promise resolver in `sendResponse()`.
   - [x] `TerminatedEvent` → session teardown sequence
   - [x] `SWOConfigureEvent` (custom) → configure mux channels. (`UARTConfigureEvent` was removed: the CLI opens
     serial ports at session start, before the adapter launches, instead of waiting for it.)
-- [ ] **No-op transport** — skip `super.sendEvent()` / `super.sendResponse()` calls so the
-      uninitialized stdio transport is never touched
 - [x] **Dispatch synthetic requests** via `dispatchRequest()` — the same sequence as the
       DAP `launch` handler flow, now driven directly:
   - [x] `initialize` request
@@ -317,11 +313,10 @@ The live session. Rust TUI connects here; AI attachers connect here later.
 
 Late-attacher path for AI (Mode 1 via subprocess) and hybrid mode (Mode 3).
 
-- [ ] Auto-discover session: `.mcu-debug/socket.json` (well-known path)
-- [ ] Explicit: `--socket /tmp/mcu-debug-<pid>.sock`
-- [ ] List: `mcu-debug list` — enumerate active sessions
-- [ ] Connect, receive snapshot, stream live — mux to stdout, commands from stdin
-- [ ] Exit cleanly on disconnect without killing the session
+- [x] Auto-discover session: `.mcu-debug/socket.json` (well-known path)
+- [x] Explicit: `--socket /tmp/mcu-debug-<pid>.sock`
+- [x] Connect, receive snapshot, stream live — mux to stdout, commands from stdin
+- [x] Exit cleanly on disconnect without killing the session
 
 ---
 
@@ -347,7 +342,7 @@ Can proceed in parallel with phases above once the `common/` structure is define
 - [x] Extract non-vscode utils from `frontend/utils.ts` → `common/utils.ts`
 - [x] Update `frontend/` imports to use `common/` for moved files — mechanical, low risk
 - [x] Update `extension.ts` imports for moved files — mechanical, minimum viable touch
-- [ ] **Do not refactor `extension.ts` internals for v1** — multi-core and panel lifecycle
+- [x] **Do not refactor `extension.ts` internals for v1** — multi-core and panel lifecycle
       stay as-is; convergence deferred until both paths are working. Refactor as you go
 
 ---
@@ -357,11 +352,6 @@ Can proceed in parallel with phases above once the `common/` structure is define
 See [cli-architecture.md §8](./cli-architecture.md) for full design rationale and wrapper code.
 
 - [x] `mcu-debug-cli.js` bundled via existing esbuild pipeline (single file, no node_modules)
-- [ ] Extension activation writes `~/.mcu-debug/config.json` → `{ extensionPath, version }`
-      (stable pointer — recreated on every activation, absorbs version-path churn)
-- [ ] npm package (`mcu-debug` on npmjs.com) is a thin JS wrapper only — no binaries bundled
-      Reads `config.json`, sets `MCU_DEBUG_NODE` + `MCU_DEBUG_CLI_JS`, spawns Rust binary
-      Errors clearly with marketplace URL if extension not installed (Option 1 — no fallback)
 - [x] Node.js >= 22 check in Rust bootstrap (GH Copilot CLI confirmed >= 22; Claude CLI >= 22)
-- [ ] Distribution: `npx mcu-debug` for AI/CI use; `npm install -g` for terminal users;
-      VS Code extension path unchanged — all assets in extension dir, config.json is the pointer
+- [x] Create ~/.mcu-debug/bin/mcu-debug[.cmd] and add it to PATH. This scripts are the entry pont for the user
+
