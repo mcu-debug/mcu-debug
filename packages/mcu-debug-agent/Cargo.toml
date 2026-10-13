@@ -5,11 +5,11 @@ edition = "2021"
 
 [dependencies]
 # For ELF/Binary parsing
-object = { version = "0.36", features = ["read", "compression"] }
+object = { version = "0.40", features = ["read", "compression"] }
 # The DWARF powerhouse
-gimli = "0.31"
+gimli = "0.34"
 # For ultra-fast address range lookups
-addr2line = "0.24"
+addr2line = "0.27"
 # For JSON communication with your TS extension
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -57,3 +57,6 @@ codegen-units = 1
 # builds stay quick to compile.
 [profile.dev.package.crc32fast]
 opt-level = 3
+
+[build-dependencies]
+embed-resource = "3.0.12"

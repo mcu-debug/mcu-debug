@@ -117,8 +117,8 @@ fn process_dwarf_entry(
 
             // Try linkage_name first (Mangled)
             let linkage_name_attr = entry
-                .attr_value(gimli::DW_AT_linkage_name)?
-                .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
+                .attr_value(gimli::DW_AT_linkage_name)
+                .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name));
 
             let mut raw_name_opt: Option<String> = None;
 
@@ -127,7 +127,7 @@ fn process_dwarf_entry(
             }
 
             if raw_name_opt.is_none() {
-                if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
+                if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name) {
                     raw_name_opt = dwarf_attr_to_string(dwarf, unit, name_attr);
                 }
             }
@@ -136,7 +136,7 @@ fn process_dwarf_entry(
 
             // 2. Extract Address Range
             let mut low_opt = None;
-            if let Some(gimli::AttributeValue::Addr(addr)) = entry.attr_value(gimli::DW_AT_low_pc)? {
+            if let Some(gimli::AttributeValue::Addr(addr)) = entry.attr_value(gimli::DW_AT_low_pc) {
                 low_opt = Some(addr);
             }
 
@@ -155,7 +155,7 @@ fn process_dwarf_entry(
             }
 
             let mut high_opt = None;
-            if let Some(high_attr) = entry.attr_value(gimli::DW_AT_high_pc)? {
+            if let Some(high_attr) = entry.attr_value(gimli::DW_AT_high_pc) {
                 match high_attr {
                     gimli::AttributeValue::Addr(addr) => high_opt = Some(addr), // Absolute address
                     gimli::AttributeValue::Udata(size) => {
@@ -194,15 +194,15 @@ fn process_dwarf_entry(
 
             // Try linkage_name first (for global variables)
             let linkage_name_attr = entry
-                .attr_value(gimli::DW_AT_linkage_name)?
-                .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name)?);
+                .attr_value(gimli::DW_AT_linkage_name)
+                .or(entry.attr_value(gimli::DW_AT_MIPS_linkage_name));
 
             if let Some(attr) = linkage_name_attr {
                 raw_name_opt = dwarf_attr_to_string(dwarf, unit, attr);
             }
 
             if raw_name_opt.is_none() {
-                if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
+                if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name) {
                     raw_name_opt = dwarf_attr_to_string(dwarf, unit, name_attr);
                 }
             }
@@ -436,7 +436,7 @@ fn load_elf_info(path: &str, transport: &mut impl Transport, timing: bool) -> Re
 
         // Find first subprogram or variable (top-level entry)
         let mut first_entry_found = false;
-        while let Some((_, entry)) = entries.next_dfs()? {
+        while let Some(entry) = entries.next_dfs()? {
             match entry.tag() {
                 gimli::DW_TAG_subprogram | gimli::DW_TAG_variable => {
                     // Process this first entry
