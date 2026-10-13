@@ -188,7 +188,7 @@ impl RspTrace {
         let (tx, rx) = sync_channel::<Stamped>(QUEUE_DEPTH);
         let dropped = Arc::new(AtomicU64::new(0));
         let header = format!(
-            "# mdbg RSP trace  stream={label}  level={level:?}\n\
+            "# mcu-debug-agent RSP trace  stream={label}  level={level:?}\n\
              # t = ms since trace start; bytes are raw, as on the wire\n\
              # GDB>SRV / SRV>GDB are forwarded; AGT>SRV / SRV>AGT are the Agent's own\n"
         );
@@ -429,7 +429,7 @@ mod tests {
         // The header goes out before any record.
         for _ in 0..200 {
             let s = String::from_utf8_lossy(&shared.0.lock_recover()).to_string();
-            if s.contains("mdbg RSP trace") {
+            if s.contains("mcu-debug-agent RSP trace") {
                 assert!(s.contains("stream=gdbPort"));
                 assert!(s.contains("AGT>SRV"), "the header should explain the Agent parties");
                 return;

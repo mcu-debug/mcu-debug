@@ -180,7 +180,7 @@ pub type SerialPortRegistry = Arc<Mutex<HashMap<String, OpenPort>>>;
 
 /// Force-close serial ports regardless of who is using them.
 ///
-/// This is the operator escape hatch behind `mdbg proxy --close-serial`. Normal
+/// This is the operator escape hatch behind `mcu-debug-agent proxy --close-serial`. Normal
 /// `serial.close` is cooperative and per-client, so a wedged or crashed-but-not-yet
 /// reaped client can pin a device open indefinitely; nothing else can take it.
 ///

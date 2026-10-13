@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Singleton identity for `mdbg proxy` (Tier 1, Phase A).
+//! Singleton identity for `mcu-debug-agent proxy` (Tier 1, Phase A).
 //!
 //! One proxy runs per `(user, instance)`. Identity lives in a per-instance
 //! state directory under the user's home:
@@ -295,7 +295,7 @@ impl ExeStatus {
 /// stat-ing the path later reports the *replacement* and says nothing about the code
 /// actually executing. On Linux it is worse than useless: `current_exe()` resolves
 /// `/proc/self/exe` to the inode, so after a swap the running daemon's own path reads
-/// back as `…/mdbg (deleted)` and the stat fails outright.
+/// back as `…/mcu-debug-agent (deleted)` and the stat fails outright.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExeStamp {
     /// Absolute path this proxy was launched from. Empty when it could not be determined.
@@ -431,7 +431,7 @@ pub enum Handover {
     /// Stronger evidence than [`Handover::UpgradeByExe`] and it fires where that cannot: the exe
     /// rule compares one file with itself over time, so two binaries at *different paths* are
     /// deliberately treated as incomparable. In a development tree that is the common case --
-    /// `bin/mdbg`, `bin/<platform>-<arch>/mdbg` and `target/debug/mdbg` are three paths carrying
+    /// `bin/mcu-debug-agent`, `bin/<platform>-<arch>/mcu-debug-agent` and `target/debug/mcu-debug-agent` are three paths carrying
     /// the same version and, after a rebuild, three different builds. A commit does not care which
     /// path it was copied to.
     UpgradeByBuild,
@@ -683,7 +683,7 @@ pub struct BindError {
     pub error: String,
 }
 
-/// The single line of JSON `mdbg proxy` prints on stdout before exiting.
+/// The single line of JSON `mcu-debug-agent proxy` prints on stdout before exiting.
 ///
 /// This is the **only** channel back to the caller that survives. The launcher always
 /// exits after printing, so every TS launch path ignores the exit code once this line
@@ -911,8 +911,8 @@ mod handover_tests {
     /// outranks the file dates in both directions.
     #[test]
     fn version_still_decides_when_versions_differ() {
-        let old = stamp("/x/mdbg", Some(1_000));
-        let new = stamp("/x/mdbg", Some(2_000));
+        let old = stamp("/x/mcu-debug-agent", Some(1_000));
+        let new = stamp("/x/mcu-debug-agent", Some(2_000));
         assert_eq!(decide("0.1.17", &new, "0.1.16", &old, true), Handover::UpgradeByVersion);
         // Downgrade guard: rebuilding an old checkout yields a NEW file with OLD code,
         // and must not evict the newer running proxy.
@@ -921,8 +921,8 @@ mod handover_tests {
 
     #[test]
     fn same_version_newer_file_at_same_path_supersedes() {
-        let running = stamp("/ext/mcu-debug-proxy-0.1.16/bin/mdbg", Some(1_000));
-        let reinstalled = stamp("/ext/mcu-debug-proxy-0.1.16/bin/mdbg", Some(2_000));
+        let running = stamp("/ext/mcu-debug-proxy-0.1.16/bin/mcu-debug-agent", Some(1_000));
+        let reinstalled = stamp("/ext/mcu-debug-proxy-0.1.16/bin/mcu-debug-agent", Some(2_000));
         assert_eq!(
             decide("0.1.16", &reinstalled, "0.1.16", &running, true),
             Handover::UpgradeByExe
@@ -933,14 +933,14 @@ mod handover_tests {
     /// wrong would turn every window open into a daemon churn.
     #[test]
     fn same_version_same_file_reuses() {
-        let e = stamp("/x/mdbg", Some(1_000));
+        let e = stamp("/x/mcu-debug-agent", Some(1_000));
         assert_eq!(decide("0.1.16", &e, "0.1.16", &e, true), Handover::Reuse);
     }
 
     #[test]
     fn older_file_never_supersedes() {
-        let running = stamp("/x/mdbg", Some(2_000));
-        let mine = stamp("/x/mdbg", Some(1_000));
+        let running = stamp("/x/mcu-debug-agent", Some(2_000));
+        let mine = stamp("/x/mcu-debug-agent", Some(1_000));
         assert_eq!(decide("0.1.16", &mine, "0.1.16", &running, true), Handover::Reuse);
     }
 
@@ -948,8 +948,8 @@ mod handover_tests {
     /// and comparing them is meaningless, so neither is "newer".
     #[test]
     fn different_paths_are_not_comparable() {
-        let running = stamp("/opt/mdbg", Some(1_000));
-        let mine = stamp("/home/me/build/mdbg", Some(2_000));
+        let running = stamp("/opt/mcu-debug-agent", Some(1_000));
+        let mine = stamp("/home/me/build/mcu-debug-agent", Some(2_000));
         assert_eq!(decide("0.1.16", &mine, "0.1.16", &running, true), Handover::Reuse);
     }
 
@@ -957,16 +957,16 @@ mod handover_tests {
     //
     // Why a second rule at all, when the exe stamp already catches a rebuild: the stamp reasons
     // about one *file* over time and gives up when the paths differ. A development tree has the
-    // same version at three paths -- `bin/mdbg`, `bin/<platform>-<arch>/mdbg` and
-    // `target/debug/mdbg` -- so the case it gives up on is the common one. A commit is a property
+    // same version at three paths -- `bin/mcu-debug-agent`, `bin/<platform>-<arch>/mcu-debug-agent` and
+    // `target/debug/mcu-debug-agent` -- so the case it gives up on is the common one. A commit is a property
     // of the code, so it survives being copied.
 
     #[test]
     fn a_different_build_supersedes_even_where_the_paths_are_incomparable() {
         // The hole this closes: `different_paths_are_not_comparable` above, which must keep
         // reusing on the stamp alone but must NOT once the commits are known to differ.
-        let running = stamp("/ext/mcu-debug-0.1.18/bin/darwin-arm64/mdbg", Some(1_000));
-        let mine = stamp("/src/mcu-debug/packages/mcu-debug/bin/mdbg", Some(2_000));
+        let running = stamp("/ext/mcu-debug-0.1.18/bin/darwin-arm64/mcu-debug-agent", Some(1_000));
+        let mine = stamp("/src/mcu-debug/packages/mcu-debug/bin/mcu-debug-agent", Some(2_000));
         assert_eq!(
             decide_handover("0.1.18", "7de5791", &mine, "0.1.18", "502f335", &running, true),
             Handover::UpgradeByBuild
@@ -977,8 +977,8 @@ mod handover_tests {
     fn the_same_build_at_two_paths_still_reuses() {
         // Two copies of one build is an ordinary install, not a stale daemon. Handing over here
         // would churn the daemon on every launch and strand whatever it holds open.
-        let running = stamp("/opt/mdbg", Some(1_000));
-        let mine = stamp("/home/me/mdbg", Some(2_000));
+        let running = stamp("/opt/mcu-debug-agent", Some(1_000));
+        let mine = stamp("/home/me/mcu-debug-agent", Some(2_000));
         assert_eq!(
             decide_handover("0.1.18", "7de5791", &mine, "0.1.18", "7de5791", &running, true),
             Handover::Reuse
@@ -991,8 +991,8 @@ mod handover_tests {
         // empty string. Treating either as "different" would hand over on every launch against a
         // release binary built from an exported tree -- so both fall back to the stamp rule, which
         // reuses here because the paths differ.
-        let running = stamp("/opt/mdbg", Some(1_000));
-        let mine = stamp("/home/me/mdbg", Some(2_000));
+        let running = stamp("/opt/mcu-debug-agent", Some(1_000));
+        let mine = stamp("/home/me/mcu-debug-agent", Some(2_000));
         for (ours, theirs) in [
             ("", "502f335"),
             ("7de5791", ""),
@@ -1013,7 +1013,7 @@ mod handover_tests {
         // A dirty tree is the normal mid-development state and both sides usually come from the
         // same one, so the suffix says nothing about whether the code agrees. Firing on it would
         // tear the daemon down on every single development launch.
-        let e = stamp("/x/mdbg", Some(1_000));
+        let e = stamp("/x/mcu-debug-agent", Some(1_000));
         assert_eq!(
             decide_handover("0.1.18", "7de5791+dirty", &e, "0.1.18", "7de5791", &e, true),
             Handover::Reuse
@@ -1034,7 +1034,7 @@ mod handover_tests {
         // Two commits have no order, so the build rule claims none -- which means it must never be
         // able to walk an older *release* in over a newer running one. The version comparison runs
         // first for exactly this reason.
-        let e = stamp("/x/mdbg", Some(2_000));
+        let e = stamp("/x/mcu-debug-agent", Some(2_000));
         assert_eq!(
             decide_handover("0.1.17", "7de5791", &e, "0.1.18", "502f335", &e, true),
             Handover::Reuse
@@ -1045,7 +1045,7 @@ mod handover_tests {
     fn auto_upgrade_off_suppresses_the_build_rule_too() {
         // The escape hatch has to cover every same-version handover, or it stops being an escape
         // hatch. A newer version still wins, because that was never gated.
-        let e = stamp("/x/mdbg", Some(1_000));
+        let e = stamp("/x/mcu-debug-agent", Some(1_000));
         assert_eq!(
             decide_handover("0.1.18", "7de5791", &e, "0.1.18", "502f335", &e, false),
             Handover::Reuse
@@ -1062,13 +1062,13 @@ mod handover_tests {
     #[test]
     fn a_daemon_with_no_stamp_is_superseded_once() {
         let pre_feature = ExeStamp::default();
-        let mine = stamp("/x/mdbg", Some(2_000));
+        let mine = stamp("/x/mcu-debug-agent", Some(2_000));
         assert_eq!(
             decide("0.1.16", &mine, "0.1.16", &pre_feature, true),
             Handover::UpgradeByExe
         );
         // ...and once it has a stamp of its own, an identical launch reuses it.
-        let successor = stamp("/x/mdbg", Some(2_000));
+        let successor = stamp("/x/mcu-debug-agent", Some(2_000));
         assert_eq!(decide("0.1.16", &mine, "0.1.16", &successor, true), Handover::Reuse);
     }
 
@@ -1077,16 +1077,16 @@ mod handover_tests {
     /// case where absent evidence must not be read as absent-therefore-old.
     #[test]
     fn a_failed_stat_on_the_running_side_does_not_loop() {
-        let cannot_stat = stamp("/x/mdbg", None);
-        let mine = stamp("/x/mdbg", Some(2_000));
+        let cannot_stat = stamp("/x/mcu-debug-agent", None);
+        let mine = stamp("/x/mcu-debug-agent", Some(2_000));
         assert_eq!(decide("0.1.16", &mine, "0.1.16", &cannot_stat, true), Handover::Reuse);
     }
 
     /// No mtime of our own is no evidence, and the burden is on the challenger.
     #[test]
     fn a_challenger_that_cannot_stat_itself_reuses() {
-        let running = stamp("/x/mdbg", Some(1_000));
-        let mine = stamp("/x/mdbg", None);
+        let running = stamp("/x/mcu-debug-agent", Some(1_000));
+        let mine = stamp("/x/mcu-debug-agent", None);
         assert_eq!(decide("0.1.16", &mine, "0.1.16", &running, true), Handover::Reuse);
     }
 
@@ -1094,8 +1094,8 @@ mod handover_tests {
     /// upgrade still happens, because that was never opt-in.
     #[test]
     fn opting_out_suppresses_only_the_exe_rule() {
-        let running = stamp("/x/mdbg", Some(1_000));
-        let mine = stamp("/x/mdbg", Some(2_000));
+        let running = stamp("/x/mcu-debug-agent", Some(1_000));
+        let mine = stamp("/x/mcu-debug-agent", Some(2_000));
         assert_eq!(decide("0.1.16", &mine, "0.1.16", &running, false), Handover::Reuse);
         assert_eq!(
             decide("0.1.17", &mine, "0.1.16", &running, false),
@@ -1115,7 +1115,13 @@ mod handover_tests {
         let ep: Endpoint = serde_json::from_str(json).expect("a pre-exe record must parse");
         assert_eq!(ep.exe, ExeStamp::default());
         assert_eq!(
-            decide("0.1.15", &stamp("/x/mdbg", Some(9)), &ep.version, &ep.exe, true),
+            decide(
+                "0.1.15",
+                &stamp("/x/mcu-debug-agent", Some(9)),
+                &ep.version,
+                &ep.exe,
+                true
+            ),
             Handover::UpgradeByExe
         );
     }
@@ -1125,7 +1131,7 @@ mod handover_tests {
     /// JavaScript reader can hold exactly (milliseconds, not nanoseconds).
     #[test]
     fn the_stamp_round_trips_as_an_exact_json_number() {
-        let e = stamp("/x/mdbg", Some(1_757_700_093_000));
+        let e = stamp("/x/mcu-debug-agent", Some(1_757_700_093_000));
         let json = serde_json::to_string(&e).expect("serialize");
         assert!(json.contains("1757700093000"), "no exponent or rounding: {json}");
         assert_eq!(serde_json::from_str::<ExeStamp>(&json).expect("deserialize"), e);
@@ -1180,9 +1186,9 @@ mod exe_status_tests {
 
     #[test]
     fn a_replaced_binary_reads_as_replaced() {
-        let dir = std::env::temp_dir().join(format!("mdbg-exe-status-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mcu-debug-agent-exe-status-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
-        let file = dir.join("mdbg");
+        let file = dir.join("mcu-debug-agent");
         std::fs::write(&file, b"v1").expect("write");
         let started = ExeStamp {
             path: file.to_string_lossy().into_owned(),
@@ -1207,7 +1213,7 @@ mod exe_status_tests {
         assert!(!ExeStatus::describe(&no_path).replaced_since_start);
 
         let missing_file = ExeStamp {
-            path: "/nonexistent/mdbg".to_string(),
+            path: "/nonexistent/mcu-debug-agent".to_string(),
             mtime_ms: Some(1_000),
             hash: None,
         };
@@ -1429,15 +1435,15 @@ mod fingerprint_tests {
 
     #[test]
     fn a_recopy_of_identical_bytes_with_a_newer_date_reuses() {
-        let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
-        let recopied = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
+        let running = stamp("/x/mcu-debug-agent", Some(1_000), Some("crc32:0badf00d:42"));
+        let recopied = stamp("/x/mcu-debug-agent", Some(2_000), Some("crc32:0badf00d:42"));
         assert_eq!(decide("0.1.16", &recopied, "0.1.16", &running, true), Handover::Reuse);
     }
 
     #[test]
     fn different_bytes_with_a_newer_date_hand_over() {
-        let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
-        let rebuilt = stamp("/x/mdbg", Some(2_000), Some("crc32:deadbeef:42"));
+        let running = stamp("/x/mcu-debug-agent", Some(1_000), Some("crc32:0badf00d:42"));
+        let rebuilt = stamp("/x/mcu-debug-agent", Some(2_000), Some("crc32:deadbeef:42"));
         assert_eq!(
             decide("0.1.16", &rebuilt, "0.1.16", &running, true),
             Handover::UpgradeByExe
@@ -1447,8 +1453,8 @@ mod fingerprint_tests {
     /// An equal CRC with a different length is still a different file.
     #[test]
     fn the_length_is_part_of_the_fingerprint() {
-        let running = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
-        let rebuilt = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:43"));
+        let running = stamp("/x/mcu-debug-agent", Some(1_000), Some("crc32:0badf00d:42"));
+        let rebuilt = stamp("/x/mcu-debug-agent", Some(2_000), Some("crc32:0badf00d:43"));
         assert_eq!(
             decide("0.1.16", &rebuilt, "0.1.16", &running, true),
             Handover::UpgradeByExe
@@ -1459,15 +1465,15 @@ mod fingerprint_tests {
     /// its own file — keeps the date rule, rather than reusing forever.
     #[test]
     fn a_missing_fingerprint_on_either_side_keeps_the_date_rule() {
-        let old_without = stamp("/x/mdbg", Some(1_000), None);
-        let new_with = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
+        let old_without = stamp("/x/mcu-debug-agent", Some(1_000), None);
+        let new_with = stamp("/x/mcu-debug-agent", Some(2_000), Some("crc32:0badf00d:42"));
         assert_eq!(
             decide("0.1.16", &new_with, "0.1.16", &old_without, true),
             Handover::UpgradeByExe
         );
 
-        let old_with = stamp("/x/mdbg", Some(1_000), Some("crc32:0badf00d:42"));
-        let new_without = stamp("/x/mdbg", Some(2_000), None);
+        let old_with = stamp("/x/mcu-debug-agent", Some(1_000), Some("crc32:0badf00d:42"));
+        let new_without = stamp("/x/mcu-debug-agent", Some(2_000), None);
         assert_eq!(
             decide("0.1.16", &new_without, "0.1.16", &old_with, true),
             Handover::UpgradeByExe
@@ -1477,8 +1483,8 @@ mod fingerprint_tests {
     /// The date still orders: different contents never let an older file evict a newer one.
     #[test]
     fn different_bytes_with_an_older_date_still_reuse() {
-        let running = stamp("/x/mdbg", Some(2_000), Some("crc32:0badf00d:42"));
-        let older = stamp("/x/mdbg", Some(1_000), Some("crc32:deadbeef:42"));
+        let running = stamp("/x/mcu-debug-agent", Some(2_000), Some("crc32:0badf00d:42"));
+        let older = stamp("/x/mcu-debug-agent", Some(1_000), Some("crc32:deadbeef:42"));
         assert_eq!(decide("0.1.16", &older, "0.1.16", &running, true), Handover::Reuse);
     }
 
@@ -1513,7 +1519,7 @@ mod fingerprint_tests {
     #[test]
     fn status_does_not_report_a_recopy_of_identical_bytes_as_replaced() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("mdbg");
+        let exe = dir.path().join("mcu-debug-agent");
         std::fs::write(&exe, b"the same build").unwrap();
         let started = stamp_path(&exe);
         let base = started.mtime_ms.expect("stat-able");

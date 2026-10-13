@@ -22,11 +22,11 @@ if (mode !== "dev") {
     process.exit(1);
 }
 
-const rustDir = path.join(root, "packages", "mdbg");
+const rustDir = path.join(root, "packages", "mcu-debug-agent");
 const binDir = path.join(root, "packages", "mcu-debug", "bin");
 const proxyBinDir = path.join(root, "packages", "mcu-debug-proxy", "bin");
 const target = "x86_64-pc-windows-msvc";
-const binName = "mdbg.exe";
+const binName = "mcu-debug-agent.exe";
 
 function run(cmd, args, opts) {
     const result = spawnSync(cmd, args, { cwd: rustDir, stdio: "inherit", shell: false, ...opts });
@@ -58,7 +58,7 @@ if (!installed.split("\n").some((l) => l.trim() === target)) {
 
 // Build
 console.log(`Building debug helper for target: ${target}`);
-run("cargo", ["build", "--bin", "mdbg", "--target", target]);
+run("cargo", ["build", "--bin", "mcu-debug-agent", "--target", target]);
 
 // Copy artifacts
 const srcBin = path.join(rustDir, "target", target, "debug", binName);

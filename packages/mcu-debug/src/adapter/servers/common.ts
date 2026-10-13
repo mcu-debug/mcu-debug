@@ -1634,7 +1634,7 @@ export function getHelperExecutable(extPath: string): string {
     // const extPath = this.session.args.extensionPath;
     const platform = process.platform;
     const arch = process.arch;
-    let helperName = "mdbg";
+    let helperName = "mcu-debug-agent";
     if (platform === "win32") {
         helperName += ".exe";
     }

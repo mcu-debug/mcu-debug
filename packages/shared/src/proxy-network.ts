@@ -67,7 +67,7 @@ export interface ProxyLaunchResults {
     bindErrors: string[] | null;
     /**
      * Version of the proxy daemon we are actually talking to -- NOT necessarily the version of
-     * the binary we just launched. `mdbg proxy` is a singleton: launching it may reuse a daemon
+     * the binary we just launched. `mcu-debug-agent proxy` is a singleton: launching it may reuse a daemon
      * an older extension started, and on that path it reports the *running* proxy's version.
      *
      * So this is the only way a caller can tell "my upgrade took effect" from "I am still

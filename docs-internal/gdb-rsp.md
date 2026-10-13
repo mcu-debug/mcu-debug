@@ -24,7 +24,7 @@ _Known unrelated flake:_ `proxy_helper::listeners::tests::two_specific_addresses
 fails intermittently (port-binding race, pre-existing, untouched by this work) — don't read it as a
 regression. Revised 2026-09-21.
 
-**Goal:** make the Probe Agent (`mdbg proxy`) a **multiplexer on the GDB Remote Serial Protocol
+**Goal:** make the Probe Agent (`mcu-debug-agent proxy`) a **multiplexer on the GDB Remote Serial Protocol
 connection to the gdb-server**. GDB becomes one client on that connection; the Agent's own
 features — RTT, PC-sampling profiling, ETB/ETF drain, stack probing — become others. This puts
 target memory access next to the probe, in Rust, instead of at the far end of two hops driven by a
@@ -106,7 +106,7 @@ connection to the gdb-server's gdb port. GDB is a client of the Agent's multiple
 second connection to the server.
 
 ```text
-Engineer Machine                      Probe Host (mdbg proxy = Probe Agent)
+Engineer Machine                      Probe Host (mcu-debug-agent proxy = Probe Agent)
 ┌──────────────┐                      ┌────────────────────────────────────────────────────┐
 │ GDB (main)   │─ local port ─┐       │  ProxyServer (one per session)                     │
 │ GDB (live)   │─ local port ─┤       │                                                    │
@@ -219,7 +219,7 @@ say.
 
 ### Both remaining cells closed by `rsp-probe` on hardware
 
-Run against the live OpenOCD (`mdbg rsp-probe --port 2009 -v`). The two questions no GDB session can
+Run against the live OpenOCD (`mcu-debug-agent rsp-probe --port 2009 -v`). The two questions no GDB session can
 reach are now answered, and they are the two the design actually depended on:
 
 | Row                                                          | Result                                 |
@@ -1052,7 +1052,7 @@ traffic exactly. The interleaving of `AGT>SRV` against an outstanding `GDB>SRV` 
 that cannot be seen any other way, and it is where §4.1's subtleties live.
 
 ```text
-# mdbg RSP trace  stream=gdbPort  level=All
+# mcu-debug-agent RSP trace  stream=gdbPort  level=All
       0.076  GDB>SRV  $qSupported:multiprocess+;swbreak+#f7
       3.891  SRV>GDB  $PacketSize=4000;QStartNoAckMode+;vContSupported+#02
      11.498  GDB>SRV  $vCont;c#a8
@@ -1314,7 +1314,7 @@ either way.
 
 ## 6. Module layout
 
-New directory `packages/mdbg/src/gdb_rsp/` — crate-level, **not** under `proxy_helper`, because
+New directory `packages/mcu-debug-agent/src/gdb_rsp/` — crate-level, **not** under `proxy_helper`, because
 §8 requires it to be reachable from more than one entry point.
 `proxy_helper/proxy_server/gdb_rsp.rs` shrinks to the glue that wires a mux into `ProxyServer`.
 
@@ -1404,18 +1404,18 @@ BMP does not meet.
 
 **For the record, this is a hardware-availability decision, not an architectural one.** `MuxCore` is
 sans-IO on _both_ sides — its server side is a byte sink and source just as its GDB side is — and
-`mdbg` already contains a complete serial stack (`serial/port.rs`, reader thread, ring buffer). A BMP
+`mcu-debug-agent` already contains a complete serial stack (`serial/port.rs`, reader thread, ring buffer). A BMP
 bridge would therefore be: the Agent opens the CDC-ACM device, presents a TCP listener to GDB, and
 runs the mux in between. That is a small piece of work, and it is the _only_ route by which BMP could
 ever be remoted, so the architecture is the enabler rather than the obstacle. It is unstaffed because
 nobody has donated a probe to test against, not because it does not fit.
 
-### Filling the matrix: `mdbg rsp-probe`
+### Filling the matrix: `mcu-debug-agent rsp-probe`
 
 ```sh
-mdbg rsp-probe --port 3333            # OpenOCD; J-Link 2331, etc.
-mdbg rsp-probe --port 3333 -v         # log every packet both ways
-mdbg rsp-probe --port 3333 --no-resume  # leave the target alone (skips the key test)
+mcu-debug-agent rsp-probe --port 3333            # OpenOCD; J-Link 2331, etc.
+mcu-debug-agent rsp-probe --port 3333 -v         # log every packet both ways
+mcu-debug-agent rsp-probe --port 3333 --no-resume  # leave the target alone (skips the key test)
 ```
 
 Run it against a live gdb port with **no GDB attached**, or as a second client where the
@@ -1523,7 +1523,7 @@ to `ServerTier::allows_while_running` plus its test, deliberately kept that chea
 
 `ServerSession.startServer()` only builds a `ProxyClient` when `args.hostConfig` is set
 (`packages/mcu-debug/src/adapter/server-session.ts:73`). In the plain local case — probe on the
-same machine as the DA, which is most users — `mdbg proxy` is not in the data path at all, and GDB
+same machine as the DA, which is most users — `mcu-debug-agent proxy` is not in the data path at all, and GDB
 connects to the gdb-server directly. **A mux that is not in the data path cannot mux anything.**
 
 The mechanism to fix this already exists: `hostConfig.type = "local"`
@@ -1534,7 +1534,7 @@ exposed in package.json schema"_), and the serial subsystem already uses it. So 
 This is now the preferred outcome for its own sake, independent of this feature — one data path,
 one implementation, one set of behaviours to test — and the singleton work
 ([Singleton-Tier1-Plan.md](./Singleton-Tier1-Plan.md)) already makes a long-lived local Agent
-ordinary. The alternative (a separate `mdbg` subcommand the DA spawns for local sessions, sharing
+ordinary. The alternative (a separate `mcu-debug-agent` subcommand the DA spawns for local sessions, sharing
 the `gdb_rsp` module but not the proxy) exists as a fallback and is why §6 puts the engine at
 crate level, but it is second choice.
 
@@ -1628,7 +1628,7 @@ Phases 1–3 do not depend on the §8 decision. Each item is sized to be a revie
 
 ### Phase 1 — Codec and state (pure, no I/O)
 
-- [x] **1.** Create `packages/mdbg/src/gdb_rsp/`, registered in `lib.rs`. Removed the orphan
+- [x] **1.** Create `packages/mcu-debug-agent/src/gdb_rsp/`, registered in `lib.rs`. Removed the orphan
       `proxy_helper/proxy_server/gdb_rsp.rs` — it had **no `mod` declaration anywhere**, so it had
       never been compiled, which is why its camelCase field never tripped clippy. `packet.rs`,
       `caps.rs` and `state.rs` are created by their own items below rather than as empty files.
@@ -1830,7 +1830,7 @@ Stderr, GdbRsp { core }, Swo, Tcl, Telnet, Console, Other }` classified once at 
       the answer must come from a declared limit and never from an attempt (§4.7.5). OpenOCD wipes breakpoints and watchpoints; the others are
       unknown and `rsp-probe` cannot see it, since it is a side effect on the _first_ connection.
       Worth an upstream one-liner for OpenOCD regardless of what we do here.
-- [x] **17a.** `mdbg rsp-probe` (§7) — a raw-RSP diagnostic that asks a live gdb-server every
+- [x] **17a.** `mcu-debug-agent rsp-probe` (§7) — a raw-RSP diagnostic that asks a live gdb-server every
       matrix question in one pass, including the one **no arrangement of GDB processes can test**
       (does it answer `m` while a `c` is outstanding). Tested against fake servers that do and do
       not answer while running, so a `no` is a real finding rather than a timeout in our own code.

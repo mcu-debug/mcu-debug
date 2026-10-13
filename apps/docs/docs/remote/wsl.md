@@ -11,7 +11,7 @@ Debugging from WSL (Windows Subsystem for Linux) when the debug probe is physica
 ┌──────── Engineer Machine ───────────────────────────────────────┐
 │  VS Code UI process                                             │
 │  mcu-debug UI extension  ──► spawns/manages Probe Agent         │
-│  Probe Agent (mdbg proxy)  ◄─────────────────────-─┐            │
+│  Probe Agent (mcu-debug-agent proxy)  ◄─────────────────────-─┐            │
 │  GDB Server (OpenOCD, J-Link, etc.)  ◄── USB ──► Probe/Target  ││
 │                                                                ││
 │  ┌── WSL / Dev Container / VS Code Remote SSH ───────────────┐ ││
@@ -80,7 +80,7 @@ With NAT networking, WSL reaches Windows at the default gateway IP. mcu-debug de
 
 In NAT mode the proxy cannot bind loopback only — WSL is in a separate network namespace and
 would not be able to reach it — so it binds an address reachable from the guest. **Windows
-Firewall will ask for permission for `mdbg.exe` the first time this happens, and you have to
+Firewall will ask for permission for `mcu-debug-agent.exe` the first time this happens, and you have to
 allow it.** If you deny it the proxy still starts and looks healthy on the Windows side, but the
 debug adapter in WSL cannot connect and the session times out with nothing obviously wrong.
 

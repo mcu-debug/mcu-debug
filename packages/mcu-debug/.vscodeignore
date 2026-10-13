@@ -26,4 +26,4 @@ tmp/**
 **/tmp/**
 **/.#*
 **/*~
-bin/mdbg*
+bin/mcu-debug-agent*

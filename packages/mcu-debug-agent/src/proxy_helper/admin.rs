@@ -507,7 +507,7 @@ fn publish_hosts(ctx: &Arc<AdminContext>, hosts: &[String]) {
     }
 }
 
-// ── Client side (invoked by `mdbg proxy --status` / `--shutdown`) ─────────────
+// ── Client side (invoked by `mcu-debug-agent proxy --status` / `--shutdown`) ─────────────
 
 /// Ask the running proxy to step down in favor of us.
 /// Returns once it has acknowledged (it releases its lock right after).

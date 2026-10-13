@@ -20,7 +20,7 @@ export type MemoryReadCallback = (b: Buffer, len: number) => Promise<void>;
  * which for RTT is rare: drains average a few hundred bytes.
  *
  * The Agent's own engine uses the same number for the same reason; see `SAFE_DRAIN_BYTES` in
- * `packages/mdbg/src/rtt/mod.rs`.
+ * `packages/mcu-debug-agent/src/rtt/mod.rs`.
  */
 const MAX_MEMORY_CHUNK = 500;
 

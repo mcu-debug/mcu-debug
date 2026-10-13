@@ -68,7 +68,7 @@ If you are currently using `cortex-debug`, you're already ready to use MCU-Debug
 
 ### 1. Transparent Remote Probe Support (Funnel Protocol)
 In modern development, your compiler and workspace often live inside WSL, a Dev Container, or a remote lab server, while your hardware probe is plugged into your laptop. 
-MCU-Debug solves this with a lightweight **Probe Agent** (`mdbg`) running locally that multiplexes GDB RSP, RTT, SWO, and serial ports over a single, secure SSH or local TCP tunnel. No complex `usbipd` setup or firewall configuration needed.
+MCU-Debug solves this with a lightweight **Probe Agent** (`mcu-debug-agent`) running locally that multiplexes GDB RSP, RTT, SWO, and serial ports over a single, secure SSH or local TCP tunnel. No complex `usbipd` setup or firewall configuration needed.
 
 ### 2. Standalone CLI & Terminal UI (TUI)
 Step out of the IDE entirely. With the `mcu-debug` command-line interface:

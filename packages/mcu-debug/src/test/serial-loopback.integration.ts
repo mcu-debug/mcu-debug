@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // End-to-end integration tests that drive the REAL resolver (proxy.ts) and a
-// REAL `mdbg proxy` process — no fakes, no injected resolver. Unlike the fast
+// REAL `mcu-debug-agent proxy` process — no fakes, no injected resolver. Unlike the fast
 // unit suite (serial-multiproxy.test.ts) these spawn a proxy daemon and talk to
 // it over a real socket, so they live outside the `*.test.ts` glob and run via
 // `npm run test:integration`.
@@ -28,13 +28,13 @@ import { SerialPortManager } from "../common/serial-manager";
 import { setHostAdapter } from "../common/host-adapter";
 import { getHelperExecutable, HostConfig, ConfigurationArguments } from "../adapter/servers/common";
 
-// packages/mcu-debug (dir that holds bin/mdbg). CommonJS project → __dirname works.
+// packages/mcu-debug (dir that holds bin/mcu-debug-agent). CommonJS project → __dirname works.
 const EXT_ROOT = path.resolve(__dirname, "../..");
-const BIN = path.join(EXT_ROOT, "bin", "mdbg");
+const BIN = path.join(EXT_ROOT, "bin", "mcu-debug-agent");
 const HAVE_BIN = fs.existsSync(BIN);
 
 // Isolate the singleton so we never adopt or clobber the developer's real daemon.
-const STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mdbg-itest-"));
+const STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mcu-debug-agent-itest-"));
 const INSTANCE = "itest";
 process.env.MDBG_PROXY_STATE_DIR = STATE_DIR;
 process.env.MDBG_PROXY_INSTANCE = INSTANCE;
@@ -109,7 +109,7 @@ function sshLocalhostAvailable(): boolean {
     return r.status === 0;
 }
 
-/** All device paths from `mdbg serial list --all`, straight from the CLI enumerator. */
+/** All device paths from `mcu-debug-agent serial list --all`, straight from the CLI enumerator. */
 function cliListPaths(): string[] {
     const out = execFileSync(BIN, ["serial", "list", "--all"], { encoding: "utf-8", timeout: 8000 });
     return out
@@ -119,7 +119,7 @@ function cliListPaths(): string[] {
         .map((l) => l.split(/\s+/)[0]);
 }
 
-/** First callout (cu.*) device path from `mdbg serial list`, discovered locally. */
+/** First callout (cu.*) device path from `mcu-debug-agent serial list`, discovered locally. */
 function firstCuDevice(): string | undefined {
     return cliListPaths().find((p) => p.startsWith("/dev/cu."));
 }
@@ -137,7 +137,7 @@ after(() => {
 // Local loopback (type: "local")
 // ---------------------------------------------------------------------------
 
-test("local loopback enumerates real serial ports through a real proxy", { skip: HAVE_BIN ? false : "mdbg binary not built (run scripts/build-binaries.sh dev)" }, async (t) => {
+test("local loopback enumerates real serial ports through a real proxy", { skip: HAVE_BIN ? false : "mcu-debug-agent binary not built (run scripts/build-binaries.sh dev)" }, async (t) => {
     const mgr = new SerialPortManager(); // real getProxyForSerialPorts → spawns real proxy
     t.after(() => mgr.dispose());
 
@@ -148,12 +148,12 @@ test("local loopback enumerates real serial ports through a real proxy", { skip:
     }
 });
 
-test("local loopback enumeration is consistent with the CLI enumerator", { skip: HAVE_BIN ? false : "mdbg binary not built" }, async (t) => {
+test("local loopback enumeration is consistent with the CLI enumerator", { skip: HAVE_BIN ? false : "mcu-debug-agent binary not built" }, async (t) => {
     const mgr = new SerialPortManager();
     t.after(() => mgr.dispose());
 
     // The proxy enumerates over the same OS APIs the CLI uses, so every port it
-    // reports must appear in `mdbg serial list --all`. (The CLI's --all is a
+    // reports must appear in `mcu-debug-agent serial list --all`. (The CLI's --all is a
     // superset — it also lists the tty.* variants the proxy filters out.) This
     // proves the port list surfaced to the UI is real and correct end-to-end,
     // without opening a device — opening real devices is device-specific (e.g.
@@ -166,7 +166,7 @@ test("local loopback enumeration is consistent with the CLI enumerator", { skip:
     }
 });
 
-test("local loopback opens the debug-console and creates a view", { skip: HAVE_BIN ? false : "mdbg binary not built" }, async (t) => {
+test("local loopback opens the debug-console and creates a view", { skip: HAVE_BIN ? false : "mcu-debug-agent binary not built" }, async (t) => {
     const mgr = new SerialPortManager();
     t.after(() => mgr.dispose());
 
@@ -183,7 +183,7 @@ test("local loopback opens the debug-console and creates a view", { skip: HAVE_B
     assert.ok(stub.createdViews.includes(target!), `expected a view for ${target}; created: ${JSON.stringify(stub.createdViews)}`);
 });
 
-test("malformed control request fails fast with an error (no client timeout)", { skip: HAVE_BIN ? false : "mdbg binary not built" }, async (t) => {
+test("malformed control request fails fast with an error (no client timeout)", { skip: HAVE_BIN ? false : "mcu-debug-agent binary not built" }, async (t) => {
     const mgr = new SerialPortManager();
     t.after(() => mgr.dispose());
 

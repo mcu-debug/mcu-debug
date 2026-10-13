@@ -15,12 +15,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use mdbg::cockpit::run::AttachArgs;
-use mdbg::cockpit::run::DebugArgs;
-use mdbg::da_helper::run::DaHelperArgs;
-use mdbg::gdb_rsp::probe::RspProbeArgs;
-use mdbg::proxy_helper::run::ProxyArgs;
-use mdbg::serial::cmd::SerialArgs;
+use mcu_debug_agent::cockpit::run::AttachArgs;
+use mcu_debug_agent::cockpit::run::DebugArgs;
+use mcu_debug_agent::da_helper::run::DaHelperArgs;
+use mcu_debug_agent::gdb_rsp::probe::RspProbeArgs;
+use mcu_debug_agent::proxy_helper::run::ProxyArgs;
+use mcu_debug_agent::serial::cmd::SerialArgs;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "MCU Debug Helper — ELF analysis, probe agent, and TUI")]
@@ -92,11 +92,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse_from(&args);
 
     match cli.command {
-        Commands::Debug(args) => mdbg::cockpit::run::run(args),
-        Commands::Attach(args) => mdbg::cockpit::run::attach(args),
-        Commands::DaHelper(args) => mdbg::da_helper::run::run(args),
-        Commands::Proxy(args) => mdbg::proxy_helper::run::run(args),
-        Commands::Serial(args) => mdbg::serial::cmd::run(args),
-        Commands::RspProbe(args) => mdbg::gdb_rsp::probe::run_cli(args),
+        Commands::Debug(args) => mcu_debug_agent::cockpit::run::run(args),
+        Commands::Attach(args) => mcu_debug_agent::cockpit::run::attach(args),
+        Commands::DaHelper(args) => mcu_debug_agent::da_helper::run::run(args),
+        Commands::Proxy(args) => mcu_debug_agent::proxy_helper::run::run(args),
+        Commands::Serial(args) => mcu_debug_agent::serial::cmd::run(args),
+        Commands::RspProbe(args) => mcu_debug_agent::gdb_rsp::probe::run_cli(args),
     }
 }

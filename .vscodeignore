@@ -20,6 +20,6 @@ yarn.lock
 docs/**
 scripts/**
 coverage/**
-bin/mdbg
-bin/mdbg.exe
+bin/mcu-debug-agent
+bin/mcu-debug-agent.exe
 .DS_Store

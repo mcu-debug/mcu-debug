@@ -9,7 +9,7 @@ const ROOT = path.join(__dirname, "..");
 const TARGETS = [
     { label: "packages/mcu-debug/package.json", path: path.join(ROOT, "packages", "mcu-debug", "package.json"), type: "json" },
     { label: "packages/mcu-debug-proxy/package.json", path: path.join(ROOT, "packages", "mcu-debug-proxy", "package.json"), type: "json" },
-    { label: "packages/mdbg/Cargo.toml", path: path.join(ROOT, "packages", "mdbg", "Cargo.toml"), type: "cargo" },
+    { label: "packages/mcu-debug-agent/Cargo.toml", path: path.join(ROOT, "packages", "mcu-debug-agent", "Cargo.toml"), type: "cargo" },
 ];
 
 function readVersion(target) {

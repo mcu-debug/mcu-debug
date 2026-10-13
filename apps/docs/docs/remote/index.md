@@ -65,8 +65,8 @@ differ in one thing — **who starts the Probe Agent, and therefore how much we 
 | `hostConfig`                                           | Who starts the agent | What mcu-debug does                                                                       |
 | ------------------------------------------------------ | -------------------- | ----------------------------------------------------------------------------------------- |
 | `true`, or `{ "type": "auto" }`                        | mcu-debug            | Detects the topology (WSL, dev container, Remote-SSH) and launches the agent on the machine with the probe |
-| `{ "type": "ssh", "ssh": { "host" } }`                 | mcu-debug            | Copies `mdbg` to the host, launches it there, opens an `ssh -L` tunnel                    |
-| `{ "type": "ssh", "ssh": { "host", "serverPath" } }`   | mcu-debug            | As above without the copy — runs the `mdbg` you installed                                  |
+| `{ "type": "ssh", "ssh": { "host" } }`                 | mcu-debug            | Copies `mcu-debug-agent` to the host, launches it there, opens an `ssh -L` tunnel                    |
+| `{ "type": "ssh", "ssh": { "host", "serverPath" } }`   | mcu-debug            | As above without the copy — runs the `mcu-debug-agent` you installed                                  |
 | `{ "type": "ssh", "ssh": { "host", "proxyPort", "token" } }` | **you**         | Only the `ssh -L` tunnel. No copy, no launch                                              |
 | `{ "proxy": { "host", "port", "token" } }`              | **you**             | Nothing at all — connects to that endpoint exactly as given                               |
 
@@ -149,13 +149,13 @@ the agent, use `ssh` with `proxyPort` + `token` from the previous section instea
 
 Either way the rest of the remote settings still apply: `serverpath` is the **gdb-server's** path
 on the machine with the probe, wherever that machine is. (Not to be confused with
-`hostConfig.ssh.serverPath`, which is where `mdbg` itself lives on an SSH host.)
+`hostConfig.ssh.serverPath`, which is where `mcu-debug-agent` itself lives on an SSH host.)
 
 Start the agent yourself on the machine with the probe:
 
 ```bash
 # Shutdown any old daemon running, existing sessions will continue to run.
-# You can also do 'killall mdbg' to kill forcefully or use the Task manager
+# You can also do 'killall mcu-debug-agent' to kill forcefully or use the Task manager
 
 mcu-debug proxy --shutdown --all
 

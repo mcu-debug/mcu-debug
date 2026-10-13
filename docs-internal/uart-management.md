@@ -2,13 +2,13 @@
 
 Design document for UART/serial support in `mcu-debug`. Covers lifecycle, server architecture, control channel protocol, data transport, error reporting, and UI integration.
 
-This builds on — and reuses — the existing `mdbg proxy` server, RTT/SWO client-side fan-out code, and per-session control channel protocol.
+This builds on — and reuses — the existing `mcu-debug-agent proxy` server, RTT/SWO client-side fan-out code, and per-session control channel protocol.
 
 ---
 
 ## 1. Motivation & Core Flaw
 
-The current `mdbg serial` implementation ([run_serial.rs](../packages/mdbg/src/serial/run_serial.rs)) opens the serial port **only after a TCP client connects** (inside the `accept()` loop). On disconnect, the port is closed.
+The current `mcu-debug-agent serial` implementation ([run_serial.rs](../packages/mcu-debug-agent/src/serial/run_serial.rs)) opens the serial port **only after a TCP client connects** (inside the `accept()` loop). On disconnect, the port is closed.
 
 Consequences:
 
@@ -34,7 +34,7 @@ UARTs are **workspace-scoped**, not debug-session-scoped. They can be opened, ob
 | Long-lived services     | VS Code session (heartbeat-gated) | **Serial ports / UARTs**      |
 | Session-scoped services | Per debug session                 | gdb-server sessions, RTT, SWO |
 
-Both are managed by the **same** `mdbg proxy` server. There is no separate `serial` subcommand — it does not exist and is not being introduced. The proxy is a proxy for debug sessions *and* serial ports. One binary, one subcommand, two service types.
+Both are managed by the **same** `mcu-debug-agent proxy` server. There is no separate `serial` subcommand — it does not exist and is not being introduced. The proxy is a proxy for debug sessions *and* serial ports. One binary, one subcommand, two service types.
 
 ### Why workspace-scoped
 
@@ -67,7 +67,7 @@ UARTs themselves are defined in workspace UI (picker + form) and stored in works
 
 ### Program lifetime = VS Code session
 
-The heartbeat mechanism already in [proxy_helper/run.rs:178](../packages/mdbg/src/proxy_helper/run.rs) handles this:
+The heartbeat mechanism already in [proxy_helper/run.rs:178](../packages/mcu-debug-agent/src/proxy_helper/run.rs) handles this:
 
 - Extension spawns the helper with `--heartbeat`, sends a `\n` every 5s on stdin
 - Helper has a 15s timeout watchdog on the receive side
@@ -83,7 +83,7 @@ Serial ports opened during this lifetime stay open until heartbeat dies. Reset b
 ### Unified proxy server
 
 ```
-mdbg proxy     ← single entry point (no `serial` subcommand exists)
+mcu-debug-agent proxy     ← single entry point (no `serial` subcommand exists)
   │
   ├─ Control channel        ← per-session JSON-RPC (request/response + async events)
   │
@@ -244,7 +244,7 @@ for each entry in /sys/class/tty/:
 
 The "chains to real bus" check is the phantom filter. If the device's ancestry doesn't terminate at a USB, PCI, or platform device node with real hardware bindings, drop it.
 
-Implementation lives in `packages/mdbg/src/serial/enumerate_linux.rs` alongside:
+Implementation lives in `packages/mcu-debug-agent/src/serial/enumerate_linux.rs` alongside:
 - `enumerate_windows.rs` — wraps `serialport::available_ports()`
 - `enumerate_macos.rs` — wraps `serialport::available_ports()`
 
@@ -678,7 +678,7 @@ Explicit non-goals, with reasons:
 │         │                                │                           │
 │         ▼                                ▼                           │
 │   ┌──────────────────────────────────────────────┐                  │
-│   │  mdbg proxy (single binary)       │                  │
+│   │  mcu-debug-agent proxy (single binary)       │                  │
 │   │                                                │                  │
 │   │  ┌─ Serial port manager ─────────────────┐    │                  │
 │   │  │ per-port: handle, ring, log file,      │    │                  │

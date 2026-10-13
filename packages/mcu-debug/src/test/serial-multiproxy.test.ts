@@ -4,7 +4,7 @@
 // Regression tests for the multi-proxy serial refactor. Each test stands up one
 // or more in-process fake proxies that speak the control protocol over TCP, then
 // drives the real ProxyConnection / SerialPortManager against them. No hardware
-// and no real `mdbg proxy` are involved — the proxy is faked at the wire.
+// and no real `mcu-debug-agent proxy` are involved — the proxy is faked at the wire.
 
 import test from "node:test";
 import assert from "node:assert/strict";

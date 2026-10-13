@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // ── Singleton model (Tier 1) ─────────────────────────────────────────────────
-// `mdbg proxy` is now a per-(user, instance) singleton. Launching it either
+// `mcu-debug-agent proxy` is now a per-(user, instance) singleton. Launching it either
 // starts the one proxy or *reuses* the running one — the binary does the
 // "reuse-if-there, start-if-not" logic itself, so this extension no longer
 // implements it. Consequences:
@@ -236,7 +236,7 @@ function traceWarn(step: string, meta: Record<string, unknown> = {}) {
  *
  * Two things can silently not happen, and they fail in opposite ways:
  *
- *  - **Version.** `mdbg proxy` only takes over from a *strictly older* daemon. An equal version
+ *  - **Version.** `mcu-debug-agent proxy` only takes over from a *strictly older* daemon. An equal version
  *    reuses, which is correct for a second window but means a rebuild during development (same
  *    `CARGO_PKG_VERSION`, and dev mode sets `--idle-timeout 0` so the daemon never exits) keeps
  *    talking to a daemon built hours ago. A handover that was attempted and *failed* also falls
@@ -272,7 +272,7 @@ function traceLaunchOutcome(policy: ProxyLaunchPolicy, result: ProxyLaunchResult
             reused: "an already-running singleton answered instead of the binary we launched",
             // --all, not the bare form: the daemon that answered may be on another instance
             // (dev runs use `dev`), and without it only `default` is drained.
-            hint: "`mdbg proxy --shutdown --all` drains them; the next launch starts this build",
+            hint: "`mcu-debug-agent proxy --shutdown --all` drains them; the next launch starts this build",
         });
     }
 
@@ -295,7 +295,7 @@ function computeLaunchPolicy(hostType: ProxyHostType = "auto"): ProxyLaunchPolic
     return computeProxyLaunchPolicy(mode);
 }
 
-// Launch (or reuse) the singleton proxy and read its discovery line. `mdbg proxy`
+// Launch (or reuse) the singleton proxy and read its discovery line. `mcu-debug-agent proxy`
 // self-daemonizes: the process we spawn is a short-lived foreground launcher that
 // re-spawns a detached daemon, forwards its discovery line to stdout, and exits.
 // The daemon (owner) survives on its own; we never own or manage it.
@@ -340,7 +340,7 @@ function startProxyServerWrapper(proxyPolicy: ProxyLaunchPolicy): Promise<ProxyL
 const STATUS_TIMEOUT_MS = 5_000;
 
 /**
- * Run `mdbg proxy --status` and return its JSON report.
+ * Run `mcu-debug-agent proxy --status` and return its JSON report.
  *
  * This has to live on this side of the extension pair. The agent runs on the machine with
  * the probe, which in a remote window is *this* host, not the workspace one — so the main
@@ -374,7 +374,7 @@ function proxyStatus(): Promise<unknown> {
             finish(() => {
                 child.kill();
                 traceWarn("status.timeout", { ms: STATUS_TIMEOUT_MS, stdout, stderr });
-                reject(new Error(`'mdbg proxy --status' did not answer within ${STATUS_TIMEOUT_MS / 1000}s`));
+                reject(new Error(`'mcu-debug-agent proxy --status' did not answer within ${STATUS_TIMEOUT_MS / 1000}s`));
             });
         }, STATUS_TIMEOUT_MS);
 
@@ -397,7 +397,7 @@ function proxyStatus(): Promise<unknown> {
                     resolve(report);
                 } catch (e) {
                     traceWarn("status.unparseable", { exit: code, stdout, stderr, error: `${e}` });
-                    reject(new Error(`'mdbg proxy --status' returned no JSON (exit ${code}): ${stderr || stdout}`));
+                    reject(new Error(`'mcu-debug-agent proxy --status' returned no JSON (exit ${code}): ${stderr || stdout}`));
                 }
             }),
         );
@@ -438,7 +438,7 @@ export function activate(context: vscode.ExtensionContext) {
         instance: process.env["MDBG_PROXY_INSTANCE"] ?? "default",
     });
     const platform = process.platform;
-    const exeName = "mdbg" + (platform === "win32" ? ".exe" : "");
+    const exeName = "mcu-debug-agent" + (platform === "win32" ? ".exe" : "");
     const devPath = context.asAbsolutePath(`bin/${exeName}`);
     if (fs.existsSync(devPath) && binaryMatchesPlatform(devPath, platform, process.arch)) {
         proxyPath = devPath;

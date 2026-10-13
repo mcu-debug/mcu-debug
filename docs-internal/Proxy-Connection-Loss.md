@@ -1,7 +1,7 @@
 # Proxy Connection Loss — Policy & Deferred Work
 
 **Status:** Decided. Teardown is the shipped behaviour; reconnect is deferred, not rejected. 2026-09-11.
-**Area:** Debug Adapter ↔ Probe Agent (`mdbg proxy`) control connection.
+**Area:** Debug Adapter ↔ Probe Agent (`mcu-debug-agent proxy`) control connection.
 **Related:** [Remote-Proxy.md](./Remote-Proxy.md), [GdbServer-Exit-Reporting.md](./GdbServer-Exit-Reporting.md)
 
 ---
@@ -66,7 +66,7 @@ middlebox and draw ACKs back — but it means the agent never learns that its cl
 If the adapter's machine disappears without sending FIN (lid closed, cable pulled, power
 cut), the agent's socket stays `ESTABLISHED` and its connection thread blocks on a read that
 will never return. **The session ref is never released**, so `wait_until_idle`
-([lifetime.rs](../packages/mdbg/src/proxy_helper/lifetime.rs)) never sees the count reach zero
+([lifetime.rs](../packages/mcu-debug-agent/src/proxy_helper/lifetime.rs)) never sees the count reach zero
 and the idle window never begins — the 5-hour timeout is not a backstop here, it simply never
 starts. The gdb-server keeps running and the probe stays claimed, which is the exact outcome
 §2 exists to prevent.

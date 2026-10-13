@@ -91,7 +91,7 @@ const PROXY_PROBE_TIMEOUT_MS = 2000;
 const SSH_RUN_TIMEOUT_MS = 15000;
 const SSH_DEPLOY_TIMEOUT_MS = 60000;
 const SSH_AGENT_LAUNCH_TIMEOUT_MS = 30000;
-const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mdbg"; // The ~ will be expanded by the remote shell.
+const REMOTE_HELPER_PATH = "~/.mcu-debug/bin/mcu-debug-agent"; // The ~ will be expanded by the remote shell.
 
 // Appends ssh's own stderr to an error message. Because we run with BatchMode=yes
 // (SSH_BATCH_OPTS), an unusable login fails instantly and says exactly why here —
@@ -180,7 +180,7 @@ async function sshCopyHelper(hostConfig: HostConfig): Promise<void> {
         throw new Error(`Unsupported remote OS/arch: "${unameOut}"`);
     }
 
-    const binName = "mdbg";
+    const binName = "mcu-debug-agent";
     const localBinary = path.join(getHostAdapter().getExtensionPath(), "bin", archDir, binName);
     if (!fs.existsSync(localBinary)) {
         throw new Error(`Local helper binary not found for ${archDir}: ${localBinary}`);
@@ -264,7 +264,7 @@ function checkAgentVersion(agentVersion: string | undefined, where: string): voi
     throw new Error(
         `Proxy Agent version mismatch on ${where}: the agent is ${agentVersion}, this extension is ${pkgJsonVersion}. ` +
             "They must match exactly — neither side accepts an older or newer peer. " +
-            `Replace the agent with the mdbg shipped inside the matching extension (see the "Getting the mdbg binary" ` +
+            `Replace the agent with the mcu-debug-agent shipped inside the matching extension (see the "Getting the mcu-debug-agent binary" ` +
             "section of the SSH documentation).",
     );
 }
@@ -1009,7 +1009,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
                         const msg =
                             `WSL NAT: cannot reach Proxy Agent at ${resolvedProxyHost}:${current.serverPort}. ` +
                             "Windows Firewall is still blocking the connection. " +
-                            "Allow the mdbg executable through the firewall, or start the Probe Agent yourself " +
+                            "Allow the mcu-debug-agent executable through the firewall, or start the Probe Agent yourself " +
                             "on a port you have opened and point hostConfig.proxy at it.";
                         getHostAdapter().showError(msg);
                         throw new Error(msg);

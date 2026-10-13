@@ -126,7 +126,7 @@ impl ServerTier {
     /// The tier for a `servertype` from the launch configuration.
     ///
     /// Only what has actually been measured is claimed here. §7's matrix is filled in by
-    /// `mdbg rsp-probe` (item 17a), and so far only **OpenOCD** has been run (item 17b): both
+    /// `mcu-debug-agent rsp-probe` (item 17a), and so far only **OpenOCD** has been run (item 17b): both
     /// critical cells came back YES, and its memory-read path has no halt gate in the source
     /// (§4.2.1). Everything else stays [`ServerTier::Unknown`], which the send gate reads as
     /// halted-only -- so an Agent-side feature on those servers works while the target is stopped

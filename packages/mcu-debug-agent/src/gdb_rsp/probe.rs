@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `mdbg rsp-probe` — fill in the per-server capability matrix by asking the server.
+//! `mcu-debug-agent rsp-probe` — fill in the per-server capability matrix by asking the server.
 //!
 //! This answers the questions `docs-internal/gdb-rsp.md` §7 leaves open, and one of
 //! them **cannot be answered with GDB at all**: whether the server replies to `m`
@@ -783,7 +783,7 @@ mod tests {
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
-/// `mdbg rsp-probe` arguments.
+/// `mcu-debug-agent rsp-probe` arguments.
 #[derive(Debug, clap::Parser)]
 pub struct RspProbeArgs {
     /// Host the gdb-server is listening on.

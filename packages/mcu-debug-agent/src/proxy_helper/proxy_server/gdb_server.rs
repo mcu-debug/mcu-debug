@@ -147,7 +147,7 @@ impl ProxyServer {
                 problems.push(format!(
                     "version mismatch: client is {version}, this agent is {CURRENT_VERSION}. \
                      They must match exactly — neither side accepts an older or newer peer. \
-                     If you installed this agent yourself, replace it with the mdbg shipped \
+                     If you installed this agent yourself, replace it with the mcu-debug-agent shipped \
                      inside the matching extension"
                 ));
             }

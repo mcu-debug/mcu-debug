@@ -36,11 +36,11 @@
       "problemMatcher": [
         {
           "base": "$rustc",
-          "fileLocation": ["relative", "${workspaceFolder}/packages/mdbg"]
+          "fileLocation": ["relative", "${workspaceFolder}/packages/mcu-debug-agent"]
         }
       ],
       "options": {
-        "cwd": "${workspaceFolder}/packages/mdbg",
+        "cwd": "${workspaceFolder}/packages/mcu-debug-agent",
         "env": {
           "RUSTFLAGS": "-C debuginfo=2"
         }
@@ -58,11 +58,11 @@
       "problemMatcher": [
         {
           "base": "$rustc",
-          "fileLocation": ["relative", "${workspaceFolder}/packages/mdbg"]
+          "fileLocation": ["relative", "${workspaceFolder}/packages/mcu-debug-agent"]
         }
       ],
       "options": {
-        "cwd": "${workspaceFolder}/packages/mdbg"
+        "cwd": "${workspaceFolder}/packages/mcu-debug-agent"
       },
       "group": "build",
       "label": "rust: cargo clippy"

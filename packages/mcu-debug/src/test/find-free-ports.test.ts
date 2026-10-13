@@ -4,7 +4,7 @@
 // The port allocator must not hand out a port someone else is listening on, on *any* local address.
 // macOS and Windows treat loopback, wildcard and each interface address as independent endpoints, so a
 // listener on just one of them is easy to miss -- simavr on `*:2600`, or our own proxy on a WSL gateway
-// address. The Rust allocator (mdbg common/tcpports.rs) has the same tests.
+// address. The Rust allocator (mcu-debug-agent common/tcpports.rs) has the same tests.
 
 import test from "node:test";
 import assert from "node:assert/strict";

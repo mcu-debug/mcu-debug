@@ -14,7 +14,7 @@
 
 That gap appears in three situations:
 
-- **CLI mode** — the user runs `mdbg` from a terminal. No extension exists to launch the Probe Agent or publish its coordinates.
+- **CLI mode** — the user runs `mcu-debug-agent` from a terminal. No extension exists to launch the Probe Agent or publish its coordinates.
 - **WSL / Dev Container** — the DA/CLI runs in the guest, the probe is on the Engineer Machine (Topology A), but the user is in a terminal rather than driving a debug session from the UI.
 - **SSH / LAB** — the probe is on a physically separate Probe Host (Topology B), with or without VS Code on either end.
 
@@ -22,11 +22,11 @@ The goal is **autodetection**: the only irreducible manual step should be *"star
 
 ### Terminology
 
-Reuses [Proxy-Plan.md](./Proxy-Plan.md): **Engineer Machine**, **Probe Host**, **Probe Agent** (`mdbg proxy`), **DA**. This document adds:
+Reuses [Proxy-Plan.md](./Proxy-Plan.md): **Engineer Machine**, **Probe Host**, **Probe Agent** (`mcu-debug-agent proxy`), **DA**. This document adds:
 
 | Term              | Meaning                                                                                                                                                                        |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Client**        | Whatever is trying to reach the Probe Agent: the DA, or the `mdbg` CLI. Symmetric for this protocol.                                                                           |
+| **Client**        | Whatever is trying to reach the Probe Agent: the DA, or the `mcu-debug-agent` CLI. Symmetric for this protocol.                                                                           |
 | **Broker**        | The `mcu-debug.mcu-debug-proxy` VS Code UI extension acting as a URI handler. Runs on the Engineer Machine UI side. Ensures the Probe Agent is running and issues credentials. |
 | **Rendezvous**    | A pair of files (`<handle>.req` / `<handle>.res`) on a filesystem visible to both Client and Broker, used to exchange the request and the result.                              |
 | **Master key**    | Long-lived secret held **only** inside the Probe Agent. Never leaves the Probe Host.                                                                                           |
@@ -35,7 +35,7 @@ Reuses [Proxy-Plan.md](./Proxy-Plan.md): **Engineer Machine**, **Probe Host**, *
 
 ### What the Probe Agent is — and is not
 
-The Agent (`mdbg proxy`) manages **process lifecycle and the funnel**. It is **probe-agnostic**: it does *not* enumerate USB probes and does *not* know which gdb-server will be used or which probes that server can see. All of that lives in the **session's launch config**, which the Client supplies when it opens a session; the Agent then spawns the configured gdb-server (OpenOCD / J-Link / pyOCD / probe-rs, each of which supports its own probe set) and funnels its TCP ports. Consequently this protocol carries **no probe identity** — probe selection is a downstream concern of the gdb-server, not of provisioning.
+The Agent (`mcu-debug-agent proxy`) manages **process lifecycle and the funnel**. It is **probe-agnostic**: it does *not* enumerate USB probes and does *not* know which gdb-server will be used or which probes that server can see. All of that lives in the **session's launch config**, which the Client supplies when it opens a session; the Agent then spawns the configured gdb-server (OpenOCD / J-Link / pyOCD / probe-rs, each of which supports its own probe set) and funnels its TCP ports. Consequently this protocol carries **no probe identity** — probe selection is a downstream concern of the gdb-server, not of provisioning.
 
 ---
 
@@ -68,8 +68,8 @@ The Client tries these in order and stops at the first that works. Each rung deg
 0. Reuse           Is a live Probe Agent already recorded, with a usable credential?  → Connect, no round-trip.
 1. VS Code Broker  VSCODE_IPC_HOOK_CLI present + `code` shim works?  → `vscode://…/provision`  (auto-launches Agent)
 2. SSH             Configured Probe Host (Topology B)?  → ssh launch + stdout handshake + `-L` tunnel
-3. Shared-FS       User already ran `mdbg proxy` on the host?  → read endpoint file over shared FS (no VS Code needed)
-4. Manual          Nothing else worked  → Agent prints a paste-ready `mdbg connect …` line
+3. Shared-FS       User already ran `mcu-debug-agent proxy` on the host?  → read endpoint file over shared FS (no VS Code needed)
+4. Manual          Nothing else worked  → Agent prints a paste-ready `mcu-debug-agent connect …` line
 ```
 
 Rungs 1 and 3 are the WSL/Docker story; rung 2 is the SSH/LAB story; rung 4 is the always-works floor.
@@ -85,7 +85,7 @@ wslpath -u "$(cmd.exe /D /C 'echo %TEMP%' 2>/dev/null | tr -d '\r')"
 # or, if the wslu package is present:  wslpath -u "$(wslvar TEMP)"
 ```
 
-Requires Windows interop enabled; run from `~` (not a `/mnt/...` cwd) to avoid the "UNC not supported" warning. Rung 3 works with **no VS Code at all** — the user just ran `mdbg proxy` on Windows, and the Client reads its `endpoint.json` (§7) from that temp dir. So the Broker is an *enhancement* (it auto-*launches* the Agent and gates access), not a discovery dependency.
+Requires Windows interop enabled; run from `~` (not a `/mnt/...` cwd) to avoid the "UNC not supported" warning. Rung 3 works with **no VS Code at all** — the user just ran `mcu-debug-agent proxy` on Windows, and the Client reads its `endpoint.json` (§7) from that temp dir. So the Broker is an *enhancement* (it auto-*launches* the Agent and gates access), not a discovery dependency.
 
 ---
 
@@ -199,7 +199,7 @@ The one real hazard is either extension not being activated when the bridge reac
   "phase": "request",
   "nonce": "<128-bit base64url — the reply must echo this>",
   "authority": "wsl+Ubuntu-22.04",
-  "client": "mdbg CLI — Ubuntu-22.04"
+  "client": "mcu-debug-agent CLI — Ubuntu-22.04"
 }
 ```
 
@@ -314,7 +314,7 @@ Global state is UI-side only, is invisible to the CLI, and lies across crashes. 
 
 - *Is one running?* Try to acquire `proxy.lock`. **Can't** → one exists → read `endpoint.json` → connect the control channel to confirm it is really alive. **Can** → none (or it died and the OS released the lock) → you may start one.
 - A **refused connect** on a present endpoint = stale → clear it and recreate. No PID guessing, no zombie records.
-- `mdbg proxy --status` / `--shutdown` always find and stop the real one.
+- `mcu-debug-agent proxy --status` / `--shutdown` always find and stop the real one.
 
 The extension may still mirror this into `globalState` as a convenience *cache*, but must always confirm against the control channel before trusting it.
 
@@ -324,8 +324,8 @@ The extension may still mirror this into `globalState` as a convenience *cache*,
 
 Today the Agent dies with the window. That's wrong for CLI-primary users who may have no window, or outlive it. New model:
 
-- **Singleton** per (Probe Host, user, **instance**). Enforced by `proxy.lock` + the control channel. A second `mdbg proxy` for the same instance detects the live one and no-ops (or forwards).
-- **Instance key** for isolation: `--instance <name>` / `MDBG_PROXY_INSTANCE`, default `default`. When you **debug `mdbg` itself**, launch it as `--instance dev` (set in `launch.json`); it gets its own state dir, lock, control channel, and USB claims, and won't collide with the production Agent. This is the escape hatch that keeps "strict singleton" from getting in your way during development.
+- **Singleton** per (Probe Host, user, **instance**). Enforced by `proxy.lock` + the control channel. A second `mcu-debug-agent proxy` for the same instance detects the live one and no-ops (or forwards).
+- **Instance key** for isolation: `--instance <name>` / `MDBG_PROXY_INSTANCE`, default `default`. When you **debug `mcu-debug-agent` itself**, launch it as `--instance dev` (set in `launch.json`); it gets its own state dir, lock, control channel, and USB claims, and won't collide with the production Agent. This is the escape hatch that keeps "strict singleton" from getting in your way during development.
 - **Ref-counting.** Clients register interest: the Broker adds a ref on first provision for a window and drops it on window close / `deactivate`; each CLI session holds a ref for the life of its connection.
 - **Idle timeout.** When refs reach 0, start a timer (default 5 hours, configurable). Still 0 at expiry → graceful exit, **releasing the serial ports / gdb-servers it was holding**. Any new provision cancels the timer.
 - **Decoupled lifetime.** Closing the VS Code window drops *its* ref only; the Agent survives if a CLI session still holds one.
@@ -375,10 +375,10 @@ One process serving many sessions means **a crash can take down every session at
 
 **Worked example — the serial subsystem (implemented).** An audit of the 16 `Mutex` sites found the isolation model already sound (session = one client connection + its `ProxyServer`; the only cross-session state is the serial subsystem — the `serial_registry`, the availability hub, and each `Arc<PortHandle>` for a shared physical port). No architectural change was needed, only two hardening passes:
 
-- **R4 applied uniformly.** Only `FrameWriter` recovered from poison; every other lock used `.lock().unwrap()`. Added `MutexExt::lock_recover()` ([common/sync.rs](../packages/mdbg/src/common/sync.rs)) and routed all shared locks through it, so a poisoned lock recovers instead of cascading panics across sessions. A `clippy.toml` `disallowed-methods` entry turns a raw `Mutex::lock()` back into a lint error, preventing regression.
-- **R3 + R6 applied to the one hot spot.** The per-port reader thread previously held the cross-session `clients` lock across a **blocking** `write_all` to every client — the single place violating "no blocking IO under a shared lock." Reworked to a **bounded per-client queue + dedicated drain thread** ([serial/port.rs](../packages/mdbg/src/serial/port.rs), `ClientSink`): the reader only `try_send`s under the lock (brief, non-blocking), each client's own drain thread does the blocking socket write off-lock, and a client that falls `CLIENT_QUEUE_DEPTH` behind is disconnected rather than growing memory. One slow session can no longer stall — or OOM — the others sharing a port. As a bonus, the new queue let us close a long-standing late-attach race: `attach_client` now **seeds the ring snapshot as the first queue item, atomically with going live** (the reader's ring-push + fan-out is one critical section), making catch-up **exactly-once** — no bytes lost between snapshot and attach, none duplicated.
+- **R4 applied uniformly.** Only `FrameWriter` recovered from poison; every other lock used `.lock().unwrap()`. Added `MutexExt::lock_recover()` ([common/sync.rs](../packages/mcu-debug-agent/src/common/sync.rs)) and routed all shared locks through it, so a poisoned lock recovers instead of cascading panics across sessions. A `clippy.toml` `disallowed-methods` entry turns a raw `Mutex::lock()` back into a lint error, preventing regression.
+- **R3 + R6 applied to the one hot spot.** The per-port reader thread previously held the cross-session `clients` lock across a **blocking** `write_all` to every client — the single place violating "no blocking IO under a shared lock." Reworked to a **bounded per-client queue + dedicated drain thread** ([serial/port.rs](../packages/mcu-debug-agent/src/serial/port.rs), `ClientSink`): the reader only `try_send`s under the lock (brief, non-blocking), each client's own drain thread does the blocking socket write off-lock, and a client that falls `CLIENT_QUEUE_DEPTH` behind is disconnected rather than growing memory. One slow session can no longer stall — or OOM — the others sharing a port. As a bonus, the new queue let us close a long-standing late-attach race: `attach_client` now **seeds the ring snapshot as the first queue item, atomically with going live** (the reader's ring-push + fan-out is one critical section), making catch-up **exactly-once** — no bytes lost between snapshot and attach, none duplicated.
 - **R5 audited — already satisfied.** All four `Drop` impls (`ProxyServer`, `PortHandle`, `TcpBridge`, `PollingWatcher`) and every teardown helper they reach are panic-free: `lock_recover` for locks, `let _ = join()` (which returns `Err` rather than re-panicking on a panicked thread), and `.ok()`/`let _ =` on best-effort cleanup. `ClientSink`'s drain `JoinHandle` is *detached* on drop (never joined from the reader), so no teardown blocks or panics. Residual exposure is limited to third-party `Drop`s (`std::process::Child`, `TcpStream`, the `serialport` handle) — the irreducible baseline.
-- **R2 (core) applied — no session thread dies silently.** The session's existing event loop is already its supervision spine (every background thread reports to `message_loop` via `event_tx`), but a *panic* skipped the clean-exit `send` — worst case a panicking control reader stranding the loop on `recv()` forever (the loop always holds a sender, so it never sees `Disconnected`), leaking the session and its child. Added `spawn_session_thread` ([mod.rs](../packages/mdbg/src/proxy_helper/proxy_server/mod.rs)): the body runs under `catch_unwind` and **any** exit emits `ProxyEvent::SessionThreadExited { role, panicked }`. The loop ends the session on a fatal role (`ControlReader`) and notes the rest. All six session threads (control reader, gdb stdout/stderr, port monitor, port waiters, serial error forwarder) route through it; Agent-level threads (accept loop, heartbeat, availability watcher) are intentionally out of scope.
+- **R2 (core) applied — no session thread dies silently.** The session's existing event loop is already its supervision spine (every background thread reports to `message_loop` via `event_tx`), but a *panic* skipped the clean-exit `send` — worst case a panicking control reader stranding the loop on `recv()` forever (the loop always holds a sender, so it never sees `Disconnected`), leaking the session and its child. Added `spawn_session_thread` ([mod.rs](../packages/mcu-debug-agent/src/proxy_helper/proxy_server/mod.rs)): the body runs under `catch_unwind` and **any** exit emits `ProxyEvent::SessionThreadExited { role, panicked }`. The loop ends the session on a fatal role (`ControlReader`) and notes the rest. All six session threads (control reader, gdb stdout/stderr, port monitor, port waiters, serial error forwarder) route through it; Agent-level threads (accept loop, heartbeat, availability watcher) are intentionally out of scope.
 - **R3 (cancel fan-out) applied — no lingering session threads.** `ProxyServer::cancel()`, called from `Drop`, does the prompt teardown that killing the child doesn't cover: it `shutdown(Both)`s the control socket (so the reader's blocked `read` on its own clone returns at once) and sets a shared `cancel` flag. The port waiters poll it inside `wait_and_connect_sync` (returning `WaitPortResult::Cancelled` instead of blocking up to 10 min), and the serial error forwarder switches to `recv_timeout` + flag poll (instead of blocking forever on an `err_tx` that outlives the session in the shared `PortHandle`). `cancel()` lives in `Drop`, **not** `end_process`, because the `EndSession` path calls `end_process` and still needs the control socket to send its response.
 
 **Threads vs async (recorded decision).** The Agent stays **thread-per-port (sync IO)**, not tokio. The funnel handles dozens of connections, not the tens-of-thousands the async/C10k argument targets; its IO sources (serial ports, gdb-server child stdout) are blocking and would need `spawn_blocking` (i.e. threads) under tokio anyway; and async's one real advantage here — structured cancellation — is already covered by R2/R3. Linear stack traces and simple debugging matter more for a debug tool than raw connection scaling. **Revisit only** if simultaneous-connection counts ever reach the thousands (they won't, for physical probes).
@@ -400,7 +400,7 @@ One process serving many sessions means **a crash can take down every session at
   Signed with the master key; validated by the Agent on connect. TTL short (default 10 min). Revocable by `jti`/`sid`. Note: **no probe/hardware scope** — provisioning is probe-agnostic (§1); the token authorizes *opening a session*, and what that session drives comes from the launch config the Client sends afterward.
 
 - **Admission vs session:** the token gates *opening* a funnel session. Once the funnel is established, the live connection persists even past `exp` — the token is an admission ticket, not a keepalive. Revocation tears down active sessions by `sid`.
-- **Revocation triggers:** window close, user "disconnect", or explicit `mdbg proxy --revoke <sid>`.
+- **Revocation triggers:** window close, user "disconnect", or explicit `mcu-debug-agent proxy --revoke <sid>`.
 
 Because every provision mints a **fresh, TTL'd** token, there is no long-lived shared secret to distribute or hide. This is what dissolves the "how do we hide the secret under reuse?" problem: reuse of the *Agent* is fully decoupled from reuse of any *secret* — there is none to reuse.
 
@@ -443,9 +443,9 @@ This is the one decision that changes the credential machinery. It is **not yet 
 | **SelectRung** | Detect environment (VS Code shim? SSH config? shared FS?)                                      | → **Broker** / **Ssh** / **SharedFs** / **Manual**                            |
 | **Broker**     | Pre-create rendezvous dir; write `<handle>.req` (O_EXCL); `code --open-url …/provision`        | → **WaitReply**                                                               |
 | **WaitReply**  | Poll for `<handle>.res` (timeout ~15 s); require `phase==reply` + matching nonce               | `ready` → **Connect**; `denied`/`error` → **Fail(msg)**; timeout → **Manual** |
-| **Ssh**        | Deploy/verify Agent; `ssh … mdbg proxy --port 0`; parse stdout; open `-L`                      | parsed → **Connect**; fail → **Fail**                                         |
+| **Ssh**        | Deploy/verify Agent; `ssh … mcu-debug-agent proxy --port 0`; parse stdout; open `-L`                      | parsed → **Connect**; fail → **Fail**                                         |
 | **SharedFs**   | Read host `endpoint.json` via `/mnt/c/…`                                                       | found + fresh → **Connect**; else → **Manual**                                |
-| **Manual**     | Print paste-ready `mdbg connect --host … --port … --token …` (Agent also prints this on start) | user pastes → **Connect**                                                     |
+| **Manual**     | Print paste-ready `mcu-debug-agent connect --host … --port … --token …` (Agent also prints this on start) | user pastes → **Connect**                                                     |
 | **Connect**    | Dial `host:port` (host from §2), present token, add lifetime ref                               | ok → **Ready**; auth fail → **SelectRung** (token may be stale)               |
 | **Ready**      | Funnel established                                                                             | —                                                                             |
 

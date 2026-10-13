@@ -77,7 +77,7 @@ Following are listed in no particular order. They are grouped by functionality.
   - [x] AI can control execution of FW, interact with the debugger
   - [ ] Multi-core support (currently disabled)
   - [ ] Remote proxy host (does not work other than ssh)
-  - [x] Singleton `mdbg proxy` (discovery, lifecycle, instance key) — see [CLI-Proxy-Provisioning.md](./docs-internal/CLI-Proxy-Provisioning.md)
+  - [x] Singleton `mcu-debug-agent proxy` (discovery, lifecycle, instance key) — see [CLI-Proxy-Provisioning.md](./docs-internal/CLI-Proxy-Provisioning.md)
   - [x] Report gdb-server crash/exit to the client (`gdbServerExited` never emitted) — see [GdbServer-Exit-Reporting.md](./docs-internal/GdbServer-Exit-Reporting.md)
   - [x] Throttle gdb-server stdout/stderr floods (OpenOCD disconnect loop, verbose logs) — per-stream classification; see [Stream-Flow-Control.md](./docs-internal/Stream-Flow-Control.md)
   - [ ] [More line items here](./docs-internal/cli-plan.md)

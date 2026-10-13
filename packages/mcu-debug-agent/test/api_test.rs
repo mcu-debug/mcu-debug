@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use mdbg::{canonicalize_path, InstructionDb};
+use mcu_debug_agent::{canonicalize_path, InstructionDb};
 use std::path::PathBuf;
 
 #[test]

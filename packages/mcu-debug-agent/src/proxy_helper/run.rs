@@ -49,8 +49,8 @@ pub struct ProxyArgs {
     ///
     /// `Option` rather than a defaulted `String` so we can tell "the caller asked for
     /// this address" from "the caller said nothing". That distinction is what lets a
-    /// plain `mdbg proxy` reuse a running daemon untouched, while
-    /// `mdbg proxy --host 172.28.240.1` asks that daemon to *widen* to that address.
+    /// plain `mcu-debug-agent proxy` reuse a running daemon untouched, while
+    /// `mcu-debug-agent proxy --host 172.28.240.1` asks that daemon to *widen* to that address.
     ///
     /// `0.0.0.0` listens on every interface and is bound alone (it already accepts
     /// loopback); it cannot be added to a running proxy.
@@ -95,7 +95,7 @@ pub struct ProxyArgs {
 
     /// Singleton instance name. One proxy runs per (user, instance); a distinct
     /// name (e.g. `dev`) runs an isolated proxy that never collides with the
-    /// default one — handy when debugging `mdbg` itself.
+    /// default one — handy when debugging `mcu-debug-agent` itself.
     #[arg(long = "instance", env = "MDBG_PROXY_INSTANCE", default_value = "default")]
     pub instance: String,
 
@@ -305,7 +305,7 @@ fn install_panic_hook() {
 /// Parse `--host`, defaulting to loopback when the caller said nothing.
 ///
 /// Kept separate from the bind so the "no address requested" case is explicit at every
-/// call site: a plain `mdbg proxy` must not look like a request to widen a running
+/// call site: a plain `mcu-debug-agent proxy` must not look like a request to widen a running
 /// daemon to `127.0.0.1`.
 pub(crate) fn parse_host_arg(host: Option<&str>) -> Result<Ipv4Addr> {
     match host {
@@ -751,7 +751,7 @@ fn acquire_or_reuse<'a>(
                         my_exe.path
                     ),
                     // The path the exe stamp cannot reach, and the one that bites a development
-                    // tree: `bin/mdbg`, `bin/<platform>-<arch>/mdbg` and `target/debug/mdbg` are
+                    // tree: `bin/mcu-debug-agent`, `bin/<platform>-<arch>/mcu-debug-agent` and `target/debug/mcu-debug-agent` are
                     // three paths carrying the same version, and the stamp treats differing paths
                     // as incomparable by design. A commit is a property of the code, not the copy.
                     singleton::Handover::UpgradeByBuild => log::info!(

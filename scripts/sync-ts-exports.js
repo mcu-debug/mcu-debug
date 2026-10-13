@@ -7,12 +7,12 @@
 //   node scripts/sync-ts-exports.js [--report-stale]   format + sync staged files into shared
 //   node scripts/sync-ts-exports.js --check [...]      write nothing; exit 1 if shared is out of date
 //
-// packages/mdbg/.cargo/config.toml points TS_RS_EXPORT_DIR at packages/mdbg/target/ts-rs, so
+// packages/mcu-debug-agent/.cargo/config.toml points TS_RS_EXPORT_DIR at packages/mcu-debug-agent/target/ts-rs, so
 // `cargo test` never writes the committed files directly. That matters for two reasons:
 // - ts-rs output is not prettier style (its own `format` feature uses dprint), so writing in
 //   place left whitespace-only churn behind after every bare `cargo test`.
 // - Rewriting a file with identical content still changes its mtime; the next `git status`
-//   then rewrites .git/index, and packages/mdbg/build.rs (`rerun-if-changed=.git/index`)
+//   then rewrites .git/index, and packages/mcu-debug-agent/build.rs (`rerun-if-changed=.git/index`)
 //   recompiles the crate. Unchanged files are left alone here, so that stops.
 //
 // Callers clean the staging dir before exporting. Otherwise a type deleted from Rust would
@@ -26,7 +26,7 @@ const path = require("path");
 const prettier = require("prettier");
 
 const ROOT = path.resolve(__dirname, "..");
-const STAGING = path.join(ROOT, "packages", "mdbg", "target", "ts-rs");
+const STAGING = path.join(ROOT, "packages", "mcu-debug-agent", "target", "ts-rs");
 const DEST = path.join(ROOT, "packages", "shared");
 // Narrower than the project's 200 so type literals with many fields break across lines.
 const PRINT_WIDTH = 120;

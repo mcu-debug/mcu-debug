@@ -100,7 +100,7 @@ export function agentIdentityLine(id: AgentIdentity): string {
         line +=
             ` NOTE: same version, different build — the debug adapter is ${id.ourBuild}.` +
             ` The Agent is a singleton and a running one is reused, so a rebuild does not replace it;` +
-            ` in dev mode it never exits on idle either. Shut it down to pick up your build: mdbg proxy --shutdown --instance <name>`;
+            ` in dev mode it never exits on idle either. Shut it down to pick up your build: mcu-debug-agent proxy --shutdown --instance <name>`;
     }
     return line;
 }

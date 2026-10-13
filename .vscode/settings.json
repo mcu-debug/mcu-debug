@@ -31,7 +31,7 @@
         "excludeDirectories": ["**/node_modules"]
     },
     "rust-analyzer.linkedProjects": [
-        "packages/mdbg/Cargo.toml"
+        "packages/mcu-debug-agent/Cargo.toml"
     ],
     // Run clippy (not just `cargo check`) for live in-editor diagnostics, so
     // lint-level bugs (e.g. #[deny(clippy::...)] violations) show up as you

@@ -36,7 +36,7 @@ export function fmtBindErrors(obj: any): string[] | null {
 /**
  * Launch-or-reuse the singleton proxy on the Windows host from a WSL guest.
  *
- * `mdbg proxy` self-daemonizes: the process we run is a short-lived *foreground
+ * `mcu-debug-agent proxy` self-daemonizes: the process we run is a short-lived *foreground
  * launcher* that re-spawns a detached daemon, forwards the daemon's discovery
  * line to its stdout, and exits — whether it becomes the owner or reuses a
  * running proxy. Because the foreground always exits quickly, we can simply run
@@ -337,7 +337,7 @@ export function createAuthority(): string {
     return `cli-proxy-${osType}-${user}-${host}`;
 }
 
-// Launch (or reuse) the singleton proxy and read its discovery line. `mdbg proxy`
+// Launch (or reuse) the singleton proxy and read its discovery line. `mcu-debug-agent proxy`
 // self-daemonizes: the process we spawn is a short-lived foreground launcher that
 // re-spawns a detached daemon, forwards its discovery line to stdout, and exits.
 // The daemon (owner) survives on its own; we never own or manage it.
@@ -374,7 +374,7 @@ export function startProxyServerWithPolicy(proxyPolicy: ProxyLaunchPolicy, proxy
         // idle-timeout). `--token` is used only if WE become the owner; on reuse
         // the running proxy keeps its own token and reports it in the discovery.
         const args = ["proxy", "--host", proxyPolicy!.bindHost, "--port", port.toString(), "--token", NONCE];
-        // This spawned process is the SHORT-LIVED foreground launcher. `mdbg proxy`
+        // This spawned process is the SHORT-LIVED foreground launcher. `mcu-debug-agent proxy`
         // re-spawns a detached daemon itself, forwards the daemon's discovery line
         // to this process's stdout, and exits (owner OR reuse — both exit now).
         // So we do NOT need detached / unref here — survival is the daemon's job.

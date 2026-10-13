@@ -1,7 +1,7 @@
 # GDB-Server Exit Reporting — Bug & Design
 
 **Status:** Draft / confirmed bug + proposed fix. 2026-07-31.
-**Area:** Probe Agent (`mdbg proxy`) ↔ TS client (Debug Adapter) event protocol.
+**Area:** Probe Agent (`mcu-debug-agent proxy`) ↔ TS client (Debug Adapter) event protocol.
 **Related:** [Proxy-Plan.md](./Proxy-Plan.md), [CLI-Proxy-Provisioning.md](./CLI-Proxy-Provisioning.md) §7.3 (session supervision — the `spawn_session_thread` helper this fix builds on).
 
 ---
@@ -14,16 +14,16 @@ Evidence:
 
 | Piece | Location | State |
 | --- | --- | --- |
-| `GdbServerExited { pid, exit_code }` wire event | [protocol.rs:420](../packages/mdbg/src/proxy_helper/proxy_server/protocol.rs) | **Defined, never sent** — zero construction sites in Rust |
+| `GdbServerExited { pid, exit_code }` wire event | [protocol.rs:420](../packages/mcu-debug-agent/src/proxy_helper/proxy_server/protocol.rs) | **Defined, never sent** — zero construction sites in Rust |
 | TS handler for it | [proxy-client.ts:470](../packages/mcu-debug/src/adapter/proxy-client.ts) → `handleGdbServerExited` → `emit("gdbServerExited")` | Wired end-to-end, **never fires** |
 | TS consumer | [server-session.ts:131](../packages/mcu-debug/src/adapter/server-session.ts) → `serverExited(code, signal)` → "GDB Server exited unexpectedly with code…" [gdb-session.ts:1451](../packages/mcu-debug/src/adapter/gdb-session.ts) | Dead path, waiting for an event that never arrives |
-| Child-exit monitoring | `child.wait()` only in `end_process()` [mod.rs:248](../packages/mdbg/src/proxy_helper/proxy_server/mod.rs) | **None** — no `try_wait` poll, no reaper thread; status learned only on the deliberate-kill path |
+| Child-exit monitoring | `child.wait()` only in `end_process()` [mod.rs:248](../packages/mcu-debug-agent/src/proxy_helper/proxy_server/mod.rs) | **None** — no `try_wait` poll, no reaper thread; status learned only on the deliberate-kill path |
 
 Note: `GdbServerLaunched` is likewise never emitted, but launch is acked via the `StartGdbServer` **ControlResponse** (which returns the pid), so launch has an alternate path. **Exit has no such response** — it is asynchronous and unsolicited — so the missing event is a genuine functional gap, not a duplicate.
 
 ### The accidental backstop, and why it isn't enough
 
-When the gdb-server dies, its stdout/stderr pipes close → the `GdbStdout`/`GdbStderr` reader threads hit EOF → `ProxyEvent::StreamClosed` → the loop forwards a per-stream `ProxyServerEvents::StreamClosed` ([mod.rs:492](../packages/mdbg/src/proxy_helper/proxy_server/mod.rs)). So the client notices the streams vanish, but that signal:
+When the gdb-server dies, its stdout/stderr pipes close → the `GdbStdout`/`GdbStderr` reader threads hit EOF → `ProxyEvent::StreamClosed` → the loop forwards a per-stream `ProxyServerEvents::StreamClosed` ([mod.rs:492](../packages/mcu-debug-agent/src/proxy_helper/proxy_server/mod.rs)). So the client notices the streams vanish, but that signal:
 
 - is **per-stream**, not "the server exited";
 - carries **no exit code and no signal**;
@@ -107,10 +107,10 @@ Principles: say **"debug server," not "gdb-server"**; name the backend (OpenOCD 
 
 ## 5. Current-state code map (verified)
 
-- Emitted `ProxyServerEvents` today: `StreamStarted`, `StreamReady`, `StreamTimedOut`, `StreamClosed`, `SerialPortError`, `SerialAvailableChanged` ([mod.rs](../packages/mdbg/src/proxy_helper/proxy_server/mod.rs), [serial.rs](../packages/mdbg/src/proxy_helper/proxy_server/serial.rs)).
+- Emitted `ProxyServerEvents` today: `StreamStarted`, `StreamReady`, `StreamTimedOut`, `StreamClosed`, `SerialPortError`, `SerialAvailableChanged` ([mod.rs](../packages/mcu-debug-agent/src/proxy_helper/proxy_server/mod.rs), [serial.rs](../packages/mcu-debug-agent/src/proxy_helper/proxy_server/serial.rs)).
 - **Never emitted:** `GdbServerLaunched` (covered by `StartGdbServer` response), `GdbServerExited` (**this bug**).
 - Child handle: `ProxyServer.process: Option<Child>`; killed+waited only in `end_process()`; also killed on `Drop`.
-- Backstop path: gdb exit → pipe EOF → `read_and_forward` → `ProxyEvent::StreamClosed` → wire `StreamClosed` ([mod.rs:492](../packages/mdbg/src/proxy_helper/proxy_server/mod.rs)).
+- Backstop path: gdb exit → pipe EOF → `read_and_forward` → `ProxyEvent::StreamClosed` → wire `StreamClosed` ([mod.rs:492](../packages/mcu-debug-agent/src/proxy_helper/proxy_server/mod.rs)).
 
 ---
 

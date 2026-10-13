@@ -184,7 +184,7 @@ function probeAddress(port: number, host: string): Promise<"free" | "taken" | "g
  * claims on macOS and Windows, which treat each address as an independent endpoint, yet it can stop a
  * gdb-server from later binding the wildcard. (On Linux the wildcard already conflicts with every
  * address, so this finds nothing new there.) Must run *before* the claim holds anything: Linux will not
- * let us bind a specific address under our own wildcard. The Rust allocator (mdbg common/tcpports.rs)
+ * let us bind a specific address under our own wildcard. The Rust allocator (mcu-debug-agent common/tcpports.rs)
  * applies the same rule.
  */
 async function interfacesFree(port: number, addrs: string[]): Promise<boolean> {

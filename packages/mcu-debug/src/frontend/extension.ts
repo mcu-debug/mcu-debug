@@ -139,7 +139,7 @@ export class MCUDebugExtension {
             // cannot be obtained from vscode.extensions in a remote window -- see
             // activate-proxy.ts -- so this asks the proxy directly.
             vscode.commands.registerCommand("mcu-debug.checkProxyExtension", () => checkProxyCommand(context)),
-            // ...and this one is about the long-lived `mdbg proxy` daemon (the Probe Agent) on
+            // ...and this one is about the long-lived `mcu-debug-agent proxy` daemon (the Probe Agent) on
             // the machine with the probe, which outlives every window and was invisible from here.
             vscode.commands.registerCommand("mcu-debug.probeAgentStatus", () => probeAgentStatusCommand(context)),
 
@@ -883,7 +883,7 @@ export class MCUDebugExtension {
 
             const serverExePath = getHelperExecutable(extensionPath);
             if (!existsSync(serverExePath)) {
-                MCUDebugChannel.debugMessage(`Wrapper script creation failed. Missing mdbg executable at ${serverExePath}`);
+                MCUDebugChannel.debugMessage(`Wrapper script creation failed. Missing mcu-debug-agent executable at ${serverExePath}`);
                 return;
             }
             const fSlashPath = serverExePath.replace(/\\/g, "/");

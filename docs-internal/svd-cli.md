@@ -107,7 +107,7 @@ field model (with `access`, `readAction`, `modifiedWriteValues` and the skip rul
 - **TypeScript, shared.** Move `svd-parser.ts` and the model into something both repos use (for
   example `packages/shared`), with `peripheral-viewer` depending on it. The least work. The skip
   rules move into the model, so the viewer and the CLI cannot drift apart.
-- **Rust, in `mdbg`.** More work. It pays off if something else in Rust needs the SVD — for
+- **Rust, in `mcu-debug-agent`.** More work. It pays off if something else in Rust needs the SVD — for
   example the RSP multiplexer ([gdb-rsp.md](gdb-rsp.md)) doing sampling reads next to the probe,
   as it already does for RTT, instead of through the second GDB.
 

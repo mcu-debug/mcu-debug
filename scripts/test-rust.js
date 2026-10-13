@@ -2,7 +2,7 @@
 // Run the Rust test suite, then sync the ts-rs generated TypeScript into packages/shared.
 //
 // `cargo test` runs the ts-rs export tests as part of the suite. They write to a staging dir
-// (TS_RS_EXPORT_DIR in packages/mdbg/.cargo/config.toml), not to packages/shared, so a bare
+// (TS_RS_EXPORT_DIR in packages/mcu-debug-agent/.cargo/config.toml), not to packages/shared, so a bare
 // `cargo test` leaves the committed files alone -- but it also does not update them. This
 // script is the step that does: scripts/sync-ts-exports.js formats the staged files with
 // prettier and copies over only the ones that changed.
@@ -17,8 +17,8 @@ const SYNC = path.join(ROOT, "scripts", "sync-ts-exports.js");
 
 // Run from the crate directory, NOT the repo root with --manifest-path. Cargo
 // discovers .cargo/config.toml by walking up from the *current directory*; the manifest
-// path does not affect it. packages/mdbg/.cargo/config.toml sets TS_RS_EXPORT_DIR, so
-// running from elsewhere silently exports the bindings into packages/mdbg/bindings/
+// path does not affect it. packages/mcu-debug-agent/.cargo/config.toml sets TS_RS_EXPORT_DIR, so
+// running from elsewhere silently exports the bindings into packages/mcu-debug-agent/bindings/
 // instead of the staging dir -- tests pass, nothing looks wrong, and the shared types
 // are simply never regenerated (the sync below then fails, saying so).
 // --check-ts is ours, not cargo's: verify the generated TS instead of syncing it (pre-push hook).
@@ -26,7 +26,7 @@ const checkTs = process.argv.includes("--check-ts");
 const args = process.argv.slice(2).filter((a) => a !== "--check-ts");
 spawnSync(process.execPath, [SYNC, "clean"], { stdio: "inherit" });
 const test = spawnSync("cargo", ["test", "--lib", ...args], {
-    cwd: path.join(ROOT, "packages", "mdbg"),
+    cwd: path.join(ROOT, "packages", "mcu-debug-agent"),
     stdio: "inherit",
     shell: false,
 });

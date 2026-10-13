@@ -122,7 +122,7 @@
       "name": "Debug Rust mcu-debug TUI",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
+      "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug-agent",
       "args": [
         "debug",
         "-c",
@@ -162,12 +162,12 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Launch mdbg",
+      "name": "Launch mcu-debug-agent",
       "cargo": {
-        "cwd": "${workspaceFolder}/packages/mdbg",
+        "cwd": "${workspaceFolder}/packages/mcu-debug-agent",
         "args": [
           "build",
-          "--bin=mdbg" // Replace 'yourprogram' with your actual binary name
+          "--bin=mcu-debug-agent" // Replace 'yourprogram' with your actual binary name
         ]
       },
       "program": "${cargo:program}",
@@ -189,9 +189,9 @@
     {
       "type": "lldb",
       "request": "attach",
-      "name": "Attach mdbg",
+      "name": "Attach mcu-debug-agent",
       "pid": "${command:pickMyProcess}",
-      "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
+      "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug-agent",
       "sourceLanguages": [
         "rust"
       ]
@@ -200,7 +200,7 @@
       "name": "Debug Desktop Rust (GDB)",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
+      "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug-agent",
       "args": [],
       "stopAtEntry": false,
       "cwd": "${workspaceRoot}",
@@ -219,7 +219,7 @@
       "name": "Attach to Proxy Daemon (GDB)",
       "type": "cppdbg",
       "request": "attach",
-      "program": "${workspaceFolder}/packages/mcu-debug/bin/mdbg",
+      "program": "${workspaceFolder}/packages/mcu-debug/bin/mcu-debug-agent",
       "processId": "${command:pickProcess}", // VS Code will prompt you with a searchable list of running PIDs
       "MIMode": "gdb",
       "setupCommands": [

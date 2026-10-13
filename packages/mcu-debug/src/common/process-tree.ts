@@ -5,7 +5,7 @@
 // children behind: pyavrocd starts `simavr`, and once pyavrocd was gone simavr kept the gdb port open,
 // orphaned, for as long as nobody noticed.
 //
-// The proxy (mdbg common/process.rs) solves this with a process group of the gdb-server's own. Here
+// The proxy (mcu-debug-agent common/process.rs) solves this with a process group of the gdb-server's own. Here
 // that would mean `spawn({ detached: true })`, which on Unix is `setsid` -- a new *session*, not just
 // a group -- so a gdb-server started by the CLI in a terminal would stop getting the terminal's hangup
 // when the window closes. Walking the process tree instead keeps the terminal behaviour as it was.

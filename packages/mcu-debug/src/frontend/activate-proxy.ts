@@ -407,7 +407,7 @@ function formatUptime(secs: number | undefined): string {
  * `Developer: Show Probe Agent Status` — what is actually running on the probe host.
  *
  * A different question from [`checkProxyCommand`], which is about the *extension*. This one
- * is about the long-lived `mdbg proxy` daemon: it outlives the window that started it, is
+ * is about the long-lived `mcu-debug-agent proxy` daemon: it outlives the window that started it, is
  * shared by every window and the CLI, and until now nothing in the UI could see it at all.
  *
  * The facts worth having in one place: which instance, which version, how long up, how many

@@ -160,12 +160,12 @@ test("probeProxyAlive: sends a well-formed heartbeat on the control channel", as
 // only thing standing between us and a Windows `ssh.serverPath` host.
 
 test("quoteRemotePath: a Windows path with spaces survives as one argument", () => {
-    assert.equal(quoteRemotePath("C:\\Program Files\\mcu-debug\\mdbg.exe"), '"C:\\Program Files\\mcu-debug\\mdbg.exe"');
+    assert.equal(quoteRemotePath("C:\\Program Files\\mcu-debug\\mcu-debug-agent.exe"), '"C:\\Program Files\\mcu-debug\\mcu-debug-agent.exe"');
 });
 
 test("quoteRemotePath: double quotes, so cmd.exe honours them too", () => {
     // Single quotes are not quoting to cmd.exe; it would treat them as part of the name.
-    const q = quoteRemotePath("/opt/mcu debug/mdbg");
+    const q = quoteRemotePath("/opt/mcu debug/mcu-debug-agent");
     assert.ok(q.startsWith('"') && q.endsWith('"'), `expected double quotes, got ${q}`);
     assert.ok(!q.includes("'"), "must not use single quotes");
 });
@@ -173,11 +173,11 @@ test("quoteRemotePath: double quotes, so cmd.exe honours them too", () => {
 test("quoteRemotePath: a ~-relative path keeps its tilde unquoted", () => {
     // Tilde expansion only happens on an unquoted tilde; quoting the whole thing would
     // make the remote shell look for a file literally named "~/...".
-    assert.equal(quoteRemotePath("~/.mcu-debug/bin/mdbg"), '~/".mcu-debug/bin/mdbg"');
+    assert.equal(quoteRemotePath("~/.mcu-debug/bin/mcu-debug-agent"), '~/".mcu-debug/bin/mcu-debug-agent"');
 });
 
 test("quoteRemotePath: the built-in default still expands and still quotes", () => {
-    const q = quoteRemotePath("~/my tools/mdbg");
-    assert.equal(q, '~/"my tools/mdbg"');
+    const q = quoteRemotePath("~/my tools/mcu-debug-agent");
+    assert.equal(q, '~/"my tools/mcu-debug-agent"');
     assert.ok(q.startsWith("~/"), "tilde must remain outside the quotes to expand");
 });

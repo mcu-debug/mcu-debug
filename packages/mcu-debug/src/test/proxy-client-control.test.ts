@@ -3,7 +3,7 @@
 //
 // Regression tests for ProxyClient's control-command plumbing: timeout ownership,
 // pendingPromises hygiene, and error attribution. A fake proxy speaks the control
-// protocol over TCP; no real `mdbg proxy` and no gdb-server are involved.
+// protocol over TCP; no real `mcu-debug-agent proxy` and no gdb-server are involved.
 
 import test from "node:test";
 import assert from "node:assert/strict";

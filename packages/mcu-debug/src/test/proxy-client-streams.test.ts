@@ -6,7 +6,7 @@
 // the Agent so it can release its own connection to the gdb-server.
 //
 // A fake proxy speaks the control protocol over TCP and answers startStream/duplicateStream
-// the way the real Agent does. No `mdbg proxy` and no gdb-server are involved. Real loopback
+// the way the real Agent does. No `mcu-debug-agent proxy` and no gdb-server are involved. Real loopback
 // sockets are used for the consumers, because the bug being pinned is about which of them
 // survives.
 

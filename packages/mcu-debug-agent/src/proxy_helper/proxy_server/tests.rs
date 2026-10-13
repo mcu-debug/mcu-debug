@@ -160,7 +160,7 @@ fn test_proxy_server() {
 
     // Keep the singleton state dir (lock + endpoint.json) out of the real home
     // directory during tests — point it at a throwaway temp path instead.
-    let state_dir = std::env::temp_dir().join(format!("mdbg-test-proxy-{}", std::process::id()));
+    let state_dir = std::env::temp_dir().join(format!("mcu-debug-agent-test-proxy-{}", std::process::id()));
     std::env::set_var("MDBG_PROXY_STATE_DIR", &state_dir);
 
     thread::spawn(|| {

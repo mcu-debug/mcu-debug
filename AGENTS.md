@@ -38,11 +38,11 @@ The debug adapter is **not** a single TypeScript process. It has three cooperati
 
 1. **TypeScript DA** (`packages/mcu-debug/src/adapter/`) — The DAP server. Talks to VS Code, manages sessions, orchestrates GDB via stdio.
 
-2. **`da_helper`** (Rust, `packages/mdbg/src/da_helper/`) — A Rust binary invoked by the TS DA as a subprocess. Responsible for ELF parsing, symbol table lookup, and disassembly (via objdump + Capstone). The TS side does **not** parse ELF directly. Any feature that requires symbol information goes through this helper.
+2. **`da_helper`** (Rust, `packages/mcu-debug-agent/src/da_helper/`) — A Rust binary invoked by the TS DA as a subprocess. Responsible for ELF parsing, symbol table lookup, and disassembly (via objdump + Capstone). The TS side does **not** parse ELF directly. Any feature that requires symbol information goes through this helper.
 
-3. **Proxy client** (`packages/mdbg/src/proxy_helper/`) — Also Rust. Implements the client side of the Funnel Protocol for reaching a Probe Agent on a remote/host machine. Used when the probe is not accessible directly from the DA process (WSL, Dev Container, or LAB topology).
+3. **Proxy client** (`packages/mcu-debug-agent/src/proxy_helper/`) — Also Rust. Implements the client side of the Funnel Protocol for reaching a Probe Agent on a remote/host machine. Used when the probe is not accessible directly from the DA process (WSL, Dev Container, or LAB topology).
 
-The `mdbg` binary is a single Rust binary with subcommands (`da-helper`, `proxy`, …). Do not assume these are separate binaries.
+The `mcu-debug-agent` binary is a single Rust binary with subcommands (`da-helper`, `proxy`, …). Do not assume these are separate binaries.
 
 ---
 
@@ -62,7 +62,7 @@ There are two distinct scenarios. See [Proxy-Plan.md](docs-internal/Proxy-Plan.m
 - The DA sees "ghost ports" on `127.0.0.1` that tunnel through to the lab server's Probe Agent.
 - No inbound firewall rules are needed on the lab server.
 
-**Probe Agent** (`mdbg proxy`) always runs on the machine physically attached to the probe. It manages gdb-server lifecycle and implements the Funnel Protocol.
+**Probe Agent** (`mcu-debug-agent proxy`) always runs on the machine physically attached to the probe. It manages gdb-server lifecycle and implements the Funnel Protocol.
 
 ---
 
@@ -136,7 +136,7 @@ This debugger has a **push/subscription model for variable values** that is not 
 ```text
 packages/
   mcu-debug/            # VS Code extension (TypeScript) — DAP server + UI
-  mdbg/                 # Rust binary — da_helper + proxy_helper subcommands
+  mcu-debug-agent/                 # Rust binary — da_helper + proxy_helper subcommands
   mcu-debug-proxy/      # Proxy-related extension packaging
   shared/               # Shared TypeScript types and protocol definitions
   shared/proxy-protocol # GENERATED files by ts_rs. DO NOT EDIT
@@ -146,7 +146,7 @@ packages/
 
 Some directories in the `packages/shared` dir. are generated files and the script `scripts/build-binaries.sh` contains the code to generate and prettify them
 
-The `mdbg` binary is built into `packages/mcu-debug/bin/` (and mirrored to `packages/mcu-debug-proxy/bin/`); both are gitignored. It is also built locally via the `Build Helper` task.
+The `mcu-debug-agent` binary is built into `packages/mcu-debug/bin/` (and mirrored to `packages/mcu-debug-proxy/bin/`); both are gitignored. It is also built locally via the `Build Helper` task.
 
 ## Building
 
@@ -174,7 +174,7 @@ prepublish builds `shared` first.
 `npm run build:rust:dev` / `build:rust:prod` (runnable from the repo root) delegate to
 `packages/mcu-debug`'s scripts of the same name, which wrap `./scripts/build-binaries.sh dev|prod`:
 they regenerate the ts-rs TypeScript bindings, **format them with prettier**, then build the
-`mdbg` Rust binary (host-only for dev, all platforms for prod). This is the fast, Rust-only path.
+`mcu-debug-agent` Rust binary (host-only for dev, all platforms for prod). This is the fast, Rust-only path.
 
 `npm run build` (root) is a full production build across every workspace — all Rust targets,
 manifest generation, the cockpit webview, esbuild bundling of the extension — and is much
@@ -184,8 +184,8 @@ when you only touched Rust code.
 **How to apply:** When Rust structs change, run `npm run build:rust:dev` or **`npm run test:rust`**
 (not bare `cargo test`) to update the generated TS files in `packages/shared`.
 
-ts-rs never writes those files directly. `TS_RS_EXPORT_DIR` (in `packages/mdbg/.cargo/config.toml`)
-points at a staging dir, `packages/mdbg/target/ts-rs`, and `scripts/sync-ts-exports.js` formats the
+ts-rs never writes those files directly. `TS_RS_EXPORT_DIR` (in `packages/mcu-debug-agent/.cargo/config.toml`)
+points at a staging dir, `packages/mcu-debug-agent/target/ts-rs`, and `scripts/sync-ts-exports.js` formats the
 staged files with prettier (width **120**, deliberately narrower than the project's 200) and writes
 only the ones whose content changed. Both npm commands run that sync; a bare `cargo test` does not.
 So a bare `cargo test` is harmless — it leaves `packages/shared` alone — but after a Rust type
@@ -199,7 +199,7 @@ for a Rust-only build instead.
 ## Rust formatting
 
 > **Temporary (as of 2026-08-14): the crate is not currently fully formatted.** `max_width` was
-> raised to 120 in `packages/mdbg/rustfmt.toml` recently and the tree has not been reformatted
+> raised to 120 in `packages/mcu-debug-agent/rustfmt.toml` recently and the tree has not been reformatted
 > since, so `npm run fmt:rust:check` reports ~108 diff sites in already-committed code across
 > ~24 files nobody is working on. Until a one-off "format the world" commit lands, **running
 > `npm run fmt:rust` rewrites all of them** and buries your change in hundreds of lines of
@@ -209,7 +209,7 @@ for a Rust-only build instead.
 `npm run fmt:rust:check` reports without writing, and is what CI should use.
 
 **How to apply:** don't run `npm run fmt:rust` for an ordinary change. Match the surrounding
-style by hand (`max_width = 120`, set in `packages/mdbg/rustfmt.toml`), then confirm you added no
+style by hand (`max_width = 120`, set in `packages/mcu-debug-agent/rustfmt.toml`), then confirm you added no
 new violations:
 
 ```sh
@@ -277,11 +277,11 @@ reason, and an AI agent matching on the documented `Reason - ` never matched.
 
 **Do not edit the `version` field in any `package.json` or `Cargo.toml`.** Three files carry a
 version and they must agree — `packages/mcu-debug/package.json`,
-`packages/mcu-debug-proxy/package.json`, and `packages/mdbg/Cargo.toml`. The two extensions ship
+`packages/mcu-debug-proxy/package.json`, and `packages/mcu-debug-agent/Cargo.toml`. The two extensions ship
 as a matched pair and the release script refuses to publish if they differ.
 
 **Lockstep is doing real work, not bookkeeping.** It is what lets the wire types between the two
-extensions — and between them and `mdbg` — have no compatibility story at all: matched versions
+extensions — and between them and `mcu-debug-agent` — have no compatibility story at all: matched versions
 mean both ends always agree, so no struct is versioned, no field is negotiated, and nothing has
 to stay readable by an older peer. Per-struct versioning and a compatibility matrix are the
 eventual answer, deliberately deferred until the protocol has settled; adopting them now would
@@ -300,7 +300,7 @@ flow are in [docs-internal/Publishing.md](docs-internal/Publishing.md).
 
 ## Types crossing the Rust/TS boundary: authored in Rust, generated to TS
 
-**Any type that travels between `mdbg` and TypeScript is defined in Rust and translated by
+**Any type that travels between `mcu-debug-agent` and TypeScript is defined in Rust and translated by
 ts-rs. Never hand-write the TypeScript side.** One definition, one source of truth.
 
 The reason this rule needs stating is that breaking it does not fail any build. The wire is
@@ -323,7 +323,7 @@ type turns that into a compile error in the editor instead.
    then syncs it into `packages/shared`, prettier-formatted at width 120. (`ts-rs --format` is
    deliberately unused — it is dprint, a different formatter, and fights this one.) It also has to run
    from the crate directory, which the script does; from the repo root the bindings land in
-   `packages/mdbg/bindings/` instead, and the sync fails saying nothing was staged.
+   `packages/mcu-debug-agent/bindings/` instead, and the sync fails saying nothing was staged.
 4. Import by path: `import { StatusInfo } from "@mcu-debug/shared/proxy-protocol/StatusInfo";`
    There is no barrel file.
 

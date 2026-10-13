@@ -7,10 +7,10 @@ set -euo pipefail
 # - prod: attempt release builds for multiple targets and place them under packages/mcu-debug/bin/<platform>/
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RUST_DIR="$ROOT_DIR/packages/mdbg"
+RUST_DIR="$ROOT_DIR/packages/mcu-debug-agent"
 BINDIR="$ROOT_DIR/packages/mcu-debug/bin"
 PROXY_BINDIR="$ROOT_DIR/packages/mcu-debug-proxy/bin"
-BIN_NAME="mdbg"
+BIN_NAME="mcu-debug-agent"
 
 mkdir -p "$BINDIR"
 
@@ -18,7 +18,7 @@ mode="${1:-dev}"
 
 SYNC_TS="$ROOT_DIR/scripts/sync-ts-exports.js"
 
-# ts-rs writes to a staging dir (TS_RS_EXPORT_DIR in packages/mdbg/.cargo/config.toml);
+# ts-rs writes to a staging dir (TS_RS_EXPORT_DIR in packages/mcu-debug-agent/.cargo/config.toml);
 # sync-ts-exports.js prettier-formats it into packages/shared, touching only changed files.
 # The two ensure_ts_exports tests between them export every type, so stale files are reportable.
 function ensure_ts_exports() {
@@ -123,8 +123,8 @@ function copy_artifact() {
 # window is mid-session on, and kills rather than drains.
 #
 # Still here for the case a handover cannot cover: a daemon so wedged it will not answer
-# on its admin channel. Call it by hand then. `pkill -f 'mdbg proxy'` targets only proxy
-# daemons (not an unrelated `mdbg da-helper`/cockpit) across all instances at once;
+# on its admin channel. Call it by hand then. `pkill -f 'mcu-debug-agent proxy'` targets only proxy
+# daemons (not an unrelated `mcu-debug-agent da-helper`/cockpit) across all instances at once;
 # `killall` is a fallback where pkill is unavailable. Copy safety never depended on it —
 # copy_artifact's inode swap is safe regardless.
 function stop_running_proxies() {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // fetch-bin: populate the Rust helper binaries for contributors who don't build the Rust side.
 //
-// The published MCU-Debug extension already ships the version-matched `mdbg` binaries. When it's
+// The published MCU-Debug extension already ships the version-matched `mcu-debug-agent` binaries. When it's
 // installed, its `bin/` directory is sitting unzipped on disk — so we just copy it into the repo.
 // No download, no unzip, no network. If the extension isn't installed, we say so and stop: if you
 // haven't installed MCU-Debug, you're not set up to work on it yet.

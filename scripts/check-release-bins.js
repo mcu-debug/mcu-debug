@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Verifies that the release `mdbg` binaries for every platform are present in a package's bin/.
+// Verifies that the release `mcu-debug-agent` binaries for every platform are present in a package's bin/.
 // Usage: node scripts/check-release-bins.js <bin-dir>
 //
 // Runs from `vscode:prepublish` in place of building Rust there. `vsce package` always runs
@@ -16,7 +16,7 @@ if (!binDir) {
 }
 
 // Must match the target list in scripts/build-binaries.sh (prod).
-const required = ["darwin-arm64/mdbg", "darwin-x64/mdbg", "linux-arm64/mdbg", "linux-x64/mdbg", "win32-x64/mdbg.exe"];
+const required = ["darwin-arm64/mcu-debug-agent", "darwin-x64/mcu-debug-agent", "linux-arm64/mcu-debug-agent", "linux-x64/mcu-debug-agent", "win32-x64/mcu-debug-agent.exe"];
 
 const missing = required.filter((rel) => !fs.existsSync(path.join(binDir, rel)));
 if (missing.length > 0) {
@@ -30,7 +30,7 @@ if (missing.length > 0) {
 
 // Existence is the hard requirement. Staleness is only a warning: a bare `vsce package` after a
 // Rust edit is a legitimate thing to do while experimenting, but it should not go unnoticed.
-const rustDir = path.join(__dirname, "..", "packages", "mdbg");
+const rustDir = path.join(__dirname, "..", "packages", "mcu-debug-agent");
 function newestMtime(p) {
     const st = fs.statSync(p);
     if (!st.isDirectory()) {

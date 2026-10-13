@@ -1,7 +1,7 @@
 // Copyright (c) 2026 MCU-Debug Authors.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Integration test for `mdbg proxy --status` as an all-instance survey. Spawns
+// Integration test for `mcu-debug-agent proxy --status` as an all-instance survey. Spawns
 // real daemons into an isolated state dir and asserts the report lists every
 // running instance (with `count`, not the old per-instance `ok`), and that a
 // stale endpoint from a dead proxy is NOT reported as running.
@@ -16,10 +16,10 @@ import * as path from "path";
 import { execFileSync } from "child_process";
 
 const EXT_ROOT = path.resolve(__dirname, "../..");
-const BIN = path.join(EXT_ROOT, "bin", "mdbg");
+const BIN = path.join(EXT_ROOT, "bin", "mcu-debug-agent");
 const HAVE_BIN = fs.existsSync(BIN);
 
-const STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mdbg-status-"));
+const STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mcu-debug-agent-status-"));
 const env = { ...process.env, MDBG_PROXY_STATE_DIR: STATE_DIR };
 
 function startInstance(name: string) {
@@ -59,7 +59,7 @@ after(() => {
     }
 });
 
-test("proxy --status surveys all running instances", { skip: HAVE_BIN ? false : "mdbg binary not built" }, async () => {
+test("proxy --status surveys all running instances", { skip: HAVE_BIN ? false : "mcu-debug-agent binary not built" }, async () => {
     startInstance("alpha");
     startInstance("beta");
 
@@ -73,7 +73,7 @@ test("proxy --status surveys all running instances", { skip: HAVE_BIN ? false : 
     }
 });
 
-test("proxy --shutdown --all drains every running instance", { skip: HAVE_BIN ? false : "mdbg binary not built" }, async () => {
+test("proxy --shutdown --all drains every running instance", { skip: HAVE_BIN ? false : "mcu-debug-agent binary not built" }, async () => {
     startInstance("alpha");
     startInstance("beta");
     assert.equal(status().count, 2, "two instances should be running before shutdown");
@@ -90,7 +90,7 @@ test("proxy --shutdown --all drains every running instance", { skip: HAVE_BIN ? 
     await waitForStatusCount(0);
 });
 
-test("proxy --status skips a stale endpoint from a dead proxy", { skip: HAVE_BIN ? false : "mdbg binary not built" }, async () => {
+test("proxy --status skips a stale endpoint from a dead proxy", { skip: HAVE_BIN ? false : "mcu-debug-agent binary not built" }, async () => {
     startInstance("alpha");
     // Fabricate a stale instance: a dir with an endpoint.json pointing at a dead
     // pid/port. The survey must query it, get a refusal, and omit it.

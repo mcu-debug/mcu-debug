@@ -10,7 +10,7 @@ Debugging when the probe is physically connected to a remote server — for exam
 :::important
 Only the fully automatic setup requires a Unix-based remote host (Linux or macOS), and only
 because that is the path where *we* install the binary — `uname` to pick the build, POSIX shell
-commands to place it. Install `mdbg` on the host yourself and set `ssh.serverPath`, and the
+commands to place it. Install `mcu-debug-agent` on the host yourself and set `ssh.serverPath`, and the
 remote OS stops mattering; **Windows hosts work from there on**.
 See [What the remote host has to provide](#what-the-remote-host-has-to-provide).
 :::
@@ -44,7 +44,7 @@ the right binary and uses `mkdir`/`cat`/`chmod` to install it.
 
 ### You install the binary — we still launch it
 
-Install `mdbg` on the remote host yourself and point `serverPath` at it. We skip OS detection and
+Install `mcu-debug-agent` on the remote host yourself and point `serverPath` at it. We skip OS detection and
 deployment — the only Unix-specific part — but still start the agent for each session and read
 back the port and token it reports, so there is nothing left for you to manage. **The remote can
 be Windows.**
@@ -55,12 +55,12 @@ be Windows.**
   "type": "ssh",
   "ssh": {
     "host": "lab-server",
-    "serverPath": "C:\\Program Files\\mcu-debug\\mdbg.exe"  // or /opt/mcu-debug/mdbg
+    "serverPath": "C:\\Program Files\\mcu-debug\\mcu-debug-agent.exe"  // or /opt/mcu-debug/mcu-debug-agent
   }
 }
 ```
 
-See [Getting the `mdbg` binary](#getting-the-mdbg-binary) below for where to find it.
+See [Getting the `mcu-debug-agent` binary](#getting-the-mcu-debug-agent-binary) below for where to find it.
 
 ### You start the agent — we only tunnel
 
@@ -72,7 +72,7 @@ tools too.
 On the remote host:
 
 ```sh
-mdbg proxy --port 5689 --token <your-token>
+mcu-debug-agent proxy --port 5689 --token <your-token>
 ```
 
 In `launch.json`:
@@ -102,9 +102,9 @@ both ends and the secret stays out of source control.
 | `host` + `proxyPort` + `token` | nothing — only the SSH `-L` tunnel        | any, including Windows |
 
 Only the first row is Unix-bound, and only because of how we *install* the binary — `uname -sm`
-to pick the right build, and `mkdir`/`cat`/`chmod` to place it. Install `mdbg` yourself and point
+to pick the right build, and `mkdir`/`cat`/`chmod` to place it. Install `mcu-debug-agent` yourself and point
 `serverPath` at it, and that step disappears: all we then run is your binary, by the path you
-gave us. Quoting is handled, so a path like `C:\Program Files\mcu-debug\mdbg.exe` is fine.
+gave us. Quoting is handled, so a path like `C:\Program Files\mcu-debug\mcu-debug-agent.exe` is fine.
 
 On Windows, `serverPath` must be a path the remote's own shell understands — a native
 `C:\...` path for the default cmd.exe shell. Note that these two rows differ in *when* the agent
@@ -146,9 +146,9 @@ ssh -o BatchMode=yes lab-server uname -sm
 When a session starts with SSH `hostConfig`, mcu-debug:
 
 1. Runs `uname -sm` over SSH to identify the host's OS and CPU
-2. Copies the matching `mdbg` binary to the host — unconditionally, overwriting whatever was
+2. Copies the matching `mcu-debug-agent` binary to the host — unconditionally, overwriting whatever was
    there, so the deployed binary always matches the extension you are running
-3. Starts `mdbg` on the host and reads back the port and token it reports
+3. Starts `mcu-debug-agent` on the host and reads back the port and token it reports
 4. Establishes an SSH `-L` tunnel to that port
 5. Connects the local debug adapter through the tunnel
 
@@ -163,20 +163,20 @@ alive proves nothing on its own.
 
 ## Proxy Binary Deployment
 
-mcu-debug deploys the proxy binary to `~/.mcu-debug/bin/mdbg` on the remote host. The binary is statically linked (on Linux) or has zero external library dependencies (on macOS), requiring no pre-installed dependencies.
+mcu-debug deploys the proxy binary to `~/.mcu-debug/bin/mcu-debug-agent` on the remote host. The binary is statically linked (on Linux) or has zero external library dependencies (on macOS), requiring no pre-installed dependencies.
 
-### Getting the `mdbg` binary
+### Getting the `mcu-debug-agent` binary
 
-`mdbg` is not published as a standalone download. It ships **inside the extension**, so the copy
+`mcu-debug-agent` is not published as a standalone download. It ships **inside the extension**, so the copy
 you want is already on your machine — and taking it from there is what guarantees the versions
 match. Look under the installed extension's `bin` directory:
 
 ```
-~/.vscode/extensions/mcu-debug.mcu-debug-<version>/bin/<platform>/mdbg
+~/.vscode/extensions/mcu-debug.mcu-debug-<version>/bin/<platform>/mcu-debug-agent
 ```
 
 `<platform>` is one of `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, or `win32-x64`
-(where the file is `mdbg.exe`). Pick the one matching the **remote** host, not your own machine.
+(where the file is `mcu-debug-agent.exe`). Pick the one matching the **remote** host, not your own machine.
 
 The `mcu-debug-proxy` extension carries an identical `bin` directory, so either will do. Adjust
 the root for your setup: `~/.vscode-insiders/extensions` for Insiders, `%USERPROFILE%\.vscode\extensions`
@@ -185,8 +185,8 @@ on Windows.
 Copying it to a lab server is then one command:
 
 ```sh
-scp ~/.vscode/extensions/mcu-debug.mcu-debug-0.1.11/bin/linux-x64/mdbg lab-server:~/.mcu-debug/bin/
-ssh lab-server chmod +x ~/.mcu-debug/bin/mdbg
+scp ~/.vscode/extensions/mcu-debug.mcu-debug-0.1.11/bin/linux-x64/mcu-debug-agent lab-server:~/.mcu-debug/bin/
+ssh lab-server chmod +x ~/.mcu-debug/bin/mcu-debug-agent
 ```
 
 :::tip
@@ -202,7 +202,7 @@ The agent's version must match the extension's **exactly** — not "close enough
 "newer is fine". `0.1.10` against `0.1.11` is refused in either direction, and the rejection
 happens late, after the tunnel is already up. When we deploy the binary this is automatic; when
 you install it yourself, updating the extension means re-copying the binary at the same time.
-Verify with `ssh lab-server ~/.mcu-debug/bin/mdbg --version`.
+Verify with `ssh lab-server ~/.mcu-debug/bin/mcu-debug-agent --version`.
 :::
 
 ## Multi-User Lab Servers
@@ -234,11 +234,11 @@ topology, not just this one.
 Check whether the proxy binary deployed correctly:
 
 ```sh
-ssh lab-server ~/.mcu-debug/bin/mdbg --version
+ssh lab-server ~/.mcu-debug/bin/mcu-debug-agent --version
 ```
 
 If the binary is missing or fails, copy it to the host manually — see
-[Getting the `mdbg` binary](#getting-the-mdbg-binary).
+[Getting the `mcu-debug-agent` binary](#getting-the-mcu-debug-agent-binary).
 
 A version mismatch does not show up here: `--version` will happily report a number that the
 extension then refuses. Compare it against `ls ~/.vscode/extensions | grep mcu-debug`.
