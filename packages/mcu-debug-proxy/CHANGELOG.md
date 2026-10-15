@@ -11,6 +11,14 @@ extension's
 
 ## [Unreleased]
 
+## [v0.1.20] - 2026-10-14
+
+### General
+- The Rust executable `mdbg` is not named `mcu-debug-agent`. Most prople do not use this executable directly
+  except when using `ssh` without VSCode. This executable for Windows also identifies itself as coming
+  from the "MCU Debug Authors" so it is easily identifable in the firewall dialog that may popup. This also
+  helps in the Activity Monitor, Process Viewer, pkill, ps, etc. to identify the agent process
+
 ## [v0.1.19] - 2026-10-09
 
 No changes. The version is kept in step with the main extension so that the two always install

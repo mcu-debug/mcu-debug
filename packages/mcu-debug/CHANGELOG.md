@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [v0.1.20] - 2026-10-14
+
+### General
+- The Rust executable `mdbg` is not named `mcu-debug-agent`. Most prople do not use this executable directly
+  except when using `ssh` without VSCode. This executable for Windows also identifies itself as coming
+  from the "MCU Debug Authors" so it is easily identifable in the firewall dialog that may popup. This also
+  helps in the Activity Monitor, Process Viewer, pkill, ps, etc. to identify the agent process
+
+
 ## [v0.1.19] - 2026-10-09
 
 ### General
@@ -15,7 +24,7 @@
 - Fixed an issue reported https://github.com/Marus/cortex-debug/issues/1243. The fix is experimental and we may have to back it out if it causes issues like symbol table collision
 - Fixed bug with `envFile` substitions where it could ruin Windows path backslashes, it could also affect any backslashes used in regex entries. Was more of a problem in CLI launch.json processing
 
-## CLI
+### CLI
 
 - **Support for `!!watch` and `!!liveWatch` added.** These are the equivalent of VSCode `Watch` window and our own `MCU Debug Live Watch` window. See https://mcu-debug.github.io/mcu-debug/docs/reference/meta-commands. This brings much of the functionality of the GUI version and they are presistent across CLI sessions.
 
@@ -23,7 +32,7 @@
 
 This release has a **LOT** of changes, fixes and enhancements.
 
-## General
+### General
 
 - **Fixed**: The pause button did not work if there was no breakOnReset, no runToEntryPoint and have not stopped for some other brakpoint
 - **Fixed**: Regisers were not displayed properly on non top-level frames
