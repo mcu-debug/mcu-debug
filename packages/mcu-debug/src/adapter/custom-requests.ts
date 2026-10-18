@@ -140,9 +140,6 @@ export interface LiveConnectedEvent extends DebugProtocol.Event {
 
 export interface MemoryReadRequestLiveArguments extends DebugProtocol.ReadMemoryArguments {
     command: "readMemoryLive";
-    memoryReference: string;
-    offset?: number;
-    count: number;
 }
 
 export interface MemoryReadLiveResponse extends DebugProtocol.ReadMemoryResponse {
@@ -153,11 +150,17 @@ export interface MemoryReadLiveResponse extends DebugProtocol.ReadMemoryResponse
     };
 }
 
+/**
+ * The standard DAP `writeMemory` arguments, plus our opt-in for writing to a running target. Without
+ * it, a write while the target runs is refused (reads need no opt-in). Other adapters ignore the field.
+ */
+export interface WriteMemoryArgumentsMcuDebug extends DebugProtocol.WriteMemoryArguments {
+    allowWhileRunning?: boolean;
+}
+
+/** Deprecated alias of the standard `writeMemory` with `allowWhileRunning: true`. */
 export interface MemoryWriteRequestLiveArguments extends DebugProtocol.WriteMemoryArguments {
     command: "writeMemoryLive";
-    memoryReference: string;
-    offset?: number;
-    data: string;
 }
 
 export interface MemoryWriteLiveResponse extends DebugProtocol.WriteMemoryResponse {

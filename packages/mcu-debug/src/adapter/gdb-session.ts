@@ -33,7 +33,7 @@ import { MemoryRequests } from "./memory";
 import { gitCommitHash, pkgJsonVersion } from "../commit-hash";
 import { adapterIdentityLine } from "./session-identity";
 import { ScopeMask, VariableScope, getVariableClass } from "./var-scopes";
-import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse, LiveWatchClientReadyResponse } from "./custom-requests";
+import { RegisterClientResponse, SetExpressionLiveResponse, SetVariableLiveResponse, UnregisterClientResponse, LiveWatchClientReadyResponse, WriteMemoryArgumentsMcuDebug } from "./custom-requests";
 import { TargetInfo } from "./target-info";
 import { RttBufferManager, RttTcpServer } from "./rtt-builtin";
 import { RttProxyBridge } from "./rtt-proxy-bridge";
@@ -837,7 +837,22 @@ export class GDBDebugSession extends SeqDebugSession {
         }
     }
 
+    // Memory requests -- the standard DAP ones, used as-is by any client (VS Code's memory view, the
+    // peripheral viewer, other extensions):
+    // - The live GDB serves them whenever it exists, stopped or running. While running it is the only
+    //   way to read at all; at a stop it is idle, which keeps these reads out of the burst of requests
+    //   VS Code sends at every stop.
+    // - Without it, the main GDB serves them, at a stop only.
+    // - Reads need no permission. A *write* while the target runs changes firmware behaviour mid-flight,
+    //   so it is refused unless the client opts in with `allowWhileRunning: true` -- a hex editor that
+    //   used to get "busy" must not start writing into a running chip. Other adapters ignore the
+    //   unknown field, so a client can always send it.
+    // `readMemoryLive` / `writeMemoryLive` are kept as aliases for clients written against them.
     protected async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments, request?: DebugProtocol.Request): Promise<void> {
+        if (this.liveWatchMonitor.enabled()) {
+            response.body = { address: args.memoryReference, unreadableBytes: 0, data: "" };
+            return await this.liveWatchMonitor.readMemoryRequest(response, args);
+        }
         if (this.isBusy()) {
             this.busyError(response, request || args, false);
             return;
@@ -845,15 +860,25 @@ export class GDBDebugSession extends SeqDebugSession {
         await this.memoryRequests.readMemoryRequest(response, args);
     }
 
-    protected async writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments, request?: DebugProtocol.Request): Promise<void> {
-        if (this.isBusy()) {
+    protected async writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: WriteMemoryArgumentsMcuDebug, request?: DebugProtocol.Request): Promise<void> {
+        const running = this.isBusy();
+        if (running && !args.allowWhileRunning) {
+            this.handleErrResponse(response, "The target is running. To write to memory while it runs, set allowWhileRunning: true in the writeMemory arguments.");
+            return;
+        }
+        if (this.liveWatchMonitor.enabled()) {
+            response.body = { bytesWritten: 0 };
+            return await this.liveWatchMonitor.writeMemoryRequest(response, args);
+        }
+        if (running) {
+            // Opted in, but only the live GDB can write while the target runs.
             this.busyError(response, request || args, false);
             return;
         }
         await this.memoryRequests.writeMemoryRequest(response, args);
     }
 
-    protected async customRequest(command: string, response: DebugProtocol.Response, args: any) {
+    protected async customRequest(command: string, response: DebugProtocol.Response, args: any, request?: DebugProtocol.Request) {
         const retFunc = () => {
             this.handleErrResponse(response, `Debugger is busy. Cannot process custom request '${command}' now.`);
         };
@@ -862,28 +887,13 @@ export class GDBDebugSession extends SeqDebugSession {
             return retFunc();
         }
 
-        const isBusy = this.isBusy();
         switch (command) {
-            case "readMemoryLive": {
-                const rsp: DebugProtocol.ReadMemoryResponse = {
-                    ...response,
-                    body: {
-                        address: args.address,
-                        unreadableBytes: 0,
-                        data: "",
-                    },
-                };
-                return await this.liveWatchMonitor.readMemoryRequest(rsp, args);
-            }
-            case "writeMemoryLive": {
-                const wrsp: DebugProtocol.WriteMemoryResponse = {
-                    ...response,
-                    body: {
-                        bytesWritten: 0,
-                    },
-                };
-                return await this.liveWatchMonitor.writeMemoryRequest(wrsp, args);
-            }
+            case "readMemoryLive":
+                // Alias, kept for clients written against it: the standard request now does the same.
+                return this.readMemoryRequest(response, args, request);
+            case "writeMemoryLive":
+                // Alias: always allowed while running, as it always was.
+                return this.writeMemoryRequest(response, { ...args, allowWhileRunning: true }, request);
             case "registerClient": {
                 const rsp: RegisterClientResponse = {
                     ...response,
