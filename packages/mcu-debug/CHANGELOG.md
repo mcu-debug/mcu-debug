@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+## [v0.1.21] - 2026-10-14
+
+- Bugfix: A debug session that does not use any kind of remote host (WSL, Docker, etc.) should not require
+  a proxy extension to be installed. This is fixed. Partial fix for [Issue #10](https://github.com/mcu-debug/mcu-debug/issues/10)
+
 ## [v0.1.20] - 2026-10-14
 
 ### General

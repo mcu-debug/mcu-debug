@@ -1514,7 +1514,7 @@ export class GDBDebugSession extends SeqDebugSession {
                 await startServerPromise;
             } catch (e) {
                 const msg = "\nMake sure that the GDB server is configured correctly. See 'MCU Debug -> gdb-server' tab for details.\n";
-                return finishWithError(`Failed to start debug server: ${formatThrown(e)}${msg}`);
+                return finishWithError(`Failed to start debug server(${this.args.servertype ?? "unknown"}): ${formatThrown(e)}${msg}`);
             }
             reportTime("GDB Server Ready");
             await gdbPreConnectPromise;

@@ -1074,11 +1074,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
         // Nudge the user to install the companion proxy extension before anything depends on
         // it -- the failure this avoids is discovering it is missing at the moment F5 is
-        // pressed. Fire-and-forget so activation is never held up by a dialog; it remembers a
-        // "Don't Ask Again" and stays quiet once the proxy answers.
-        promptProxyInstallOnce(context).catch((err) => {
-            logger.error(`MCU-Debug Proxy install prompt failed: ${err}`);
-        });
+        // pressed. Remote windows only: a local window starts the agent from our own bin/ and
+        // never needs the proxy. Fire-and-forget so activation is never held up by a dialog;
+        // it remembers a "Don't Ask Again" and stays quiet once the proxy answers.
+        if (vscode.env.remoteName) {
+            promptProxyInstallOnce(context).catch((err) => {
+                logger.error(`MCU-Debug Proxy install prompt failed: ${err}`);
+            });
+        }
 
         const packageJson = context.extension.packageJSON;
         const version = packageJson.version || "unknown";

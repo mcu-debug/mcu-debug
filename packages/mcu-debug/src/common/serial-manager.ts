@@ -19,7 +19,7 @@ import { AvailablePort } from "@mcu-debug/shared/serial-helper/AvailablePort";
 import { SerialPortInfo } from "@mcu-debug/shared/proxy-protocol/SerialPortInfo";
 import { SerialErrorKind } from "@mcu-debug/shared/serial-helper/SerialErrorKind";
 import { ConfigurationArguments, HostConfig, SerialConfig } from "../adapter/servers/common";
-import { getProxyForSerialPorts } from "./proxy";
+import { defaultSerialHostConfig, getProxyForSerialPorts } from "./proxy";
 import { ControlMessage } from "@mcu-debug/shared/proxy-protocol/ControlMessage";
 import { getHostAdapter, ISerialPortView } from "./host-adapter";
 import { PROXY_KEEPALIVE_MS } from "./utils";
@@ -882,11 +882,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         // a standalone list works even with no debug session running. Failure to
         // resolve/connect is non-fatal here: we still aggregate whatever other
         // connections active debug sessions have already established.
-        const tmpHostConfig: HostConfig = {
-            type: getHostAdapter().getRemoteName() ? "auto" : "local",
-            enabled: true,
-        };
-        const resolvedHostConfig = await this.resolveProxy(tmpHostConfig);
+        const resolvedHostConfig = await this.resolveProxy(defaultSerialHostConfig());
         if (resolvedHostConfig && resolvedHostConfig.pvtProxyPort && resolvedHostConfig.pvtProxyPort > 0) {
             const conn = this.getOrCreateConnection(resolvedHostConfig);
             if (!(await conn.connect(resolvedHostConfig))) {
@@ -957,10 +953,7 @@ export class SerialPortManager implements ProxyConnectionDelegate {
         // second session pointing at a different remote gets its own connection
         // instead of tearing this one down.
         const rawHostConfig = typeof args?.hostConfig === "boolean" ? (args.hostConfig ? { enabled: true, type: "auto" as const } : undefined) : args?.hostConfig;
-        const tmpHostConfig: HostConfig = rawHostConfig || {
-            type: getHostAdapter().getRemoteName() ? "auto" : "local",
-            enabled: true,
-        };
+        const tmpHostConfig: HostConfig = rawHostConfig || defaultSerialHostConfig();
         const resolvedHostConfig = await this.resolveProxy(tmpHostConfig);
         if (!resolvedHostConfig || !resolvedHostConfig.pvtProxyPort || resolvedHostConfig.pvtProxyPort <= 0) {
             this.logError(`Failed to resolve proxy configuration for serial ports. Serial ports will not be available.`);

@@ -1020,11 +1020,23 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
             hostConfig.pvtProxyToken = current.token as string;
         } else {
             getHostAdapter().showWarning(`Unknown hostConfig.type "${hostConfig.type}". Proxy server will not be used. Please set hostConfig.type to "local", "ssh", or "auto" (recommended).`);
-            delConfig;
+            delConfig();
         }
     } else {
-        delConfig;
+        delConfig();
     }
+}
+
+/**
+ * The host serial ports use when nothing asks for another: the one this extension runs on.
+ *
+ * Deliberately "local" even in a remote window. That matches what a debug launch without
+ * a hostConfig resolves to, and it is the only choice that never needs the mcu-debug-proxy
+ * extension -- reaching the ports on the Engineer Machine is something to ask for with
+ * `hostConfig.type: "auto"`, not something to get by default.
+ */
+export function defaultSerialHostConfig(): HostConfig {
+    return { type: "local", enabled: true };
 }
 
 /**
@@ -1033,7 +1045,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
  * resolve independently instead of clobbering one shared slot.
  *
  * @param hostConfig - the desired host configuration; when omitted, defaults to
- *   "auto" on a remote workspace and "local" otherwise.
+ *   {@link defaultSerialHostConfig}.
  * @returns the resolved HostConfig (with pvtProxy* fields populated), or null if
  *   the request does not resolve to a usable proxy.
  *
@@ -1046,10 +1058,7 @@ export async function handleHostConfig(hostConfig: HostConfig | undefined, delCo
  */
 export async function getProxyForSerialPorts(hostConfig: HostConfig | undefined): Promise<HostConfig | null> {
     if (!hostConfig) {
-        hostConfig = {
-            type: getHostAdapter().getRemoteName() ? "auto" : "local",
-            enabled: true,
-        };
+        hostConfig = defaultSerialHostConfig();
     }
     const key = proxyRequestFingerprint(hostConfig);
     const cached = resolvedHostConfigs.get(key);

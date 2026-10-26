@@ -12,7 +12,9 @@
 // limitations under the License.
 
 import * as vscode from "vscode";
+import { execFile } from "child_process";
 import { logger } from "../common/logger";
+import { getHelperExecutable } from "../adapter/servers/common";
 // Generated from the Rust definitions by ts-rs (`cargo test ensure_ts_exports`) -- the
 // `--status` document is a wire type, and hand-writing it here is how the two ends drift.
 import { StatusReport } from "@mcu-debug/shared/proxy-protocol/StatusReport";
@@ -314,9 +316,8 @@ export async function ensureProxyForLaunch(ourVersion: string): Promise<boolean>
  * One-time nudge at activation, before anything is broken.
  *
  * The whole failure mode this guards against is discovering the proxy is missing at the moment
- * you press F5. Asking early — even in a local window, where it is not needed yet — means the
- * extension is already in place the first time a workspace turns out to be remote. It installs
- * locally either way, being `ui`-kind.
+ * you press F5. Only called in a remote window: a local window starts the agent from our own
+ * bin/ and never needs the proxy, so asking there only made an optional extension look required.
  *
  * Dismissal is remembered in global state, not workspace state: it is a statement about this
  * user's setup, not about one folder. It suppresses only this reminder — {@link
@@ -393,6 +394,32 @@ export async function promptProxyInstallOnce(context: vscode.ExtensionContext): 
  * It deliberately reports the *ping* result rather than anything from `vscode.extensions`,
  * because that is the only view that is true across extension hosts.
  */
+/**
+ * Run `mcu-debug-agent proxy --status` from our own bin/ and parse its report.
+ *
+ * Only valid in a local window, where the agent and this extension share a machine. Same
+ * contract as the proxy extension's `proxyStatus()`: a client mode that never starts an
+ * agent, and an empty report when none is running.
+ */
+function localProxyStatus(extensionPath: string): Promise<StatusReport> {
+    return new Promise<StatusReport>((resolve, reject) => {
+        let exe: string;
+        try {
+            exe = getHelperExecutable(extensionPath);
+        } catch (e) {
+            reject(e);
+            return;
+        }
+        execFile(exe, ["proxy", "--status"], { timeout: 5000, windowsHide: true }, (err, stdout, stderr) => {
+            try {
+                resolve(JSON.parse(stdout) as StatusReport);
+            } catch {
+                reject(new Error(`'mcu-debug-agent proxy --status' returned no JSON${err ? ` (${err.message})` : ""}: ${stderr || stdout}`));
+            }
+        });
+    });
+}
+
 /** `<n>h <n>m` / `<n>m` — uptime in the form someone reads rather than counts. */
 function formatUptime(secs: number | undefined): string {
     if (typeof secs !== "number" || secs < 0) {
@@ -415,32 +442,47 @@ function formatUptime(secs: number | undefined): string {
  * from has been replaced since it started, which is the one that explains "I installed a new
  * build and nothing changed".
  *
- * Only the proxy extension can answer, so a missing one is reported as exactly that rather
- * than as a failure, and points at the command that deals with it.
+ * In a local window we run the agent's `--status` ourselves. In a remote window only the proxy
+ * extension can answer, so a missing one is reported as exactly that rather than as a
+ * failure, and points at the command that deals with it.
  */
 export async function probeAgentStatusCommand(context: vscode.ExtensionContext): Promise<void> {
     const ourVersion = context.extension.packageJSON.version as string;
     trace("agentStatus.begin", { ourVersion, remote: vscode.env.remoteName ?? "local" });
 
-    // Ping first: without it, a missing proxy extension surfaces as "command not found",
-    // which reads like a bug in MCU-Debug rather than an extension that is not installed.
-    const pong = await pingProxy();
-    if (!pong) {
-        trace("agentStatus.proxy-unreachable");
-        const choice = await vscode.window.showWarningMessage(`The '${PROXY_NAME}' extension is not reachable, so there is no Probe Agent to report on.`, "Check Proxy Extension");
-        if (choice) {
-            await vscode.commands.executeCommand("mcu-debug.checkProxyExtension");
-        }
-        return;
-    }
-
+    // In a local window the agent runs on this machine, from our own bin/, so we can ask it
+    // ourselves. Only a remote window has to go through the proxy extension.
     let report: StatusReport | undefined;
-    try {
-        report = await vscode.commands.executeCommand<StatusReport>(PROXY_STATUS_CMD);
-    } catch (e) {
-        trace("agentStatus.failed", { error: `${e}` });
-        void vscode.window.showErrorMessage(`Could not read Probe Agent status: ${e}`);
-        return;
+    let source: string;
+    if (!vscode.env.remoteName) {
+        source = `MCU-Debug ${ourVersion}`;
+        try {
+            report = await localProxyStatus(context.extensionPath);
+        } catch (e) {
+            trace("agentStatus.failed", { error: `${e}`, via: "local" });
+            void vscode.window.showErrorMessage(`Could not read Probe Agent status: ${e}`);
+            return;
+        }
+    } else {
+        // Ping first: without it, a missing proxy extension surfaces as "command not found",
+        // which reads like a bug in MCU-Debug rather than an extension that is not installed.
+        const pong = await pingProxy();
+        if (!pong) {
+            trace("agentStatus.proxy-unreachable");
+            const choice = await vscode.window.showWarningMessage(`The '${PROXY_NAME}' extension is not reachable, so there is no Probe Agent to report on.`, "Check Proxy Extension");
+            if (choice) {
+                await vscode.commands.executeCommand("mcu-debug.checkProxyExtension");
+            }
+            return;
+        }
+        source = `${PROXY_NAME} ${pong.version}`;
+        try {
+            report = await vscode.commands.executeCommand<StatusReport>(PROXY_STATUS_CMD);
+        } catch (e) {
+            trace("agentStatus.failed", { error: `${e}` });
+            void vscode.window.showErrorMessage(`Could not read Probe Agent status: ${e}`);
+            return;
+        }
     }
 
     const instances = report?.instances ?? [];
@@ -449,7 +491,7 @@ export async function probeAgentStatusCommand(context: vscode.ExtensionContext):
     if (instances.length === 0) {
         // Not a problem. The agent is started on demand and exits when idle, so "none" is
         // the normal state between debug sessions.
-        void vscode.window.showInformationMessage(`No Probe Agent is running. One starts automatically when a debug session needs it. (${PROXY_NAME} ${pong.version})`);
+        void vscode.window.showInformationMessage(`No Probe Agent is running. One starts automatically when a debug session needs it. (${source})`);
         return;
     }
 
