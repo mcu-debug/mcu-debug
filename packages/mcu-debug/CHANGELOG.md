@@ -1,7 +1,5 @@
 # Change Log
 
-> **Pre-release:** there is no release version yet. Install via the dropdown beside **Install**
-> and pick *Install Pre-Release Version*; see the README for why the plain button complains.
 > Please report any issues to https://github.com/mcu-debug/mcu-debug/issues
 
 ## [Unreleased]

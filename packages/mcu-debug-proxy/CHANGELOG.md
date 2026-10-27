@@ -1,7 +1,5 @@
 # Change Log
 
-> **Pre-release:** there is no release version yet. Install via the dropdown beside **Install** and pick *Install Pre-Release Version*.
-
 This extension's version tracks the main
 [MCU-Debug](https://marketplace.visualstudio.com/items?itemName=mcu-debug.mcu-debug) extension so
 that the two always install as a matched pair. Most entries here are version bumps with no
@@ -14,7 +12,7 @@ extension's
 ## [v0.1.20] - 2026-10-14
 
 ### General
-- The Rust executable `mdbg` is not named `mcu-debug-agent`. Most prople do not use this executable directly
+- The Rust executable `mdbg` is now named `mcu-debug-agent`. Most prople do not use this executable directly
   except when using `ssh` without VSCode. This executable for Windows also identifies itself as coming
   from the "MCU Debug Authors" so it is easily identifable in the firewall dialog that may popup. This also
   helps in the Activity Monitor, Process Viewer, pkill, ps, etc. to identify the agent process

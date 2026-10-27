@@ -30,21 +30,6 @@ Or from the command line:
 code --install-extension mcu-debug.mcu-debug
 ```
 
-:::info[mcu-debug is still pre-release]
-There is **no release version yet** — every build so far is a pre-release, and this is for early
-adopters.
-
-**Use the dropdown arrow next to the Install button and choose *Install Pre-Release Version*.**
-That installs it directly.
-
-Clicking **Install** on its own also works, but it assumes a release version exists: it first
-reports that there is none, then offers you the pre-release. Nothing is wrong when that happens
-— the message is about the channel, not a broken listing — but the dropdown skips it.
-
-The convention is an odd minor version for pre-release (`0.1.x`) and an even one for release
-(`0.2.x`), so when `0.2.0` appears the release channel exists and this stops applying.
-:::
-
 ## Installing from a VSIX
 
 Use this for builds from the [GitHub releases](https://github.com/mcu-debug/mcu-debug/releases)

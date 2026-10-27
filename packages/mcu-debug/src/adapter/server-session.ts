@@ -196,7 +196,7 @@ export class GDBServerSession extends EventEmitter {
                 try {
                     this.proxyClient.on("streamStarted", (data: TcpPortDef) => {
                         if (data.name.startsWith("gdb")) {
-                            this.session.handleMsg(GdbEventNames.Stdout, `GDB-Server stream ready on port server ${data.remotePort}\n`);
+                            this.session.handleMsg(GdbEventNames.Stdout, `GDB-Server gdb port ready on server ${data.remotePort}, local port ${data.localPort}\n`);
                             this.serverResolve?.();
                             this.serverResolve = null;
                             this.resolved = true;
@@ -259,7 +259,7 @@ export class GDBServerSession extends EventEmitter {
                         killTimers();
                     } else {
                         const elapsed = Math.round((Date.now() - now) / 1000);
-                        if (this.matchRegex) {
+                        if (this.matchRegex && !this.proxyClient) {
                             this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to output line matching regex ${this.matchRegex} (${elapsed}s elapsed)...\n`);
                         } else {
                             this.session.handleMsg(GdbEventNames.Stderr, `Waiting for gdb-server to start (${elapsed}s elapsed)...\n`);
