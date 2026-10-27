@@ -4553,7 +4553,8 @@
     "sorted-array-type": "^1.3.0",
     "triple-beam": "^1.4.1"
   },
-  "extensionDependencies": [
+  "extensionPack": [
+    "mcu-debug.mcu-debug-proxy",
     "mcu-debug.debug-tracker-vscode",
     "mcu-debug.memory-view",
     "mcu-debug.rtos-views",
